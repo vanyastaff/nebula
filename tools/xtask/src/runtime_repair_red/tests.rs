@@ -8,9 +8,6 @@ const EXPECTED_RED_WORKFLOW: &str =
     include_str!("../../../../.github/workflows/runtime-repair-red.yml");
 const SCENARIO_TARGET: &str =
     include_str!("../../../../apps/server/tests/runtime_repair_red_scenarios.rs");
-const ABA_FENCING_TARGET: &str = include_str!(
-    "../../../../apps/server/tests/runtime_repair_red_scenarios/same_processor_aba_fencing.rs"
-);
 
 const EMPTY_TEST_MANIFEST: &str = r#"
 manifest_version = 1
@@ -67,14 +64,7 @@ fn active_profile_manifest_is_valid_and_names_all_genuine_cases() {
     let manifest = validate_manifest_source(ACTIVE_PROFILE_MANIFEST).expect("manifest is valid");
     for expected in &manifest.expected_failures {
         assert!(
-            SCENARIO_TARGET.contains(&format!("async fn {}", expected.test_name))
-                || ABA_FENCING_TARGET.contains(&format!(
-                    "async fn {}",
-                    expected
-                        .test_name
-                        .strip_prefix("same_processor_aba_fencing::")
-                        .unwrap_or(&expected.test_name)
-                )),
+            SCENARIO_TARGET.contains(&format!("async fn {}", expected.test_name)),
             "manifest case `{}` must name a real test",
             expected.test_name
         );
@@ -125,21 +115,19 @@ fn workflow_does_not_force_ignored_or_mask_infrastructure_failures() {
 
 #[test]
 fn active_target_contains_no_fake_or_suppressed_test() {
-    for source in [SCENARIO_TARGET, ABA_FENCING_TARGET] {
-        for forbidden_source in [
-            "#[ignore]",
-            "#[should_panic]",
-            "fn sentinel",
-            "fn fake",
-            "fn placeholder",
-            "tokio::time::sleep",
-            "std::thread::sleep",
-        ] {
-            assert!(
-                !source.contains(forbidden_source),
-                "scenario target contains forbidden source `{forbidden_source}`"
-            );
-        }
+    for forbidden_source in [
+        "#[ignore]",
+        "#[should_panic]",
+        "fn sentinel",
+        "fn fake",
+        "fn placeholder",
+        "tokio::time::sleep",
+        "std::thread::sleep",
+    ] {
+        assert!(
+            !SCENARIO_TARGET.contains(forbidden_source),
+            "scenario target contains forbidden source `{forbidden_source}`"
+        );
     }
 
     let manifest = validate_manifest_source(ACTIVE_PROFILE_MANIFEST).expect("manifest is valid");
@@ -152,8 +140,7 @@ fn active_target_contains_no_fake_or_suppressed_test() {
     // cases than exist — that would mean an entry excusing a test that never
     // ran. Each entry is separately checked to name a real test in
     // `active_profile_manifest_is_valid_and_names_all_genuine_cases`.
-    let selected_tests = SCENARIO_TARGET.matches("#[tokio::test]").count()
-        + ABA_FENCING_TARGET.matches("#[tokio::test").count();
+    let selected_tests = SCENARIO_TARGET.matches("#[tokio::test]").count();
     assert!(
         manifest.expected_failures.len() <= selected_tests,
         "manifest names {} cases but the target defines {selected_tests} tests",
@@ -163,11 +150,6 @@ fn active_target_contains_no_fake_or_suppressed_test() {
         SCENARIO_TARGET.matches("EXPECTED_RED:").count(),
         1,
         "one product-root helper owns its exact marker emission"
-    );
-    assert_eq!(
-        ABA_FENCING_TARGET.matches("EXPECTED_RED:").count(),
-        1,
-        "one component-only helper owns its exact marker emission"
     );
 }
 

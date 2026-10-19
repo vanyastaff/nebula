@@ -13,7 +13,7 @@ use nebula_storage_port::{
     store::{
         ControlFlavorRefusal, ControlFlavorRefusalOutcome, ControlStartAcceptance,
         ControlStartHandoff, ControlTurnCommit, ControlTurnCommitOutcome, ExecutionStore,
-        ExecutionTurnHandoff, TurnAcceptance, TurnHandoff,
+        ExecutionTurnHandoff,
     },
 };
 
@@ -78,10 +78,6 @@ impl ExecutionTurnHandoff for TakeoverBeforeCommit {
     ) -> Result<ControlStartAcceptance, StorageError> {
         self.inner.accept_control_start(request).await
     }
-
-    async fn accept_turn(&self, request: &TurnHandoff<'_>) -> Result<TurnAcceptance, StorageError> {
-        self.inner.accept_turn(request).await
-    }
 }
 
 #[derive(Debug)]
@@ -144,9 +140,5 @@ impl ExecutionTurnHandoff for CheckpointBeforeCommit {
         request: &ControlStartHandoff<'_>,
     ) -> Result<ControlStartAcceptance, StorageError> {
         self.inner.accept_control_start(request).await
-    }
-
-    async fn accept_turn(&self, request: &TurnHandoff<'_>) -> Result<TurnAcceptance, StorageError> {
-        self.inner.accept_turn(request).await
     }
 }

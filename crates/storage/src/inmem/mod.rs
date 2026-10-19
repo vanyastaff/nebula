@@ -20,7 +20,6 @@ mod execution;
 mod execution_fence;
 mod identity;
 mod iteration_checkpoint;
-mod job_dispatch;
 mod journal;
 mod node_result;
 mod operation_ledger;
@@ -42,7 +41,6 @@ pub use identity::{
     InMemoryTriggerStore, InMemoryWorkspaceStore,
 };
 pub use iteration_checkpoint::InMemoryCheckpointStore;
-pub use job_dispatch::InMemoryJobDispatchQueue;
 pub use journal::InMemoryJournalReader;
 pub use node_result::InMemoryNodeResultStore;
 pub use operation_ledger::InMemoryOperationLedger;
@@ -54,6 +52,6 @@ pub use resume_token::InMemoryResumeTokenStore;
 pub use start_acceptance::InMemoryStartAcceptanceStore;
 pub use turn_handoff::InMemoryTurnHandoff;
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
-pub(crate) use turn_handoff::{acceptance_label, control_acceptance_label};
+pub(crate) use turn_handoff::control_acceptance_label;
 pub use webhook_activation::InMemoryWebhookActivationStore;
 pub use workflow::{InMemoryWorkflowStore, InMemoryWorkflowVersionStore};

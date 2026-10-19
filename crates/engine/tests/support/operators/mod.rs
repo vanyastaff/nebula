@@ -735,13 +735,6 @@ impl nebula_storage_port::ExecutionTurnHandoff for FailingFlavorObservation {
     {
         self.0.accept_control_start(request).await
     }
-
-    async fn accept_turn(
-        &self,
-        request: &nebula_storage_port::store::TurnHandoff<'_>,
-    ) -> Result<nebula_storage_port::store::TurnAcceptance, nebula_storage_port::StorageError> {
-        self.0.accept_turn(request).await
-    }
 }
 
 /// Recording a flavor mismatch is an observation. A transient failure to

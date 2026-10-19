@@ -6612,15 +6612,6 @@ impl nebula_storage_port::store::ExecutionTurnHandoff for OneShotControlHandoff 
             "control Start is outside this test boundary".to_owned(),
         ))
     }
-
-    async fn accept_turn(
-        &self,
-        _: &nebula_storage_port::store::TurnHandoff<'_>,
-    ) -> Result<nebula_storage_port::store::TurnAcceptance, StorageError> {
-        Err(StorageError::Internal(
-            "job handoff is outside this test boundary".to_owned(),
-        ))
-    }
 }
 
 async fn process_claimed_resume(

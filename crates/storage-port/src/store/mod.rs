@@ -13,7 +13,6 @@ mod credential_refresh_schedule;
 mod execution;
 mod idempotency;
 mod identity;
-mod job_dispatch;
 mod journal;
 mod node_result;
 mod operation_ledger;
@@ -30,7 +29,9 @@ mod workflow;
 
 pub use crate::dto::RevisionCatalogError;
 pub use checkpoint::CheckpointStore;
-pub use control_queue::{ControlClaim, ControlClaimToken, ControlQueue, ReclaimOutcome};
+pub use control_queue::{
+    ClaimGeneration, ControlClaim, ControlClaimToken, ControlQueue, ReclaimOutcome,
+};
 pub use credential::{
     CredentialAlreadyExistsKey, CredentialPersistence, CredentialPersistenceError,
     StoredCredentialOperationalHead,
@@ -45,7 +46,6 @@ pub use idempotency::IdempotencyGuard;
 pub use identity::{
     MembershipStore, OrgStore, ResourceStore, TenantProvisioningStore, TriggerStore, WorkspaceStore,
 };
-pub use job_dispatch::{ClaimGeneration, JobClaim, JobClaimToken, JobDispatchQueue};
 pub use journal::ExecutionJournalReader;
 pub use node_result::NodeResultStore;
 pub use operation_ledger::{OperationLedger, OperationLedgerAdjudicator};
@@ -76,7 +76,7 @@ pub use turn_handoff::{
     ControlTurnCommitOutcome, ControlTurnTransition, ExecutionAdmissionRefusal,
     ExecutionAdmissionRefusalOutcome, ExecutionTurnHandoff, FlavorMismatchSnapshot,
     RecoverableTurn, RecoverableTurnPage, RecoveryTurnAcceptance, RecoveryTurnHandoff,
-    TurnAcceptance, TurnHandoff, TurnRecovery,
+    TurnRecovery,
 };
 pub use webhook::WebhookActivationStore;
 pub use workflow::{WorkflowPublicationError, WorkflowStore, WorkflowVersionStore};

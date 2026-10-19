@@ -82,7 +82,7 @@
   read as `Option<T>` and rejected when `None` (or the column is declared NOT NULL in every
   migration). Integers cross the signed SQL boundary only through `decode_u64` /
   `decode_i32` / `encode_u64` — never `as`. Older adapters (`execution`, `workflow`,
-  `control_queue`, `job_dispatch`, `turn_handoff`) still bind with `as i64`: convert them
+  `control_queue`, `turn_handoff`) still bind with `as i64`: convert them
   when you touch them.
 - **Reference adapter.** `inmem/` returns the same variants, order and uniqueness outcomes
   as the SQL backends; conformance asserts it.
@@ -135,7 +135,7 @@
 | Stored resources, resource status, resource references | `resource_status_conformance_*` (SQL fixtures seed the resources they publish for) and the `resource*` `relational_matrix!` cases in [conformance](tests/conformance/resources.rs): live workspace / live resource checks, archived-resource status hidden, cascades on resource and workspace purge. |
 | Port behavior and tenancy | [conformance](tests/conformance.rs) and [identity_conformance](tests/identity_conformance.rs) for the affected backends; report which backend cases actually executed. |
 | Migration admission | [schema_source_authority](tests/schema_source_authority.rs), [credential_migration_catalog](tests/credential_migration_catalog.rs), and the SQLite/PostgreSQL schema-setup suites. Review admission before updating the expected head; verify both catalog inventory and canonical-prefix rejection. |
-| Execution handoff or remote effects | The `turn_handoff_conformance_*` and `operation_ledger_conformance_*` targets in [tests/](tests/); pair backend evidence with engine/worker ownership tests. |
+| Execution handoff or remote effects | The `control_start_handoff`/`control_start_handoff_postgres` and `operation_ledger_conformance_*` targets in [tests/](tests/); pair backend evidence with engine/worker ownership tests. |
 
 ## See also
 

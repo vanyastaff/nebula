@@ -58,10 +58,10 @@ plugin-registry — и рискует разойтись с canon §12.2 control
 
 ## 3. Зависимости и зависимые
 
-- **Deps (15 intra-workspace, намеренно для composition root):** `nebula-core`, `nebula-error`,
+- **Deps (14 intra-workspace, намеренно для composition root):** `nebula-core`, `nebula-error`,
   `nebula-action`, `nebula-expression`, `nebula-plugin`, `nebula-workflow`, `nebula-execution`,
   `nebula-schema`, `nebula-credential`, `nebula-eventbus`, `nebula-resource`, `nebula-resilience`,
-  `nebula-storage-port`, `nebula-metrics`, `nebula-orchestrator`. `nebula-storage` — только dev-dep (после удаления
+  `nebula-storage-port`, `nebula-metrics`. `nebula-storage` — только dev-dep (после удаления
   credential-модуля lib его больше не линкует).
   Внешние ключевые: `tokio`, `dashmap`, `opentelemetry` / `tracing-opentelemetry`, `async-trait`,
   `zeroize`.

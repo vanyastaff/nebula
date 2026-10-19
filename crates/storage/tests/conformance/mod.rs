@@ -22,19 +22,18 @@
 use std::sync::Arc;
 
 use nebula_core::{
-    ExecutablePlanRevisionId, ExecutionContractBundleId, ExecutionId, OrgId, PluginKey,
-    PluginSetId, WorkerFlavorRevisionId, WorkflowId, WorkflowVersionId, WorkspaceId,
+    ExecutablePlanRevisionId, ExecutionContractBundleId, ExecutionId, OrgId, PluginSetId,
+    WorkerFlavorRevisionId, WorkflowId, WorkflowVersionId, WorkspaceId,
 };
 use nebula_storage_port::dto::{
-    ContractBundleRecord, ControlCommand, ControlMsg, JobDispatchMsg, JournalEntry,
-    MaterializedStart, NewExecution, ResumeTarget, WebhookActivationRecord, WebhookMode,
-    WorkflowRecord, WorkflowVersionRecord,
+    ContractBundleRecord, ControlCommand, ControlMsg, JournalEntry, MaterializedStart,
+    NewExecution, ResumeTarget, WebhookActivationRecord, WebhookMode, WorkflowRecord,
+    WorkflowVersionRecord,
 };
 use nebula_storage_port::store::{
     ClaimGeneration, ControlClaimToken, ControlQueue, ExecutionJournalReader, ExecutionStore,
-    IdempotencyGuard, JobClaimToken, JobDispatchQueue, StartAcceptanceStore, StartContractIdentity,
-    StartMaterialization, TriggerStore, WebhookActivationStore, WorkflowStore,
-    WorkflowVersionStore,
+    IdempotencyGuard, StartAcceptanceStore, StartContractIdentity, StartMaterialization,
+    TriggerStore, WebhookActivationStore, WorkflowStore, WorkflowVersionStore,
 };
 use nebula_storage_port::{
     BeginDrainOutcome, ExecutionReferenceTransition, FencingToken, PlanFlavorCatalogAdmin,
@@ -82,8 +81,6 @@ pub(crate) trait Backend: Send + Sync {
     /// A workflow-version store backed by this backend, sharing the same
     /// backend as [`Backend::workflow_store`].
     async fn workflow_version_store(&self) -> Arc<dyn WorkflowVersionStore>;
-    /// A job-dispatch queue backed by this backend.
-    async fn job_dispatch_queue(&self) -> Arc<dyn JobDispatchQueue>;
     /// A keyed-start acceptance store backed by this backend, sharing the same
     /// core as [`Backend::execution_store`] and [`Backend::control_queue`] so
     /// `materialize_start` commits every start-owned write together.
@@ -167,23 +164,11 @@ async fn seed_execution(backend: &dyn Backend, scope: &Scope, execution_id: &str
     }
 }
 
-/// Test-only clock control for SQL job-dispatch retention assertions.
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
-#[async_trait::async_trait]
-pub(crate) trait SqlJobTimestampFixture: Backend {
-    /// Move a job's current processing timestamp into the past.
-    async fn age_job_timestamp(
-        &self,
-        job_id: &[u8; 16],
-        age: std::time::Duration,
-    ) -> Result<(), StorageError>;
-}
-
 /// InMemory backend (always available).
 ///
 /// Holds one execution store whose core is shared (it is `Clone` over an
-/// `Arc<Mutex<…>>`), so the control queue, journal reader, and job-dispatch
-/// queue observe the same rows under one lock.
+/// `Arc<Mutex<…>>`), so the control queue and journal reader observe the
+/// same rows under one lock.
 pub(crate) struct InMemoryBackend {
     store: nebula_storage::inmem::InMemoryExecutionStore,
     guard: nebula_storage::inmem::InMemoryIdempotencyGuard,
@@ -244,11 +229,6 @@ impl Backend for InMemoryBackend {
     async fn workflow_version_store(&self) -> Arc<dyn WorkflowVersionStore> {
         Arc::new(self.workflow_version.clone())
     }
-    async fn job_dispatch_queue(&self) -> Arc<dyn JobDispatchQueue> {
-        Arc::new(nebula_storage::inmem::InMemoryJobDispatchQueue::new(
-            &self.store,
-        ))
-    }
     async fn start_acceptance_store(&self) -> Arc<dyn StartAcceptanceStore> {
         Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
             &self.store,
@@ -305,35 +285,6 @@ impl SqliteBackend {
             })
             .await
             .clone()
-    }
-}
-
-#[cfg(feature = "sqlite")]
-#[async_trait::async_trait]
-impl SqlJobTimestampFixture for SqliteBackend {
-    async fn age_job_timestamp(
-        &self,
-        job_id: &[u8; 16],
-        age: std::time::Duration,
-    ) -> Result<(), StorageError> {
-        let age_micros = i64::try_from(age.as_micros()).unwrap_or(i64::MAX);
-        let rows_updated = sqlx::query(
-            "UPDATE job_dispatch_queue SET processed_at = \
-             CAST((julianday('now') - 2440587.5) * 86400000000.0 AS INTEGER) - ? WHERE id = ?",
-        )
-        .bind(age_micros)
-        .bind(job_id.as_slice())
-        .execute(&self.pool().await)
-        .await
-        .map_err(|error| StorageError::Connection(error.to_string()))?
-        .rows_affected();
-        if rows_updated != 1 {
-            return Err(StorageError::NotFound {
-                entity: "job_dispatch",
-                id: hex::encode(job_id),
-            });
-        }
-        Ok(())
     }
 }
 
@@ -410,16 +361,6 @@ impl Backend for SqliteBackend {
     }
     #[cfg(not(feature = "sqlite"))]
     async fn workflow_version_store(&self) -> Arc<dyn WorkflowVersionStore> {
-        unimplemented!("build with --features sqlite to exercise the SQLite backend")
-    }
-    #[cfg(feature = "sqlite")]
-    async fn job_dispatch_queue(&self) -> Arc<dyn JobDispatchQueue> {
-        Arc::new(nebula_storage::sqlite::SqliteJobDispatchQueue::new(
-            self.pool().await,
-        ))
-    }
-    #[cfg(not(feature = "sqlite"))]
-    async fn job_dispatch_queue(&self) -> Arc<dyn JobDispatchQueue> {
         unimplemented!("build with --features sqlite to exercise the SQLite backend")
     }
     #[cfg(feature = "sqlite")]
@@ -573,35 +514,6 @@ impl PostgresBackend {
     }
 }
 
-#[cfg(feature = "postgres")]
-#[async_trait::async_trait]
-impl SqlJobTimestampFixture for PostgresBackend {
-    async fn age_job_timestamp(
-        &self,
-        job_id: &[u8; 16],
-        age: std::time::Duration,
-    ) -> Result<(), StorageError> {
-        let age_micros = i64::try_from(age.as_micros()).unwrap_or(i64::MAX);
-        let rows_updated = sqlx::query(
-            "UPDATE job_dispatch_queue \
-             SET processed_at = clock_timestamp() - $1 * INTERVAL '1 microsecond' WHERE id = $2",
-        )
-        .bind(age_micros)
-        .bind(job_id.as_slice())
-        .execute(&self.pool().await)
-        .await
-        .map_err(|error| StorageError::Connection(error.to_string()))?
-        .rows_affected();
-        if rows_updated != 1 {
-            return Err(StorageError::NotFound {
-                entity: "job_dispatch",
-                id: hex::encode(job_id),
-            });
-        }
-        Ok(())
-    }
-}
-
 #[async_trait::async_trait]
 impl Backend for PostgresBackend {
     fn name(&self) -> &'static str {
@@ -675,16 +587,6 @@ impl Backend for PostgresBackend {
     }
     #[cfg(not(feature = "postgres"))]
     async fn workflow_version_store(&self) -> Arc<dyn WorkflowVersionStore> {
-        unimplemented!("build with --features postgres to exercise the Postgres backend")
-    }
-    #[cfg(feature = "postgres")]
-    async fn job_dispatch_queue(&self) -> Arc<dyn JobDispatchQueue> {
-        Arc::new(nebula_storage::postgres::PgJobDispatchQueue::new(
-            self.pool().await,
-        ))
-    }
-    #[cfg(not(feature = "postgres"))]
-    async fn job_dispatch_queue(&self) -> Arc<dyn JobDispatchQueue> {
         unimplemented!("build with --features postgres to exercise the Postgres backend")
     }
     #[cfg(feature = "postgres")]
@@ -2684,12 +2586,6 @@ impl<B: Backend> Backend for ScopedBackend<B> {
         ))
     }
 
-    // Job dispatch is a worker-global discovery port. Tenant predicates are
-    // carried by the storage-minted claim token on acknowledgement.
-    async fn job_dispatch_queue(&self) -> Arc<dyn JobDispatchQueue> {
-        self.inner.job_dispatch_queue().await
-    }
-
     // Start acceptance is not wrapped by the tenancy decorator: the scope is
     // is already an explicit field of the materialization, so no ambient scope
     // for a decorator to substitute.
@@ -2721,13 +2617,21 @@ impl<B: Backend> Backend for ScopedBackend<B> {
     }
 }
 
+/// How long a claim must age before `reclaim_stuck` will take it back.
+///
+/// The SQL backends compare wall-clock microsecond instants while the in-memory
+/// backend compares `tokio::time::Instant`s; a real sleep advances both, so
+/// one shared assertion can drive all three. The margin is generous because
+/// the assertion is about ordering, not about a deadline.
+const ABA_RECLAIM_HORIZON: std::time::Duration = std::time::Duration::from_millis(20);
+const ABA_CLAIM_AGE: std::time::Duration = std::time::Duration::from_millis(60);
+
 /// A stable processor identity cannot acknowledge a control command whose
 /// claim a reclaim already superseded — the same-processor ABA, on the queue
 /// that carries accepted lifecycle commands.
 ///
-/// The `JobDispatchQueue` twin of this assertion is
-/// `assert_job_dispatch_same_processor_aba_is_fenced`; both queues had the same
-/// `processed_by` fence and therefore the same defect. Here the stakes are a
+/// A `processed_by` fence alone cannot tell the two attempts apart. Here the
+/// stakes are a
 /// Cancel or Terminate being marked completed by a consumer that no longer owns
 /// it, while the attempt that does own it is still dispatching.
 pub(crate) async fn assert_control_queue_same_processor_aba_is_fenced(
@@ -3244,583 +3148,6 @@ pub(crate) async fn assert_expired_rollbacks_are_released(backend: &dyn Backend)
     );
 }
 
-// ── job-dispatch conformance assertions ───────────────────────────────────
-
-fn make_job(id: u8, required_plugin_key: &str, tags: &[&str]) -> JobDispatchMsg {
-    let key: PluginKey = required_plugin_key
-        .parse()
-        .expect("conformance test plugin key must be valid");
-    let required_plugins: Vec<PluginKey> = tags
-        .iter()
-        .map(|s| {
-            s.parse::<PluginKey>()
-                .expect("conformance test tag must be valid")
-        })
-        .collect();
-    JobDispatchMsg::new(
-        [id; 16],
-        format!("exe_{id}"),
-        ControlCommand::Start,
-        scope_a(),
-        serde_json::json!({}),
-        None::<&str>,
-        key,
-        required_plugins,
-        None::<&str>,
-        0,
-        WorkerFlavorRevisionId::from_bytes([0x11; 32]),
-    )
-}
-
-/// Enqueue `job` after creating the execution it names (a job belongs to its
-/// execution, which the SQL backends enforce).
-async fn enqueue_job(backend: &dyn Backend, queue: &dyn JobDispatchQueue, job: &JobDispatchMsg) {
-    seed_execution(backend, &job.scope, &job.execution_id).await;
-    queue.enqueue(job).await.expect("enqueue job");
-}
-
-/// `claim_pending` only delivers rows whose required plugin is in the worker's
-/// `available_plugins`; a row requiring an unavailable plugin is not delivered.
-pub(crate) async fn assert_job_dispatch_routes_by_plugin(backend: &dyn Backend) {
-    let q = backend.job_dispatch_queue().await;
-
-    let job_a = make_job(0x10, "plugin.alpha", &["plugin.alpha"]);
-    let job_b = make_job(0x11, "plugin.beta", &["plugin.beta"]);
-    enqueue_job(backend, q.as_ref(), &job_a).await;
-    enqueue_job(backend, q.as_ref(), &job_b).await;
-
-    let proc = [9u8; 16];
-    // Advertise only alpha — must NOT receive beta.
-    let claimed = q
-        .claim_pending(
-            &proc,
-            16,
-            &["plugin.alpha".parse::<PluginKey>().unwrap()],
-            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
-        )
-        .await
-        .expect("claim");
-    assert_eq!(
-        claimed.len(),
-        1,
-        "[{}] only alpha row claimed",
-        backend.name()
-    );
-    assert_eq!(
-        claimed[0].msg.required_plugin_key.as_str(),
-        "plugin.alpha",
-        "[{}] claimed row must be alpha",
-        backend.name()
-    );
-
-    // Advertise only beta — beta row is still Pending (alpha took none).
-    let claimed_b = q
-        .claim_pending(
-            &proc,
-            16,
-            &["plugin.beta".parse::<PluginKey>().unwrap()],
-            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
-        )
-        .await
-        .expect("claim beta");
-    assert_eq!(claimed_b.len(), 1, "[{}] beta row claimed", backend.name());
-
-    // Advertise an unrelated tag — nothing claimed.
-    let nothing = q
-        .claim_pending(
-            &proc,
-            16,
-            &["plugin.gamma".parse::<PluginKey>().unwrap()],
-            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
-        )
-        .await
-        .expect("claim gamma");
-    assert!(
-        nothing.is_empty(),
-        "[{}] unadvertised tag must not match any row",
-        backend.name()
-    );
-}
-
-/// The primary plugin remains an independent routing requirement when a
-/// malformed decoded message omits it from the full plugin set.
-pub(crate) async fn assert_job_dispatch_requires_primary_plugin(backend: &dyn Backend) {
-    let queue = backend.job_dispatch_queue().await;
-    let mut job = make_job(0x12, "plugin.alpha", &["plugin.alpha"]);
-    job.required_plugins = vec![
-        "plugin.beta"
-            .parse::<PluginKey>()
-            .expect("conformance test plugin key must be valid"),
-    ];
-    enqueue_job(backend, queue.as_ref(), &job).await;
-
-    let claims = queue
-        .claim_pending(
-            &[9; 16],
-            16,
-            &["plugin.beta"
-                .parse::<PluginKey>()
-                .expect("conformance test plugin key must be valid")],
-            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
-        )
-        .await
-        .expect("claim malformed job");
-
-    assert!(
-        claims.is_empty(),
-        "[{}] a worker missing the primary plugin must not claim malformed routing metadata",
-        backend.name()
-    );
-}
-
-/// Terminal retention starts at the terminal transition, not when the claim
-/// began. SQL fixtures move timestamps directly so the assertion has no
-/// wall-clock sleep or scheduler race.
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
-pub(crate) async fn assert_sql_job_cleanup_uses_terminal_transition(
-    backend: &dyn SqlJobTimestampFixture,
-) {
-    let queue = backend.job_dispatch_queue().await;
-    let job = make_job(0x13, "plugin.alpha", &["plugin.alpha"]);
-    enqueue_job(backend, queue.as_ref(), &job).await;
-    let claim = queue
-        .claim_pending(
-            &[9; 16],
-            1,
-            &["plugin.alpha"
-                .parse::<PluginKey>()
-                .expect("conformance test plugin key must be valid")],
-            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
-        )
-        .await
-        .expect("claim cleanup job")
-        .remove(0);
-
-    backend
-        .age_job_timestamp(&job.id, std::time::Duration::from_secs(10))
-        .await
-        .expect("age active claim timestamp");
-    queue
-        .mark_dispatched(&claim.token)
-        .await
-        .expect("terminalize cleanup job");
-    assert_eq!(
-        queue
-            .cleanup(std::time::Duration::from_secs(1))
-            .await
-            .expect("cleanup immediately after terminal transition"),
-        0,
-        "[{}] a long-running claim must survive immediately after terminalization",
-        backend.name()
-    );
-
-    backend
-        .age_job_timestamp(&job.id, std::time::Duration::from_secs(10))
-        .await
-        .expect("age terminal timestamp");
-    assert_eq!(
-        queue
-            .cleanup(std::time::Duration::from_secs(1))
-            .await
-            .expect("cleanup expired terminal job"),
-        1,
-        "[{}] an expired terminal job must be deleted",
-        backend.name()
-    );
-}
-
-/// `mark_dispatched` and `mark_failed` are both fenced on the storage-minted
-/// claim generation: a token that does not name the row's current claim
-/// changes nothing.
-pub(crate) async fn assert_job_dispatch_fencing(backend: &dyn Backend) {
-    let q = backend.job_dispatch_queue().await;
-    let plugin_tags = &["plugin.x".parse::<PluginKey>().unwrap()];
-
-    let runner_a = [1u8; 16];
-
-    // ── mark_dispatched fencing ───────────────────────────────────────────────
-    let job_d = make_job(0x20, "plugin.x", &["plugin.x"]);
-    enqueue_job(backend, q.as_ref(), &job_d).await;
-
-    let claimed = q
-        .claim_pending(
-            &runner_a,
-            16,
-            plugin_tags,
-            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
-        )
-        .await
-        .expect("claim");
-    assert_eq!(claimed.len(), 1, "[{}] claimed one row", backend.name());
-    let current = &claimed[0].token;
-
-    let foreign_scope = JobClaimToken::new(job_d.id, current.generation(), scope_b());
-    let foreign_dispatch = q.mark_dispatched(&foreign_scope).await;
-    assert!(
-        matches!(
-            foreign_dispatch,
-            Err(StorageError::NotFound {
-                entity: "job_dispatch",
-                ..
-            })
-        ),
-        "[{}] a job claim bound to another tenant must receive uniform NotFound, got: {foreign_dispatch:?}",
-        backend.name()
-    );
-
-    // A token naming a generation this row never reached must be rejected.
-    // Under the old `processed_by` fence this was expressed as "a different
-    // processor id"; authority is now the token, which a caller cannot forge
-    // into existence, so the equivalent probe is a wrong generation.
-    let forged = JobClaimToken::new(
-        job_d.id,
-        ClaimGeneration::new(current.generation().get() + 1),
-        current.scope().clone(),
-    );
-    let stale_dispatched = q.mark_dispatched(&forged).await;
-    assert!(
-        matches!(stale_dispatched, Err(StorageError::FencedOut { .. })),
-        "[{}] mark_dispatched with a non-current generation must be FencedOut, got: {:?}",
-        backend.name(),
-        stale_dispatched
-    );
-
-    // The row is still Processing (the fenced call made no change) — the
-    // holder of the current claim succeeds.
-    q.mark_dispatched(current)
-        .await
-        .expect("mark_dispatched (claimant)");
-
-    // After mark_dispatched, a fresh claim should find no pending rows.
-    let after_dispatch = q
-        .claim_pending(
-            &runner_a,
-            16,
-            plugin_tags,
-            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
-        )
-        .await
-        .expect("claim after dispatch");
-    assert!(
-        after_dispatch.is_empty(),
-        "[{}] no pending rows after mark_dispatched",
-        backend.name()
-    );
-
-    // ── mark_failed fencing ───────────────────────────────────────────────────
-    let job_f = make_job(0x21, "plugin.x", &["plugin.x"]);
-    enqueue_job(backend, q.as_ref(), &job_f).await;
-
-    let claimed_f = q
-        .claim_pending(
-            &runner_a,
-            16,
-            plugin_tags,
-            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
-        )
-        .await
-        .expect("claim job_f");
-    assert_eq!(claimed_f.len(), 1, "[{}] claimed job_f", backend.name());
-    let current_f = &claimed_f[0].token;
-
-    let forged_f = JobClaimToken::new(
-        job_f.id,
-        ClaimGeneration::new(current_f.generation().get() + 1),
-        current_f.scope().clone(),
-    );
-    let stale_failed = q.mark_failed(&forged_f, "stale error").await;
-    assert!(
-        matches!(stale_failed, Err(StorageError::FencedOut { .. })),
-        "[{}] mark_failed with a non-current generation must be FencedOut, got: {:?}",
-        backend.name(),
-        stale_failed
-    );
-
-    // The row is still Processing — the current claim can still fail it.
-    q.mark_failed(current_f, "real error")
-        .await
-        .expect("mark_failed (claimant)");
-
-    // After mark_failed the row is terminal; fresh claim yields nothing.
-    let after_failed = q
-        .claim_pending(
-            &runner_a,
-            16,
-            plugin_tags,
-            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
-        )
-        .await
-        .expect("claim after failed");
-    assert!(
-        after_failed.is_empty(),
-        "[{}] no pending rows after mark_failed",
-        backend.name()
-    );
-}
-
-/// How long a claim must age before `reclaim_stuck` will take it back.
-///
-/// The SQL backends compare wall-clock microsecond instants while the in-memory
-/// backend compares `tokio::time::Instant`s; a real sleep advances both, so
-/// one shared assertion can drive all three. The margin is generous because
-/// the assertion is about ordering, not about a deadline.
-const ABA_RECLAIM_HORIZON: std::time::Duration = std::time::Duration::from_millis(20);
-const ABA_CLAIM_AGE: std::time::Duration = std::time::Duration::from_millis(60);
-
-/// A stable processor identity cannot acknowledge a claim that a reclaim
-/// already superseded by a newer claim from the same processor.
-///
-/// One processor claims a row, the sweep hands the row back, and the *same*
-/// processor claims it again. Every `processed_by`-based fence accepts an
-/// acknowledgement issued against the first claim at that point, because the
-/// recorded processor still matches: the late acknowledgement terminalises a
-/// row the second attempt is still working. Only a per-attempt generation
-/// tells the two apart.
-pub(crate) async fn assert_job_dispatch_same_processor_aba_is_fenced(
-    backend: &dyn Backend,
-) -> serde_json::Value {
-    let q = backend.job_dispatch_queue().await;
-    let plugin_tags = &["plugin.aba".parse::<PluginKey>().unwrap()];
-    // One identity for both attempts — that is the whole point.
-    let processor = [7u8; 16];
-
-    let job = make_job(0x22, "plugin.aba", &["plugin.aba"]);
-    enqueue_job(backend, q.as_ref(), &job).await;
-
-    let first = q
-        .claim_pending(
-            &processor,
-            16,
-            plugin_tags,
-            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
-        )
-        .await
-        .expect("first claim");
-    assert_eq!(
-        first.len(),
-        1,
-        "[{}] generation N must claim the row",
-        backend.name()
-    );
-    let superseded = first[0].token.clone();
-
-    tokio::time::sleep(ABA_CLAIM_AGE).await;
-    let outcome = q
-        .reclaim_stuck(ABA_RECLAIM_HORIZON, 16)
-        .await
-        .expect("reclaim");
-    assert_eq!(
-        (outcome.reclaimed, outcome.exhausted),
-        (1, 0),
-        "[{}] the aged claim must be reclaimed, not exhausted",
-        backend.name()
-    );
-
-    let second = q
-        .claim_pending(
-            &processor,
-            16,
-            plugin_tags,
-            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
-        )
-        .await
-        .expect("second claim");
-    assert_eq!(
-        second.len(),
-        1,
-        "[{}] generation N+1 must re-claim the row",
-        backend.name()
-    );
-    let current = second[0].token.clone();
-    assert_eq!(
-        current.row_id(),
-        superseded.row_id(),
-        "[{}] both attempts must name the same row",
-        backend.name()
-    );
-    assert!(
-        current.generation() > superseded.generation(),
-        "[{}] a re-claim must mint a strictly greater generation ({} then {})",
-        backend.name(),
-        superseded.generation(),
-        current.generation()
-    );
-
-    let late_ack = q.mark_dispatched(&superseded).await;
-    assert!(
-        matches!(late_ack, Err(StorageError::FencedOut { .. })),
-        "[{}] a late ack from generation N must be FencedOut, got: {late_ack:?}",
-        backend.name()
-    );
-    let late_nack = q
-        .mark_failed(&superseded, "late generation-N failure")
-        .await;
-    assert!(
-        matches!(late_nack, Err(StorageError::FencedOut { .. })),
-        "[{}] a late nack from generation N must be FencedOut, got: {late_nack:?}",
-        backend.name()
-    );
-
-    // Zero state change: the row is still owned by generation N+1, which can
-    // still acknowledge it. Were the fence merely returning an error while
-    // terminalising the row, this would fail.
-    q.mark_dispatched(&current)
-        .await
-        .expect("generation N+1 still owns the row after the fenced acknowledgements");
-    serde_json::json!({
-        "queue": "job",
-        "row_id": current.row_id(),
-        "superseded_generation": superseded.generation().get(),
-        "current_generation": current.generation().get(),
-        "same_processor": true,
-        "late_ack_fenced": true,
-        "late_nack_fenced": true,
-        "stale_generation_mutation_count": 0,
-        "current_owner_completed_after_stale_attempts": true
-    })
-}
-
-/// `claim_pending` enforces a superset predicate: a worker may claim a job
-/// only when its `available_plugins` cover EVERY plugin in the job's `required_plugins`.
-///
-/// Contract (job has `required_plugin_key = "plugin.alpha"` and
-/// `required_plugins = ["plugin.alpha", "plugin.beta"]`):
-///
-/// 1. Advertised `["plugin.alpha"]` only → NOT claimed (missing beta).
-/// 2. Advertised `["plugin.beta"]` only → NOT claimed (missing alpha; the
-///    `required_plugin_key` pre-filter also rejects it independently).
-/// 3. Advertised `["plugin.alpha", "plugin.beta"]` → claimed (exact superset).
-/// 4. Advertised `["plugin.alpha", "plugin.beta", "plugin.gamma"]` → claimed
-///    (strict superset); claimed job identity verified.
-/// 5. Empty advertised set → claims nothing (parity across all backends).
-pub(crate) async fn assert_job_dispatch_routes_by_plugin_superset(backend: &dyn Backend) {
-    let q = backend.job_dispatch_queue().await;
-
-    // Job requires alpha AND beta (required_plugins covers both; invariant upheld).
-    let job = make_job(0x60, "plugin.alpha", &["plugin.alpha", "plugin.beta"]);
-    enqueue_job(backend, q.as_ref(), &job).await;
-
-    let proc = [0xAAu8; 16];
-
-    // 1. Alpha-only worker: pre-filter passes (required_plugin_key = alpha) but
-    //    superset check fails — beta is required and not advertised.
-    let claimed_by_alpha_only = q
-        .claim_pending(
-            &proc,
-            16,
-            &["plugin.alpha".parse::<PluginKey>().unwrap()],
-            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
-        )
-        .await
-        .expect("claim alpha-only");
-    assert!(
-        claimed_by_alpha_only.is_empty(),
-        "[{}] alpha-only worker must not claim a job that also requires beta \
-         (superset predicate: all required_plugins must be covered)",
-        backend.name()
-    );
-
-    // 2. Beta-only worker: pre-filter rejects (required_plugin_key = alpha not
-    //    in advertised) and the superset check would also fail independently.
-    let claimed_by_beta_only = q
-        .claim_pending(
-            &proc,
-            16,
-            &["plugin.beta".parse::<PluginKey>().unwrap()],
-            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
-        )
-        .await
-        .expect("claim beta-only");
-    assert!(
-        claimed_by_beta_only.is_empty(),
-        "[{}] beta-only worker must not claim an alpha-required job \
-         (pre-filter on required_plugin_key rejects it)",
-        backend.name()
-    );
-
-    // 3. Exact-superset worker: advertises both alpha and beta — must claim.
-    let claimed_by_both = q
-        .claim_pending(
-            &proc,
-            16,
-            &[
-                "plugin.alpha".parse::<PluginKey>().unwrap(),
-                "plugin.beta".parse::<PluginKey>().unwrap(),
-            ],
-            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
-        )
-        .await
-        .expect("claim alpha+beta");
-    assert_eq!(
-        claimed_by_both.len(),
-        1,
-        "[{}] worker advertising [alpha, beta] must claim the job (exact superset)",
-        backend.name()
-    );
-    assert_eq!(
-        claimed_by_both[0].msg.required_plugin_key.as_str(),
-        "plugin.alpha",
-        "[{}] claimed job must be the alpha-required one",
-        backend.name()
-    );
-
-    // 4. Strict-superset worker (re-enqueue to get a fresh Pending row).
-    let job2 = make_job(0x61, "plugin.alpha", &["plugin.alpha", "plugin.beta"]);
-    enqueue_job(backend, q.as_ref(), &job2).await;
-    let claimed_by_superset = q
-        .claim_pending(
-            &proc,
-            16,
-            &[
-                "plugin.alpha".parse::<PluginKey>().unwrap(),
-                "plugin.beta".parse::<PluginKey>().unwrap(),
-                "plugin.gamma".parse::<PluginKey>().unwrap(),
-            ],
-            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
-        )
-        .await
-        .expect("claim strict superset");
-    assert_eq!(
-        claimed_by_superset.len(),
-        1,
-        "[{}] worker advertising [alpha, beta, gamma] must claim a job requiring [alpha, beta]",
-        backend.name()
-    );
-    assert_eq!(
-        claimed_by_superset[0].msg.id,
-        job2.id,
-        "[{}] claimed job must be the strict-superset job (id match)",
-        backend.name()
-    );
-    assert_eq!(
-        claimed_by_superset[0].msg.required_plugin_key.as_str(),
-        "plugin.alpha",
-        "[{}] claimed job must be the alpha-required one",
-        backend.name()
-    );
-
-    // 5. Empty advertised set → claims nothing — parity with SQLite + Postgres
-    //    which both short-circuit on empty available_plugins.  Re-enqueue a
-    //    conforming job (required_plugins ⊇ {required_plugin_key}) to confirm
-    //    it stays Pending.
-    let job3 = make_job(0x62, "plugin.alpha", &["plugin.alpha", "plugin.beta"]);
-    enqueue_job(backend, q.as_ref(), &job3).await;
-    let claimed_empty_adv = q
-        .claim_pending(
-            &proc,
-            16,
-            &[],
-            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
-        )
-        .await
-        .expect("claim with empty advertised");
-    assert!(
-        claimed_empty_adv.is_empty(),
-        "[{}] empty advertised set must claim nothing (parity with SQL backends)",
-        backend.name()
-    );
-}
-
 /// A released claim is immediately re-claimable, is fenced against a
 /// superseded token, and does not consume the reclaim budget.
 ///
@@ -3918,75 +3245,4 @@ pub(crate) async fn assert_control_queue_release_returns_row_for_redelivery(back
         "[{}] the fenced-out release must have changed nothing",
         backend.name()
     );
-}
-
-/// Exact flavor is persisted by both insert routes, filters before the batch
-/// limit, and survives reclaim without giving an old claim ABA authority.
-pub(crate) async fn assert_job_dispatch_exact_flavor(backend: &dyn Backend) {
-    use std::time::Duration;
-    let queue = backend.job_dispatch_queue().await;
-    let matching_flavor = WorkerFlavorRevisionId::from_bytes([0x61; 32]);
-    let other_flavor = WorkerFlavorRevisionId::from_bytes([0x62; 32]);
-    let plugins = ["exact.flavor".parse::<PluginKey>().unwrap()];
-    let processor = [0x63; 16];
-    let mut wrong = make_job(0x61, "exact.flavor", &["exact.flavor"]);
-    wrong.required_worker_flavor_id = other_flavor;
-    let mut matching = make_job(0x62, "exact.flavor", &["exact.flavor"]);
-    matching.required_worker_flavor_id = matching_flavor;
-    enqueue_job(backend, queue.as_ref(), &wrong).await;
-    enqueue_job(backend, queue.as_ref(), &matching).await;
-
-    let claims = queue
-        .claim_pending(&processor, 1, &plugins, matching_flavor)
-        .await
-        .unwrap();
-    assert_eq!(claims.len(), 1);
-    assert_eq!(
-        claims[0].msg, matching,
-        "compose must persist exact identity and filter before LIMIT"
-    );
-    let stale = claims[0].token.clone();
-    assert!(
-        queue
-            .claim_pending(&processor, 1, &plugins, matching_flavor)
-            .await
-            .unwrap()
-            .is_empty()
-    );
-
-    // Both wall-clock SQL backends and the monotonic reference backend cross
-    // the strict reclaim cutoff. Only this uniquely scoped queue is reclaimed.
-    tokio::time::sleep(Duration::from_millis(5)).await;
-    assert_eq!(
-        queue
-            .reclaim_stuck(Duration::ZERO, 3)
-            .await
-            .unwrap()
-            .reclaimed,
-        1
-    );
-    let reclaimed = queue
-        .claim_pending(&processor, 1, &plugins, matching_flavor)
-        .await
-        .unwrap();
-    assert_eq!(reclaimed.len(), 1);
-    assert_eq!(reclaimed[0].msg.required_worker_flavor_id, matching_flavor);
-    assert_eq!(reclaimed[0].msg.reclaim_count, 1);
-    assert!(reclaimed[0].token.generation() > stale.generation());
-    assert!(matches!(
-        queue.mark_dispatched(&stale).await,
-        Err(StorageError::FencedOut { .. })
-    ));
-    queue.mark_dispatched(&reclaimed[0].token).await.unwrap();
-
-    let other = queue
-        .claim_pending(&processor, 1, &plugins, other_flavor)
-        .await
-        .unwrap();
-    assert_eq!(other.len(), 1);
-    assert_eq!(
-        other[0].msg, wrong,
-        "ordinary enqueue must preserve exact identity"
-    );
-    queue.mark_dispatched(&other[0].token).await.unwrap();
 }

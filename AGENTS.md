@@ -14,7 +14,7 @@ it is a starting point, not an exhaustive gate or a claim that those tests passe
 Run package commands from the workspace root unless stated otherwise. These guides add
 only crate-specific rules; everything in this file applies everywhere.
 
-`orchestrator`, `worker`, `plugin-core`, `apps/server`, and `apps/worker` have no
+`worker`, `plugin-core`, `apps/server`, and `apps/worker` have no
 `AGENTS.md` yet — read their `README.md` where present, otherwise the crate-root docs in
 `src/lib.rs` or `src/main.rs`, plus the invariants below.
 
@@ -144,7 +144,7 @@ failures.
 | Layer | Crates |
 |-------|--------|
 | **API / Surfaces** | `api`, `sdk` |
-| **Exec** | `engine`, `orchestrator`, `worker`, `storage`, `storage-loom-probe` |
+| **Exec** | `engine`, `worker`, `storage`, `storage-loom-probe` |
 | **Business** | `resource`, `action`, `plugin`, `plugin-core`, `tenancy` |
 | **Core / shared-infra** | `api-contract`, `core`, `validator`, `expression`, `workflow`, `execution`, `schema`, `metadata`, `storage-port`, `credential` |
 | **Cross-cutting** | `crypto`, `log`, `eventbus`, `metrics`, `resilience`, `error`, `env` |

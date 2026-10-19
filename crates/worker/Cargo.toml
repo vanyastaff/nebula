@@ -27,7 +27,6 @@ rand = { workspace = true }
 nebula-credential = { path = "../credential" }
 nebula-resource = { path = "../resource" }
 nebula-metrics = { path = "../metrics" }
-nebula-orchestrator = { path = "../orchestrator" }
 nebula-plugin = { path = "../plugin" }
 nebula-storage = { path = "../storage", features = ["sqlite", "postgres"] }
 nebula-action = { path = "../action" }

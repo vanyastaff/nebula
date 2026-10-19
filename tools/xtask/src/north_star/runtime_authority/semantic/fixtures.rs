@@ -16,7 +16,7 @@ pub(super) fn claim_fencing() -> Value {
         })
     };
     json!({"backend":"in-memory","contract":"claim-generation-fencing","producer_version":1,
-        "scenario_inventory_version":1,"queues":[queue("control", 1), queue("job", 2)]})
+        "scenario_inventory_version":2,"queues":[queue("control", 1)]})
 }
 
 pub(super) fn claim_handoff() -> Value {

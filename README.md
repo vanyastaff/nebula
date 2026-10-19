@@ -36,7 +36,7 @@ Most automation platforms are runtime-interpreted, dynamically typed, and treat 
 
 ```
 API / Surfaces  api (HTTP + webhook module) · sdk (supported Rust persona façade)
-Exec            engine · orchestrator · worker · storage · storage-loom-probe
+Exec            engine · worker · storage · storage-loom-probe
 Business        resource · action · plugin · plugin-core · tenancy
 Core/shared     core · validator · expression · workflow · execution · schema · metadata · storage-port · credential
 Cross-cutting   crypto · env · log · eventbus · metrics · resilience · error
@@ -98,8 +98,7 @@ Source of truth: workspace members in `Cargo.toml`.
 |                   | `plugin-core`        | First-party `core` plugin: filter/sort/aggregate, reshaping, branching, datetime, durable delay |
 |                   | `tenancy`            | Scope-enforcing decorator wrapping `storage-port` so a tenant scope is substituted on every call (ADR-0072) |
 | **Exec**          | `engine`             | Frontier loop, lease lifecycle, node scheduling, control consumer (ADR-0008)         |
-|                   | `orchestrator`       | Capability-routed job-dispatch pull loop (ADR-0095)                                  |
-|                   | `worker`             | Reusable runtime assembly wiring a `WorkflowEngine` into the orchestrator pull-loop (ADR-0095 D1); not a deployment composition root |
+|                   | `worker`             | Reusable runtime assembly wiring a `WorkflowEngine` into the durable control-queue consumer (ADR-0095 D1); not a deployment composition root |
 |                   | `storage`            | Persistence adapters: SQLite/Postgres deployment backends plus internal InMemory test/reference conformance adapter |
 |                   | `storage-loom-probe` | `loom`-checked concurrency probe for storage paths                                   |
 | **API / Surfaces** | `api`               | REST server, webhook transport, middleware                                           |

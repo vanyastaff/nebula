@@ -6,10 +6,6 @@
 //!
 //! ## Test plan
 //!
-//! **B-series (EngineExecutionSink unit tests)**
-//! - `sink_dispatch_drives_resume_execution` — Created row → sink → engine runs → Completed.
-//! - `sink_dispatch_redelivery_is_idempotent` — same JobDispatchMsg twice → Ok both times, one run.
-//!
 //! **C-series (DurableExecutionEmitter unit tests)**
 //! - `emitter_dispatched_creates_row_and_enqueues_start` — emit with Some(event_id) → Dispatched,
 //!   Created row exists, Start row in queue with exact routing fields.
@@ -39,17 +35,13 @@ use nebula_action::{
 };
 use nebula_core::{Dependencies, PluginKey, action_key, id::ExecutionId, node_key};
 use nebula_engine::{
-    ActionRegistry, ActionRuntime, DataPassingPolicy, EngineExecutionSink, InProcessRunner,
-    ResourceFanoutCoordinator, ResourceFanoutFailureKind, WorkflowEngine,
-    WorkflowTriggerConsumerCodec, WorkflowTriggerTarget,
+    ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, ResourceFanoutCoordinator,
+    ResourceFanoutFailureKind, WorkflowEngine, WorkflowTriggerConsumerCodec, WorkflowTriggerTarget,
 };
-use nebula_execution::{ExecutionState, ExecutionStatus};
+use nebula_execution::ExecutionStatus;
 use nebula_metrics::MetricsRegistry;
-use nebula_orchestrator::{DispatchedTurn, ExecutionSink};
 use nebula_storage::inmem::InMemoryTurnHandoff;
-use nebula_storage::{
-    InMemoryExecutionStore, InMemoryWorkflowVersionStore, inmem::InMemoryJobDispatchQueue,
-};
+use nebula_storage::{InMemoryExecutionStore, InMemoryWorkflowVersionStore};
 use nebula_storage_port::{
     Scope, StorageError,
     dto::{
@@ -57,17 +49,15 @@ use nebula_storage_port::{
         AcquireResourceSourceLeaseRequest, ClaimResourceHandoffsRequest,
         ClaimResourceRuntimeWorkRequest, ClaimedResourceHandoff, ControlCommand, EventEnvelope,
         EventOccurrenceKey, EventOccurrenceNamespace, HeartbeatResourceHandoffRequest,
-        JobDispatchMsg, PutResourceSubscriptionRequest, ResolveSharedResourceOutcome,
-        ResolveSharedResourceRequest, ResourceCompatibilityVersion, ResourceConfigurationIdentity,
-        ResourceHandoffClaimRequest, ResourceKind, ResourceLeaseHolder, ResourceLeaseTtl,
-        ResourcePageSize, ResourceSlotIdentity, SharedResourceIdentity, TriggerStartKey,
-        WorkflowVersionRecord,
+        PutResourceSubscriptionRequest, ResolveSharedResourceOutcome, ResolveSharedResourceRequest,
+        ResourceCompatibilityVersion, ResourceConfigurationIdentity, ResourceHandoffClaimRequest,
+        ResourceKind, ResourceLeaseHolder, ResourceLeaseTtl, ResourcePageSize,
+        ResourceSlotIdentity, SharedResourceIdentity, TriggerStartKey, WorkflowVersionRecord,
     },
     store::{
-        ControlQueue, ExecutionStore, JobDispatchQueue, ResourceEventFanoutStore,
-        ResourceExecutionHandoffStore, ResourceRuntimeRecovery, ResourceSourceLeaseStore,
-        ResourceSubscriptionStore, SharedResourceStore, StartAcceptanceStore, WorkflowStore,
-        WorkflowVersionStore,
+        ControlQueue, ExecutionStore, ResourceEventFanoutStore, ResourceExecutionHandoffStore,
+        ResourceRuntimeRecovery, ResourceSourceLeaseStore, ResourceSubscriptionStore,
+        SharedResourceStore, StartAcceptanceStore, WorkflowStore, WorkflowVersionStore,
     },
 };
 use nebula_workflow::{
@@ -78,6 +68,10 @@ use tokio_util::sync::CancellationToken;
 
 // ── shared harness ────────────────────────────────────────────────────────────
 
+#[expect(
+    dead_code,
+    reason = "this binary only freezes registries; state materialization serves sibling binaries"
+)]
 mod exact_fixture;
 
 /// In-memory storage adapters for one isolated test tenant.
@@ -383,33 +377,6 @@ async fn save_echo_workflow(stores: &TestStores) -> Arc<ValidatedWorkflow> {
     Arc::new(validated)
 }
 
-/// Persist a pristine `Created` execution row, mirroring the API handler.
-async fn persist_created(
-    stores: &TestStores,
-    workflow_id: nebula_core::WorkflowId,
-    execution_id: ExecutionId,
-    input: serde_json::Value,
-) {
-    let mut exec_state = ExecutionState::new(execution_id, workflow_id, &[]);
-    exec_state.set_workflow_input(input);
-    let record = stores
-        .versions
-        .get(&scope(), &workflow_id.to_string(), 0)
-        .await
-        .unwrap()
-        .unwrap();
-    let encoded = serde_json::to_string(&record.definition).unwrap();
-    let workflow = serde_json::from_str(&encoded).unwrap();
-    exact_fixture::materialize_state(
-        &stores.execution,
-        &scope(),
-        stores.frozen.get().unwrap(),
-        &workflow,
-        &mut exec_state,
-    )
-    .await;
-}
-
 /// Read the persisted execution status from the store.
 async fn read_status(stores: &TestStores, execution_id: ExecutionId) -> Option<ExecutionStatus> {
     let record = stores
@@ -427,143 +394,6 @@ async fn read_status(stores: &TestStores, execution_id: ExecutionId) -> Option<E
 /// Helper: `[b; 16]` processor id.
 fn proc16(b: u8) -> [u8; 16] {
     [b; 16]
-}
-
-// ── B-series: EngineExecutionSink unit tests ─────────────────────────────────
-
-/// Mint a turn fence the way the durable handoff does: acquire the
-/// execution lease and hand the fence to the sink, which adopts it instead of
-/// acquiring a second lease.
-async fn mint_turn_fence(
-    stores: &TestStores,
-    execution_id: ExecutionId,
-) -> nebula_storage_port::FencingToken {
-    stores
-        .execution
-        .acquire_lease(
-            &scope(),
-            &execution_id.to_string(),
-            "test-driver",
-            Duration::from_secs(30),
-        )
-        .await
-        .expect("acquire lease for the test turn")
-        .expect("no live lease yet")
-}
-
-/// `EngineExecutionSink::dispatch` on a `Created` row drives
-/// `resume_execution_leased` under the handoff fence and the execution
-/// reaches `Completed`.
-#[tokio::test(start_paused = true)]
-async fn sink_dispatch_drives_resume_execution() {
-    let stores = TestStores::new();
-    let (engine, echo_count) = make_engine(&stores).await;
-    let workflow = save_echo_workflow(&stores).await;
-    let workflow_id = workflow.definition().id;
-
-    // Seed a Created row (the emitter does this in prod; we seed it directly
-    // for the isolated sink unit test).
-    let execution_id = ExecutionId::new();
-    persist_created(
-        &stores,
-        workflow_id,
-        execution_id,
-        serde_json::json!({"x": 1}),
-    )
-    .await;
-
-    let sink = EngineExecutionSink::new(Arc::clone(&engine), stores.execution.clone());
-    let test_plugin_key: PluginKey = "test.plugin".parse().unwrap();
-    let msg = JobDispatchMsg::new(
-        [42u8; 16],
-        execution_id.to_string(),
-        ControlCommand::Start,
-        scope(),
-        serde_json::json!({}),
-        None::<String>,
-        test_plugin_key.clone(),
-        vec![test_plugin_key],
-        None::<String>,
-        0,
-        test_flavor(&[TEST_PLUGIN_KEY.parse().unwrap()]).revision_id(),
-    );
-
-    let fence = mint_turn_fence(&stores, execution_id).await;
-    let turn = DispatchedTurn { msg: &msg, fence };
-    let result = sink.dispatch(&turn).await;
-    assert!(
-        result.is_ok(),
-        "EngineExecutionSink::dispatch must succeed on a Created row: {result:?}"
-    );
-
-    // Status must be Completed — not just Created, which would mean
-    // resume_execution was never driven.
-    let status = read_status(&stores, execution_id)
-        .await
-        .expect("execution row must exist after dispatch");
-    assert_eq!(
-        status,
-        ExecutionStatus::Completed,
-        "execution must reach Completed after sink dispatch — got {status:?}"
-    );
-    assert_eq!(
-        echo_count.load(Ordering::SeqCst),
-        1,
-        "echo handler must be invoked exactly once"
-    );
-}
-
-/// Re-delivering the same `JobDispatchMsg` to `EngineExecutionSink` returns
-/// `Ok(())` without driving the engine a second time (idempotency contract).
-#[tokio::test(start_paused = true)]
-async fn sink_dispatch_redelivery_is_idempotent() {
-    let stores = TestStores::new();
-    let (engine, echo_count) = make_engine(&stores).await;
-    let workflow = save_echo_workflow(&stores).await;
-    let workflow_id = workflow.definition().id;
-
-    let execution_id = ExecutionId::new();
-    persist_created(&stores, workflow_id, execution_id, serde_json::json!({})).await;
-
-    let sink = EngineExecutionSink::new(Arc::clone(&engine), stores.execution.clone());
-    let test_plugin_key: PluginKey = "test.plugin".parse().unwrap();
-    let msg = JobDispatchMsg::new(
-        [7u8; 16],
-        execution_id.to_string(),
-        ControlCommand::Start,
-        scope(),
-        serde_json::json!({}),
-        None::<String>,
-        test_plugin_key.clone(),
-        vec![test_plugin_key],
-        None::<String>,
-        0,
-        test_flavor(&[TEST_PLUGIN_KEY.parse().unwrap()]).revision_id(),
-    );
-
-    // First dispatch — drives execution to Completed under the handoff fence.
-    let fence = mint_turn_fence(&stores, execution_id).await;
-    let turn = DispatchedTurn { msg: &msg, fence };
-    sink.dispatch(&turn)
-        .await
-        .expect("first dispatch must succeed");
-
-    // Second dispatch (redelivery) — must be Ok without re-running the
-    // handler. The idempotency guard short-circuits before the fence is
-    // adopted, so the same (now released) fence value is fine.
-    let redelivery = DispatchedTurn { msg: &msg, fence };
-    let second = sink.dispatch(&redelivery).await;
-    assert!(
-        second.is_ok(),
-        "redelivery must return Ok (idempotency contract): {second:?}"
-    );
-
-    // Handler invoked exactly once across both dispatches.
-    assert_eq!(
-        echo_count.load(Ordering::SeqCst),
-        1,
-        "echo handler must not be invoked on re-delivery"
-    );
 }
 
 // ── C-series: DurableExecutionEmitter unit tests ─────────────────────────────
@@ -704,20 +534,6 @@ async fn emitter_dispatched_creates_row_and_enqueues_start() {
                 .revision_id()
         )
         .unwrap()
-    );
-    assert!(
-        InMemoryJobDispatchQueue::new(&stores.execution)
-            .claim_pending(
-                &proc16(9),
-                10,
-                &[TEST_PLUGIN_KEY.parse().unwrap()],
-                nebula_plugin::WorkerFlavorContext::from_registry(stores.frozen.get().unwrap())
-                    .revision_id()
-            )
-            .await
-            .unwrap()
-            .is_empty(),
-        "one drive identity, with no second Job row"
     );
 }
 
@@ -892,10 +708,6 @@ async fn trigger_dispatch_end_to_end_real_engine_resume() {
     );
 }
 
-fn test_flavor(plugins: &[PluginKey]) -> nebula_plugin::WorkerFlavorContext {
-    nebula_plugin::WorkerFlavorContext::from_registry(&test_registry(plugins))
-}
-
 fn test_registry(plugins: &[PluginKey]) -> Arc<nebula_plugin::FrozenPluginRegistry> {
     #[derive(Debug)]
     struct FixturePlugin(nebula_plugin::PluginManifest);
@@ -931,7 +743,7 @@ async fn unsupported_selected_flavor_writes_no_execution_dispatch_or_dedup() {
     let stores = TestStores::new();
     let workflow = save_echo_workflow(&stores).await;
     let starts = nebula_storage::inmem::InMemoryStartAcceptanceStore::new(&stores.execution);
-    let queue = InMemoryJobDispatchQueue::new(&stores.execution);
+    let queue = nebula_storage::inmem::InMemoryControlQueue::new(&stores.execution);
     let _ = activated_start_service(&stores, &workflow).await;
     let registry = test_registry(&["unrelated.plugin".parse().unwrap()]);
     let flavor_id = nebula_plugin::WorkerFlavorContext::from_registry(&registry).revision_id();
@@ -980,15 +792,11 @@ async fn unsupported_selected_flavor_writes_no_execution_dispatch_or_dedup() {
     );
     assert!(
         queue
-            .claim_pending(
-                &proc16(0xAB),
-                10,
-                &[TEST_PLUGIN_KEY.parse().unwrap()],
-                flavor_id
-            )
+            .claim_pending_for_flavor(&proc16(0xAB), 10, flavor_id)
             .await
             .unwrap()
-            .is_empty()
+            .is_empty(),
+        "an unsupported selected flavor must enqueue no Start command"
     );
 }
 

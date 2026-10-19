@@ -7,9 +7,6 @@
 
 #![cfg(feature = "runtime-repair-red")]
 
-#[path = "runtime_repair_red_scenarios/same_processor_aba_fencing.rs"]
-mod same_processor_aba_fencing;
-
 use std::{net::SocketAddr, time::Duration};
 
 use nebula_core::{NodeKey, id::ExecutionId};

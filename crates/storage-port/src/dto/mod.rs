@@ -13,7 +13,6 @@ mod execution_history;
 mod execution_listing;
 mod identity;
 mod iteration_checkpoint;
-mod job_dispatch;
 mod journal;
 mod membership;
 mod node_result;
@@ -63,7 +62,6 @@ pub use iteration_checkpoint::{
     MAX_CHECKPOINT_ITERATION, MAX_ITERATION_CHECKPOINT_KEY_PART_BYTES,
     MAX_ITERATION_CHECKPOINT_STATE_BYTES,
 };
-pub use job_dispatch::JobDispatchMsg;
 pub use journal::JournalEntry;
 pub use membership::{
     MembershipRoleParseError, OrgMemberRemoveOutcome, OrgMemberUpsert, OrgMemberUpsertOutcome,

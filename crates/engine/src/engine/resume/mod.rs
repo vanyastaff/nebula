@@ -109,9 +109,9 @@ impl WorkflowEngine {
 
     /// Resume an execution whose lease the durable handoff already minted.
     ///
-    /// The orchestrator's handoff (`ExecutionTurnHandoff::accept_turn`)
-    /// acknowledged the dispatch row and acquired this execution's lease in
-    /// one transaction; `fence` is the token it returned. This call adopts
+    /// A durable handoff (an `ExecutionTurnHandoff` acceptance) completed the
+    /// queue row and acquired this execution's lease in one transaction;
+    /// `fence` is the token it returned. This call adopts
     /// that fence — renewing and releasing it on the same heartbeat loop the
     /// acquire path uses — instead of acquiring a second lease.
     ///
@@ -1132,8 +1132,8 @@ impl WorkflowEngine {
     ///
     /// A signal-driven wait is satisfied ONLY by this method — it is the sole
     /// writer of `next_attempt_at` on a signal-`Waiting{None}` node. A reclaim
-    /// re-drive (`dispatch_start`, `dispatch_restart`, worker `EngineExecutionSink`)
-    /// enters `resume_execution` without calling this method first, so the node
+    /// re-drive (`dispatch_start`, `dispatch_restart`) enters
+    /// `resume_execution` without calling this method first, so the node
     /// stays `Waiting{next_attempt_at == None}`, is never wait-heap-seeded, and
     /// the execution returns to `Paused` unchanged. That structural
     /// discriminator prevents a crashed Paused execution from auto-completing

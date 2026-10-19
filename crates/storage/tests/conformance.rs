@@ -32,14 +32,10 @@ use harness::{
     assert_deleted_workflow_hides_its_versions, assert_expired_rollbacks_are_released,
     assert_get_published_is_highest_numbered, assert_history_is_scope_isolated,
     assert_history_orders_filters_and_pages, assert_idempotency_first_writer_wins,
-    assert_job_dispatch_exact_flavor, assert_job_dispatch_fencing,
-    assert_job_dispatch_requires_primary_plugin, assert_job_dispatch_routes_by_plugin,
-    assert_job_dispatch_routes_by_plugin_superset,
-    assert_job_dispatch_same_processor_aba_is_fenced, assert_journal_visibility_and_scope,
-    assert_live_lease_blocks_acquire, assert_non_resume_row_still_exhausts,
-    assert_resume_row_exempt_from_reclaim_budget, assert_resume_target_survives_queue_round_trip,
-    assert_save_with_published_version_is_atomic, assert_stale_fencing_is_fenced_out,
-    assert_status_projection_follows_commit,
+    assert_journal_visibility_and_scope, assert_live_lease_blocks_acquire,
+    assert_non_resume_row_still_exhausts, assert_resume_row_exempt_from_reclaim_budget,
+    assert_resume_target_survives_queue_round_trip, assert_save_with_published_version_is_atomic,
+    assert_stale_fencing_is_fenced_out, assert_status_projection_follows_commit,
     assert_terminal_commit_rejects_incompatible_reference_transition,
     assert_terminal_commit_releases_live_reference, assert_terminal_commit_retains_rollback_window,
     assert_webhook_activation_and_scope, assert_webhook_system_surface,
@@ -204,32 +200,7 @@ matrix!(
     get_published_is_highest_numbered,
     assert_get_published_is_highest_numbered
 );
-matrix!(
-    job_dispatch_routes_by_plugin,
-    assert_job_dispatch_routes_by_plugin
-);
-matrix!(
-    job_dispatch_requires_primary_plugin,
-    assert_job_dispatch_requires_primary_plugin
-);
 
-#[cfg(feature = "sqlite")]
-#[tokio::test]
-async fn sqlite_job_cleanup_uses_terminal_transition() {
-    let backend = SqliteBackend::default();
-    harness::assert_sql_job_cleanup_uses_terminal_transition(&backend).await;
-}
-
-#[cfg(feature = "postgres")]
-#[tokio::test]
-async fn postgres_job_cleanup_uses_terminal_transition() {
-    let backend = PostgresBackend::default();
-    if let Some(reason) = skip_reason(&backend) {
-        eprintln!("WARN [conformance] {reason}");
-        return;
-    }
-    harness::assert_sql_job_cleanup_uses_terminal_transition(&backend).await;
-}
 matrix!(
     terminal_commit_releases_live_reference,
     assert_terminal_commit_releases_live_reference
@@ -246,11 +217,6 @@ matrix!(
     expired_rollbacks_are_released,
     assert_expired_rollbacks_are_released
 );
-matrix!(job_dispatch_fencing, assert_job_dispatch_fencing);
-matrix!(
-    job_dispatch_same_processor_aba_is_fenced,
-    assert_job_dispatch_same_processor_aba_is_fenced
-);
 matrix!(
     control_queue_same_processor_aba_is_fenced,
     assert_control_queue_same_processor_aba_is_fenced
@@ -258,10 +224,6 @@ matrix!(
 matrix!(
     control_queue_release_returns_row_for_redelivery,
     assert_control_queue_release_returns_row_for_redelivery
-);
-matrix!(
-    job_dispatch_routes_by_plugin_superset,
-    assert_job_dispatch_routes_by_plugin_superset
 );
 
 #[rstest]
@@ -287,7 +249,6 @@ async fn claim_generation_raw_observations(
         return;
     }
     let control = assert_control_queue_same_processor_aba_is_fenced(backend.as_ref()).await;
-    let job = assert_job_dispatch_same_processor_aba_is_fenced(backend.as_ref()).await;
     let Ok(path) = std::env::var(env) else {
         return;
     };
@@ -306,9 +267,9 @@ async fn claim_generation_raw_observations(
         &serde_json::json!({
             "producer_version": 1,
             "contract": "claim-generation-fencing",
-            "scenario_inventory_version": 1,
+            "scenario_inventory_version": 2,
             "backend": backend_name,
-            "queues": [control, job]
+            "queues": [control]
         }),
     )
     .unwrap();
@@ -454,5 +415,3 @@ scoped_matrix!(
     scoped_get_published_is_highest_numbered,
     assert_get_published_is_highest_numbered
 );
-
-matrix!(job_dispatch_exact_flavor, assert_job_dispatch_exact_flavor);

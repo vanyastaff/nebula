@@ -915,9 +915,6 @@ async fn dispatch_cancel_rejects_nonexistent_execution() {
 /// Invariant #7 — fail-closed cross-tenant isolation on the CONTROL-DISPATCH
 /// path (`EngineControlDispatch::read_status` → `dispatch_start`).
 ///
-/// This is the symmetric companion to `cross_tenant_dispatch_is_rejected` in
-/// `execution_sink.rs`, which covers the orchestrator-dispatch path.
-///
 /// The row is seeded under `single_tenant_scope()` = `("nebula","nebula")`,
 /// the exact value the old `engine_scope()` constant returned. A `dispatch_start`
 /// call carrying `scope_b = ("wsB","orgB")` is then issued.

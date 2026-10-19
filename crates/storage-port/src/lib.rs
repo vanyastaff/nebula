@@ -74,6 +74,5 @@ pub use store::{
     RefreshClaimReclaimer, RefreshClaimStore, RefreshOutcomeDecision, ReplicaId,
     ResourceEventFanoutStore, ResourceExecutionHandoffStore, ResourceRuntimeRecovery,
     ResourceSourceLeaseStore, ResourceSubscriptionStore, RevokeOutcomeDecision,
-    SentinelEscalationPolicy, SharedResourceStore, StoredCredentialOperationalHead, TurnAcceptance,
-    TurnHandoff, TurnRecovery,
+    SentinelEscalationPolicy, SharedResourceStore, StoredCredentialOperationalHead, TurnRecovery,
 };

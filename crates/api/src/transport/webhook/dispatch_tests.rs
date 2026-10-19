@@ -564,7 +564,7 @@ impl TestFixture {
     }
 
     async fn assert_exact_start(&self, delivery_id: &str) {
-        use nebula_storage_port::store::{ControlQueue, JobDispatchQueue, StartAcceptanceStore};
+        use nebula_storage_port::store::{ControlQueue, StartAcceptanceStore};
 
         let starts = nebula_storage::inmem::InMemoryStartAcceptanceStore::new(&self.exec_store);
         let trigger =
@@ -608,22 +608,6 @@ impl TestFixture {
         assert_eq!(
             controls[0].msg.command,
             nebula_storage_port::dto::ControlCommand::Start
-        );
-        let jobs = nebula_storage::inmem::InMemoryJobDispatchQueue::new(&self.exec_store)
-            .claim_pending(
-                &[8; 16],
-                10,
-                &[
-                    nebula_core::plugin_key!("core"),
-                    nebula_core::plugin_key!("test"),
-                ],
-                revisions.worker_flavor(),
-            )
-            .await
-            .unwrap();
-        assert!(
-            jobs.is_empty(),
-            "webhook admission must not also enqueue a Job"
         );
     }
 
