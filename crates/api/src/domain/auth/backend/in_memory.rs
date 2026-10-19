@@ -888,22 +888,33 @@ impl AuthBackend for InMemoryAuthBackend {
             NEBULA_API_AUTH_ATTEMPTS_TOTAL,
             None,
             async move {
-                let entry = self
-                    .verification_tokens
-                    .remove(token)
-                    .ok_or(AuthError::InvalidToken)?
-                    .1;
-                if entry.kind != VerificationKind::PasswordReset {
-                    return Err(AuthError::InvalidToken);
-                }
-                if entry.expires_at <= Self::now_secs() {
-                    return Err(AuthError::InvalidToken);
-                }
+                let user_id = {
+                    let entry = self
+                        .verification_tokens
+                        .get(token)
+                        .ok_or(AuthError::InvalidToken)?;
+                    if entry.kind != VerificationKind::PasswordReset {
+                        return Err(AuthError::InvalidToken);
+                    }
+                    if entry.expires_at <= Self::now_secs() {
+                        return Err(AuthError::InvalidToken);
+                    }
+                    entry.user_id
+                };
                 if new_password.len() < 8 {
                     return Err(AuthError::InvalidCredentials);
                 }
                 let new_hash = password::hash_password_async(new_password).await?;
-                self.users.alter(&entry.user_id, |_, mut u| {
+                // Consume the token only once the hash exists, so a request
+                // cancelled while Argon2 runs leaves the reset link usable.
+                self.verification_tokens
+                    .remove_if(token, |_, entry| {
+                        entry.kind == VerificationKind::PasswordReset
+                            && entry.user_id == user_id
+                            && entry.expires_at > Self::now_secs()
+                    })
+                    .ok_or(AuthError::InvalidToken)?;
+                self.users.alter(&user_id, |_, mut u| {
                     u.password_hash = Some(new_hash.clone());
                     u.failed_login_count = 0;
                     u.locked_until = None;
