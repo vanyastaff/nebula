@@ -179,10 +179,14 @@ pub(crate) fn add_session_security(openapi: &mut utoipa::openapi::OpenApi) {
 ///
 /// - `429` from the global per-IP limiter on every non-probe route;
 /// - `404`/`503` from tenant resolution on every `/orgs/{org}` route;
+/// - `503` from `RequestLimits` on every route (deadline) and every
+///   non-probe route (concurrency cap);
 /// - `400`/`413`/`415`/`422` from the body limit and [`ApiJson`] decoding on
 ///   every operation that takes a JSON request body.
 ///
-/// Existing, endpoint-specific descriptions are kept.
+/// Existing, endpoint-specific descriptions are kept; an endpoint's own `503`
+/// gets the router-wide `503` conditions appended, since the layer can still
+/// produce them.
 ///
 /// [`ApiJson`]: crate::extractors::ApiJson
 pub(crate) fn add_problem_response_contract(openapi: &mut utoipa::openapi::OpenApi) {
@@ -243,13 +247,30 @@ pub(crate) fn add_problem_response_contract(openapi: &mut utoipa::openapi::OpenA
                 ]);
             }
             for (status, description) in layer_failures {
-                operation
-                    .responses
-                    .responses
-                    .entry(status.to_owned())
-                    .or_insert_with(|| problem_response(description));
+                add_layer_failure(operation, status, description);
             }
         }
+    }
+}
+
+/// Insert a router-wide failure, or append it to an endpoint's own `503`.
+fn add_layer_failure(operation: &mut Operation, status: &str, description: &str) {
+    use std::collections::btree_map::Entry;
+
+    use utoipa::openapi::RefOr;
+
+    match operation.responses.responses.entry(status.to_owned()) {
+        Entry::Vacant(slot) => {
+            slot.insert(problem_response(description));
+        },
+        Entry::Occupied(mut slot) if status == "503" => {
+            if let RefOr::T(response) = slot.get_mut()
+                && !response.description.contains(description)
+            {
+                response.description = format!("{} Also: {description}", response.description);
+            }
+        },
+        Entry::Occupied(_) => {},
     }
 }
 
@@ -322,6 +343,48 @@ fn add_session_requirement(operation: &mut Option<Operation>, csrf_required: boo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_endpoint_503_also_names_the_request_limits() {
+        use utoipa::openapi::{
+            OpenApiBuilder, PathItem, PathsBuilder, ResponsesBuilder, path::OperationBuilder,
+        };
+
+        let operation = OperationBuilder::new()
+            .responses(
+                ResponsesBuilder::new()
+                    .response("503", problem_response("Auth backend is not configured.")),
+            )
+            .build();
+        let mut openapi = OpenApiBuilder::new()
+            .paths(PathsBuilder::new().path(
+                "/api/v1/auth/login",
+                PathItem::new(utoipa::openapi::HttpMethod::Post, operation),
+            ))
+            .build();
+        add_problem_response_contract(&mut openapi);
+        add_problem_response_contract(&mut openapi);
+
+        let item = &openapi.paths.paths["/api/v1/auth/login"];
+        let operation = item.post.as_ref().expect("post operation");
+        let utoipa::openapi::RefOr::T(response) = &operation.responses.responses["503"] else {
+            panic!("503 stays an inline response");
+        };
+        assert!(
+            response
+                .description
+                .starts_with("Auth backend is not configured.")
+        );
+        assert_eq!(
+            response
+                .description
+                .matches("concurrent request limit")
+                .count(),
+            1,
+            "{}",
+            response.description
+        );
+    }
 
     /// Materializing the OpenAPI value must succeed at compile/test time.
     /// This locks the `#[derive(OpenApi)]` shape and the `Modify` impl
