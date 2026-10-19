@@ -98,6 +98,15 @@ pub enum ApiConfigError {
         var: &'static str,
     },
 
+    /// An `API_*` numeric env var exceeds the largest value it supports.
+    #[error("API_{var} must be <= {max}")]
+    TooLarge {
+        /// Name of the env var suffix after `API_`.
+        var: &'static str,
+        /// Largest accepted value.
+        max: usize,
+    },
+
     /// `API_SMTP_HOST` is set but the value is empty or whitespace-only.
     ///
     /// Treating `API_SMTP_HOST=""` as "unset" would silently fall

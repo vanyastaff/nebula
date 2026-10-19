@@ -42,10 +42,13 @@ pub struct RequestLimits {
 
 impl RequestLimits {
     /// Allow `max_concurrent` requests at once, each answered within `timeout`.
+    ///
+    /// A cap above [`Semaphore::MAX_PERMITS`] is lowered to it; configuration
+    /// loading rejects such values before they get here.
     #[must_use]
     pub fn new(max_concurrent: usize, timeout: Duration) -> Self {
         Self {
-            permits: Arc::new(Semaphore::new(max_concurrent)),
+            permits: Arc::new(Semaphore::new(max_concurrent.min(Semaphore::MAX_PERMITS))),
             timeout,
         }
     }
@@ -67,9 +70,9 @@ impl RequestLimits {
                 .insert(RETRY_AFTER, HeaderValue::from_static("1"));
             return response;
         };
-        match tokio::time::timeout(self.timeout, next.run(request)).await {
-            Ok(response) => response,
-            Err(_) => {
+        tokio::time::timeout(self.timeout, next.run(request))
+            .await
+            .unwrap_or_else(|_elapsed| {
                 tracing::warn!(
                     timeout_ms = u64::try_from(self.timeout.as_millis()).unwrap_or(u64::MAX),
                     "request abandoned: deadline exceeded"
@@ -78,8 +81,7 @@ impl RequestLimits {
                     "The request did not complete within the server's time limit.".into(),
                 )
                 .into_response()
-            },
-        }
+            })
     }
 }
 
@@ -137,7 +139,7 @@ mod tests {
     #[tokio::test]
     async fn a_request_over_the_cap_is_refused_and_probes_still_pass() {
         let (release, parked) = oneshot::channel();
-        let limits = RequestLimits::new(1, Duration::from_secs(60));
+        let limits = RequestLimits::new(1, Duration::from_mins(1));
         let app = router(limits.clone(), Some(parked));
 
         let held = tokio::spawn(app.clone().oneshot(get_request("/slow")));

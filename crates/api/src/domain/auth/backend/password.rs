@@ -10,7 +10,7 @@ use argon2::{
     password_hash::{SaltString, rand_core::OsRng},
 };
 
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use tokio::sync::Semaphore;
 use zeroize::Zeroizing;
@@ -23,8 +23,10 @@ use super::error::AuthError;
 /// milliseconds. Unbounded, a burst of logins or signups would fill the
 /// blocking pool and grow memory with every request in flight; one permit per
 /// core keeps the work at what the machine can actually run.
-static ARGON2_PERMITS: LazyLock<Semaphore> = LazyLock::new(|| {
-    Semaphore::new(std::thread::available_parallelism().map_or(2, std::num::NonZero::get))
+static ARGON2_PERMITS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| {
+    Arc::new(Semaphore::new(
+        std::thread::available_parallelism().map_or(2, std::num::NonZero::get),
+    ))
 });
 
 /// Run Argon2 work on the blocking pool, under [`ARGON2_PERMITS`].
@@ -35,13 +37,18 @@ static ARGON2_PERMITS: LazyLock<Semaphore> = LazyLock::new(|| {
 async fn off_runtime<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, AuthError> + Send + 'static,
 ) -> Result<T, AuthError> {
-    let _permit = ARGON2_PERMITS
-        .acquire()
+    let permit = Arc::clone(&ARGON2_PERMITS)
+        .acquire_owned()
         .await
         .map_err(|e| AuthError::Crypto(format!("argon2 permits: {e}")))?;
-    tokio::task::spawn_blocking(work)
-        .await
-        .map_err(|e| AuthError::Crypto(format!("argon2 task: {e}")))?
+    // The permit moves into the job: a caller dropped at its deadline must
+    // not free capacity while the hash it started is still running.
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        work()
+    })
+    .await
+    .map_err(|e| AuthError::Crypto(format!("argon2 task: {e}")))?
 }
 
 /// [`hash_password`] on the blocking pool; see [`off_runtime`].

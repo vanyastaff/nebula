@@ -269,6 +269,12 @@ impl ApiConfig {
                 var: "MAX_CONCURRENT_REQUESTS",
             });
         }
+        if max_concurrent_requests > tokio::sync::Semaphore::MAX_PERMITS {
+            return Err(ApiConfigError::TooLarge {
+                var: "MAX_CONCURRENT_REQUESTS",
+                max: tokio::sync::Semaphore::MAX_PERMITS,
+            });
+        }
 
         let max_body_size = std::env::var("API_MAX_BODY_SIZE")
             .ok()

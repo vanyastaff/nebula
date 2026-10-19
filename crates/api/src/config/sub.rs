@@ -566,6 +566,22 @@ mod tests {
     }
 
     #[test]
+    fn from_env_rejects_a_concurrency_cap_above_the_semaphore_maximum() {
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
+        env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+        env.set("API_MAX_CONCURRENT_REQUESTS", &usize::MAX.to_string());
+
+        assert!(matches!(
+            ApiConfig::from_env(),
+            Err(crate::config::ApiConfigError::TooLarge {
+                var: "MAX_CONCURRENT_REQUESTS",
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn from_env_reads_request_limits() {
         let mut env = env_guard();
         env.set("NEBULA_ENV", "production");

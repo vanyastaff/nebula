@@ -18,6 +18,13 @@ unmaintained = "workspace"
 yanked = "deny"
 ignore = [
   { id = "RUSTSEC-2023-0071", reason = "rsa pulled by jsonwebtoken rust_crypto feature; project uses HS256 only, RSA code path never reached" },
+  # zip 3 is a build-only dependency of utoipa-swagger-ui 9, which pins zip 3;
+  # the fix ships in zip 9. Its build.rs writes entries itself through
+  # `enclosed_name()` and never calls `ZipArchive::extract` /
+  # `ZipStreamReader::extract`, so no archive symlink is created or followed.
+  # Drop both once utoipa-swagger-ui accepts zip >= 9.
+  { id = "RUSTSEC-2026-0368", reason = "zip 3 build-only via utoipa-swagger-ui; ZipArchive::extract never called" },
+  { id = "RUSTSEC-2026-0369", reason = "zip 3 build-only via utoipa-swagger-ui; ZipArchive/ZipStreamReader::extract never called" },
   # RUSTSEC-2026-0097 / -0098 ignores were dropped 2026-04-28: rand bumped to
   # 0.10.1 (patched), webpki crate no longer in lock. Re-add only if regressions.
 ]

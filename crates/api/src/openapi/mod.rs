@@ -203,24 +203,30 @@ pub(crate) fn add_problem_response_contract(openapi: &mut utoipa::openapi::OpenA
         {
             normalize_problem_responses(operation);
             let mut layer_failures = Vec::new();
-            if !crate::middleware::rate_limit::EXCLUDED_PATHS.contains(&path.as_str()) {
+            let probe = crate::middleware::rate_limit::EXCLUDED_PATHS.contains(&path.as_str());
+            if !probe {
                 layer_failures.push((
                     "429",
                     "Global per-IP request quota exceeded; Retry-After carries retry advice.",
                 ));
             }
-            if path.starts_with(TENANT_PREFIX) {
-                layer_failures.extend([
-                    (
-                        "404",
-                        "Organisation or workspace is unknown or not visible to the caller.",
-                    ),
-                    (
-                        "503",
-                        "Tenant authority is not configured on this instance.",
-                    ),
-                ]);
-            }
+            // `RequestLimits` answers every route past its deadline and, except
+            // probes, every route over the concurrency cap.
+            let unavailable = if path.starts_with(TENANT_PREFIX) {
+                layer_failures.push((
+                    "404",
+                    "Organisation or workspace is unknown or not visible to the caller.",
+                ));
+                "Tenant authority is not configured on this instance, the request exceeded \
+                 the server's deadline, or the server is at its concurrent request limit \
+                 (Retry-After carries retry advice)."
+            } else if probe {
+                "The request exceeded the server's deadline."
+            } else {
+                "The request exceeded the server's deadline, or the server is at its \
+                 concurrent request limit (Retry-After carries retry advice)."
+            };
+            layer_failures.push(("503", unavailable));
             let takes_json_body = operation
                 .request_body
                 .as_ref()

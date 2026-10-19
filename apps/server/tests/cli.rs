@@ -63,7 +63,14 @@ async fn rejected_startup(overrides: &[(&str, &str)], diagnostic: &str) {
 #[tokio::test]
 async fn development_key_is_refused_outside_development() {
     rejected_startup(
-        &[("NEBULA_ENV", "production")],
+        &[
+            ("NEBULA_ENV", "production"),
+            // Production also requires a JWT secret, checked first.
+            (
+                "API_JWT_SECRET",
+                "cli-test-secret-of-at-least-thirty-two-bytes",
+            ),
+        ],
         "NEBULA_CRED_DEV_KEY=1 is refused outside development",
     )
     .await;
