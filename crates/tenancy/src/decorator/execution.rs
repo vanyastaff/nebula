@@ -124,10 +124,15 @@ impl ExecutionStore for ScopedExecutionStore {
         self.inner.cancel_requested(&self.bound, id).await
     }
 
-    async fn list_all_running(&self) -> Result<Vec<ExecutionRecord>, StorageError> {
+    async fn list_due_timers(
+        &self,
+        due_at: chrono::DateTime<chrono::Utc>,
+        after: Option<&nebula_storage_port::dto::DueTimerCursor>,
+        limit: u32,
+    ) -> Result<Vec<nebula_storage_port::dto::DueTimer>, StorageError> {
         // No scope filter: cross-tenant scan is the point of this method.
         // The caller (timer scanner) re-drives each row under its own scope.
-        self.inner.list_all_running().await
+        self.inner.list_due_timers(due_at, after, limit).await
     }
 
     async fn list_history(

@@ -2,7 +2,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::execution_listing::ExecutionListingStatus;
+use super::execution_listing::{ExecutionListingStatus, MicrosInstant};
 use crate::Scope;
 
 /// Parameters for inserting a new execution row inside a compose transaction.
@@ -64,4 +64,46 @@ pub struct ExecutionRecord {
     pub created_at: DateTime<Utc>,
     /// Last state change.
     pub updated_at: DateTime<Utc>,
+}
+
+/// An execution whose earliest durable timer is due, as listed by
+/// [`crate::store::ExecutionStore::list_due_timers`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct DueTimer {
+    /// The listed timer instant (the row's `next_wake_at`).
+    pub next_wake_at: MicrosInstant,
+    /// The execution row.
+    pub record: ExecutionRecord,
+}
+
+impl DueTimer {
+    /// Position after this row, to continue the listing from.
+    #[must_use]
+    pub fn cursor(&self) -> DueTimerCursor {
+        DueTimerCursor {
+            next_wake_at: self.next_wake_at,
+            id: self.record.id.clone(),
+        }
+    }
+}
+
+/// Keyset position in a due-timer listing, ordered by `(next_wake_at, id)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DueTimerCursor {
+    next_wake_at: MicrosInstant,
+    id: String,
+}
+
+impl DueTimerCursor {
+    /// The timer instant of the last listed row.
+    #[must_use]
+    pub const fn next_wake_at(&self) -> MicrosInstant {
+        self.next_wake_at
+    }
+
+    /// The execution id of the last listed row.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
 }

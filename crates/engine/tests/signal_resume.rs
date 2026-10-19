@@ -1391,8 +1391,13 @@ impl ExecutionStore for CommitFenceInterceptor {
         self.inner.cancel_requested(scope, id).await
     }
 
-    async fn list_all_running(&self) -> Result<Vec<ExecutionRecord>, StorageError> {
-        self.inner.list_all_running().await
+    async fn list_due_timers(
+        &self,
+        due_at: chrono::DateTime<Utc>,
+        after: Option<&nebula_storage_port::dto::DueTimerCursor>,
+        limit: u32,
+    ) -> Result<Vec<nebula_storage_port::dto::DueTimer>, StorageError> {
+        self.inner.list_due_timers(due_at, after, limit).await
     }
 
     async fn list_history(
@@ -1720,8 +1725,13 @@ impl ExecutionStore for CancelDuringSatisfyInterceptor {
         self.inner.cancel_requested(scope, id).await
     }
 
-    async fn list_all_running(&self) -> Result<Vec<ExecutionRecord>, StorageError> {
-        self.inner.list_all_running().await
+    async fn list_due_timers(
+        &self,
+        due_at: chrono::DateTime<Utc>,
+        after: Option<&nebula_storage_port::dto::DueTimerCursor>,
+        limit: u32,
+    ) -> Result<Vec<nebula_storage_port::dto::DueTimer>, StorageError> {
+        self.inner.list_due_timers(due_at, after, limit).await
     }
 
     async fn list_history(
@@ -2221,8 +2231,13 @@ impl ExecutionStore for LeaseFailAfterArmInterceptor {
         self.inner.cancel_requested(scope, id).await
     }
 
-    async fn list_all_running(&self) -> Result<Vec<ExecutionRecord>, StorageError> {
-        self.inner.list_all_running().await
+    async fn list_due_timers(
+        &self,
+        due_at: chrono::DateTime<Utc>,
+        after: Option<&nebula_storage_port::dto::DueTimerCursor>,
+        limit: u32,
+    ) -> Result<Vec<nebula_storage_port::dto::DueTimer>, StorageError> {
+        self.inner.list_due_timers(due_at, after, limit).await
     }
 
     async fn list_history(
@@ -2569,8 +2584,13 @@ impl ExecutionStore for CommitStatusRecorder {
         self.inner.cancel_requested(scope, id).await
     }
 
-    async fn list_all_running(&self) -> Result<Vec<ExecutionRecord>, StorageError> {
-        self.inner.list_all_running().await
+    async fn list_due_timers(
+        &self,
+        due_at: chrono::DateTime<Utc>,
+        after: Option<&nebula_storage_port::dto::DueTimerCursor>,
+        limit: u32,
+    ) -> Result<Vec<nebula_storage_port::dto::DueTimer>, StorageError> {
+        self.inner.list_due_timers(due_at, after, limit).await
     }
 
     async fn list_history(

@@ -269,6 +269,7 @@ pub struct ExecutionListing {
     status: ExecutionListingStatus,
     started_at: Option<MicrosInstant>,
     finished_at: Option<MicrosInstant>,
+    next_wake_at: Option<MicrosInstant>,
 }
 
 impl ExecutionListing {
@@ -277,6 +278,7 @@ impl ExecutionListing {
         status: ExecutionListingStatus::Created,
         started_at: None,
         finished_at: None,
+        next_wake_at: None,
     };
 
     /// Project a snapshot's status and lifecycle timestamps.
@@ -296,7 +298,20 @@ impl ExecutionListing {
             finished_at: finished_at
                 .filter(|_| status.is_terminal())
                 .map(MicrosInstant::floor),
+            next_wake_at: None,
         }
+    }
+
+    /// The earliest durable timer of a parked node, if any.
+    ///
+    /// Indexed so the timer sweep reads only executions whose timer is due
+    /// instead of every live row. A terminal snapshot never has one.
+    #[must_use]
+    pub fn with_next_wake_at(mut self, next_wake_at: Option<DateTime<Utc>>) -> Self {
+        self.next_wake_at = next_wake_at
+            .filter(|_| !self.status.is_terminal())
+            .map(MicrosInstant::floor);
+        self
     }
 
     /// Execution status.
@@ -315,5 +330,11 @@ impl ExecutionListing {
     #[must_use]
     pub const fn finished_at(&self) -> Option<MicrosInstant> {
         self.finished_at
+    }
+
+    /// The earliest durable timer of a parked node, if any.
+    #[must_use]
+    pub const fn next_wake_at(&self) -> Option<MicrosInstant> {
+        self.next_wake_at
     }
 }

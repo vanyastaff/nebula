@@ -1,8 +1,12 @@
 //! The atomic execution aggregate trait.
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
+
 use crate::batch::{TransitionBatch, TransitionOutcome};
-use crate::dto::{ExecutionHistoryPage, ExecutionHistoryQuery, ExecutionRecord};
+use crate::dto::{
+    DueTimer, DueTimerCursor, ExecutionHistoryPage, ExecutionHistoryQuery, ExecutionRecord,
+};
 use crate::error::StorageError;
 use crate::ids::FencingToken;
 use crate::scope::Scope;
@@ -119,17 +123,24 @@ pub trait ExecutionStore: Send + Sync + std::fmt::Debug {
     /// Returns [`StorageError`] on a backend failure.
     async fn cancel_requested(&self, scope: &Scope, id: &str) -> Result<bool, StorageError>;
 
-    /// List every non-terminal execution row across ALL tenant scopes.
+    /// Up to `limit` executions across ALL tenant scopes whose earliest durable
+    /// timer (the listing's `next_wake_at`) is at or before `due_at`.
     ///
-    /// Used by the durable-timer wake scanner to find parked timers with no live
-    /// owner regardless of tenant. Returns full [`ExecutionRecord`]s (scope + state)
-    /// so the caller applies its own predicate and re-drives under each row's own
-    /// scope. Terminal rows are filtered by the listing status column; a
-    /// backend-side overdue-timer pushdown is a separate optimization.
+    /// Used by the durable-timer wake scanner to find parked timers with no
+    /// live owner regardless of tenant. Rows are ordered by
+    /// `(next_wake_at, id)` and start after `after` when given, so a sweep
+    /// pages through due rows without rereading the ones it skipped. Only
+    /// rows with a timer are read; the caller re-checks the state and
+    /// re-drives each row under its own scope.
     ///
     /// # Errors
     /// Returns [`StorageError`] on a backend failure.
-    async fn list_all_running(&self) -> Result<Vec<ExecutionRecord>, StorageError>;
+    async fn list_due_timers(
+        &self,
+        due_at: DateTime<Utc>,
+        after: Option<&DueTimerCursor>,
+        limit: u32,
+    ) -> Result<Vec<DueTimer>, StorageError>;
 
     /// One page of execution history in `scope`, newest first.
     ///

@@ -2864,10 +2864,13 @@ impl ExecutionStore for FailAtCommitN {
         self.inner.cancel_requested(scope, id).await
     }
 
-    async fn list_all_running(
+    async fn list_due_timers(
         &self,
-    ) -> Result<Vec<nebula_storage_port::dto::ExecutionRecord>, StorageError> {
-        self.inner.list_all_running().await
+        due_at: DateTime<Utc>,
+        after: Option<&nebula_storage_port::dto::DueTimerCursor>,
+        limit: u32,
+    ) -> Result<Vec<nebula_storage_port::dto::DueTimer>, StorageError> {
+        self.inner.list_due_timers(due_at, after, limit).await
     }
 
     async fn list_history(
@@ -5139,10 +5142,13 @@ impl ExecutionStore for ExternalMutateBeforeN {
         self.inner.cancel_requested(scope, id).await
     }
 
-    async fn list_all_running(
+    async fn list_due_timers(
         &self,
-    ) -> Result<Vec<nebula_storage_port::dto::ExecutionRecord>, StorageError> {
-        self.inner.list_all_running().await
+        due_at: DateTime<Utc>,
+        after: Option<&nebula_storage_port::dto::DueTimerCursor>,
+        limit: u32,
+    ) -> Result<Vec<nebula_storage_port::dto::DueTimer>, StorageError> {
+        self.inner.list_due_timers(due_at, after, limit).await
     }
 
     async fn list_history(
@@ -7064,12 +7070,6 @@ async fn persistent_direct_start_rejection_leaves_no_row_or_lease() {
     assert_eq!(
         row_count, 0,
         "a rejected direct persistent start must not create an execution row"
-    );
-
-    let running = stores.execution.list_all_running().await.unwrap();
-    assert!(
-        running.is_empty(),
-        "a rejected direct persistent start must not leave a running lease"
     );
 }
 
