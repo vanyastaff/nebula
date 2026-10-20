@@ -60,6 +60,18 @@ changes are expected between minor releases — call them out here.
   for an execution the database does not hold is `NotFound`, and the bulk loads
   answer in node-id byte order on every backend.
 
+### Security
+
+- **The credential resolver's handle cache is bounded.** Every resolved
+  handle, with its decrypted scheme material, stayed in
+  `CredentialResolver`'s cache for the life of the process, including
+  handles for deleted, revoked or unused credentials. A handle not resolved
+  for 15 minutes is now dropped, the cache holds at most 10,000 handles
+  (least recently used goes first), and delete, revoke, or a resolve that
+  finds the row gone drops that credential's handles at once. A handle
+  evicted while a caller still holds it is no longer updated in place by
+  later refreshes; resolving again returns a current one.
+
 ## [0.33.0] - 2026-10-07
 
 This is the first versioned section. Workspace versions before 0.33.0 were
@@ -1857,15 +1869,6 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Security
 
-- **The credential resolver's handle cache is bounded.** Every resolved
-  handle, with its decrypted scheme material, stayed in
-  `CredentialResolver`'s cache for the life of the process, including
-  handles for deleted, revoked or unused credentials. A handle not resolved
-  for 15 minutes is now dropped, the cache holds at most 10,000 handles
-  (least recently used goes first), and delete, revoke, or a resolve that
-  finds the row gone drops that credential's handles at once. A handle
-  evicted while a caller still holds it is no longer updated in place by
-  later refreshes; resolving again returns a current one.
 - Update the locked TLS stack to `rustls 0.23.45`, including its required
   `aws-lc-rs`, `aws-lc-sys`, and `rustls-webpki` updates, to resolve
   [RUSTSEC-2026-0285](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc).
