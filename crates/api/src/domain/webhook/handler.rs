@@ -133,8 +133,8 @@ pub async fn register_webhook(
     let webhook_activation_store = state.webhook_activation_store.as_ref().ok_or_else(|| {
         ApiError::ServiceUnavailable("webhook activation store not configured".to_string())
     })?;
-    let action_registry = state.action_registry.as_ref().ok_or_else(|| {
-        ApiError::ServiceUnavailable("action registry not configured".to_string())
+    let action_registry = state.webhook_provider_registry().ok_or_else(|| {
+        ApiError::ServiceUnavailable("webhook provider registry not configured".to_string())
     })?;
     let factory = action_registry
         .lookup_webhook_factory(&body.provider)
@@ -373,8 +373,11 @@ pub async fn register_webhook(
         activation_record.workflow_id = Some(body.workflow_id.clone());
         activation_record.mode = WebhookMode::Prod;
 
-        let ctx_template = ctx_factory.build(&activation_record);
+        let ctx_template = ctx_factory.build(&activation_record).map_err(|error| {
+            ApiError::Internal(format!("cannot build the trigger context: {error}"))
+        })?;
 
+        let handler = Arc::clone(&built.handler);
         let handle = activate_and_persist(
             transport,
             webhook_activation_store.as_ref(),
@@ -406,6 +409,26 @@ pub async fn register_webhook(
             );
             ApiError::Internal(format!("activation failed: {e}"))
         })?;
+
+        // The handler serves deliveries only once started. Undo the
+        // activation if it cannot start, so the URL is never handed out.
+        if let Err(error) = handler.start(&handle.ctx).await {
+            transport.deactivate(&handle);
+            if let Err(rollback) = webhook_activation_store
+                .deactivate(&scope, &body.trigger_id)
+                .await
+            {
+                tracing::error!(
+                    target: "nebula::api::webhook::register",
+                    error = %rollback,
+                    trigger_id = %body.trigger_id,
+                    "deactivating the activation row after a failed start failed"
+                );
+            }
+            return Err(ApiError::Internal(format!(
+                "cannot start the webhook trigger: {error}"
+            )));
+        }
 
         Ok(handle)
     }

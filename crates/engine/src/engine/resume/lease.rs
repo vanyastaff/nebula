@@ -24,9 +24,6 @@ impl From<EngineError> for ExactTurnFailure {
 #[derive(Clone)]
 pub(super) enum ResumeLeaseSource<'a> {
     Acquire,
-    Adopt {
-        fence: nebula_storage_port::FencingToken,
-    },
     ControlStart(ClaimedStartRequest<'a>),
     Recovery(RecoveryTurnRequest<'a>),
     Control(&'a ClaimedControlTurnRequest),
@@ -209,10 +206,6 @@ impl WorkflowEngine {
                 self.acquire_and_heartbeat_lease(scope, execution_id, cancel_token.clone())
                     .await?
             },
-            ResumeLeaseSource::Adopt { fence } => Some(
-                self.adopt_handoff_lease(scope, execution_id, fence, cancel_token.clone())
-                    .await?,
-            ),
             ResumeLeaseSource::ControlStart(request) => {
                 let execution_key = execution_id.to_string();
                 let start_handoff = ControlStartHandoff::for_claim(

@@ -3,8 +3,7 @@
 //! `nebula-workflow` cannot depend on `nebula-action` (the `action → workflow`
 //! edge already exists; the reverse would be a cycle). Instead the workflow
 //! validator accepts a `NodeSchemaResolver` injected by the layer that owns
-//! the catalog (`nebula-api`). The registry-free seam mirrors the
-//! `DefinitionRoutingResolver` precedent from ADR-0095 D1.
+//! the catalog (`nebula-api`).
 
 use nebula_core::ActionKey;
 use nebula_schema::{InputSchema, OutputSchema};

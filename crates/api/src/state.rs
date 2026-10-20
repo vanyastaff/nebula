@@ -295,6 +295,12 @@ pub struct AppState {
     /// When `None`, the `GET /actions` endpoints return 503.
     pub action_registry: Option<Arc<ActionRegistry>>,
 
+    /// Webhook provider factories for webhook registration and route
+    /// restoration, kept apart from [`Self::action_registry`] so a deployment
+    /// can serve webhooks without claiming an action catalog. When `None`,
+    /// [`Self::webhook_provider_registry`] falls back to `action_registry`.
+    pub webhook_providers: Option<Arc<ActionRegistry>>,
+
     /// Optional plugin registry for the plugin catalog endpoints.
     /// When `None`, the `GET /plugins` endpoints return 503.
     pub plugin_registry: Option<Arc<RwLock<PluginRegistry>>>,
@@ -661,6 +667,7 @@ impl AppState {
             api_keys: Arc::new(Vec::new()),
             metrics_registry: None,
             action_registry: None,
+            webhook_providers: None,
             plugin_registry: None,
             credential_schema: None,
             credential_gateway: None,
@@ -1252,6 +1259,23 @@ impl AppState {
     ) -> Self {
         self.webhook_secret_resolver = Some(resolver);
         self
+    }
+
+    /// Attach the webhook provider factories used by webhook registration and
+    /// route restoration.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_webhook_providers(mut self, providers: Arc<ActionRegistry>) -> Self {
+        self.webhook_providers = Some(providers);
+        self
+    }
+
+    /// The registry webhook provider factories are looked up in: the
+    /// dedicated [`Self::webhook_providers`], else the action catalog.
+    #[must_use]
+    pub fn webhook_provider_registry(&self) -> Option<&Arc<ActionRegistry>> {
+        self.webhook_providers
+            .as_ref()
+            .or(self.action_registry.as_ref())
     }
 
     /// Attach the B-world webhook ctx-template factory (ADR-0096 — E1+E3).

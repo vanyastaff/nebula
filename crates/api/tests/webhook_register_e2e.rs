@@ -60,7 +60,7 @@ use nebula_api::{
     ports::credential_service_factory::with_memory_store,
     transport::webhook::{
         SecretResolutionError, TriggerStoreSpecLookup, WebhookActivationContextFactory,
-        WebhookSecretResolver, WebhookTransport, WebhookTransportConfig,
+        WebhookContextError, WebhookSecretResolver, WebhookTransport, WebhookTransportConfig,
     },
 };
 use nebula_core::{
@@ -283,8 +283,11 @@ fn workflow_definition_with_binding(
 struct NoopCtxFactory;
 
 impl WebhookActivationContextFactory for NoopCtxFactory {
-    fn build(&self, _record: &WebhookActivationRecord) -> TriggerRuntimeContext {
-        TriggerRuntimeContext::new(
+    fn build(
+        &self,
+        _record: &WebhookActivationRecord,
+    ) -> Result<TriggerRuntimeContext, WebhookContextError> {
+        Ok(TriggerRuntimeContext::new(
             Arc::new(
                 nebula_core::BaseContext::builder(nebula_core::scope::Scope::default())
                     .principal(Principal::System)
@@ -294,7 +297,7 @@ impl WebhookActivationContextFactory for NoopCtxFactory {
             ),
             WorkflowId::new(),
             node_key!("webhook-register-e2e"),
-        )
+        ))
     }
 }
 
@@ -1322,11 +1325,16 @@ async fn bootstrap_reconstruct_uses_spec_trigger_id() {
     //   Row B: spec_trigger_id = None         → bootstrap should skip it.
     let activation_store = Arc::new(InMemoryWebhookActivationStore::new());
 
+    // Both rows carry the routable identity `activate_and_persist` writes
+    // (activation UUID as slug, token hash), so only the spec link differs.
     let mut row_with_spec =
-        WebhookActivationRecord::new(NODE_KEY, scope_a(), "slug-with-spec", true);
+        WebhookActivationRecord::new(NODE_KEY, scope_a(), uuid::Uuid::new_v4().to_string(), true);
     row_with_spec.spec_trigger_id = Some(TRG_SPEC_PK.to_string());
+    row_with_spec.token_hash = nebula_api::transport::webhook::token::token_hash("nonce-a");
 
-    let row_legacy = WebhookActivationRecord::new(NODE_KEY, scope_a(), "slug-legacy", true);
+    let mut row_legacy =
+        WebhookActivationRecord::new(NODE_KEY, scope_a(), uuid::Uuid::new_v4().to_string(), true);
+    row_legacy.token_hash = nebula_api::transport::webhook::token::token_hash("nonce-b");
     // spec_trigger_id defaults to None — simulates a pre-ADR-0101 row.
 
     activation_store
@@ -1343,7 +1351,9 @@ async fn bootstrap_reconstruct_uses_spec_trigger_id() {
         registry.register_webhook_provider(f);
     }
 
+    let transport = WebhookTransport::new(WebhookTransportConfig::default());
     let report = bootstrap_webhook_activations(
+        &transport,
         activation_store.as_ref(),
         &registry,
         &FakeSecretResolver,

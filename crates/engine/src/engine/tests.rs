@@ -2276,7 +2276,7 @@ async fn graph_preflight_rejection_terminalizes_created_execution() {
         );
     }
     engine
-        .fail_cold_start_preflight(&scope, execution_id, exec_state, 0, &reject, None)
+        .fail_cold_start_preflight(&scope, execution_id, exec_state, 0, &reject)
         .await;
     let result: Result<ExecutionResult, EngineError> = Err(reject);
 
@@ -2330,129 +2330,6 @@ async fn graph_preflight_rejection_terminalizes_created_execution() {
     assert!(
         row.lease_holder.is_none(),
         "the lease taken to mark the row Failed must be released afterward"
-    );
-}
-
-/// A preflight failure must use an already-adopted lease for its durable write.
-///
-/// Red-ability: if `fail_cold_start_preflight` tried to `acquire_lease` on
-/// this path, the live handoff lease would block it (even for the same
-/// holder), the best-effort write would be skipped, and the row would stay
-/// `Created` — orphaned, because the acknowledged queue row is never
-/// redelivered. The `Failed`-status assertion below is the one that fires.
-#[tokio::test]
-async fn graph_preflight_rejection_uses_adopted_fence_and_terminalizes_execution() {
-    let registry = Arc::new(ActionRegistry::new());
-    registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
-        .expect("valid test catalog definition");
-
-    let stores = TestStores::new();
-    let (engine, _) = make_engine(registry);
-    let engine = stores.attach(engine);
-
-    let a = node_key!("a");
-    let b = node_key!("b");
-    let wf = make_workflow(
-        vec![
-            NodeDefinition::new(a.clone(), "A", "core", "echo").unwrap(),
-            NodeDefinition::new(b.clone(), "B", "core", "echo").unwrap(),
-        ],
-        vec![Connection::new(a.clone(), b.clone()).with_from_port(port_key!("typo_port"))],
-    );
-    stores.save_workflow(&wf).await;
-
-    // Cold-start shape persisted by the emitter before the handoff runs.
-    let execution_id = ExecutionId::new();
-    let exec_state = ExecutionState::new(execution_id, wf.id, &[]);
-    let state_json = serde_json::to_value(&exec_state).unwrap();
-    stores.inject_state(execution_id, wf.id, state_json).await;
-
-    let scope = crate::store_seam::single_tenant_scope();
-
-    // The handoff's lease: minted before the sink drives the turn, held
-    // while `resume_execution_leased` runs.
-    let fence = stores
-        .execution
-        .acquire_lease(
-            &scope,
-            &execution_id.to_string(),
-            "orchestrator:test",
-            Duration::from_secs(30),
-        )
-        .await
-        .unwrap()
-        .expect("no lease existed yet");
-
-    let graph = DependencyGraph::from_definition(&wf).unwrap();
-    let node_map = wf
-        .nodes
-        .iter()
-        .map(|node| (node.id.clone(), node))
-        .collect();
-    let reject = engine
-        .validate_declared_output_ports(&graph, &node_map)
-        .unwrap_err();
-    let mut exec_state = exec_state;
-    for node in &wf.nodes {
-        exec_state.set_node_state(
-            node.id.clone(),
-            nebula_execution::state::NodeExecutionState::new(),
-        );
-    }
-    engine
-        .fail_cold_start_preflight(&scope, execution_id, exec_state, 0, &reject, Some(fence))
-        .await;
-    let result: Result<ExecutionResult, EngineError> = Err(reject);
-
-    assert!(
-        matches!(result, Err(EngineError::UndeclaredOutputPort { .. })),
-        "expected UndeclaredOutputPort, got {result:?}"
-    );
-
-    // The rejection must still be durable even though the lease was already
-    // held: the row is Failed, not orphaned in Created.
-    let (version, state_json) = stores
-        .get_state(execution_id)
-        .await
-        .unwrap()
-        .expect("row must still exist — a rejection must not delete it");
-    assert!(
-        version > 0,
-        "the Failed transition must be durably committed under the handoff fence"
-    );
-    let state_str = serde_json::to_string(&state_json).unwrap();
-    let persisted: ExecutionState = serde_json::from_str(&state_str).unwrap();
-    assert_eq!(
-        persisted.status,
-        ExecutionStatus::Failed,
-        "a cold-start pre-flight rejection on the adopt path must leave the execution row \
-         Failed, not orphaned in Created with an acknowledged queue row"
-    );
-    assert_eq!(
-        persisted.node_states.get(&a).map(|ns| ns.state),
-        Some(NodeState::Failed),
-        "the offending node must record the rejection"
-    );
-
-    // The handoff lease must be released after the failure write — nothing
-    // else will ever touch this terminal row.
-    let row = stores
-        .execution
-        .get(&scope, &execution_id.to_string())
-        .await
-        .unwrap()
-        .expect("row must still exist");
-    assert!(
-        row.lease_holder.is_none(),
-        "the handoff lease must be released once the row is terminally Failed"
     );
 }
 
@@ -2554,7 +2431,7 @@ async fn graph_preflight_rejects_undeclared_ports_for_warm_execution() {
         .unwrap_err();
     assert!(matches!(reject, EngineError::UndeclaredOutputPort { .. }));
     engine
-        .fail_cold_start_preflight(&scope, execution_id, exec_state, 0, &reject, None)
+        .fail_cold_start_preflight(&scope, execution_id, exec_state, 0, &reject)
         .await;
     let (_, persisted) = stores.get_state(execution_id).await.unwrap().unwrap();
     assert_eq!(persisted["status"], "failed");

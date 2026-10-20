@@ -221,11 +221,17 @@ scope, and converts stored `whsec_` material to raw HMAC bytes. Its failures
 cross the API port as a closed, secret-free classification; credential or
 provider error text is never forwarded to API logs or problem responses.
 
-The `all` and `webhook` transports mount webhook ingress. Trigger rows and the
+The `all` and `webhook` transports mount webhook ingress and attach what
+registration needs: the first-party provider factories and a context factory
+that builds each trigger context from its activation row. Trigger rows and the
 capability tokens minted at activation are stored on the selected execution
-backend. The live route table is still held by the process that activated the
-webhook: after a restart, or on another replica, a webhook must be activated
-again before it receives deliveries.
+backend, and routing is keyed by the stored token hash. Before serving, the
+process routes every active activation in that database, and it repeats the
+pass every 30 seconds, so a registered webhook keeps its URL across restarts
+and an activation registered on another replica routes here within that
+interval. `API_WEBHOOK_BOOTSTRAP_FROM_STORAGE=false` turns both passes off.
+Registration itself needs the webhook transport, so it answers 503 on the
+REST-only `api` transport.
 
 Webhook registration still generates and returns the one-time `whsec_` value
 inside the HTTP boundary. That generator is API-private and is not a public

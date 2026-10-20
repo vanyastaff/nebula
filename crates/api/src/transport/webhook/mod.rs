@@ -18,7 +18,8 @@
 //!   replay-counter label set.
 //! - [`provider`] — [`EndpointProviderImpl`] implementing `nebula_action::WebhookEndpointProvider`
 //!   so action code can read `ctx.webhook.endpoint_url()`.
-//! - `routing` — private `RoutingMap` (DashMap under the hood) keyed by `(trigger_uuid, nonce)`.
+//! - `routing` — private `RoutingMap` (DashMap under the hood) keyed by
+//!   `(trigger_uuid, SHA-256(nonce))`, the same token hash the activation store keeps.
 //! - Rate limiting lives in [`ratelimit`] (moved out of
 //!   `middleware/webhook_ratelimit` in webhook activation phase F1; the
 //!   middleware/ placement was a misnomer — there was never a Tower
@@ -41,8 +42,10 @@ pub mod token;
 pub mod transport;
 
 pub use bootstrap::{
-    BootstrapError, BootstrapReport, SecretResolutionError, TriggerSpecLookup,
-    WebhookActivationContextFactory, WebhookSecretResolver, bootstrap_webhook_activations,
+    BootstrapError, BootstrapReport, RecordWebhookContextFactory, SecretResolutionError,
+    TriggerSpecLookup, WebhookActivationContextFactory, WebhookContextError, WebhookSecretResolver,
+    bootstrap_webhook_activations, default_webhook_providers, spawn_webhook_route_sync,
+    sync_webhook_routes,
 };
 pub use events::{TriggerLifecycleBus, TriggerLifecycleEvent, TriggerLifecycleEventBus};
 pub use key::WebhookKey;
