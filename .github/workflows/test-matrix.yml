@@ -330,7 +330,6 @@ jobs:
             revision_catalog_migration_postgres \
             schema_setup_postgres \
             revision_record_constraints \
-            turn_handoff_conformance_postgres \
             workflow_activation_postgres
           do
             cargo nextest run "${common[@]}" --test "$suite"

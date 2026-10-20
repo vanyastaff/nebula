@@ -7,9 +7,6 @@
 
 #![cfg(feature = "runtime-repair-red")]
 
-#[path = "runtime_repair_red_scenarios/same_processor_aba_fencing.rs"]
-mod same_processor_aba_fencing;
-
 use std::{net::SocketAddr, time::Duration};
 
 use nebula_core::{NodeKey, id::ExecutionId};
@@ -334,6 +331,24 @@ async fn startkey_scenario(backend: Backend) {
         .get("started_at")
         .and_then(Value::as_i64)
         .expect("SETUP: acceptance receipt carries a timestamp");
+    // Let the run reach its parked delay first. Until then its status and start
+    // time can move between the replay and the read below, and the
+    // comparison would race.
+    let parked_execution =
+        ExecutionId::parse(&first_execution).expect("SETUP: API returned a valid execution id");
+    let parked_node = NodeKey::new(DELAY_NODE).expect("SETUP: delay node key is valid");
+    match harness
+        .evidence_controls()
+        .observations()
+        .await_node_parked(parked_execution, parked_node, OBSERVATION_BOUND)
+        .await
+    {
+        Ok(()) | Err(EvidenceIntegrityError::ObservationTimedOut) => {},
+        Err(error) => {
+            running.shutdown().await;
+            panic!("SETUP: lifecycle observer failed before the keyed start parked: {error}");
+        },
+    }
 
     let replay = running
         .http
@@ -346,19 +361,28 @@ async fn startkey_scenario(backend: Backend) {
             .expected_red("startkey-same-fingerprint-duplicated")
             .await;
     }
-    // The receipt is the *original* one, so its timestamp must be the original
-    // too. Substituting only the id would date the execution to whenever the
-    // retry arrived — a fabricated fact, and one that silently skews any
-    // latency measured from this field.
+    // The whole receipt describes the persisted execution, not the request
+    // that was refused. Its timestamp is the stored run start, or the original
+    // acceptance time before the run starts; substituting only the id would
+    // date the execution to whenever the retry arrived, a fabricated fact that
+    // silently skews any latency measured from this field. Reading `status`
+    // from the state this retry built would report `created` for an execution
+    // that has since started or finished.
+    let persisted = running.http.get_execution(&first_execution).await;
+    let persisted_started_at = persisted
+        .get("started_at")
+        .and_then(Value::as_str)
+        .map(|started| {
+            chrono::DateTime::parse_from_rfc3339(started)
+                .expect("SETUP: persisted start time is RFC 3339")
+                .timestamp()
+        })
+        .unwrap_or(first_started_at);
     assert_eq!(
         replay.get("started_at").and_then(Value::as_i64),
-        Some(first_started_at),
-        "a replayed receipt must carry the original acceptance timestamp"
+        Some(persisted_started_at),
+        "a replayed receipt must carry the stored start time, not the retry's arrival"
     );
-    // The whole receipt describes the persisted execution, not the request
-    // that was refused. Reading `status` from the state this retry built would
-    // report `created` for an execution that has since started or finished.
-    let persisted = running.http.get_execution(&first_execution).await;
     assert_eq!(
         replay.get("status").and_then(Value::as_str),
         persisted.get("status").and_then(Value::as_str),

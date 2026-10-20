@@ -1,11 +1,9 @@
 //! Trigger-dispatch routing seam.
 //!
-//! [`RoutingResolver`] is a port (DIP seam) the [`DurableExecutionEmitter`]
-//! calls to determine which `required_plugin_key` (and flavour SHA) should be
-//! attached to each enqueued [`JobDispatchMsg`].  The engine's orchestrator
-//! pull-loop claims only rows whose `required_plugin_key` is in the worker's
-//! advertised capability set, so the resolver is the single place that maps a
-//! `(validated_workflow, trigger_id)` pair onto a dispatch route.
+//! [`RoutingResolver`] is a port (DIP seam) that maps a
+//! `(validated_workflow, trigger_id)` pair onto a dispatch route: the primary
+//! `required_plugin_key`, the exact worker flavor, and the full plugin set a
+//! worker must provide to run the workflow.
 //!
 //! ## D1 implementation
 //!
@@ -16,9 +14,6 @@
 //! `WorkflowDefinition` closes the duplicate-trigger-id hole
 //! by construction: validation rejects duplicate `trigger_binding` ids before
 //! the resolver is ever reached, so `.find()` always picks a unique match.
-//!
-//! [`DurableExecutionEmitter`]: super::durable_emitter::DurableExecutionEmitter
-//! [`JobDispatchMsg`]: nebula_storage_port::dto::JobDispatchMsg
 
 use std::collections::BTreeSet;
 
@@ -31,17 +26,14 @@ use nebula_workflow::ValidatedWorkflow;
 /// A resolved dispatch route for one `(validated_workflow, fired_trigger_id)`
 /// pair.
 ///
-/// Returned by [`RoutingResolver::resolve`].  The `required_plugin_key` is
-/// written into the `JobDispatchMsg::required_plugin_key` field; the
-/// orchestrator claims rows whose `required_plugin_key` is a member of the
-/// worker's `available_plugins`.
+/// Returned by [`RoutingResolver::resolve`].
 ///
 /// `required_plugins` carries the full set of plugin keys the workflow needs
 /// (trigger + enabled nodes, deduplicated and sorted).  The claim predicate
 /// is the superset check `job.required_plugins ⊆ worker.available_plugins`;
 /// `required_plugin_key` is kept as an index-friendly pre-filter (sound
 /// because `required_plugins ⊇ {required_plugin_key}` by construction).
-#[must_use = "a DispatchRoute must be written into the JobDispatchMsg; dropping it yields an un-claimable job"]
+#[must_use = "a DispatchRoute is the routing decision; dropping it discards the resolution"]
 #[derive(Debug, Clone)]
 pub struct DispatchRoute {
     /// The primary required plugin (the trigger's plugin); an element of

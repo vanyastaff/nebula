@@ -3,7 +3,34 @@ use std::time::Duration;
 
 use crate::dto::ControlMsg;
 use crate::error::StorageError;
-use crate::store::ClaimGeneration;
+
+/// Storage-minted generation of one claim attempt on a queue row.
+///
+/// Every successful claim mints a strictly greater generation for that row.
+/// Reclaim clears ownership but never decrements or reuses a generation, so a
+/// generation identifies **one claim attempt** for the lifetime of the row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ClaimGeneration(u64);
+
+impl ClaimGeneration {
+    /// Wrap a generation minted by a storage backend.
+    #[must_use]
+    pub const fn new(generation: u64) -> Self {
+        Self(generation)
+    }
+
+    /// The raw generation, for persistence and diagnostics.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for ClaimGeneration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 /// Summary of a single `reclaim_stuck` sweep.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -16,10 +43,8 @@ pub struct ReclaimOutcome {
 
 /// Proof that its holder owns the *current* claim on one control-queue row.
 ///
-/// Same contract, and same reason for existing, as
-/// [`crate::store::JobClaimToken`]: a stable processor identity cannot fence an
-/// ABA reclaim. One runner may claim a command, lose it to the reclaim sweep,
-/// and claim it again — at which point an acknowledgement issued against the
+/// A stable processor identity cannot fence an ABA reclaim. One runner may
+/// claim a command, lose it to the reclaim sweep, and claim it again — at which point an acknowledgement issued against the
 /// *first* claim still satisfies `processed_by = <self>` and terminalises a
 /// command the second attempt is still dispatching. The generation makes the
 /// two attempts distinguishable.

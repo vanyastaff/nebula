@@ -14,8 +14,7 @@ use nebula_storage_port::{
     },
     store::{
         ControlStartAcceptance, ControlStartHandoff, ExecutionTurnHandoff, OperationLedger,
-        RecoverableTurnPage, RecoveryTurnAcceptance, RecoveryTurnHandoff, TurnAcceptance,
-        TurnHandoff, TurnRecovery,
+        RecoverableTurnPage, RecoveryTurnAcceptance, RecoveryTurnHandoff, TurnRecovery,
     },
 };
 use std::{
@@ -158,9 +157,6 @@ impl ExecutionTurnHandoff for LostAcknowledgement {
         Err(StorageError::AcknowledgementUnknown {
             operation: "control_start_handoff",
         })
-    }
-    async fn accept_turn(&self, request: &TurnHandoff<'_>) -> Result<TurnAcceptance, StorageError> {
-        self.owner.accept_turn(request).await
     }
 }
 

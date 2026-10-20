@@ -9,8 +9,8 @@
 //!
 //! A signal-driven wait must be satisfied **only** by `dispatch_resume` — the
 //! sole caller of `satisfy_signal_waits`.  All other re-entry paths
-//! (`dispatch_start`, `dispatch_restart`, the worker `EngineExecutionSink`)
-//! must leave the nodes `Waiting` and the execution `Paused`.
+//! (`dispatch_start`, `dispatch_restart`) must leave the nodes `Waiting` and
+//! the execution `Paused`.
 //!
 //! Every test has a **falsifiability clause** naming the regression it catches.
 //!

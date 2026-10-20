@@ -12,7 +12,7 @@
 //!
 //! The engine is tenant-agnostic. Every port call takes a `&Scope`, which
 //! is threaded in from the per-message scope on the production path
-//! (control-queue / job-dispatch row). On the worker path there is no
+//! (control-queue row). On the worker path there is no
 //! tenancy decorator, so the scope the engine passes is the real tenant
 //! scope from the message DTO, preserving tenant isolation.
 //!

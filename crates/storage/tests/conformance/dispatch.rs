@@ -7,12 +7,11 @@
 //! it is live in the same transaction. These are references between
 //! aggregates, so they run on SQL only (`relational_matrix!`).
 
-use nebula_core::{PluginKey, WorkerFlavorRevisionId};
 use nebula_storage_port::dto::{ControlCommand, ControlMsg, TriggerRow, WebhookActivationRecord};
 use nebula_storage_port::store::TriggerStore;
 use nebula_storage_port::{Scope, StorageError};
 
-use super::{Backend, make_job, scope_a, scope_b, seed_execution, seed_scope_and_workflow};
+use super::{Backend, scope_a, scope_b, seed_execution, seed_scope_and_workflow};
 
 fn control_msg(id: u8, scope: &Scope, execution_id: &str) -> ControlMsg {
     ControlMsg {
@@ -56,11 +55,10 @@ fn is_not_found(result: &Result<(), StorageError>, entity: &str) -> bool {
     matches!(result, Err(StorageError::NotFound { entity: found, .. }) if *found == entity)
 }
 
-/// Enqueueing on either queue for an execution its tenant does not hold is
+/// Enqueueing a control row for an execution its tenant does not hold is
 /// `NotFound { entity: "execution" }` and leaves nothing claimable.
 pub(crate) async fn assert_queue_rows_require_their_execution(backend: &dyn Backend) {
     let control = backend.control_queue().await;
-    let jobs = backend.job_dispatch_queue().await;
 
     let missing = control
         .enqueue(&control_msg(0xE1, &scope_a(), "exe_missing"))
@@ -68,13 +66,6 @@ pub(crate) async fn assert_queue_rows_require_their_execution(backend: &dyn Back
     assert!(
         is_not_found(&missing, "execution"),
         "[{}] a control row for a missing execution must be NotFound, got {missing:?}",
-        backend.name()
-    );
-    let job = make_job(0xE2, "plugin.orphan", &["plugin.orphan"]);
-    let missing_job = jobs.enqueue(&job).await;
-    assert!(
-        is_not_found(&missing_job, "execution"),
-        "[{}] a job for a missing execution must be NotFound, got {missing_job:?}",
         backend.name()
     );
 
@@ -98,39 +89,20 @@ pub(crate) async fn assert_queue_rows_require_their_execution(backend: &dyn Back
         "[{}] a rejected enqueue must leave no control row",
         backend.name()
     );
-    assert!(
-        jobs.claim_pending(
-            &[1; 16],
-            16,
-            &["plugin.orphan".parse::<PluginKey>().expect("plugin key")],
-            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
-        )
-        .await
-        .expect("claim jobs")
-        .is_empty(),
-        "[{}] a rejected enqueue must leave no job",
-        backend.name()
-    );
 }
 
-/// Purging an execution purges its control rows and jobs; purging a
+/// Purging an execution purges its control rows; purging a
 /// workflow purges its executions and, through them, their rows.
 pub(crate) async fn assert_queue_rows_cascade_with_their_execution(backend: &dyn Backend) {
     let control = backend.control_queue().await;
-    let jobs = backend.job_dispatch_queue().await;
     let executions = backend.execution_store().await;
     let s = scope_a();
-    let plugins = ["plugin.purged".parse::<PluginKey>().expect("plugin key")];
-    let flavor = WorkerFlavorRevisionId::from_bytes([0x11; 32]);
 
     seed_execution(backend, &s, "exe_purged").await;
     control
         .enqueue(&control_msg(0xE4, &s, "exe_purged"))
         .await
         .expect("enqueue the control row");
-    let mut job = make_job(0xE5, "plugin.purged", &["plugin.purged"]);
-    job.execution_id = "exe_purged".into();
-    jobs.enqueue(&job).await.expect("enqueue the job");
 
     assert!(
         backend.purge("executions", &s, "exe_purged").await,
@@ -144,14 +116,6 @@ pub(crate) async fn assert_queue_rows_cascade_with_their_execution(backend: &dyn
             .expect("claim control rows")
             .is_empty(),
         "[{}] an execution's control rows are purged with it",
-        backend.name()
-    );
-    assert!(
-        jobs.claim_pending(&[2; 16], 16, &plugins, flavor)
-            .await
-            .expect("claim jobs")
-            .is_empty(),
-        "[{}] an execution's jobs are purged with it",
         backend.name()
     );
 

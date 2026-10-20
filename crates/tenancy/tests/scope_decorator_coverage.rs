@@ -152,7 +152,6 @@ const INTENTIONALLY_UNSCOPED_PORTS: &[&str] = &[
     // caller-supplied scope, so tenant substitution is neither possible nor
     // appropriate at this port.
     "CredentialRefreshSchedule",
-    "JobDispatchQueue",
     "MembershipStore",
     "OrgStore",
     "PlanFlavorCatalog",

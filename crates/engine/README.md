@@ -88,7 +88,7 @@ configuration, and process lifecycle.
   Replays read the original acceptance before consulting the current workflow;
   an unknown commit permits one retry of the identical original envelope.
 - `DurableExecutionEmitter` — delegates trigger fan-out to `WorkflowStartService`.
-  It creates one Control Start command; it does not also enqueue a Job Start.
+  It creates one Control Start command.
   Unkeyed uncertain acceptance is non-retryable at the action boundary because
   re-entering the emitter would allocate another execution identity.
 - `ResourceFanoutCoordinator` — consumes durable resource deliveries and starts

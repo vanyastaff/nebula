@@ -1,6 +1,6 @@
-//! In-memory dispatch-claim → execution-turn handoff.
+//! In-memory control-claim → execution-turn handoff.
 //!
-//! The queue rows and the execution rows already live under the execution
+//! The control-queue rows and the execution rows already live under the execution
 //! store's single lock, so the whole handoff runs in one critical section —
 //! the in-memory equivalent of the SQL backends' single transaction.
 //!
@@ -12,14 +12,13 @@
 use std::time::Duration;
 
 use nebula_storage_port::store::{
-    ControlStartAcceptance, ControlStartHandoff, ExecutionTurnHandoff, TurnAcceptance, TurnHandoff,
-    TurnRecovery,
+    ControlStartAcceptance, ControlStartHandoff, ExecutionTurnHandoff, TurnRecovery,
 };
 use nebula_storage_port::{FencingToken, StorageError};
 
 use super::execution::SharedState;
 
-/// In-memory owner of the dispatch-claim → execution-turn handoff.
+/// In-memory owner of the control-claim → execution-turn handoff.
 #[derive(Clone)]
 pub struct InMemoryTurnHandoff {
     inner: SharedState,
@@ -82,10 +81,6 @@ impl ExecutionTurnHandoff for InMemoryTurnHandoff {
         handoff: &ControlStartHandoff<'_>,
     ) -> Result<ControlStartAcceptance, StorageError> {
         self.accept_control_start_impl(handoff)
-    }
-
-    async fn accept_turn(&self, handoff: &TurnHandoff<'_>) -> Result<TurnAcceptance, StorageError> {
-        self.accept_turn_impl(handoff)
     }
 }
 
@@ -215,143 +210,6 @@ impl InMemoryTurnHandoff {
         tracing::Span::current().record("outcome", control_acceptance_label(&result));
         result
     }
-
-    #[tracing::instrument(
-        level = "debug",
-        name = "turn_handoff.accept_turn",
-        skip(self, handoff),
-        fields(
-            backend = "in_memory",
-            execution_id = handoff.execution_id(),
-            claim_generation = handoff.claim().generation().get(),
-            outcome = tracing::field::Empty,
-        )
-    )]
-    fn accept_turn_impl(&self, handoff: &TurnHandoff<'_>) -> Result<TurnAcceptance, StorageError> {
-        let ttl = normalized_ttl(handoff.lease_ttl());
-        let result = {
-            let mut state = self.inner.lock();
-            let now = self.clock.now();
-
-            // Decide everything before writing: this critical section cannot
-            // roll back, so a rejection discovered after a write would leave
-            // the execution leased to a worker that must not run it.
-            // A vanished row is the superseded case, not an error: the SQL
-            // backends select on identity, status, and generation together, so
-            // a purged row yields no match there either. A caller swapping
-            // backends must not see a typed outcome on one and a hard error on
-            // the other.
-            //
-            // The row must also belong to the execution and tenant this handoff
-            // names. A valid token from one job paired with another execution id
-            // would otherwise lease the wrong aggregate and acknowledge —
-            // dropping — the job that was actually claimed.
-            let claim_live = state.jobs.get(handoff.claim().row_id()).is_some_and(|job| {
-                job.status == "Processing"
-                    && job.claim_generation == handoff.claim().generation().get()
-                    && job.msg.execution_id == handoff.execution_id()
-                    && &job.msg.scope == handoff.scope()
-                    && job.msg.required_worker_flavor_id == handoff.worker_flavor_revision_id()
-                    && handoff.execution_id().parse().is_ok_and(|execution_id| {
-                        super::plan_flavor_catalog::execution_matches_live_flavor(
-                            &state.revision_catalog,
-                            execution_id,
-                            handoff.worker_flavor_revision_id(),
-                        )
-                    })
-            });
-            if claim_live {
-                let lease_duration = chrono::Duration::from_std(ttl).map_err(|_| {
-                    StorageError::Internal("handoff lease duration is invalid".into())
-                })?;
-                let lease_expiry = now.checked_add_signed(lease_duration).ok_or_else(|| {
-                    StorageError::Internal("handoff lease expiry overflowed".into())
-                })?;
-                let row = state
-                    .rows
-                    .get(handoff.execution_id())
-                    .filter(|row| &row.scope == handoff.scope())
-                    .ok_or_else(|| StorageError::not_found("execution", handoff.execution_id()))?;
-                let held = matches!(row.lease_expires_at, Some(expiry) if expiry >= now);
-                if held {
-                    // The queue row is deliberately left claimed: acknowledging
-                    // here would make it terminal while no owner ever ran the
-                    // turn, so the sweep must still be able to redeliver it.
-                    Ok(TurnAcceptance::TurnHeldByAnotherOwner)
-                } else {
-                    // Every acquire bumps the generation, so a token from
-                    // before this handoff is dead — including one held by a
-                    // crashed-then-restarted runner reusing its identity.
-                    let generation = row
-                        .fencing_generation
-                        .checked_add(1)
-                        .filter(|generation| i64::try_from(*generation).is_ok())
-                        .ok_or_else(|| {
-                            StorageError::Internal("handoff fence is exhausted".into())
-                        })?;
-                    // The observation is the last fallible write and lands
-                    // first; past it the lease and the acknowledgement land
-                    // together or not at all.
-                    let payload = crate::control_turn::accepted_turn_payload(
-                        nebula_execution::ExecutionControlSource::JobDispatch {
-                            row_id: *handoff.claim().row_id(),
-                            queue_claim_generation: handoff.claim().generation().get(),
-                        },
-                        generation,
-                        now,
-                    )?;
-                    if !state.jobs.contains_key(handoff.claim().row_id()) {
-                        return Err(StorageError::not_found("job_dispatch", "claimed row"));
-                    }
-                    super::control_turn::append_observation(
-                        &mut state,
-                        handoff.execution_id(),
-                        payload,
-                    )?;
-                    let super::execution::State { rows, jobs, .. } = &mut *state;
-                    let row = rows.get_mut(handoff.execution_id()).ok_or_else(|| {
-                        StorageError::not_found("execution", handoff.execution_id())
-                    })?;
-                    row.fencing_generation = generation;
-                    handoff
-                        .holder()
-                        .clone_into(row.lease_holder.get_or_insert_with(String::new));
-                    row.lease_expires_at = Some(lease_expiry);
-                    let job = jobs
-                        .get_mut(handoff.claim().row_id())
-                        .ok_or_else(|| StorageError::not_found("job_dispatch", "claimed row"))?;
-                    // Retention runs from the terminal transition, and this is
-                    // one: leaving `processed_at` at the claim time would make
-                    // a long preflight expire the row the moment it lands.
-                    "Dispatched".clone_into(&mut job.status);
-                    job.processed_at = Some(tokio::time::Instant::now());
-                    state.accepted_turns.insert(
-                        handoff.execution_id().to_owned(),
-                        super::turn_recovery::AcceptedTurn {
-                            scope: handoff.scope().clone(),
-                            generation,
-                            source: "Job",
-                            queue_id: *handoff.claim().row_id(),
-                        },
-                    );
-                    Ok(TurnAcceptance::Accepted {
-                        fence: FencingToken::from_generation(generation),
-                    })
-                }
-            } else {
-                Ok(TurnAcceptance::ClaimSuperseded)
-            }
-        };
-
-        let outcome = acceptance_label(&result);
-        tracing::Span::current().record("outcome", outcome);
-        tracing::debug!(
-            target: "nebula_storage::inmem",
-            outcome,
-            "dispatch claim handed off to an execution turn"
-        );
-        result
-    }
 }
 
 pub(crate) const fn control_acceptance_label(
@@ -364,20 +222,6 @@ pub(crate) const fn control_acceptance_label(
         Ok(ControlStartAcceptance::VersionConflict { .. }) => "version_conflict",
         Ok(_) => "unsupported_outcome",
         Err(StorageError::AcknowledgementUnknown { .. }) => "acknowledgement_unknown",
-        Err(_) => "error",
-    }
-}
-
-/// Stable label naming one handoff outcome, so every backend reports the same
-/// vocabulary on its spans.
-pub(crate) const fn acceptance_label(
-    result: &Result<TurnAcceptance, StorageError>,
-) -> &'static str {
-    match *result {
-        Ok(TurnAcceptance::Accepted { .. }) => "accepted",
-        Ok(TurnAcceptance::ClaimSuperseded) => "claim_superseded",
-        Ok(TurnAcceptance::TurnHeldByAnotherOwner) => "turn_held_by_another_owner",
-        Ok(_) => "unsupported_outcome",
         Err(_) => "error",
     }
 }

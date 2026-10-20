@@ -1,4 +1,4 @@
-//! PostgreSQL dispatch-claim → execution-turn handoff.
+//! PostgreSQL control-claim → execution-turn handoff.
 //!
 //! The claim re-check, the lease acquisition, and the queue acknowledgement are
 //! three statements in **one** transaction, so a crash can only land on one
@@ -16,16 +16,14 @@
 //! already-dead lease, and neither is detectable from the row afterwards.
 
 use nebula_storage_port::store::{
-    ControlStartAcceptance, ControlStartHandoff, ExecutionTurnHandoff, TurnAcceptance, TurnHandoff,
-    TurnRecovery,
+    ControlStartAcceptance, ControlStartHandoff, ExecutionTurnHandoff, TurnRecovery,
 };
 use nebula_storage_port::{FencingToken, StorageError};
 use sqlx::{PgPool, Row};
 
-use crate::inmem::acceptance_label;
 use crate::sql_error::storage_error;
 
-/// PostgreSQL-backed owner of the dispatch-claim → execution-turn handoff.
+/// PostgreSQL-backed owner of the control-claim → execution-turn handoff.
 #[derive(Clone, Debug)]
 pub struct PgTurnHandoff {
     pool: PgPool,
@@ -71,10 +69,6 @@ impl ExecutionTurnHandoff for PgTurnHandoff {
         handoff: &ControlStartHandoff<'_>,
     ) -> Result<ControlStartAcceptance, StorageError> {
         self.accept_control_start_impl(handoff).await
-    }
-
-    async fn accept_turn(&self, handoff: &TurnHandoff<'_>) -> Result<TurnAcceptance, StorageError> {
-        self.accept_turn_impl(handoff).await
     }
 }
 
@@ -185,178 +179,6 @@ impl PgTurnHandoff {
             Ok(ControlStartAcceptance::Accepted { fence })
         }.await;
         tracing::Span::current().record("outcome", crate::inmem::control_acceptance_label(&result));
-        result
-    }
-
-    #[tracing::instrument(
-        level = "debug",
-        name = "turn_handoff.accept_turn",
-        skip(self, handoff),
-        fields(
-            backend = "postgres",
-            execution_id = handoff.execution_id(),
-            claim_generation = handoff.claim().generation().get(),
-            outcome = tracing::field::Empty,
-        )
-    )]
-    async fn accept_turn_impl(
-        &self,
-        handoff: &TurnHandoff<'_>,
-    ) -> Result<TurnAcceptance, StorageError> {
-        let result = async {
-            let claim_generation = i64::try_from(handoff.claim().generation().get())
-                .map_err(|_| StorageError::Internal("job handoff claim generation is invalid".into()))?;
-            let ttl_ms = normalized_ttl_ms(handoff.lease_ttl())?;
-            let mut tx = self.pool.begin().await.map_err(storage_error)?;
-
-            // `SELECT 1` is INT4 in PostgreSQL, not INT8: decoding it as i64
-            // fails at the driver. The probe only needs existence, so the
-            // narrow type is also the honest one.
-            let still_claimed: Option<i32> = sqlx::query_scalar(
-                // The row must belong to the execution and tenant this handoff
-                // names. A valid token from one job paired with another
-                // execution id would otherwise lease the wrong aggregate and
-                // acknowledge — dropping — the job that was actually claimed.
-                "SELECT 1 FROM job_dispatch_queue q \
-                 JOIN execution_revision_references r ON r.execution_id = q.execution_id \
-                 WHERE q.id = $1 AND q.status = 'Processing' AND q.claim_generation = $2 \
-                   AND q.execution_id = $3 AND q.workspace_id = $4 AND q.org_id = $5 \
-                   AND q.required_worker_flavor_id = $6 \
-                   AND r.worker_flavor_id = $6 AND r.reference_state = 'live' \
-                 FOR UPDATE OF q FOR SHARE OF r",
-            )
-            .bind(handoff.claim().row_id().as_slice())
-            .bind(claim_generation)
-            .bind(handoff.execution_id())
-            .bind(&handoff.scope().workspace_id)
-            .bind(&handoff.scope().org_id)
-            .bind(handoff.worker_flavor_revision_id().as_bytes().as_slice())
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(storage_error)?;
-            if still_claimed.is_none() {
-                drop(tx.rollback().await);
-                return Ok(TurnAcceptance::ClaimSuperseded);
-            }
-
-            // Same statement shape as `acquire_lease`: the database decides
-            // live-vs-expired and stamps the deadline, so a caller's clock
-            // cannot fence out a healthy peer or mint an already-dead lease.
-            let acquired: Option<i64> = sqlx::query_scalar(
-                "UPDATE executions \
-                 SET lease_holder = $1, \
-                     lease_expires_at = clock_timestamp() + $2 * INTERVAL '1 millisecond', \
-                     fencing_generation = fencing_generation + 1 \
-                 WHERE id = $3 AND workspace_id = $4 AND org_id = $5 \
-                   AND (lease_expires_at IS NULL OR lease_expires_at < clock_timestamp()) \
-                 RETURNING fencing_generation",
-            )
-            .bind(handoff.holder())
-            .bind(ttl_ms)
-            .bind(handoff.execution_id())
-            .bind(&handoff.scope().workspace_id)
-            .bind(&handoff.scope().org_id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(storage_error)?;
-
-            let Some(generation) = acquired else {
-                // Either a live lease blocks the turn, or the execution does
-                // not exist in this tenant. Distinguishing them costs one read
-                // and is worth it: a caller must not treat a missing execution
-                // as contention it can wait out.
-                let exists: Option<i32> = sqlx::query_scalar(
-                    "SELECT 1 FROM executions \
-                     WHERE id = $1 AND workspace_id = $2 AND org_id = $3",
-                )
-                .bind(handoff.execution_id())
-                .bind(&handoff.scope().workspace_id)
-                .bind(&handoff.scope().org_id)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(storage_error)?;
-                drop(tx.rollback().await);
-                return if exists.is_some() {
-                    // The queue row stays claimed on purpose: acknowledging it
-                    // would make it terminal while no owner ever ran the turn.
-                    Ok(TurnAcceptance::TurnHeldByAnotherOwner)
-                } else {
-                    Err(StorageError::not_found("execution", handoff.execution_id()))
-                };
-            };
-
-            // Retention is measured from the terminal transition, and this is
-            // one: a claim that spent longer than the retention window in
-            // preflight would otherwise be eligible for deletion the moment the
-            // handoff lands, because `processed_at` would still hold the
-            // claim time.
-            let acknowledged = sqlx::query(
-                "UPDATE job_dispatch_queue \
-                 SET status = 'Dispatched', processed_at = clock_timestamp() \
-                 WHERE id = $1 AND status = 'Processing' AND claim_generation = $2 \
-                   AND execution_id = $3 AND workspace_id = $4 AND org_id = $5",
-            )
-            .bind(handoff.claim().row_id().as_slice())
-            .bind(claim_generation)
-            .bind(handoff.execution_id())
-            .bind(&handoff.scope().workspace_id)
-            .bind(&handoff.scope().org_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(storage_error)?;
-
-            if acknowledged.rows_affected() != 1 {
-                return Err(StorageError::Internal(
-                    "job handoff locked claim changed".into(),
-                ));
-            }
-
-            let recorded = sqlx::query("INSERT INTO execution_turn_acceptances (execution_id, workspace_id, org_id, last_accepted_fencing_generation, source_kind, source_queue_id) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT(execution_id) DO UPDATE SET last_accepted_fencing_generation = excluded.last_accepted_fencing_generation, source_kind = excluded.source_kind, source_queue_id = excluded.source_queue_id WHERE execution_turn_acceptances.workspace_id = excluded.workspace_id AND execution_turn_acceptances.org_id = excluded.org_id")
-                .bind(handoff.execution_id()).bind(&handoff.scope().workspace_id).bind(&handoff.scope().org_id)
-                .bind(generation).bind("Job").bind(handoff.claim().row_id().as_slice())
-                .execute(&mut *tx).await.map_err(storage_error)?;
-            if recorded.rows_affected() != 1 {
-                return Err(StorageError::Internal(
-                    "job handoff tenant binding changed".into(),
-                ));
-            }
-            // A negative generation here would mean the monotone column was
-            // written out of band — fail closed with a typed error rather
-            // than handing out fence 0 (the lowest possible value, which a
-            // stale token compares against as at least as new).
-            let generation = u64::try_from(generation).map_err(|_| {
-                StorageError::Internal(format!(
-                    "fencing_generation out of u64 range for execution {}: {generation}",
-                    handoff.execution_id()
-                ))
-            })?;
-            let now: i64 = sqlx::query_scalar("SELECT (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint")
-                .fetch_one(&mut *tx).await.map_err(storage_error)?;
-            let payload = crate::control_turn::accepted_turn_payload(
-                nebula_execution::ExecutionControlSource::JobDispatch {
-                    row_id: *handoff.claim().row_id(),
-                    queue_claim_generation: handoff.claim().generation().get(),
-                },
-                generation,
-                backend_timestamp(now)?,
-            )?;
-            super::control_turn::append_observation(&mut tx, handoff.scope(), handoff.execution_id(), &payload).await?;
-            tx.commit().await.map_err(|_| StorageError::AcknowledgementUnknown {
-                operation: "job_turn_handoff",
-            })?;
-            Ok(TurnAcceptance::Accepted {
-                fence: FencingToken::from_generation(generation),
-            })
-        }
-        .await;
-
-        let outcome = acceptance_label(&result);
-        tracing::Span::current().record("outcome", outcome);
-        tracing::debug!(
-            target: "nebula_storage::postgres",
-            outcome,
-            "dispatch claim handed off to an execution turn"
-        );
         result
     }
 }

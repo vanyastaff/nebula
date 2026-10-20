@@ -19,7 +19,6 @@ mod execution;
 mod execution_fence;
 mod identity;
 mod iteration_checkpoint;
-mod job_dispatch;
 mod node_result;
 mod operation_ledger;
 mod plan_flavor_catalog;
@@ -41,7 +40,6 @@ pub use identity::{
     SqliteTriggerStore, SqliteWorkspaceStore,
 };
 pub use iteration_checkpoint::SqliteCheckpointStore;
-pub use job_dispatch::SqliteJobDispatchQueue;
 pub use node_result::SqliteNodeResultStore;
 pub use operation_ledger::SqliteOperationLedger;
 pub use plan_flavor_catalog::SqlitePlanFlavorCatalog;

@@ -2232,8 +2232,8 @@ impl WorkflowEngine {
     /// Adopt a lease the durable handoff already minted (#976) and run the
     /// same heartbeat loop an acquired lease gets.
     ///
-    /// The handoff (`ExecutionTurnHandoff::accept_turn`) acquires the lease
-    /// and acknowledges the queue row in one transaction; the engine must
+    /// The handoff (an `ExecutionTurnHandoff` acceptance) acquires the lease
+    /// and completes the queue row in one transaction; the engine must
     /// drive the turn under that fence rather than acquire again — a live
     /// lease blocks acquisition outright, even for the same holder. Renewal
     /// and release are fence-gated, so the holder string recorded at handoff
@@ -2714,7 +2714,7 @@ impl WorkflowEngine {
     /// [`execute_workflow_with_acquire_scope`](Self::execute_workflow_with_acquire_scope), and
     /// [`replay_execution`](Self::replay_execution) with a caller-supplied scope; called by
     /// [`resume_execution`](Self::resume_execution) with the per-message tenant scope from the
-    /// control-queue / job-dispatch row. The test-only `execute_unit_fixture` caller is restricted
+    /// control-queue row. The test-only `execute_unit_fixture` caller is restricted
     /// to storeless execution so persistent fixtures cannot bypass durable acceptance.
     async fn execute_workflow_scoped(
         &self,

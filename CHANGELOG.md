@@ -17,6 +17,20 @@ changes are expected between minor releases — call them out here.
   `ListExecutionsResponse` from offset pagination to the cursor-based contract.
   All workspace packages and external SDK fixture pins move in lockstep.
 
+- **The unused job-dispatch control channel is removed.** Nothing in production
+  constructed it: starts, resumes and restarts already flow through the durable
+  control queue, and abandoned turns through `TurnRecovery`. The `nebula-orchestrator` crate is deleted, along
+  with `nebula-engine`'s `EngineExecutionSink`; `nebula-storage-port` drops the
+  `JobDispatchQueue` port, `JobDispatchMsg`, `JobClaim`, `JobClaimToken`,
+  `TurnHandoff`, `TurnHandoffLease`, `TurnAcceptance` and
+  `ExecutionTurnHandoff::accept_turn` (`ClaimGeneration` moves next to
+  `ControlClaimToken`); `nebula-storage` drops the `InMemoryJobDispatchQueue`,
+  `SqliteJobDispatchQueue` and `PgJobDispatchQueue` adapters; the
+  `nebula_orchestrator_*` metric names are removed. The `job_dispatch_queue`
+  table stays in the schema until a later migration drops it, and the
+  persisted observation vocabulary keeps decoding historical job-dispatch
+  sources.
+
 - **Ordinary serving consumes accepted executions.** The server now owns an
   in-process worker by default, using its admitted deployment pool, linked release
   and credential projection. Startup acknowledges installed worker loops before

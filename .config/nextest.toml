@@ -46,7 +46,7 @@ fail-fast = false
 default-filter = '''
 not (
     binary(=runtime_repair_red_scenarios)
-    | binary(/(refresh_claim|turn_handoff|revision_catalog|operation_ledger|iteration_checkpoint|credential_lifecycle|rate_limit|resource_fanout|resource_status|schema_setup)_(postgres|conformance_postgres|migration_postgres)/)
+    | binary(/(refresh_claim|revision_catalog|operation_ledger|iteration_checkpoint|credential_lifecycle|rate_limit|resource_fanout|resource_status|schema_setup)_(postgres|conformance_postgres|migration_postgres)/)
     | binary(=pg_idempotency)
     | binary(=execution_state_bounds_postgres)
     | binary(=ordered_migration_observations_postgres)

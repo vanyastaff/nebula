@@ -50,10 +50,10 @@ use nebula_storage_port::dto::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
 use nebula_storage_port::store::{
     CheckpointStore, ClaimGeneration, ControlQueue, ControlStartAcceptance, ControlStartHandoff,
     ControlTurnCommit, ControlTurnCommitOutcome, ExecutionStore, ExecutionTurnHandoff,
-    JobClaimToken, OperationLedger, OperationLedgerAdjudicator, ReclaimOutcome,
-    ResourceEventFanoutStore, ResourceExecutionHandoffStore, ResourceSourceLeaseStore,
-    ResourceStore, ResourceSubscriptionStore, SharedResourceStore, StartAcceptanceStore,
-    StartMaterialization, StartMaterializationError, TriggerStore, TurnAcceptance, TurnHandoff,
+    OperationLedger, OperationLedgerAdjudicator, ReclaimOutcome, ResourceEventFanoutStore,
+    ResourceExecutionHandoffStore, ResourceSourceLeaseStore, ResourceStore,
+    ResourceSubscriptionStore, SharedResourceStore, StartAcceptanceStore, StartMaterialization,
+    StartMaterializationError, TriggerStore,
 };
 use nebula_storage_port::{
     CheckpointSaved, FencingToken, IterationCheckpoint, IterationCheckpointError,
@@ -1507,14 +1507,6 @@ impl ExecutionTurnHandoff for ScopeRecordingHandoff {
             .push(handoff.scope().clone());
         Ok(ControlStartAcceptance::ClaimSuperseded)
     }
-
-    async fn accept_turn(&self, handoff: &TurnHandoff<'_>) -> Result<TurnAcceptance, StorageError> {
-        self.observed
-            .lock()
-            .expect("recording lock")
-            .push(handoff.scope().clone());
-        Ok(TurnAcceptance::ClaimSuperseded)
-    }
 }
 
 #[tokio::test]
@@ -1522,17 +1514,22 @@ async fn execution_turn_handoff_substitutes_the_bound_scope() {
     let inner = Arc::new(ScopeRecordingHandoff::default());
     let scoped = ScopedExecutionTurnHandoff::new(inner.clone(), scope_a());
     let foreign_scope = scope_b();
-    let request = TurnHandoff::for_claim(
+    let request = ControlStartHandoff::for_claim(
         &foreign_scope,
         "execution",
-        JobClaimToken::new([7; 16], ClaimGeneration::new(1), foreign_scope.clone()),
+        nebula_storage_port::store::ControlClaimToken::new(
+            [7; 16],
+            ClaimGeneration::new(1),
+            foreign_scope.clone(),
+        ),
         WorkerFlavorRevisionId::from_bytes([9; 32]),
     )
+    .at_version(0)
     .lease_to("worker", Duration::from_secs(30));
 
     assert_eq!(
-        scoped.accept_turn(&request).await.unwrap(),
-        TurnAcceptance::ClaimSuperseded
+        scoped.accept_control_start(&request).await.unwrap(),
+        ControlStartAcceptance::ClaimSuperseded
     );
     assert_eq!(
         inner.observed.lock().expect("recording lock").as_slice(),
