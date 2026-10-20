@@ -226,8 +226,8 @@ async fn durable_budget_samples_prior_elapsed_before_catalog_io() {
 }
 
 #[tokio::test]
-async fn corrupt_exact_plan_rejects_cold_warm_and_adopted_turns_without_dispatch() {
-    for (warm, adopt) in [(false, false), (true, false), (true, true)] {
+async fn corrupt_exact_plan_rejects_cold_and_warm_turns_without_dispatch() {
+    for warm in [false, true] {
         let runtime_registry = Arc::new(ActionRegistry::new());
         let (frozen, instantiations) = snapshot_registry_counted(&runtime_registry, "must-not-run");
         let stores = TestStores::new();
@@ -259,28 +259,10 @@ async fn corrupt_exact_plan_rejects_cold_warm_and_adopted_turns_without_dispatch
                 )),
             );
         let scope = crate::store_seam::single_tenant_scope();
-        let error = if adopt {
-            let fence = stores
-                .execution
-                .acquire_lease(
-                    &scope,
-                    &execution_id.to_string(),
-                    "handoff",
-                    Duration::from_secs(30),
-                )
-                .await
-                .unwrap()
-                .unwrap();
-            engine
-                .resume_execution_leased(&scope, execution_id, fence)
-                .await
-                .unwrap_err()
-        } else {
-            engine
-                .resume_execution(&scope, execution_id)
-                .await
-                .unwrap_err()
-        };
+        let error = engine
+            .resume_execution(&scope, execution_id)
+            .await
+            .unwrap_err();
         assert!(matches!(error, EngineError::ExactRevision { .. }));
         assert_eq!(instantiations.load(Ordering::SeqCst), 0);
         assert!(!format!("{error:?} {error}").contains("secret-canary"));
@@ -385,7 +367,7 @@ async fn durable_resume_uses_stored_graph_and_retained_factory_after_mutable_rep
 }
 
 #[tokio::test]
-async fn durable_resume_missing_runtime_preserves_state_and_releases_adopted_fence() {
+async fn durable_resume_missing_runtime_preserves_state_and_releases_its_lease() {
     let runtime_registry = Arc::new(ActionRegistry::new());
     let (frozen, instantiations) = snapshot_registry_counted(&runtime_registry, "must-not-run");
     let stores = TestStores::new();
@@ -394,19 +376,8 @@ async fn durable_resume_missing_runtime_preserves_state_and_releases_adopted_fen
     let engine = engine.with_execution_stores(stores.execution_stores());
     let scope = crate::store_seam::single_tenant_scope();
     let before = stores.get_state(execution_id).await.unwrap();
-    let fence = stores
-        .execution
-        .acquire_lease(
-            &scope,
-            &execution_id.to_string(),
-            "handoff",
-            Duration::from_secs(30),
-        )
-        .await
-        .unwrap()
-        .unwrap();
     let error = engine
-        .resume_execution_leased(&scope, execution_id, fence)
+        .resume_execution(&scope, execution_id)
         .await
         .unwrap_err();
     assert!(matches!(error, EngineError::MissingExactRuntime));

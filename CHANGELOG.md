@@ -17,6 +17,13 @@ changes are expected between minor releases — call them out here.
   `ListExecutionsResponse` from offset pagination to the cursor-based contract.
   All workspace packages and external SDK fixture pins move in lockstep.
 
+- **Leftover job-dispatch routing and leased resume are removed.** They had
+  no caller once the job-dispatch channel was gone. `nebula-engine` drops the
+  `daemon::routing` module with `RoutingResolver`, `DefinitionRoutingResolver`,
+  `DispatchRoute` and `RoutingError`, and `WorkflowEngine::resume_execution_leased`;
+  resume through `WorkflowEngine::resume_execution` or the durable control
+  queue instead.
+
 - **The unused job-dispatch control channel is removed.** Nothing in production
   constructed it: starts, resumes and restarts already flow through the durable
   control queue, and abandoned turns through `TurnRecovery`. The `nebula-orchestrator` crate is deleted, along

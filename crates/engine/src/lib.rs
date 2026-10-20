@@ -112,8 +112,7 @@ pub use control_dispatch::EngineControlDispatch;
 pub use credential_accessor::EngineCredentialAccessor;
 pub use daemon::{
     AnyDaemonHandle, Daemon, DaemonConfig, DaemonError, DaemonRegistry, DaemonRuntime,
-    DefinitionRoutingResolver, DispatchRoute, DurableExecutionEmitter, EventSource,
-    EventSourceAdapter, EventSourceRuntime, RestartPolicy, RoutingError, RoutingResolver,
+    DurableExecutionEmitter, EventSource, EventSourceAdapter, EventSourceRuntime, RestartPolicy,
 };
 #[cfg(feature = "rotation")]
 pub use engine::ResourceReconciliationStartupError;
