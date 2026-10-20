@@ -8,7 +8,10 @@
 //! Slug-routed activations were retired in ADR-0096 commit 3; the map is
 //! now programmatic-only.
 
-use std::sync::Arc;
+use std::{
+    sync::{Arc, OnceLock},
+    time::Instant,
+};
 
 use dashmap::DashMap;
 use nebula_action::{TriggerHandler, TriggerRuntimeContext, WebhookConfig};
@@ -30,11 +33,16 @@ use super::key::WebhookKey;
 /// handed to the transport alongside the handler. It is *not* read
 /// through the dyn `TriggerHandler` surface — webhook-specific
 /// configuration does not belong on the base trigger contract.
+///
+/// `persisted` is set once the entry's row is durable in the activation
+/// store. Such an entry is only valid while that row is active: dispatch
+/// refuses it when the row is gone, and route sync drops it.
 #[derive(Clone)]
 pub(crate) struct ActivationEntry {
     pub(crate) handler: Arc<dyn TriggerHandler>,
     pub(crate) ctx: TriggerRuntimeContext,
     pub(crate) config: WebhookConfig,
+    pub(crate) persisted: OnceLock<Instant>,
 }
 
 impl std::fmt::Debug for ActivationEntry {
@@ -87,6 +95,32 @@ impl RoutingMap {
         self.entries.remove(key).is_some()
     }
 
+    /// Record that `key`'s row is now durable in the activation store.
+    pub(crate) fn mark_persisted(&self, key: &WebhookKey) {
+        if let Some(entry) = self.entries.get(key) {
+            entry.persisted.get_or_init(Instant::now);
+        }
+    }
+
+    /// Remove every entry persisted before `cutoff` whose key `keep`
+    /// rejects, returning the removed entries.
+    pub(crate) fn prune_persisted(
+        &self,
+        cutoff: Instant,
+        keep: impl Fn(&WebhookKey) -> bool,
+    ) -> Vec<Arc<ActivationEntry>> {
+        let stale: Vec<WebhookKey> = self
+            .entries
+            .iter()
+            .filter(|e| e.value().persisted.get().is_some_and(|at| *at < cutoff) && !keep(e.key()))
+            .map(|e| e.key().clone())
+            .collect();
+        stale
+            .into_iter()
+            .filter_map(|key| self.entries.remove(&key).map(|(_, entry)| entry))
+            .collect()
+    }
+
     /// Current number of active registrations. Used by transport
     /// observability accessors and tests.
     pub(crate) fn len(&self) -> usize {
@@ -120,7 +154,7 @@ mod tests {
         }
 
         fn dependencies() -> &'static Dependencies {
-            static DEPENDENCIES: std::sync::OnceLock<Dependencies> = std::sync::OnceLock::new();
+            static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
             DEPENDENCIES.get_or_init(Dependencies::new)
         }
     }
@@ -165,6 +199,7 @@ mod tests {
             handler,
             ctx,
             config: WebhookConfig::default(),
+            persisted: OnceLock::new(),
         }
     }
 

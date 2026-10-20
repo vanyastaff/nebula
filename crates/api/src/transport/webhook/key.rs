@@ -5,24 +5,26 @@
 //! (`/api/v1/hooks/{org}/{ws}/{slug}`) was retired in ADR-0096 commit 3;
 //! the routing map is now programmatic-only.
 //!
-//! # Security — nonce redaction
+//! # Security — the key holds the token hash, not the nonce
 //!
-//! The nonce in `WebhookKey` is the bearer token for the capability URL.
-//! It is **never** emitted in logs or `Debug` output. [`WebhookKey`] has
-//! a manual `Debug` impl that prints only the trigger `uuid` and omits the
-//! nonce; `rate_limit_key` returns a token-free bucket label (`rl:{uuid}`)
-//! for the same reason.
+//! The nonce in the URL is the bearer token for the capability URL. The key
+//! stores only its SHA-256 hash, the same value `webhook_activations` stores,
+//! so an activation restored from the durable row routes exactly like the one
+//! minted in this process, and the plaintext token is never kept in the map.
+//! [`WebhookKey`] has a manual `Debug` impl that prints only the trigger
+//! `uuid`; `rate_limit_key` returns a token-free bucket label (`rl:{uuid}`).
 
 use uuid::Uuid;
+
+use super::token::token_hash;
 
 /// Composite routing-map key for a programmatic `(uuid, nonce)` webhook
 /// activation minted by the runtime.
 ///
 /// # Security note
 ///
-/// `Debug` is manually implemented to redact the `nonce` field: the nonce
-/// is the bearer token embedded in the capability URL and must never appear
-/// in log output.
+/// `Debug` is manually implemented to redact the token hash: it identifies
+/// the bearer token embedded in the capability URL and has no place in logs.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum WebhookKey {
     /// Runtime-minted activation. The transport allocates a fresh
@@ -31,38 +33,42 @@ pub enum WebhookKey {
     Programmatic {
         /// Trigger UUID (path segment 1).
         uuid: Uuid,
-        /// 32-char hex nonce (path segment 2). Per-activation random
-        /// so stale external hooks pointing at the same UUID cannot
-        /// route to a fresh registration.
-        nonce: String,
+        /// SHA-256 of the 32-char hex nonce (path segment 2). The nonce is
+        /// per-activation random so stale external hooks pointing at the
+        /// same UUID cannot route to a fresh registration.
+        token_hash: [u8; 32],
     },
 }
 
 /// Redacting `Debug` for [`WebhookKey`].
 ///
-/// The `nonce` is the bearer token embedded in the capability URL — it is
-/// excluded from debug output to prevent token leakage into log aggregators
-/// and traces.
+/// The token hash identifies the bearer token embedded in the capability
+/// URL — it is excluded from debug output so log aggregators and traces never
+/// carry it.
 impl std::fmt::Debug for WebhookKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Programmatic { uuid, .. } => f
                 .debug_struct("WebhookKey::Programmatic")
                 .field("trigger", uuid)
-                .field("nonce", &"<redacted>")
+                .field("token", &"<redacted>")
                 .finish(),
         }
     }
 }
 
 impl WebhookKey {
-    /// Convenience: build a programmatic key.
+    /// Build the key for a request or activation from the plaintext nonce
+    /// in its URL; only the nonce's hash is kept.
     #[must_use]
-    pub fn programmatic(uuid: Uuid, nonce: impl Into<String>) -> Self {
-        Self::Programmatic {
-            uuid,
-            nonce: nonce.into(),
-        }
+    pub fn programmatic(uuid: Uuid, nonce: impl AsRef<str>) -> Self {
+        Self::from_token_hash(uuid, token_hash(nonce.as_ref()))
+    }
+
+    /// Build the key of a persisted activation from its stored token hash.
+    #[must_use]
+    pub fn from_token_hash(uuid: Uuid, token_hash: [u8; 32]) -> Self {
+        Self::Programmatic { uuid, token_hash }
     }
 
     /// Telemetry label — always `"programmatic"` for the sole remaining
@@ -84,23 +90,21 @@ impl WebhookKey {
     #[must_use]
     pub fn rate_limit_key(&self) -> String {
         match self {
-            // Intentionally exclude nonce — it is the bearer token.
+            // Intentionally exclude the token — it is the bearer credential.
             Self::Programmatic { uuid, .. } => format!("rl:{uuid}"),
         }
     }
 
-    /// Extract the raw nonce (bearer token) from the key.
+    /// The SHA-256 of the bearer token, as `webhook_activations` stores it.
     ///
     /// # Security note
     ///
-    /// The returned value is the plaintext capability token and must
-    /// **never** be emitted in logs or metrics.  This accessor exists
-    /// solely for the token-hash computation performed at the API edge
-    /// before querying the durable store.
+    /// The hash identifies the capability token and must **never** be
+    /// emitted in logs or metrics; it exists for the durable-store lookup.
     #[must_use]
-    pub(super) fn nonce(&self) -> &str {
+    pub(super) fn token_hash(&self) -> &[u8; 32] {
         match self {
-            Self::Programmatic { nonce, .. } => nonce.as_str(),
+            Self::Programmatic { token_hash, .. } => token_hash,
         }
     }
 }
@@ -126,6 +130,22 @@ mod tests {
         assert!(
             debug_output.contains("redacted"),
             "Debug output must contain a redaction marker. Got: {debug_output}"
+        );
+    }
+
+    /// A request key built from the URL nonce equals the key of the persisted
+    /// activation built from the stored hash, so restored routes match.
+    #[test]
+    fn programmatic_key_matches_the_stored_token_hash() {
+        let uuid = Uuid::new_v4();
+        let nonce = "0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            WebhookKey::programmatic(uuid, nonce),
+            WebhookKey::from_token_hash(uuid, token_hash(nonce))
+        );
+        assert_ne!(
+            WebhookKey::programmatic(uuid, nonce),
+            WebhookKey::programmatic(uuid, "another-nonce")
         );
     }
 

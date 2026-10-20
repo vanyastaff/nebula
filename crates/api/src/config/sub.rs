@@ -159,19 +159,17 @@ pub struct AuthApiConfig {
 
 /// Webhook subsystem configuration (webhook activation).
 ///
-/// Controls how the slug-routed webhook surface boots. Default is
-/// `bootstrap_from_storage = true` so production deployments wire
-/// activation rows on startup; tests opt out by setting the field to
-/// `false` and seeding the transport directly.
+/// Controls whether a webhook-serving process routes the activations stored
+/// in the deployment database. Default is `bootstrap_from_storage = true`;
+/// tests opt out by setting the field to `false` and seeding the transport
+/// directly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebhookApiConfig {
-    /// When `true`, the composition root invokes
-    /// `bootstrap_webhook_activations` before `build_app` to validate
-    /// the active rows in the port store (`WebhookActivationStore`) —
-    /// confirming each row's factory, secret, and spec can be resolved
-    /// so startup logs surface misconfiguration early (ADR-0096).
-    /// Dispatch routing onto the in-memory map is deferred to U-D1.4b.
-    /// When `false`, the validation step is skipped entirely.
+    /// When `true`, the composition root routes every active row of the
+    /// port store (`WebhookActivationStore`) before serving, then repeats the
+    /// pass periodically so activations registered by other replicas route
+    /// too (ADR-0096). Rows whose spec, secret or factory cannot be resolved
+    /// are skipped and logged. When `false`, neither pass runs.
     ///
     /// Env var: `API_WEBHOOK_BOOTSTRAP_FROM_STORAGE`
     /// (`true` / `false` / `1` / `0`; default `true`).

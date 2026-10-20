@@ -1119,6 +1119,22 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Fixed
 
+- **Registered webhooks survive restarts and route on every replica.**
+  The server never attached the webhook provider registry or context factory,
+  so webhook registration answered 503, and the routing table only held
+  activations minted by the process itself: storage bootstrap validated rows
+  but routed none. The `all` and `webhook` transports now attach both, the
+  routing key is the token hash `webhook_activations` stores, and the server
+  routes every active row before serving and every 30 seconds after.
+  Registered and restored handlers are started before their URL answers, so
+  signed deliveries no longer fail with 500. A route whose row is no longer
+  active answers 404 and is dropped at the next sync.
+  `nebula-api` adds `sync_webhook_routes`, `spawn_webhook_route_sync`,
+  `RecordWebhookContextFactory`, `default_webhook_providers` and
+  `AppState::with_webhook_providers`; `bootstrap_webhook_activations` takes
+  the transport to route on, and `WebhookActivationContextFactory::build`
+  returns a `Result`.
+
 - **Node results live in the deployment database.**
   The server and worker composition roots wired an in-memory `NodeResultStore`
   (with a startup warning) even on SQLite and PostgreSQL, so node outputs, typed

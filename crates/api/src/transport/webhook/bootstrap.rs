@@ -1,11 +1,12 @@
 //! Storage-driven webhook bootstrap (webhook activation — ADR-0096, B-world).
 //!
 //! Reads active webhook activations from the spec-16 port store
-//! (`WebhookActivationStore`) and validates each row can be built into a
-//! handler. Routing of B-world activations onto the in-memory map for
-//! live dispatch is deferred to U-D1.4b (durable emitter install); until
-//! then the port store is the authority and `resolve_by_token` confirms
-//! token identity on the hot path.
+//! (`WebhookActivationStore`), rebuilds each row's handler and routes it on
+//! this process's [`WebhookTransport`]. The routing key is the stored token
+//! hash, so an activation registered by another replica, or by this process
+//! before a restart, answers its URL here too. Rows that are already routed
+//! are left alone, which makes repeated passes cheap:
+//! [`spawn_webhook_route_sync`] runs one at startup and then periodically.
 //!
 //! # Failure isolation
 //!
@@ -21,11 +22,16 @@
 //! [`crate::AppState`] into [`crate::app::build_app`] — the `Router`
 //! builder itself stays synchronous.
 
-use std::future::Future;
+use std::{
+    collections::HashSet,
+    future::Future,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use async_trait::async_trait;
 use nebula_action::{
-    BuiltWebhookHandler, FactoryError, TriggerRuntimeContext,
+    ActionError, BuiltWebhookHandler, FactoryError, TriggerRuntimeContext,
     webhook::factory::WebhookActivationSpec as ActionWebhookActivationSpec,
 };
 use nebula_engine::ActionRegistry;
@@ -41,6 +47,11 @@ use nebula_storage_port::{
     dto::WebhookActivationRecord as PortWebhookActivationRecord,
 };
 use thiserror::Error;
+use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
+
+use super::{key::WebhookKey, transport::WebhookTransport};
+use crate::state::AppState;
 
 /// Credential-neutral, secret-free failure returned by
 /// [`WebhookSecretResolver::resolve`].
@@ -92,16 +103,22 @@ pub trait WebhookSecretResolver: Send + Sync {
 
 /// Result of [`bootstrap_webhook_activations`].
 ///
-/// `loaded` is the count of activation rows that were validated
-/// successfully. `skipped` is the count of rows that surfaced a
-/// non-storage error (decode mismatch, factory rejection, secret
-/// resolution failure).
+/// `loaded` is the count of active rows routed on the transport after the
+/// pass, `restored` the subset this pass newly routed. `skipped` is the
+/// count of rows that surfaced a non-storage error (unroutable row, decode
+/// mismatch, factory rejection, secret resolution failure, handler start
+/// failure). `removed` is the count of routes dropped because their row is
+/// no longer active.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BootstrapReport {
-    /// Activations validated from the port store.
+    /// Active rows routed on the transport after this pass.
     pub loaded: usize,
+    /// Rows this pass newly routed (the rest were already routed).
+    pub restored: usize,
     /// Rows that returned a non-storage failure and were skipped.
     pub skipped: usize,
+    /// Routes dropped because their activation row is no longer active.
+    pub removed: usize,
 }
 
 /// Failure modes for the bootstrap pathway (B-world port store).
@@ -138,6 +155,32 @@ pub enum BootstrapError {
         #[source]
         source: SecretResolutionError,
     },
+    /// The row carries no routable capability token: its `slug` is not the
+    /// activation UUID or its `token_hash` is unset. Rows written by
+    /// `activate_and_persist` always carry both.
+    #[error("activation row for trigger_id={trigger_id} has no routable capability token")]
+    Unroutable {
+        /// Trigger id of the unroutable row.
+        trigger_id: String,
+    },
+    /// The row's identity could not be turned into a trigger context.
+    #[error("cannot build a trigger context for trigger_id={trigger_id}: {source}")]
+    Context {
+        /// Trigger id of the row.
+        trigger_id: String,
+        /// Which part of the identity is invalid.
+        #[source]
+        source: WebhookContextError,
+    },
+    /// The rebuilt handler's lifecycle start failed.
+    #[error("webhook handler for trigger_id={trigger_id} failed to start: {source}")]
+    Start {
+        /// Trigger id of the row.
+        trigger_id: String,
+        /// Error returned by `TriggerHandler::start`.
+        #[source]
+        source: ActionError,
+    },
     /// No factory registered for the spec's `action_kind`.
     #[error("no factory registered for kind '{0}'")]
     UnknownProvider(String),
@@ -160,7 +203,86 @@ pub enum BootstrapError {
 /// transport clones on every dispatch.
 pub trait WebhookActivationContextFactory: Send + Sync {
     /// Build a fresh ctx template for the B-world activation.
-    fn build(&self, record: &PortWebhookActivationRecord) -> TriggerRuntimeContext;
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WebhookContextError`] when the record's workflow or trigger
+    /// identity is missing or malformed.
+    fn build(
+        &self,
+        record: &PortWebhookActivationRecord,
+    ) -> Result<TriggerRuntimeContext, WebhookContextError>;
+}
+
+/// A registry holding the first-party webhook provider factories
+/// (`nebula_action::webhook::providers::default_factories`) and nothing else,
+/// for [`AppState::with_webhook_providers`].
+#[must_use]
+pub fn default_webhook_providers() -> Arc<ActionRegistry> {
+    let registry = ActionRegistry::new();
+    for factory in nebula_action::webhook::providers::default_factories() {
+        registry.register_webhook_provider(factory);
+    }
+    Arc::new(registry)
+}
+
+/// Why an activation record cannot become a trigger context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum WebhookContextError {
+    /// The record names no workflow.
+    #[error("activation record names no workflow")]
+    MissingWorkflow,
+    /// The record's workflow id is not a workflow id.
+    #[error("activation record workflow id is malformed")]
+    InvalidWorkflowId,
+    /// The record's trigger id is not a node key.
+    #[error("activation record trigger id is not a node key")]
+    InvalidTriggerId,
+    /// The base context could not be built.
+    #[error("trigger base context could not be built")]
+    BaseContext,
+}
+
+/// Builds the trigger context of an activation from its record alone: the
+/// tenant, workflow and trigger node the record names, a system principal,
+/// and default capabilities.
+///
+/// Durable (Prod) dispatch starts executions from the row through the start
+/// service, not through the context's emitter, so nothing deployment-specific
+/// is needed here.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RecordWebhookContextFactory;
+
+impl WebhookActivationContextFactory for RecordWebhookContextFactory {
+    fn build(
+        &self,
+        record: &PortWebhookActivationRecord,
+    ) -> Result<TriggerRuntimeContext, WebhookContextError> {
+        let workflow_id = record
+            .workflow_id
+            .as_deref()
+            .ok_or(WebhookContextError::MissingWorkflow)?;
+        let workflow_id = nebula_core::WorkflowId::parse(workflow_id)
+            .map_err(|_| WebhookContextError::InvalidWorkflowId)?;
+        let trigger = nebula_core::NodeKey::new(&record.trigger_id)
+            .map_err(|_| WebhookContextError::InvalidTriggerId)?;
+        let scope = nebula_core::scope::Scope {
+            org_id: nebula_core::OrgId::parse(&record.scope.org_id).ok(),
+            workspace_id: nebula_core::WorkspaceId::parse(&record.scope.workspace_id).ok(),
+            ..Default::default()
+        };
+        let base = nebula_core::BaseContext::builder(scope)
+            .principal(nebula_core::scope::Principal::System)
+            .cancellation(CancellationToken::new())
+            .build()
+            .map_err(|_| WebhookContextError::BaseContext)?;
+        Ok(TriggerRuntimeContext::new(
+            Arc::new(base),
+            workflow_id,
+            trigger,
+        ))
+    }
 }
 
 /// Return type for [`TriggerSpecLookup::lookup`] — a boxed future that resolves
@@ -214,14 +336,15 @@ pub trait TriggerSpecLookup: Send + Sync {
         'life2: 'async_trait;
 }
 
-/// Walk the B-world port store's active webhook activations and validate each
-/// can be built into a handler. Returns a [`BootstrapReport`] with loaded/skipped
+/// Walk the B-world port store's active webhook activations and route each on
+/// `transport`. Returns a [`BootstrapReport`] with loaded/restored/skipped
 /// counts.
 ///
-/// Routing of B-world activations onto the in-memory dispatch map is deferred to
-/// U-D1.4b (durable emitter install). This function validates the port store is
-/// accessible and each row's factory + secret can be resolved, so startup logs
-/// surface misconfiguration early.
+/// A row already routed on `transport` is counted as loaded without being
+/// rebuilt. Any other row is rebuilt from its trigger spec (spec lookup,
+/// secret resolution, factory build), started, and routed under its stored
+/// token hash. Routes whose row was durable before the pass but is no longer
+/// active are dropped and their handlers stopped.
 ///
 /// Failure isolation is per-row: per-row failures are logged and counted;
 /// storage failures bubble out.
@@ -231,6 +354,7 @@ pub trait TriggerSpecLookup: Send + Sync {
 /// Returns [`BootstrapError::Storage`] only when the underlying port store
 /// call fails. Per-row failures are absorbed into `report.skipped`.
 pub async fn bootstrap_webhook_activations(
+    transport: &WebhookTransport,
     store: &dyn WebhookActivationStore,
     registry: &ActionRegistry,
     secrets: &dyn WebhookSecretResolver,
@@ -243,6 +367,9 @@ pub async fn bootstrap_webhook_activations(
         "loading active webhook activations from port store"
     );
 
+    // Taken before the snapshot: a route persisted earlier than this has its
+    // row in the snapshot unless the row was deactivated.
+    let cutoff = Instant::now();
     let records = store.list_all_active().await.inspect_err(|_| {
         record_bootstrap_failure(metrics, webhook_bootstrap_failure_reason::STORAGE);
     })?;
@@ -250,8 +377,22 @@ pub async fn bootstrap_webhook_activations(
     let mut report = BootstrapReport::default();
 
     for record in &records {
-        match validate_one(record, registry, secrets, ctx_factory, spec_lookup).await {
-            Ok(()) => report.loaded += 1,
+        match route_one(
+            transport,
+            record,
+            registry,
+            secrets,
+            ctx_factory,
+            spec_lookup,
+        )
+        .await
+        {
+            Ok(restored) => {
+                report.loaded += 1;
+                if restored {
+                    report.restored += 1;
+                }
+            },
             Err(err) => {
                 report.skipped += 1;
                 record_bootstrap_failure(metrics, bootstrap_failure_reason(&err));
@@ -270,26 +411,64 @@ pub async fn bootstrap_webhook_activations(
         "bootstrap accounting must equal list_all_active count"
     );
 
-    tracing::info!(
+    let active: HashSet<WebhookKey> = records
+        .iter()
+        .filter_map(|record| routing_key(record).ok())
+        .collect();
+    for entry in transport.prune_persisted(cutoff, &active) {
+        report.removed += 1;
+        if let Err(error) = entry.handler.stop(&entry.ctx).await {
+            tracing::warn!(
+                target: "nebula::api::webhook::bootstrap",
+                error = %error,
+                "stopping a webhook handler whose activation is gone failed"
+            );
+        }
+    }
+
+    tracing::debug!(
         target: "nebula::api::webhook::bootstrap",
         loaded = report.loaded,
+        restored = report.restored,
         skipped = report.skipped,
+        removed = report.removed,
         total,
         source = "port_store",
-        "webhook bootstrap complete (dispatch routing deferred to U-D1.4b)"
+        "webhook routes synchronized"
     );
     Ok(report)
 }
 
-/// Validate one B-world activation row: spec lookup + secret resolution +
-/// factory build. Does not touch the transport routing map.
-async fn validate_one(
+/// The routing key a persisted row answers to: its activation UUID (stored as
+/// the slug) and its token hash.
+fn routing_key(record: &PortWebhookActivationRecord) -> Result<WebhookKey, BootstrapError> {
+    let unroutable = || BootstrapError::Unroutable {
+        trigger_id: record.trigger_id.clone(),
+    };
+    if record.token_hash == [0u8; 32] {
+        return Err(unroutable());
+    }
+    let uuid = Uuid::parse_str(&record.slug).map_err(|_| unroutable())?;
+    Ok(WebhookKey::from_token_hash(uuid, record.token_hash))
+}
+
+/// Route one B-world activation row on `transport`: spec lookup + secret
+/// resolution + factory build + handler start, then insert under the stored
+/// token hash.
+/// Returns whether this call routed it (`false` when it was already routed).
+async fn route_one(
+    transport: &WebhookTransport,
     record: &PortWebhookActivationRecord,
     registry: &ActionRegistry,
     secrets: &dyn WebhookSecretResolver,
     ctx_factory: &dyn WebhookActivationContextFactory,
     spec_lookup: &dyn TriggerSpecLookup,
-) -> Result<(), BootstrapError> {
+) -> Result<bool, BootstrapError> {
+    let key = routing_key(record)?;
+    if transport.is_routed(&key) {
+        return Ok(false);
+    }
+
     // Use spec_trigger_id (the `triggers` PK, `trg_` prefix) as the spec
     // lookup key — NOT trigger_id (the dispatch routing NodeKey).  Legacy rows
     // written before ADR-0101 have spec_trigger_id = None; skip them with
@@ -332,25 +511,147 @@ async fn validate_one(
         .lookup_webhook_factory(&spec.provider)
         .ok_or_else(|| BootstrapError::UnknownProvider(spec.provider.clone()))?;
 
-    // Build the handler to prove the factory accepts the spec. The
-    // resulting handler + ctx are discarded — dispatch onto the in-memory
-    // routing map is U-D1.4b.
-    let BuiltWebhookHandler { .. } =
+    let BuiltWebhookHandler { handler, config } =
         factory
             .build(&action_spec)
             .map_err(|source| BootstrapError::Factory {
                 kind: spec.provider.clone(),
                 source,
             })?;
-    let _ctx = ctx_factory.build(record);
+    let ctx = ctx_factory
+        .build(record)
+        .map_err(|source| BootstrapError::Context {
+            trigger_id: record.trigger_id.clone(),
+            source,
+        })?;
 
+    handler
+        .start(&ctx)
+        .await
+        .map_err(|source| BootstrapError::Start {
+            trigger_id: record.trigger_id.clone(),
+            source,
+        })?;
+
+    // A concurrent pass may have routed the same row meanwhile; either entry
+    // serves it, so losing that race is not an error, but this handler is
+    // then unused and must not stay started.
+    let restored = transport.restore(key, Arc::clone(&handler), config, ctx.clone());
+    if !restored && let Err(error) = handler.stop(&ctx).await {
+        tracing::warn!(
+            target: "nebula::api::webhook::bootstrap",
+            trigger_id = %record.trigger_id,
+            error = %error,
+            "stopping a duplicate webhook handler failed"
+        );
+    }
     tracing::debug!(
         target: "nebula::api::webhook::bootstrap",
         trigger_id = %record.trigger_id,
         scope = ?record.scope,
-        "webhook activation validated (dispatch deferred to U-D1.4b)"
+        restored,
+        "webhook activation routed from the port store"
     );
-    Ok(())
+    Ok(restored)
+}
+
+/// Route every active persisted activation on the transport attached to
+/// `state`.
+///
+/// Returns `Ok(None)` when `state` lacks a webhook transport or any component
+/// a rebuild needs (activation store, provider registry, secret resolver,
+/// context factory, spec lookup): such a process does not serve webhooks.
+///
+/// # Errors
+///
+/// Returns [`BootstrapError::Storage`] when listing active rows fails.
+pub async fn sync_webhook_routes(
+    state: &AppState,
+) -> Result<Option<BootstrapReport>, BootstrapError> {
+    let (
+        Some(transport),
+        Some(store),
+        Some(registry),
+        Some(secrets),
+        Some(ctx_factory),
+        Some(spec_lookup),
+    ) = (
+        state.webhook_transport.as_ref(),
+        state.webhook_activation_store.as_ref(),
+        state.webhook_provider_registry(),
+        state.webhook_secret_resolver.as_ref(),
+        state.webhook_ctx_factory_b.as_ref(),
+        state.webhook_spec_lookup.as_ref(),
+    )
+    else {
+        return Ok(None);
+    };
+    bootstrap_webhook_activations(
+        transport,
+        store.as_ref(),
+        registry,
+        secrets.as_ref(),
+        ctx_factory.as_ref(),
+        spec_lookup.as_ref(),
+        state.metrics_registry.as_deref(),
+    )
+    .await
+    .map(Some)
+}
+
+/// Keep this process's webhook routes in step with the activation store:
+/// one pass now, then one every `every`, until `shutdown` is cancelled.
+///
+/// Activations registered on another replica, or on this process before a
+/// restart, become routable here within one interval. A failed pass is
+/// logged and retried at the next tick. Returns `None` without spawning when
+/// `state` cannot route webhooks (see [`sync_webhook_routes`]).
+pub fn spawn_webhook_route_sync(
+    state: AppState,
+    every: Duration,
+    shutdown: CancellationToken,
+) -> Option<tokio::task::JoinHandle<()>> {
+    if state.webhook_transport.is_none()
+        || state.webhook_activation_store.is_none()
+        || state.webhook_provider_registry().is_none()
+        || state.webhook_secret_resolver.is_none()
+        || state.webhook_ctx_factory_b.is_none()
+        || state.webhook_spec_lookup.is_none()
+    {
+        return None;
+    }
+    Some(tokio::spawn(async move {
+        let mut ticks = tokio::time::interval(every);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                () = shutdown.cancelled() => break,
+                _ = ticks.tick() => {},
+            }
+            match sync_webhook_routes(&state).await {
+                Ok(Some(report))
+                    if report.restored > 0 || report.skipped > 0 || report.removed > 0 =>
+                {
+                    tracing::info!(
+                        target: "nebula::api::webhook::bootstrap",
+                        loaded = report.loaded,
+                        restored = report.restored,
+                        skipped = report.skipped,
+                        removed = report.removed,
+                        "webhook routes synchronized from the activation store"
+                    );
+                },
+                Ok(_) => {},
+                Err(error) => {
+                    tracing::warn!(
+                        target: "nebula::api::webhook::bootstrap",
+                        error = %error,
+                        "webhook route sync failed; retrying at the next interval"
+                    );
+                },
+            }
+        }
+    }))
 }
 
 fn into_action_spec(
@@ -394,11 +695,15 @@ fn map_timestamp_format(format: WebhookTimestampFormat) -> nebula_action::webhoo
 fn bootstrap_failure_reason(err: &BootstrapError) -> &'static str {
     match err {
         BootstrapError::Storage(_) => webhook_bootstrap_failure_reason::STORAGE,
+        BootstrapError::Unroutable { .. } | BootstrapError::Context { .. } => {
+            webhook_bootstrap_failure_reason::DECODE
+        },
         BootstrapError::MissingSpec { .. }
         | BootstrapError::SpecLookup { .. }
         | BootstrapError::SecretResolution { .. }
         | BootstrapError::UnknownProvider(_)
-        | BootstrapError::Factory { .. } => webhook_bootstrap_failure_reason::FACTORY,
+        | BootstrapError::Factory { .. }
+        | BootstrapError::Start { .. } => webhook_bootstrap_failure_reason::FACTORY,
     }
 }
 
