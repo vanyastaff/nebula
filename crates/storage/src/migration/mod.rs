@@ -1244,6 +1244,14 @@ mod tests {
     /// `next_attempt_at`). Terminal rows and rows without a timer keep `NULL`.
     /// No constraint is tightened. A build that predates 0012 refuses the
     /// schema, so no writer can leave the column stale.
+    ///
+    /// 0013 adds the execution-owned node-result tables (`node_outputs`,
+    /// `node_results`, `workflow_inputs`). They are new, empty children of
+    /// `executions` that cascade with it; no existing row is read, rewritten or
+    /// deleted, so every admitted older prefix reaches 0012 and then only gains
+    /// empty tables. Nodes of executions that were in flight across the upgrade
+    /// have no stored results and re-execute, as they did with the previous
+    /// process-local store.
     #[test]
     fn new_catalog_head_requires_explicit_admission_policy_review() {
         use crate::migration_catalog::REVIEWED_HEAD;

@@ -236,6 +236,9 @@ pub(crate) struct ExecutionStoreBundle {
     /// Runtime status the workers publish for activated resource rows.
     pub(super) resource_status_store: Arc<dyn nebula_storage_port::store::ResourceStatusStore>,
     pub(super) execution_store: Arc<dyn nebula_storage_port::store::ExecutionStore>,
+    /// Node outputs, typed results and workflow inputs, on the same
+    /// deployment database as `execution_store` (their rows reference the
+    /// execution); the worker projection shares this handle.
     pub(super) node_result_store: Arc<dyn nebula_storage_port::store::NodeResultStore>,
     /// Trigger configuration rows on the deployment database, shared by every
     /// replica instead of living in one process's memory.

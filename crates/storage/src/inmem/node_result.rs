@@ -9,18 +9,25 @@
 //! Node-output vs node-result are distinct slots: `save_node_output` stores
 //! the raw payload a node emitted; `save_node_result` stores the full typed
 //! result record so idempotent replay can reconstruct routing semantics.
-//! The schema version on every loaded record is checked against
-//! [`MAX_SUPPORTED_RESULT_SCHEMA_VERSION`] and a newer record fails closed
+//! The schema version on every saved and loaded record is checked against
+//! `MAX_SUPPORTED_RESULT_SCHEMA_VERSION` and a newer record fails closed
 //! with [`StorageError::UnknownSchemaVersion`] rather than being silently
-//! misinterpreted (unknown schema version fails closed).
+//! misinterpreted (unknown schema version fails closed). The bulk loads
+//! answer in node-id byte order, as the SQL backends do.
+//!
+//! The SQL backends also refuse a write for an execution they do not hold;
+//! this reference model is composed independently of the execution store and
+//! does not check that reference.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use nebula_storage_port::dto::{MAX_SUPPORTED_RESULT_SCHEMA_VERSION, NodeResultRecord};
+use nebula_storage_port::dto::NodeResultRecord;
 use nebula_storage_port::store::NodeResultStore;
 use nebula_storage_port::{Scope, StorageError};
 use parking_lot::Mutex;
+
+use crate::node_result::guard_schema;
 
 /// Per-node slot key: `(workspace_id, org_id, execution_id, node_id)`.
 /// Folding the scope into the key makes a cross-tenant collision
@@ -47,21 +54,6 @@ fn input_key(scope: &Scope, execution_id: &str) -> InputKey {
         scope.org_id.clone(),
         execution_id.to_string(),
     )
-}
-
-/// Reject a record whose schema version this binary cannot decode.
-///
-/// A newer writer may have stored a shape this process does not
-/// understand; surfacing it as a typed error keeps resume loud instead of
-/// silently reconstructing a node from a misread payload.
-fn guard_schema(record: &NodeResultRecord) -> Result<(), StorageError> {
-    if record.schema_version > MAX_SUPPORTED_RESULT_SCHEMA_VERSION {
-        return Err(StorageError::UnknownSchemaVersion {
-            found: record.schema_version,
-            max: MAX_SUPPORTED_RESULT_SCHEMA_VERSION,
-        });
-    }
-    Ok(())
 }
 
 #[derive(Debug, Default)]
@@ -177,6 +169,7 @@ impl NodeResultStore for InMemoryNodeResultStore {
                 out.push((node.clone(), rec.clone()));
             }
         }
+        out.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
         Ok(out)
     }
 
@@ -193,6 +186,7 @@ impl NodeResultStore for InMemoryNodeResultStore {
                 out.push((node.clone(), rec.clone()));
             }
         }
+        out.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
         Ok(out)
     }
 

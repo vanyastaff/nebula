@@ -141,20 +141,16 @@ fn build_sqlite_execution_stores(
     deployment: nebula_storage::sqlite::DeploymentPool,
     metrics: &MetricsRegistry,
 ) -> ExecutionStoreBundle {
-    use nebula_storage::InMemoryNodeResultStore;
     use nebula_storage::sqlite::{
-        SqliteControlQueue, SqliteExecutionStore, SqliteJournalReader, SqliteResourceStore,
-        SqliteResumeProducer, SqliteResumeTokenStore, SqliteStartAcceptanceStore,
-        SqliteTurnHandoff, SqliteWorkflowStore, SqliteWorkflowVersionStore,
+        SqliteControlQueue, SqliteExecutionStore, SqliteJournalReader, SqliteNodeResultStore,
+        SqliteResourceStore, SqliteResumeProducer, SqliteResumeTokenStore,
+        SqliteStartAcceptanceStore, SqliteTurnHandoff, SqliteWorkflowStore,
+        SqliteWorkflowVersionStore,
     };
     use nebula_storage::sqlite::{SqliteIdempotencyGuard, SqliteOperationLedger};
     let pool = deployment.pool().clone();
-    tracing::warn!(
-        "the node-result store is in-memory (not persisted across restarts); \
-         crash-recovery re-executes affected nodes via the reclaim sweep — \
-         authoritative execution state is the SQLite execution row"
-    );
-    let node_results = Arc::new(InMemoryNodeResultStore::new());
+    let node_results: Arc<dyn nebula_storage_port::store::NodeResultStore> =
+        Arc::new(SqliteNodeResultStore::new(pool.clone()));
     let workflow_store: Arc<dyn nebula_storage_port::store::WorkflowStore> =
         Arc::new(SqliteWorkflowStore::new(pool.clone()));
     let workflow_version_store: Arc<dyn nebula_storage_port::store::WorkflowVersionStore> =
@@ -182,7 +178,7 @@ fn build_sqlite_execution_stores(
             execution_stores: nebula_engine::ExecutionStores {
                 execution: Arc::clone(&execution_store),
                 journal: Arc::clone(&journal_reader),
-                node_results: Arc::clone(&node_results) as _,
+                node_results: Arc::clone(&node_results),
                 checkpoints: Arc::new(nebula_storage::sqlite::SqliteCheckpointStore::new(
                     pool.clone(),
                 )),
@@ -253,18 +249,12 @@ fn build_postgres_execution_stores(
     pool: sqlx::PgPool,
     metrics: &MetricsRegistry,
 ) -> ExecutionStoreBundle {
-    use nebula_storage::InMemoryNodeResultStore;
     use nebula_storage::postgres::{
-        PgControlQueue, PgExecutionStore, PgJournalReader, PgResourceStore, PgResumeProducer,
-        PgResumeTokenStore, PgStartAcceptanceStore, PgTurnHandoff, PgWorkflowStore,
-        PgWorkflowVersionStore,
+        PgControlQueue, PgExecutionStore, PgJournalReader, PgNodeResultStore, PgResourceStore,
+        PgResumeProducer, PgResumeTokenStore, PgStartAcceptanceStore, PgTurnHandoff,
+        PgWorkflowStore, PgWorkflowVersionStore,
     };
     use nebula_storage::postgres::{PgIdempotencyGuard, PgOperationLedger};
-    tracing::warn!(
-        "the node-result store is in-memory (not persisted across restarts); \
-         crash-recovery re-executes affected nodes via the reclaim sweep — \
-         authoritative execution state is the Postgres execution row"
-    );
     let workflow_store: Arc<dyn nebula_storage_port::store::WorkflowStore> =
         Arc::new(PgWorkflowStore::new(pool.clone()));
     let workflow_version_store: Arc<dyn nebula_storage_port::store::WorkflowVersionStore> =
@@ -272,7 +262,7 @@ fn build_postgres_execution_stores(
     let execution_store: Arc<dyn nebula_storage_port::store::ExecutionStore> =
         Arc::new(PgExecutionStore::new(pool.clone()));
     let node_result_store: Arc<dyn nebula_storage_port::store::NodeResultStore> =
-        Arc::new(InMemoryNodeResultStore::new());
+        Arc::new(PgNodeResultStore::new(pool.clone()));
     let journal_reader: Arc<dyn nebula_storage_port::store::ExecutionJournalReader> =
         Arc::new(PgJournalReader::new(pool.clone()));
     let resume_token_store: Arc<dyn nebula_storage_port::store::ResumeTokenStore> =

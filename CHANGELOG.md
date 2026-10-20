@@ -1112,6 +1112,17 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Fixed
 
+- **Node results live in the deployment database.**
+  The server and worker composition roots wired an in-memory `NodeResultStore`
+  (with a startup warning) even on SQLite and PostgreSQL, so node outputs, typed
+  results and workflow inputs were lost on restart and not shared between
+  replicas. They now use `SqliteNodeResultStore` / `PgNodeResultStore` on the
+  admitted deployment pool. Migration `0013_node_results.sql` adds
+  `node_outputs`, `node_results` and `workflow_inputs`, children of their
+  execution that cascade with it; it only creates empty tables. A durable save
+  for an execution the database does not hold is `NotFound`, and the bulk loads
+  answer in node-id byte order on every backend.
+
 - **Shutdown failures remain failures.** The standalone worker cancels its
   runtime when signal registration fails and aborts/joins its owned task after
   a drain timeout. HTTP handlers and streaming connections share one drain

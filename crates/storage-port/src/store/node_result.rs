@@ -7,7 +7,23 @@ use crate::scope::Scope;
 ///
 /// Records are port-local [`NodeResultRecord`]s — the port does not depend
 /// on `ActionResult`. An unknown `schema_version` fails closed with
-/// [`StorageError::UnknownSchemaVersion`] rather than being misinterpreted.
+/// [`StorageError::UnknownSchemaVersion`] rather than being misinterpreted:
+/// a save of such a record is refused and a stored one is never returned.
+///
+/// Every adapter answers identically:
+///
+/// - each node has two independent slots, the raw output and the typed
+///   result, plus one workflow-input slot per execution; a save replaces its
+///   slot (the latest write wins) and never touches another slot;
+/// - every slot is keyed by `(scope, execution_id[, node_id])`, so a read
+///   under another scope never observes a row (it answers `None` or empty);
+/// - the bulk loads answer in node-id byte order.
+///
+/// The SQL deployment backends store the slots beside the execution row and
+/// refuse a save for an execution they do not hold with
+/// [`StorageError::NotFound`] (`entity: "execution"`); the rows are purged
+/// with their execution. The in-memory reference adapter is composed apart
+/// from the execution store and does not check that reference.
 #[async_trait::async_trait]
 pub trait NodeResultStore: Send + Sync + std::fmt::Debug {
     /// Persist a node's raw output payload.

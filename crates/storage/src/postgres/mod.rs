@@ -16,6 +16,7 @@ mod execution;
 mod execution_fence;
 mod identity;
 mod iteration_checkpoint;
+mod node_result;
 mod operation_ledger;
 mod plan_flavor_catalog;
 mod rate_limit;
@@ -36,6 +37,7 @@ pub use identity::{
     PgWorkspaceStore,
 };
 pub use iteration_checkpoint::PgCheckpointStore;
+pub use node_result::PgNodeResultStore;
 pub use operation_ledger::PgOperationLedger;
 pub use plan_flavor_catalog::PgPlanFlavorCatalog;
 pub use rate_limit::PgLimitStore;
