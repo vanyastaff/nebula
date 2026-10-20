@@ -856,6 +856,33 @@ async fn with_email_port_routes_through_injected_port() {
     );
 }
 
+struct RefusingEmail;
+
+#[async_trait]
+impl EmailPort for RefusingEmail {
+    async fn send(&self, _msg: EmailMessage) -> Result<(), crate::ports::email::EmailError> {
+        Err(crate::ports::email::EmailError::Transport(
+            "smtp relay down".to_owned(),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn signup_succeeds_when_the_verification_email_cannot_be_sent() {
+    let backend = InMemoryAuthBackend::new().with_email_port(Arc::new(RefusingEmail));
+    let profile = backend
+        .register_user(signup_req("undelivered@example.test"))
+        .await
+        .expect("the account is created, so signup must not report a failure");
+    assert!(!profile.email_verified);
+    assert!(matches!(
+        backend
+            .register_user(signup_req("undelivered@example.test"))
+            .await,
+        Err(AuthError::EmailAlreadyRegistered)
+    ));
+}
+
 #[tokio::test]
 async fn sweep_expired_deletes_only_expired_rows() {
     let backend = InMemoryAuthBackend::new();

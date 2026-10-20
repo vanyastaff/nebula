@@ -466,14 +466,14 @@ impl AuthBackend for DurableAuthBackend {
                     })
                     .await?;
 
-                // Email send happens AFTER the tx commits. A delivery failure
-                // here returns `AuthError::Internal` — the user still exists in
-                // an unverified state and can recover by requesting a password
-                // reset (the reset flow does not require an email-verified
-                // account to issue the cooldown-bounded token).
-                // Signup deliberately commits the user record before queueing
-                // the verification email so a transient transport failure does
-                // not destroy the durable account on retry.
+                // Email send happens AFTER the tx commits, so the account
+                // exists whatever the transport does. A delivery failure is
+                // logged and signup still succeeds: the user is unverified and
+                // can recover by requesting a password reset (the reset flow
+                // does not require an email-verified account to issue the
+                // cooldown-bounded token). Returning an error here used to
+                // answer 500 for a created account, and the client's retry
+                // could then only get "email already registered".
                 if let Err(err) = self
                     .email_port
                     .send(EmailMessage {
@@ -489,7 +489,6 @@ impl AuthBackend for DurableAuthBackend {
                         user_id = %user_id,
                         "failed to deliver verification email after user-create commit",
                     );
-                    return Err(AuthError::Internal(format!("email: {err}")));
                 }
 
                 tracing::info!(user_id = %user_id, "user registered");

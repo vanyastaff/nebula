@@ -34,6 +34,12 @@ impl PluginAttrs {
     ) -> Result<Self> {
         let key = attr_args.require_string("key", struct_name)?;
         let name = attr_args.require_string("name", struct_name)?;
+        if name.trim().is_empty() {
+            return Err(syn::Error::new(
+                struct_name.span(),
+                "#[plugin(name = ...)] must not be blank",
+            ));
+        }
 
         let description = attr_args
             .get_string("description")
@@ -66,6 +72,23 @@ impl PluginAttrs {
             version,
             group,
         })
+    }
+
+    /// A compile-time check that the key is one `PluginManifest` accepts.
+    ///
+    /// The manifest is built lazily on first `Plugin::manifest` call, where an
+    /// invalid key could only panic. The builder lowercases the key and maps
+    /// spaces to underscores before validating it, so the same normalized
+    /// literal is asserted here with the key type's own const validator.
+    pub(crate) fn key_assertion(&self) -> TokenStream2 {
+        let normalized = self.key.to_ascii_lowercase().replace(' ', "_");
+        let message = format!("invalid plugin key in #[plugin(key = \"{}\")]", self.key);
+        quote! {
+            const _: () = ::core::assert!(
+                ::nebula_plugin::PluginKey::is_valid_key_const(#normalized),
+                #message
+            );
+        }
     }
 
     /// Generate `PluginManifest` builder expression.

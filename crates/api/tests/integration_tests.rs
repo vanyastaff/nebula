@@ -1678,7 +1678,10 @@ async fn rate_limit_returns_429_when_quota_exceeded() {
         svc.clone(),
         Request::builder()
             .uri(ws_path("/workflows"))
-            .header("x-real-ip", "10.0.0.99")
+            .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                [10, 0, 0, 99],
+                4000,
+            ))))
             .header("authorization", format!("Bearer {token}"))
             .header("x-csrf-token", TEST_CSRF_TOKEN)
             .header("cookie", TEST_CSRF_COOKIE)
@@ -1693,7 +1696,10 @@ async fn rate_limit_returns_429_when_quota_exceeded() {
         svc,
         Request::builder()
             .uri(ws_path("/workflows"))
-            .header("x-real-ip", "10.0.0.99")
+            .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                [10, 0, 0, 99],
+                4000,
+            ))))
             .header("authorization", format!("Bearer {token}"))
             .header("x-csrf-token", TEST_CSRF_TOKEN)
             .header("cookie", TEST_CSRF_COOKIE)
@@ -1735,7 +1741,10 @@ async fn rate_limit_is_per_ip() {
         svc.clone(),
         Request::builder()
             .uri(ws_path("/workflows"))
-            .header("x-real-ip", "10.0.0.1")
+            .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                [10, 0, 0, 1],
+                4000,
+            ))))
             .header("authorization", format!("Bearer {token}"))
             .header("x-csrf-token", TEST_CSRF_TOKEN)
             .header("cookie", TEST_CSRF_COOKIE)
@@ -1750,7 +1759,10 @@ async fn rate_limit_is_per_ip() {
         svc,
         Request::builder()
             .uri(ws_path("/workflows"))
-            .header("x-real-ip", "10.0.0.2")
+            .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                [10, 0, 0, 2],
+                4000,
+            ))))
             .header("authorization", format!("Bearer {token}"))
             .header("x-csrf-token", TEST_CSRF_TOKEN)
             .header("cookie", TEST_CSRF_COOKIE)

@@ -173,7 +173,8 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
     let routes = crate::openapi::conformance::observe_if_enabled(routes, &observation_spec);
 
     // Build per-IP rate limiter from config.
-    let rate_limit = RateLimitState::new(config.rate_limit_per_second);
+    let rate_limit = RateLimitState::new(config.rate_limit_per_second)
+        .with_trusted_proxies(config.trusted_proxies.clone());
     // Process-wide deadline and concurrency cap; the rate limiter alone
     // bounds each client, not the work the process holds at once.
     let request_limits = RequestLimits::new(config.max_concurrent_requests, config.request_timeout);

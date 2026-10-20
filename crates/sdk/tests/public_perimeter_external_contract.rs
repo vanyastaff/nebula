@@ -506,7 +506,7 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
                 }
             }
             pub mod plugin {
-                pub use nebula_plugin::{Plugin, PluginManifest};
+                pub use nebula_plugin::{Plugin, PluginKey, PluginManifest};
             }
             pub mod resource {
                 pub use nebula_resource::{

@@ -4,11 +4,14 @@
 //! are live (real 200/201 + typed errors). The **org-record** and
 //! **service-account** routes are still honest-501 stubs marked
 //! `#[deprecated]` so the generated OpenAPI spec flags them per stub-endpoint policy
-//! Stub Endpoint Policy. The deprecation lint is silenced at module level
+//! Stub Endpoint Policy. The deprecation lint is expected at module level
 //! because the stub handlers are intentionally mounted (returning 501) so
 //! the route table stays in sync with the published spec — the
-//! non-deprecated member handlers are unaffected by the allow.
-#![allow(deprecated)]
+//! non-deprecated member handlers are unaffected by the expectation.
+#![expect(
+    deprecated,
+    reason = "stub org-record and service-account handlers stay mounted so the route table matches the published spec"
+)]
 
 use axum::middleware;
 use nebula_core::Permission;

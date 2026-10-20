@@ -789,7 +789,9 @@ fn apply_additive_jitter(
     if !total.is_finite() {
         return delay;
     }
-    Duration::from_secs_f64(total.min(Duration::MAX.as_secs_f64()))
+    // `Duration::MAX.as_secs_f64()` rounds up past `Duration::MAX`, so a
+    // clamp to it still overflows `from_secs_f64`; saturate instead.
+    Duration::try_from_secs_f64(total).unwrap_or(Duration::MAX)
 }
 
 #[cfg(test)]

@@ -9,12 +9,15 @@ on:
       - '**/Cargo.toml'
       - '**/Cargo.lock'
       - '.cargo/audit.toml'
+      - 'deny.toml'
       - '.github/workflows/security-audit.yml'
   pull_request:
     paths:
       - '**/Cargo.toml'
       - '**/Cargo.lock'
       - '.cargo/audit.toml'
+      - 'deny.toml'
+      - '.github/workflows/security-audit.yml'
   workflow_dispatch:
 
 permissions:
@@ -36,6 +39,17 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Check advisory ignores match deny.toml
+        run: |
+          # deny.toml mentions dropped IDs in comments; only `id = "…"` entries count.
+          deny=$(grep -E '^\s*\{ *id *= *"RUSTSEC-' deny.toml | grep -oE 'RUSTSEC-[0-9]{4}-[0-9]{4}' | sort -u)
+          audit=$(grep -E '^\s*"RUSTSEC-' .cargo/audit.toml | grep -oE 'RUSTSEC-[0-9]{4}-[0-9]{4}' | sort -u)
+          if [ "$deny" != "$audit" ]; then
+            echo "::error::.cargo/audit.toml and deny.toml ignore different advisories"
+            diff <(echo "$deny") <(echo "$audit") || true
+            exit 1
+          fi
 
       - name: Install cargo-audit
         uses: taiki-e/install-action@481c34c1cf3a84c68b5e46f4eccfc82af798415a # v2.75.23

@@ -1,10 +1,4 @@
 //! Workflow handlers
-//!
-//! `unused_qualifications` is silenced for the module: the
-//! `IntoParams`-derived `PaginationParams` triggers it from inside the
-//! `#[utoipa::path(... params(PaginationParams))]` expansion (utoipa 5.5
-//! macro-generated code paths qualify the type).
-#![allow(unused_qualifications)]
 
 use axum::{
     Extension, Json,
