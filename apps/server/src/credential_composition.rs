@@ -81,6 +81,11 @@ pub(crate) enum CredentialCompositionError {
     Service(#[from] CredentialServiceError),
     #[error("credential key provider initialization failed: {0}")]
     KeyProvider(String),
+    #[error(
+        "NEBULA_CRED_DEV_KEY=1 is refused outside development (NEBULA_ENV={0:?}); \
+         set NEBULA_CRED_MASTER_KEY"
+    )]
+    DevelopmentKeyOutsideDevelopment(String),
     #[error("credential legacy master-key configuration is invalid")]
     InvalidLegacyKeyring(#[source] CredentialKeyringError),
     #[error("credential store initialization failed")]
@@ -93,27 +98,47 @@ pub(crate) enum CredentialCompositionError {
     RefreshScheduler(#[from] CredentialRefreshSchedulerConfigError),
 }
 
+/// Whether `NEBULA_CRED_DEV_KEY=1` selects the fixed development key.
+///
+/// The key is public, so it is honoured only when `NEBULA_ENV` names a
+/// development mode (`development`, `dev`, `local`) — the rule the API applies
+/// to a missing JWT secret. Anywhere else, including an unset `NEBULA_ENV`,
+/// the request is refused with the mode as `Err`, rather than silently storing
+/// production secrets under a known key.
+fn development_key_requested() -> Result<bool, String> {
+    if std::env::var("NEBULA_CRED_DEV_KEY").as_deref() != Ok("1") {
+        return Ok(false);
+    }
+    let mode = std::env::var("NEBULA_ENV").unwrap_or_default();
+    if matches!(mode.as_str(), "development" | "dev" | "local") {
+        Ok(true)
+    } else {
+        Err(mode)
+    }
+}
+
 /// Resolve the process-wide credential/identity encryption keyring.
 pub(crate) fn resolve_first_party_keyring() -> Result<CredentialKeyring, CredentialCompositionError>
 {
     let span = tracing::info_span!("credential_keyring_resolution");
     let _guard = span.enter();
-    let current: Arc<dyn KeyProvider> =
-        if std::env::var("NEBULA_CRED_DEV_KEY").as_deref() == Ok("1") {
-            tracing::warn!(
-                "security: NEBULA_CRED_DEV_KEY=1 — using a fixed development key; \
+    let current: Arc<dyn KeyProvider> = if development_key_requested()
+        .map_err(CredentialCompositionError::DevelopmentKeyOutsideDevelopment)?
+    {
+        tracing::warn!(
+            "security: NEBULA_CRED_DEV_KEY=1 — using a fixed development key; \
              credential and Plane-A identity secrets are not securely encrypted"
-            );
-            Arc::new(
-                EnvKeyProvider::from_base64(DEVELOPMENT_KEY_BASE64)
-                    .map_err(|error| CredentialCompositionError::KeyProvider(error.to_string()))?,
-            )
-        } else {
-            Arc::new(
-                EnvKeyProvider::from_env()
-                    .map_err(|error| CredentialCompositionError::KeyProvider(error.to_string()))?,
-            )
-        };
+        );
+        Arc::new(
+            EnvKeyProvider::from_base64(DEVELOPMENT_KEY_BASE64)
+                .map_err(|error| CredentialCompositionError::KeyProvider(error.to_string()))?,
+        )
+    } else {
+        Arc::new(
+            EnvKeyProvider::from_env()
+                .map_err(|error| CredentialCompositionError::KeyProvider(error.to_string()))?,
+        )
+    };
     CredentialKeyring::from_env(current).map_err(|error| {
         tracing::error!(
             reason = error.category(),

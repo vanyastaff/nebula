@@ -159,6 +159,17 @@ impl ControlQueue for ControlPollingWitness {
             .await
     }
 
+    async fn claim_pending_interrupts_for_flavor(
+        &self,
+        processor: &[u8; 16],
+        batch_size: u32,
+        flavor: nebula_core::WorkerFlavorRevisionId,
+    ) -> Result<Vec<nebula_storage_port::store::ControlClaim>, StorageError> {
+        self.inner
+            .claim_pending_interrupts_for_flavor(processor, batch_size, flavor)
+            .await
+    }
+
     async fn mark_completed(
         &self,
         claim: &nebula_storage_port::store::ControlClaimToken,

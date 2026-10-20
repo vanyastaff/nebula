@@ -22,7 +22,7 @@ use crate::{
     config::{ApiConfig, IdempotencyApiConfig},
     domain,
     middleware::{
-        IdempotencyLayer,
+        IdempotencyLayer, RequestLimits,
         idempotency::{IdempotencyConfig, REPLAY_SAFE_POST_ROUTES},
         rate_limit::RateLimitState,
         security_headers::security_headers_middleware,
@@ -174,6 +174,9 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
 
     // Build per-IP rate limiter from config.
     let rate_limit = RateLimitState::new(config.rate_limit_per_second);
+    // Process-wide deadline and concurrency cap; the rate limiter alone
+    // bounds each client, not the work the process holds at once.
+    let request_limits = RequestLimits::new(config.max_concurrent_requests, config.request_timeout);
 
     // Build middleware stack (tower `ServiceBuilder`: **first** `.layer()` sees the request
     // first — outermost). Order is therefore:
@@ -225,14 +228,21 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
 
     // Apply middleware to routes.
     // Layers are applied bottom-up: rate_limit runs first (outermost),
-    // then request_id, then security_headers, then W3C trace extraction
-    // (must run before `TraceLayer` inside `middleware_stack`), then the inner stack
-    // (`TraceLayer` → response trace inject → compression → CORS).
+    // then request_id, then security_headers, then the request limits, then
+    // W3C trace extraction (must run before `TraceLayer` inside
+    // `middleware_stack`), then the inner stack (`TraceLayer` → response
+    // trace inject → compression → CORS). The request limits sit inside the
+    // rate limiter, so a throttled client never holds a permit, and inside
+    // request_id and security_headers, so their 503s carry both.
     let routes = routes
         .layer(middleware_stack)
         .layer(middleware::from_fn(
             crate::middleware::trace_context_middleware,
         ))
+        .layer(middleware::from_fn(move |req, next| {
+            let limits = request_limits.clone();
+            async move { limits.handle(req, next).await }
+        }))
         .layer(middleware::from_fn(security_headers_middleware))
         .layer(middleware::from_fn(request_id_middleware))
         // Global per-IP rate limiting — placed outermost so it runs first

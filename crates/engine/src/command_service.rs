@@ -438,7 +438,7 @@ impl ExecutionCommandService {
             }
         }
         let msg = ControlMsg {
-            id: *uuid::Uuid::new_v4().as_bytes(),
+            id: ulid::Ulid::new().to_bytes(),
             execution_id: row.execution_id,
             command: ControlCommand::Resume,
             scope: row.scope.clone(),
@@ -571,7 +571,7 @@ impl ExecutionCommandService {
         );
         let queue = ScopedControlQueue::new(Arc::clone(&self.control_queue), scope.clone());
         let msg = ControlMsg {
-            id: *uuid::Uuid::new_v4().as_bytes(),
+            id: ulid::Ulid::new().to_bytes(),
             execution_id: execution_id.to_string(),
             command,
             scope: scope.clone(),

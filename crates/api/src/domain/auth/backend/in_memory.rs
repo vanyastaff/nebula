@@ -509,7 +509,7 @@ impl AuthBackend for InMemoryAuthBackend {
                 if self.users_by_email.contains_key(&email) {
                     return Err(AuthError::EmailAlreadyRegistered);
                 }
-                let hash = password::hash_password(req.password.expose())?;
+                let hash = password::hash_password_async(req.password.expose()).await?;
                 let id = UserId::new();
                 let record = UserRecord {
                     id,
@@ -586,7 +586,7 @@ impl AuthBackend for InMemoryAuthBackend {
                     .password_hash
                     .as_ref()
                     .ok_or(AuthError::InvalidCredentials)?;
-                if !password::verify_password(stored_hash, password_input)? {
+                if !password::verify_password_async(stored_hash, password_input).await? {
                     self.users.alter(&user.id, |_, mut u| {
                         u.failed_login_count += 1;
                         if u.failed_login_count >= LOCKOUT_THRESHOLD {
@@ -596,6 +596,15 @@ impl AuthBackend for InMemoryAuthBackend {
                         }
                         u
                     });
+                    return Err(AuthError::InvalidCredentials);
+                }
+                // A reset may have replaced the hash while Argon2 waited for
+                // a permit; only the hash that was verified may authenticate.
+                let current = self
+                    .users
+                    .get(&user.id)
+                    .and_then(|u| u.password_hash.clone());
+                if current.as_ref() != Some(stored_hash) {
                     return Err(AuthError::InvalidCredentials);
                 }
 
@@ -888,22 +897,33 @@ impl AuthBackend for InMemoryAuthBackend {
             NEBULA_API_AUTH_ATTEMPTS_TOTAL,
             None,
             async move {
-                let entry = self
-                    .verification_tokens
-                    .remove(token)
-                    .ok_or(AuthError::InvalidToken)?
-                    .1;
-                if entry.kind != VerificationKind::PasswordReset {
-                    return Err(AuthError::InvalidToken);
-                }
-                if entry.expires_at <= Self::now_secs() {
-                    return Err(AuthError::InvalidToken);
-                }
+                let user_id = {
+                    let entry = self
+                        .verification_tokens
+                        .get(token)
+                        .ok_or(AuthError::InvalidToken)?;
+                    if entry.kind != VerificationKind::PasswordReset {
+                        return Err(AuthError::InvalidToken);
+                    }
+                    if entry.expires_at <= Self::now_secs() {
+                        return Err(AuthError::InvalidToken);
+                    }
+                    entry.user_id
+                };
                 if new_password.len() < 8 {
                     return Err(AuthError::InvalidCredentials);
                 }
-                let new_hash = password::hash_password(new_password)?;
-                self.users.alter(&entry.user_id, |_, mut u| {
+                let new_hash = password::hash_password_async(new_password).await?;
+                // Consume the token only once the hash exists, so a request
+                // cancelled while Argon2 runs leaves the reset link usable.
+                self.verification_tokens
+                    .remove_if(token, |_, entry| {
+                        entry.kind == VerificationKind::PasswordReset
+                            && entry.user_id == user_id
+                            && entry.expires_at > Self::now_secs()
+                    })
+                    .ok_or(AuthError::InvalidToken)?;
+                self.users.alter(&user_id, |_, mut u| {
                     u.password_hash = Some(new_hash.clone());
                     u.failed_login_count = 0;
                     u.locked_until = None;

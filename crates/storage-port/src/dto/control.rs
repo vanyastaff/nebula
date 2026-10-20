@@ -63,6 +63,18 @@ impl ControlCommand {
             Self::Restart => "Restart",
         }
     }
+
+    /// Whether this command interrupts a run rather than driving it.
+    ///
+    /// `Cancel` and `Terminate` only signal or terminalize an execution, so
+    /// their dispatch is short. Backends claim them ahead of the commands
+    /// that drive an execution step (`Start`, `Resume`, `Restart`), and the
+    /// consumer keeps a lane for them that a full set of parked runs cannot
+    /// block.
+    #[must_use]
+    pub const fn is_interrupt(self) -> bool {
+        matches!(self, Self::Cancel | Self::Terminate)
+    }
 }
 
 /// One queued control message.

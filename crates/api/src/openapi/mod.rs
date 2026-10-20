@@ -179,10 +179,14 @@ pub(crate) fn add_session_security(openapi: &mut utoipa::openapi::OpenApi) {
 ///
 /// - `429` from the global per-IP limiter on every non-probe route;
 /// - `404`/`503` from tenant resolution on every `/orgs/{org}` route;
+/// - `503` from `RequestLimits` on every route (deadline) and every
+///   non-probe route (concurrency cap);
 /// - `400`/`413`/`415`/`422` from the body limit and [`ApiJson`] decoding on
 ///   every operation that takes a JSON request body.
 ///
-/// Existing, endpoint-specific descriptions are kept.
+/// Existing, endpoint-specific descriptions are kept; an endpoint's own `503`
+/// gets the router-wide `503` conditions appended, since the layer can still
+/// produce them.
 ///
 /// [`ApiJson`]: crate::extractors::ApiJson
 pub(crate) fn add_problem_response_contract(openapi: &mut utoipa::openapi::OpenApi) {
@@ -203,24 +207,30 @@ pub(crate) fn add_problem_response_contract(openapi: &mut utoipa::openapi::OpenA
         {
             normalize_problem_responses(operation);
             let mut layer_failures = Vec::new();
-            if !crate::middleware::rate_limit::EXCLUDED_PATHS.contains(&path.as_str()) {
+            let probe = crate::middleware::rate_limit::EXCLUDED_PATHS.contains(&path.as_str());
+            if !probe {
                 layer_failures.push((
                     "429",
                     "Global per-IP request quota exceeded; Retry-After carries retry advice.",
                 ));
             }
-            if path.starts_with(TENANT_PREFIX) {
-                layer_failures.extend([
-                    (
-                        "404",
-                        "Organisation or workspace is unknown or not visible to the caller.",
-                    ),
-                    (
-                        "503",
-                        "Tenant authority is not configured on this instance.",
-                    ),
-                ]);
-            }
+            // `RequestLimits` answers every route past its deadline and, except
+            // probes, every route over the concurrency cap.
+            let unavailable = if path.starts_with(TENANT_PREFIX) {
+                layer_failures.push((
+                    "404",
+                    "Organisation or workspace is unknown or not visible to the caller.",
+                ));
+                "Tenant authority is not configured on this instance, the request exceeded \
+                 the server's deadline, or the server is at its concurrent request limit \
+                 (Retry-After carries retry advice)."
+            } else if probe {
+                "The request exceeded the server's deadline."
+            } else {
+                "The request exceeded the server's deadline, or the server is at its \
+                 concurrent request limit (Retry-After carries retry advice)."
+            };
+            layer_failures.push(("503", unavailable));
             let takes_json_body = operation
                 .request_body
                 .as_ref()
@@ -237,13 +247,41 @@ pub(crate) fn add_problem_response_contract(openapi: &mut utoipa::openapi::OpenA
                 ]);
             }
             for (status, description) in layer_failures {
-                operation
-                    .responses
-                    .responses
-                    .entry(status.to_owned())
-                    .or_insert_with(|| problem_response(description));
+                add_layer_failure(operation, status, description);
             }
         }
+    }
+}
+
+/// Insert a router-wide failure, or append it to an endpoint's own `503`.
+fn add_layer_failure(operation: &mut Operation, status: &str, description: &str) {
+    use std::collections::btree_map::Entry;
+
+    use utoipa::openapi::{ContentBuilder, Ref, RefOr};
+
+    match operation.responses.responses.entry(status.to_owned()) {
+        Entry::Vacant(slot) => {
+            slot.insert(problem_response(description));
+        },
+        Entry::Occupied(mut slot) if status == "503" => {
+            let RefOr::T(response) = slot.get_mut() else {
+                return;
+            };
+            if !response.description.contains(description) {
+                response.description = format!("{} Also: {description}", response.description);
+            }
+            // The layer answers with a problem body even where the endpoint's
+            // own 503 carries another schema (readiness).
+            response
+                .content
+                .entry("application/problem+json".to_owned())
+                .or_insert_with(|| {
+                    ContentBuilder::new()
+                        .schema(Some(Ref::from_schema_name("ProblemDetails")))
+                        .build()
+                });
+        },
+        Entry::Occupied(_) => {},
     }
 }
 
@@ -316,6 +354,88 @@ fn add_session_requirement(operation: &mut Option<Operation>, csrf_required: boo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_endpoint_503_also_names_the_request_limits() {
+        use utoipa::openapi::{
+            OpenApiBuilder, PathItem, PathsBuilder, ResponsesBuilder, path::OperationBuilder,
+        };
+
+        let operation = OperationBuilder::new()
+            .responses(
+                ResponsesBuilder::new()
+                    .response("503", problem_response("Auth backend is not configured.")),
+            )
+            .build();
+        let mut openapi = OpenApiBuilder::new()
+            .paths(PathsBuilder::new().path(
+                "/api/v1/auth/login",
+                PathItem::new(utoipa::openapi::HttpMethod::Post, operation),
+            ))
+            .build();
+        add_problem_response_contract(&mut openapi);
+        add_problem_response_contract(&mut openapi);
+
+        let item = &openapi.paths.paths["/api/v1/auth/login"];
+        let operation = item.post.as_ref().expect("post operation");
+        let utoipa::openapi::RefOr::T(response) = &operation.responses.responses["503"] else {
+            panic!("503 stays an inline response");
+        };
+        assert!(
+            response
+                .description
+                .starts_with("Auth backend is not configured.")
+        );
+        assert_eq!(
+            response
+                .description
+                .matches("concurrent request limit")
+                .count(),
+            1,
+            "{}",
+            response.description
+        );
+    }
+
+    #[test]
+    fn a_readiness_503_also_documents_the_problem_body() {
+        use utoipa::openapi::{
+            ContentBuilder, OpenApiBuilder, PathItem, PathsBuilder, Ref, ResponseBuilder,
+            ResponsesBuilder, path::OperationBuilder,
+        };
+
+        let readiness = ResponseBuilder::new()
+            .description("Not ready.")
+            .content(
+                "application/json",
+                ContentBuilder::new()
+                    .schema(Some(Ref::from_schema_name("ReadinessResponse")))
+                    .build(),
+            )
+            .build();
+        let operation = OperationBuilder::new()
+            .responses(ResponsesBuilder::new().response("503", readiness))
+            .build();
+        let mut openapi = OpenApiBuilder::new()
+            .paths(PathsBuilder::new().path(
+                "/ready",
+                PathItem::new(utoipa::openapi::HttpMethod::Get, operation),
+            ))
+            .build();
+        add_problem_response_contract(&mut openapi);
+
+        let operation = openapi.paths.paths["/ready"].get.as_ref().expect("get");
+        let utoipa::openapi::RefOr::T(response) = &operation.responses.responses["503"] else {
+            panic!("503 stays an inline response");
+        };
+        assert!(response.content.contains_key("application/json"));
+        assert!(response.content.contains_key("application/problem+json"));
+        assert!(
+            response.description.contains("deadline"),
+            "{}",
+            response.description
+        );
+    }
 
     /// Materializing the OpenAPI value must succeed at compile/test time.
     /// This locks the `#[derive(OpenApi)]` shape and the `Modify` impl

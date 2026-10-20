@@ -15,6 +15,12 @@ ignore = [
   # rustls-webpki wildcard name-constraint issue; affected crate is pinned transitively by AWS rustls 0.21 stack.
   # Track: https://rustsec.org/advisories/RUSTSEC-2026-0099
   "RUSTSEC-2026-0099",
+  # zip 3.0.0: extract API symlink / permission issues. Build-only dependency of
+  # utoipa-swagger-ui 9 (requires zip 3; fixed in zip 9), whose build.rs never
+  # calls the extract API. Same reasoning as deny.toml; drop with it.
+  "RUSTSEC-2026-0367",
+  "RUSTSEC-2026-0368",
+  "RUSTSEC-2026-0369",
 ]
 
 [output]

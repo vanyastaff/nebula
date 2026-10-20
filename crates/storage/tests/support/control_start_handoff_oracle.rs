@@ -223,9 +223,83 @@ async fn accepted(ports: &Ports, seed: &Seed) {
     );
 }
 
+/// Enqueue `command` for the seeded execution, with a fresh id.
+async fn enqueue_command(ports: &Ports, seed: &Seed, command: ControlCommand) -> [u8; 16] {
+    let msg = ControlMsg {
+        id: ExecutionId::new().as_bytes(),
+        execution_id: seed.execution.clone(),
+        command,
+        scope: seed.scope.clone(),
+        w3c_traceparent: None,
+        reclaim_count: 0,
+        resume_target: None,
+    };
+    ports.queue.enqueue(&msg).await.unwrap();
+    msg.id
+}
+
+/// `Cancel` and `Terminate` are claimed ahead of older commands that drive a
+/// run, and the interrupt lane never hands out anything else.
+async fn interrupts_claim_first(ports: &Ports) {
+    let seed = seed(ports).await;
+    let mut driving = Vec::new();
+    for _ in 0..3 {
+        driving.push(enqueue_command(ports, &seed, ControlCommand::Resume).await);
+    }
+    let terminate = enqueue_command(ports, &seed, ControlCommand::Terminate).await;
+    let cancel = enqueue_command(ports, &seed, ControlCommand::Cancel).await;
+
+    let lane = ports
+        .queue
+        .claim_pending_interrupts_for_flavor(&[0x66; 16], 16, seed.flavor)
+        .await
+        .unwrap();
+    let mut lane_ids: Vec<_> = lane.iter().map(|claim| claim.msg.id).collect();
+    lane_ids.sort_unstable();
+    let mut expected = vec![terminate, cancel];
+    expected.sort_unstable();
+    assert_eq!(lane_ids, expected, "the interrupt lane claims only interrupts");
+
+    let late_cancel = enqueue_command(ports, &seed, ControlCommand::Cancel).await;
+    let first = ports
+        .queue
+        .claim_pending_for_flavor(&[0x66; 16], 1, seed.flavor)
+        .await
+        .unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(
+        first[0].msg.id, late_cancel,
+        "a newer Cancel is claimed ahead of older Resume rows"
+    );
+
+    let rest = ports
+        .queue
+        .claim_pending_for_flavor(&[0x66; 16], 16, seed.flavor)
+        .await
+        .unwrap();
+    let mut rest_ids: Vec<_> = rest.iter().map(|claim| claim.msg.id).collect();
+    rest_ids.sort_unstable();
+    driving.sort_unstable();
+    assert_eq!(rest_ids, driving);
+    assert!(
+        ports
+            .queue
+            .claim_pending_interrupts_for_flavor(&[0x66; 16], 16, seed.flavor)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    // Later steps count stuck rows globally; leave none behind.
+    for claim in lane.iter().chain(&first).chain(&rest) {
+        ports.queue.mark_completed(&claim.token).await.unwrap();
+    }
+    ports.queue.mark_completed(&seed.claim).await.unwrap();
+}
+
 async fn oracle(ports: Ports) {
     control_turn_oracle::run(&ports).await;
     recovery_oracle::run(&ports).await;
+    interrupts_claim_first(&ports).await;
     let happy = seed(&ports).await;
     accepted(&ports, &happy).await;
     let invalid_number = seed(&ports).await;
