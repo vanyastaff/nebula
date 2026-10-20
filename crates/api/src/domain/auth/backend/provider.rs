@@ -478,6 +478,12 @@ pub trait AuthBackend: Send + Sync {
         code: &str,
         redirect_uri: &str,
     ) -> Result<OAuthCompletion, AuthError>;
+
+    /// Delete expired sessions, verification tokens and OAuth states;
+    /// returns how many rows went. Expired rows are already refused on read,
+    /// so this only bounds storage. Driven by
+    /// [`AuthExpirySweeper`](crate::auth_expiry_sweep::AuthExpirySweeper).
+    async fn sweep_expired(&self) -> Result<u64, AuthError>;
 }
 
 #[cfg(test)]

@@ -2856,6 +2856,14 @@ impl ExecutionStore for FailAtCommitN {
         self.inner.release_lease(scope, id, token).await
     }
 
+    async fn request_cancel(&self, scope: &Scope, id: &str) -> Result<bool, StorageError> {
+        self.inner.request_cancel(scope, id).await
+    }
+
+    async fn cancel_requested(&self, scope: &Scope, id: &str) -> Result<bool, StorageError> {
+        self.inner.cancel_requested(scope, id).await
+    }
+
     async fn list_all_running(
         &self,
     ) -> Result<Vec<nebula_storage_port::dto::ExecutionRecord>, StorageError> {
@@ -5121,6 +5129,14 @@ impl ExecutionStore for ExternalMutateBeforeN {
         token: nebula_storage_port::FencingToken,
     ) -> Result<bool, StorageError> {
         self.inner.release_lease(scope, id, token).await
+    }
+
+    async fn request_cancel(&self, scope: &Scope, id: &str) -> Result<bool, StorageError> {
+        self.inner.request_cancel(scope, id).await
+    }
+
+    async fn cancel_requested(&self, scope: &Scope, id: &str) -> Result<bool, StorageError> {
+        self.inner.cancel_requested(scope, id).await
     }
 
     async fn list_all_running(

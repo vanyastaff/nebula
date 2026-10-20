@@ -96,6 +96,29 @@ pub trait ExecutionStore: Send + Sync + std::fmt::Debug {
         token: FencingToken,
     ) -> Result<bool, StorageError>;
 
+    /// Durably record that a cancel was requested for this execution.
+    ///
+    /// The control consumer that drains a `Cancel` cannot reach the cancel
+    /// registry of a runner on another worker. It records the request here
+    /// instead, and the lease holder observes it from its heartbeat; any
+    /// later lease holder observes it as soon as it acquires. The first
+    /// request's instant is kept. The write is not lease-gated and never
+    /// changes the aggregate's version, so it cannot conflict with the
+    /// holder's commits.
+    ///
+    /// Returns `false` when no execution `id` exists in `scope`.
+    ///
+    /// # Errors
+    /// Returns [`StorageError`] on a backend failure.
+    async fn request_cancel(&self, scope: &Scope, id: &str) -> Result<bool, StorageError>;
+
+    /// Whether [`Self::request_cancel`] was recorded for this execution.
+    /// A scope mismatch or a missing row reads as `false`.
+    ///
+    /// # Errors
+    /// Returns [`StorageError`] on a backend failure.
+    async fn cancel_requested(&self, scope: &Scope, id: &str) -> Result<bool, StorageError>;
+
     /// List every non-terminal execution row across ALL tenant scopes.
     ///
     /// Used by the durable-timer wake scanner to find parked timers with no live

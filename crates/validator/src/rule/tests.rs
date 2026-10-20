@@ -31,8 +31,8 @@ fn described_inherits_inner_kind() {
 }
 
 #[test]
-fn is_deferred_tags_custom() {
-    assert!(Rule::custom("check()").unwrap().is_deferred());
+fn is_deferred_tags_unique_by() {
+    assert!(Rule::unique_by("id").unwrap().is_deferred());
     assert!(!Rule::email().is_deferred());
 }
 
@@ -88,7 +88,7 @@ fn matches_rejects_value_and_deferred_rules() {
     let ctx = PredicateContext::new();
     for rule in [
         Rule::value(ValueRule::Email).unwrap(),
-        Rule::custom("check()").unwrap(),
+        Rule::unique_by("id").unwrap(),
     ] {
         let error = rule.matches(&ctx).unwrap_err();
         assert_eq!(error.kind(), crate::ValidationErrorKind::InvalidRule);

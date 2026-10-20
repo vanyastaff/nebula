@@ -290,7 +290,11 @@ impl ControlQueue for SqliteControlQueue {
         processor: &[u8; 16],
         batch_size: u32,
     ) -> Result<Vec<ControlClaim>, StorageError> {
-        let mut tx = self.pool.begin().await.map_err(storage_error)?;
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(storage_error)?;
         let rows = sqlx::query(
             "SELECT id, execution_id, workspace_id, org_id, command, \
                     w3c_traceparent, reclaim_count, resume_target \
@@ -443,7 +447,11 @@ impl ControlQueue for SqliteControlQueue {
         // A claim is stuck once SQLite's clock passed its claim instant by
         // `reclaim_after`; the same clock stamped `processed_at`.
         let reclaim_after = age_micros(reclaim_after);
-        let mut tx = self.pool.begin().await.map_err(storage_error)?;
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(storage_error)?;
         // Exhausted rows (past the reclaim budget) → Failed.
         //
         // A `command = 'Resume'` row is EXEMPT (ADR-0099 W-S3b): a Resume does
@@ -494,11 +502,21 @@ impl ControlQueue for SqliteControlQueue {
         })
     }
 
-    async fn cleanup(&self, _retention: Duration) -> Result<u64, StorageError> {
-        // Terminal rows are pruned by the consumer's retention sweep;
-        // `execution_control_queue` has no enqueue instant and its rows are
-        // purged with their execution, so age-based pruning is a no-op here.
-        Ok(0)
+    async fn cleanup(&self, retention: Duration) -> Result<u64, StorageError> {
+        // A terminal row keeps the `processed_at` of its last claim, stamped
+        // by the SQLite clock this cutoff reads too. Pending and Processing
+        // rows are never pruned.
+        let cleanup = format!(
+            "DELETE FROM execution_control_queue \
+             WHERE status IN ('Completed', 'Failed') AND processed_at < {NOW_MICROS} - ?"
+        );
+        let deleted = sqlx::query(sqlx::AssertSqlSafe(cleanup))
+            .bind(age_micros(retention))
+            .execute(&self.pool)
+            .await
+            .map_err(storage_error)?
+            .rows_affected();
+        Ok(deleted)
     }
 }
 

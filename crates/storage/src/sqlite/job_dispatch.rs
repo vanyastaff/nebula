@@ -251,7 +251,11 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         if available_plugins.is_empty() {
             return Ok(Vec::new());
         }
-        let mut tx = self.pool.begin().await.map_err(storage_error)?;
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(storage_error)?;
 
         // Superset predicate: a job is claimable when `required_plugins ⊆
         // available_plugins`.  The available set is bound ONCE as a JSON array
@@ -387,7 +391,11 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
     ) -> Result<ReclaimOutcome, StorageError> {
         // Same clock and cutoff arithmetic as `execution_control_queue`.
         let reclaim_after = age_micros(reclaim_after);
-        let mut tx = self.pool.begin().await.map_err(storage_error)?;
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(storage_error)?;
         let exhaust = format!(
             "UPDATE job_dispatch_queue \
              SET status = 'Failed', \

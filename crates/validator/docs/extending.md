@@ -207,7 +207,7 @@ logic, use the programmatic API.
 
 ### Defining and evaluating rules
 
-Most rules have infallible constructor functions. `Rule::pattern`, `Rule::custom`, and
+Most rules have infallible constructor functions. `Rule::pattern` and
 `Rule::unique_by` are fallible because they validate or budget their input.
 
 ```rust

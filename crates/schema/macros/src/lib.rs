@@ -92,9 +92,7 @@ pub fn field_key(input: TokenStream) -> TokenStream {
 /// - `#[field(...)]` — label/description/placeholder/default/hint/secret/
 ///   multiline/no_expression/expression_required/enum_select/skip/group.
 /// - `#[validate(...)]` — required/length(min,max)/range(min..=max)/ pattern/url/email.
-/// - `#[schema(...)]` — struct-level options: `custom = "..."` → the validator's
-///   `Rule::custom` on the built schema (deferred wire hook); `reserved("a", "b")`
-///   → keys that may not be used by any field (reusing a removed field's key would
+/// - `#[schema(...)]` — struct-level options: `reserved("a", "b")` → keys that may not be used by any field (reusing a removed field's key would
 ///   misread older documents), rejected at expansion if a field's resolved key or
 ///   a `#[serde(alias = ..)]` collides.
 ///   `condition(name, C)` declares a checked named condition in the containing

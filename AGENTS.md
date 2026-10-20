@@ -137,9 +137,10 @@ Per crate: `Cargo.toml`, `README.md`, `AGENTS.md`; some carry a sibling derive c
 ## Layered Dependency Map
 
 **Mechanically enforced** by `cargo deny check` against `deny.toml` `[bans].deny`
-wrappers. Each layer depends only on layers below. Direct imports of lower-layer domain
-types and ports are normal; upward dependencies and undeclared lateral coupling are CI
-failures.
+wrappers, and by `cargo xtask layer-map`, which checks this table and those wrappers
+against the dependency graph. Each layer depends only on layers below; a `<name>-macros`
+crate sits in its parent's layer. Direct imports of lower-layer domain types and ports
+are normal; upward dependencies and undeclared lateral coupling are CI failures.
 
 | Layer | Crates |
 |-------|--------|
@@ -147,7 +148,7 @@ failures.
 | **Exec** | `engine`, `orchestrator`, `worker`, `storage`, `storage-loom-probe` |
 | **Business** | `resource`, `action`, `plugin`, `plugin-core`, `tenancy` |
 | **Core / shared-infra** | `api-contract`, `core`, `validator`, `expression`, `workflow`, `execution`, `schema`, `metadata`, `storage-port`, `credential` |
-| **Cross-cutting** | `crypto`, `log`, `eventbus`, `metrics`, `resilience`, `error`, `env` |
+| **Cross-cutting** | `crypto`, `log`, `eventbus`, `metrics`, `resilience`, `error`, `env`, `macro-support` |
 
 `nebula-xtask` is repository tooling, not a product crate or architectural layer. It may
 depend on general-purpose tooling libraries but never on a `nebula-*` product package.

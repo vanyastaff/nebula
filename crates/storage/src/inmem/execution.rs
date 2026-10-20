@@ -78,6 +78,8 @@ pub(super) struct Row {
     /// (re)acquired by a different/expired holder, so a superseded
     /// holder's token no longer matches.
     pub(super) fencing_generation: u64,
+    /// Set once by [`ExecutionStore::request_cancel`]; never cleared.
+    pub(super) cancel_requested: bool,
     /// Append-only journal: `(seq, payload)` oldest first.
     pub(super) journal: Vec<(u64, serde_json::Value)>,
 }
@@ -312,6 +314,7 @@ pub(super) fn insert_created_row(
             lease_holder: None,
             lease_expires_at: None,
             fencing_generation: 0,
+            cancel_requested: false,
             journal: Vec::new(),
         },
     );
@@ -456,6 +459,25 @@ impl ExecutionStore for InMemoryExecutionStore {
         row.lease_holder = None;
         row.lease_expires_at = None;
         Ok(true)
+    }
+
+    async fn request_cancel(&self, scope: &Scope, id: &str) -> Result<bool, StorageError> {
+        let mut st = self.inner.lock();
+        match st.rows.get_mut(id) {
+            Some(row) if &row.scope == scope => {
+                row.cancel_requested = true;
+                Ok(true)
+            },
+            _ => Ok(false),
+        }
+    }
+
+    async fn cancel_requested(&self, scope: &Scope, id: &str) -> Result<bool, StorageError> {
+        let st = self.inner.lock();
+        Ok(st
+            .rows
+            .get(id)
+            .is_some_and(|row| &row.scope == scope && row.cancel_requested))
     }
 
     async fn list_all_running(&self) -> Result<Vec<ExecutionRecord>, StorageError> {

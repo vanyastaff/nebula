@@ -3,8 +3,9 @@
 use std::{assert_matches, fmt::Debug};
 
 use nebula_schema::{
-    AuthoredValue, HasSchema, PathResolveError, PathWalk, RootShape, Rule, ScalarKind,
-    ScalarSchema, Schema, SchemaKind, ValidSchema, ValuePath, schema_of,
+    AuthoredValue, HasSchema, PathResolveError, PathWalk, Predicate, Property, PropertyType,
+    RootShape, Rule, ScalarKind, ScalarSchema, Schema, SchemaKind, SchemaTypeBuilder,
+    SchemaTypeUse, ValidSchema, ValidationReport, ValuePath, field_key, schema_of,
 };
 use nebula_validator::ValueRule;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -252,7 +253,7 @@ fn nested_scalar_roots_are_rejected_instead_of_erased() {
 #[test]
 fn derived_any_fields_are_dynamic_and_preserve_opaque_data() {
     let schema = schema_of::<NestedUnknown>().unwrap();
-    assert_matches!(schema.properties()[0], nebula_schema::Property::Dynamic(_));
+    assert_matches!(schema.properties()[0], Property::Dynamic(_));
     assert_eq!(
         schema.walk_reference_path(&ValuePath::from_pointer("/inner/arbitrary/path").unwrap()),
         PathWalk::Opaque
@@ -267,13 +268,10 @@ fn derived_any_fields_are_dynamic_and_preserve_opaque_data() {
         roundtrip(NestedUnknown { inner: value });
     }
     let list_schema = schema_of::<UnknownList>().unwrap();
-    let nebula_schema::Property::List(list) = &list_schema.properties()[0] else {
+    let Property::List(list) = &list_schema.properties()[0] else {
         panic!("expected list");
     };
-    assert_matches!(
-        list.item.as_deref(),
-        Some(nebula_schema::Property::Dynamic(_))
-    );
+    assert_matches!(list.item.as_deref(), Some(Property::Dynamic(_)));
     roundtrip(UnknownList {
         items: vec![
             Value::Null,
@@ -297,10 +295,33 @@ fn derived_any_fields_do_not_admit_expressions_in_opaque_descendants() {
     assert_eq!(error.path().to_string(), "/inner/child");
 }
 
-#[derive(Serialize, Deserialize, Schema)]
-#[schema(custom = "payload_guard")]
+#[derive(Serialize, Deserialize)]
 struct GuardedPayload {
     label: String,
+}
+
+impl HasSchema for GuardedPayload {
+    fn schema() -> Result<ValidSchema, ValidationReport> {
+        Schema::builder()
+            .property(Property::string(field_key!("label")))
+            .root_rule(Rule::predicate(Predicate::eq("/label", "ready").unwrap()).unwrap())
+            .build()
+    }
+}
+
+impl PropertyType for GuardedPayload {
+    fn define_schema_type(
+        builder: &mut SchemaTypeBuilder,
+    ) -> Result<SchemaTypeUse, ValidationReport> {
+        builder.define::<Self>(|builder| {
+            let string = String::define_schema_type(builder)?;
+            let label = builder.property(
+                string,
+                Property::string(field_key!("label")).required().into(),
+            )?;
+            Ok(json!({"kind":"record","properties":[label],"additional_properties":"closed"}))
+        })
+    }
 }
 
 #[derive(Serialize, Deserialize, Schema)]

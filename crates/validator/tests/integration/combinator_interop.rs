@@ -128,7 +128,7 @@ fn not_over_predicate_propagates_skip_when_no_ctx() {
 fn not_over_deferred_propagates_skip_in_static_only() {
     use serde_json::json;
 
-    let rule = Rule::not(Rule::custom("dynamic_check()").unwrap()).unwrap();
+    let rule = Rule::not(Rule::unique_by("id").unwrap()).unwrap();
     let result = rule
         .validate(
             &json!("any"),
@@ -143,9 +143,14 @@ fn not_over_deferred_propagates_skip_in_static_only() {
             nebula_validator::DeferredReason::DeferredRule
         ])
     );
+    // Full evaluation runs the uniqueness check, so `not` inverts its verdict.
+    assert!(Validate::validate(&rule, &json!([{"id": 1}, {"id": 1}])).is_ok());
     assert_eq!(
-        Validate::validate(&rule, &json!("any")).unwrap_err().kind(),
-        nebula_validator::ValidationErrorKind::Unavailable
+        Validate::validate(&rule, &json!([{"id": 1}, {"id": 2}]))
+            .unwrap_err()
+            .code
+            .as_ref(),
+        "not_failed"
     );
 }
 

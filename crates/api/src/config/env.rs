@@ -80,6 +80,7 @@ pub(crate) mod tests {
         "API_AUTH_BACKEND",
         "API_EXECUTION_BACKEND",
         "API_EXECUTION_DB_PATH",
+        "API_EXECUTION_MAX_CONNECTIONS",
         "API_SMTP_HOST",
         "API_SMTP_PORT",
         "API_SMTP_USERNAME",

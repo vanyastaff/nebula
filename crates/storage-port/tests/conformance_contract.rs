@@ -98,6 +98,14 @@ impl ExecutionStore for StubExecutionStore {
         Ok(false)
     }
 
+    async fn request_cancel(&self, _scope: &Scope, _id: &str) -> Result<bool, StorageError> {
+        Ok(false)
+    }
+
+    async fn cancel_requested(&self, _scope: &Scope, _id: &str) -> Result<bool, StorageError> {
+        Ok(false)
+    }
+
     async fn list_all_running(&self) -> Result<Vec<ExecutionRecord>, StorageError> {
         Ok(vec![])
     }

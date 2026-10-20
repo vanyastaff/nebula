@@ -76,10 +76,11 @@ impl ResumeProducer for SqliteResumeProducer {
         // BEGIN IMMEDIATE takes the write lock up front so the DELETE + INSERT
         // pair is atomic against the single writer (spec §5 SQLite contract;
         // mirrors `SqliteExecutionStore::commit`).
-        let mut tx = self.pool.begin().await.map_err(storage_error)?;
-        // sqlx already opened a tx, so the lock-upgrade hint may fail with
-        // "cannot start a transaction within a transaction" — best-effort only.
-        let _hint = sqlx::query("BEGIN IMMEDIATE").execute(&mut *tx).await;
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(storage_error)?;
 
         // `DELETE … RETURNING` (rows-affected == 1) IS the single-use replay
         // gate: a raced/replayed/absent hash deletes zero rows.

@@ -855,3 +855,33 @@ async fn with_email_port_routes_through_injected_port() {
         "with_email_port must drop the default echo: `emails()` should be empty"
     );
 }
+
+#[tokio::test]
+async fn sweep_expired_deletes_only_expired_rows() {
+    let backend = InMemoryAuthBackend::new();
+    let profile = backend
+        .register_user(signup_req("sweep@nebula.dev"))
+        .await
+        .expect("signup issues a verification token");
+    backend
+        .create_session(&profile.user_id)
+        .await
+        .expect("session");
+    assert_eq!(
+        backend.sweep_expired().await.unwrap(),
+        0,
+        "nothing expired yet"
+    );
+    assert_eq!(backend.sessions.len(), 1);
+    assert_eq!(backend.verification_tokens.len(), 1);
+
+    for mut session in backend.sessions.iter_mut() {
+        session.expires_at = 0;
+    }
+    for mut token in backend.verification_tokens.iter_mut() {
+        token.expires_at = 0;
+    }
+    assert_eq!(backend.sweep_expired().await.unwrap(), 2);
+    assert!(backend.sessions.is_empty());
+    assert!(backend.verification_tokens.is_empty());
+}

@@ -1,35 +1,29 @@
-//! `#[derive(Schema)]` smoke: struct-level `#[schema(custom = ...)]` + validate.
+//! `#[derive(Schema)]` smoke: derive, validate and resolve.
 
-use std::assert_matches;
-
-use nebula_schema::{AuthoredValue, HasSchema, Schema, validated::PendingValidation};
+use nebula_schema::{AuthoredValue, HasSchema, Schema};
 use serde::Deserialize;
 use serde_json::json;
 
 #[derive(Schema, Deserialize)]
-#[schema(custom = "phase3_engine_stub")]
 struct Demo {
-    #[expect(dead_code, reason = "the custom rule prevents typed extraction")]
+    #[expect(dead_code, reason = "only schema validation is exercised")]
     name: String,
 }
 
 #[test]
-fn derive_schema_custom_and_validate() {
+fn derive_schema_validates_and_resolves() {
     let schema = Demo::schema().unwrap();
     assert_eq!(schema.properties().len(), 1);
-    assert_eq!(schema.root_rules().len(), 1);
+    assert!(schema.root_rules().is_empty());
 
     let values = AuthoredValue::from_data(json!({"name": "ada"})).unwrap();
     let valid = schema.validate(values).unwrap();
     assert_eq!(valid.values().to_json(), json!({"name": "ada"}));
-    assert_matches!(valid.pending(), [PendingValidation::Rule { .. }]);
-    let report = valid.resolve_data().unwrap_err();
-    assert_eq!(report.errors().count(), 1);
+    assert_eq!(valid.pending(), []);
     assert_eq!(
-        report.errors().next().unwrap().code(),
-        "evaluation_unavailable"
+        valid.resolve_data().unwrap().into_json(),
+        json!({"name": "ada"})
     );
-    assert_eq!(report.errors().next().unwrap().path().to_string(), "");
 }
 
 #[test]

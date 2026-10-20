@@ -21,7 +21,6 @@ fn mixed_ruleset() -> Vec<Rule> {
     vec![
         Rule::min_length(3),
         Rule::pattern(r"^[a-z]+$").unwrap(),
-        Rule::custom("skipped").unwrap(),
         Rule::unique_by("id").unwrap(),
         Rule::all([Rule::min_length(1), Rule::max_length(64)]).unwrap(),
     ]

@@ -172,16 +172,33 @@ fn data_ingress_preserves_template_syntax_and_expression_shaped_objects() {
 }
 
 #[test]
-fn full_completion_cannot_claim_an_unsupported_rule_was_satisfied() {
+fn full_completion_runs_deferred_rules() {
     let schema = Schema::builder()
-        .root_rule(Rule::custom("private_runtime_check").expect("bounded custom rule"))
+        .property(
+            Property::list(field_key!("items"))
+                .item(
+                    Property::object(field_key!("item"))
+                        .property(Property::string(field_key!("id"))),
+                )
+                .with_rule(Rule::unique_by("id").expect("bounded deferred rule")),
+        )
         .build()
         .unwrap();
-    let prepared = schema.validate(AuthoredValue::object()).unwrap();
-    assert!(!prepared.pending().is_empty());
-    let error = prepared.resolve_data().unwrap_err();
+    let prepare = |items: Value| {
+        schema
+            .validate(AuthoredValue::from_data(json!({"items": items})).unwrap())
+            .unwrap()
+    };
+
+    let distinct = prepare(json!([{"id": "a"}, {"id": "b"}]));
+    assert!(!distinct.pending().is_empty());
+    assert!(distinct.resolve_data().is_ok());
+
+    let duplicate = prepare(json!([{"id": "a"}, {"id": "a"}]));
+    assert!(!duplicate.pending().is_empty());
+    let error = duplicate.resolve_data().unwrap_err();
     assert_eq!(error.errors().count(), 1);
-    assert!(!format!("{error:?}").contains("private_runtime_check"));
+    assert_eq!(error.errors().next().unwrap().code(), "unique_by");
 }
 
 #[derive(Debug, Deserialize, Schema, PartialEq)]
