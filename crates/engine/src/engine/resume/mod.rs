@@ -739,9 +739,8 @@ impl WorkflowEngine {
             }
         };
 
-        if let Some(guard) = lease {
-            guard.shutdown().await;
-        }
+        self.release_turn_lease(scope, execution_id, lease, reported_status)
+            .await;
         self.emit_final_event(execution_id, reported_status, elapsed, &failed_node);
         self.emit_frontier_integrity_if_violated(execution_id, integrity_violation);
         tracing::info!(

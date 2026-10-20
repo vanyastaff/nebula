@@ -31,6 +31,11 @@ struct MockPool {
     fail_check: Arc<AtomicBool>,
     recycle_drop: Arc<AtomicBool>,
     revoke_calls: Arc<AtomicU64>,
+    /// What `credential_slot_epoch` reports; a test bumps it to stand for a
+    /// rotation that has installed new credential material.
+    slot_epoch: Arc<AtomicU64>,
+    refresh_calls: Arc<AtomicU64>,
+    fail_refresh: Arc<AtomicBool>,
     /// Panic-isolation fixture: `on_credential_revoke` panics when
     /// called with this instance id (`None` = never panics).
     panic_revoke_for: Arc<std::sync::Mutex<Option<u64>>>,
@@ -45,6 +50,9 @@ impl MockPool {
             fail_check: Arc::new(AtomicBool::new(false)),
             recycle_drop: Arc::new(AtomicBool::new(false)),
             revoke_calls: Arc::new(AtomicU64::new(0)),
+            slot_epoch: Arc::new(AtomicU64::new(0)),
+            refresh_calls: Arc::new(AtomicU64::new(0)),
+            fail_refresh: Arc::new(AtomicBool::new(false)),
             panic_revoke_for: Arc::new(std::sync::Mutex::new(None)),
         }
     }
@@ -86,12 +94,39 @@ impl Provider for MockPool {
         Ok(())
     }
 
+    async fn on_credential_refresh(&self, _slot: &str, _runtime: &u64) -> Result<(), Error> {
+        self.refresh_calls.fetch_add(1, Ordering::SeqCst);
+        if self.fail_refresh.load(Ordering::SeqCst) {
+            Err(Error::transient("refresh failed"))
+        } else {
+            Ok(())
+        }
+    }
+
     fn metadata() -> ResourceMetadataDraft {
         ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("mock-pool"), "")
     }
 }
 
-crate::no_credential_slots!(MockPool);
+impl crate::HasCredentialSlots for MockPool {
+    fn credential_slot_epoch(&self) -> u64 {
+        self.slot_epoch.load(Ordering::SeqCst)
+    }
+
+    fn declares_credential_slots() -> bool {
+        false
+    }
+
+    fn credential_slot_names() -> &'static [&'static str] {
+        &["db"]
+    }
+}
+
+impl crate::call::PinSlots for MockPool {
+    type Pinned = ();
+
+    fn pin_slots(&self) -> Self::Pinned {}
+}
 
 impl PoolProvider for MockPool {
     fn is_broken(&self, _runtime: &u64) -> BrokenCheck {
@@ -620,6 +655,124 @@ async fn dispatch_credential_hook_isolates_a_panicking_entry_and_continues() {
         "the SECOND idle entry must still receive its revoke hook — the \
          panic on the first entry must not abort the whole fan-out \
          (per-entry isolation)"
+    );
+}
+
+async fn refresh_idle(
+    topo: &Pooled<MockPool>,
+    resource: &MockPool,
+    store: &InstanceStore<PoolEntry<MockPool>>,
+) -> Result<(), crate::topology::HookFault> {
+    let retained = crate::RetainedStore::for_test();
+    topo.dispatch_credential_hook(resource, StoreView::new(store), &retained, "db", true)
+        .await
+}
+
+/// Credential hooks reach only idle entries. An instance leased while a
+/// refresh ran gets the refresh hook when it comes back, before it is pooled
+/// again, and is destroyed if that hook fails.
+#[tokio::test]
+async fn on_release_hooks_an_entry_leased_across_a_refresh() {
+    let resource = MockPool::new();
+    let topo = mock_pool(Config::default(), 0);
+    let store: InstanceStore<PoolEntry<MockPool>> = InstanceStore::new(None);
+    let mut leased = topo
+        .create_pool_entry(&resource, &PoolTestConfig, &test_ctx())
+        .await
+        .expect("create");
+
+    resource.slot_epoch.store(1, Ordering::SeqCst);
+    refresh_idle(&topo, &resource, &store)
+        .await
+        .expect("refresh dispatch");
+    assert_eq!(resource.refresh_calls.load(Ordering::SeqCst), 0);
+
+    assert!(
+        topo.on_release(&mut leased, &resource)
+            .await
+            .expect("release")
+    );
+    assert_eq!(
+        resource.refresh_calls.load(Ordering::SeqCst),
+        1,
+        "the instance that missed the fan-out is hooked on its return"
+    );
+    assert!(
+        topo.on_release(&mut leased, &resource)
+            .await
+            .expect("release")
+    );
+    assert_eq!(
+        resource.refresh_calls.load(Ordering::SeqCst),
+        1,
+        "a caught-up instance is not hooked again"
+    );
+
+    resource.slot_epoch.store(2, Ordering::SeqCst);
+    resource.fail_refresh.store(true, Ordering::SeqCst);
+    assert!(
+        !topo
+            .on_release(&mut leased, &resource)
+            .await
+            .expect("release"),
+        "an instance whose catch-up hook failed is not re-pooled"
+    );
+}
+
+/// An idle entry the fan-out reached is handed out without another hook. One
+/// whose fan-out hook failed is hooked again at checkout, and refused if that
+/// fails too.
+#[tokio::test]
+async fn accept_hooks_an_idle_entry_whose_refresh_failed() {
+    let resource = MockPool::new();
+    let topo = mock_pool(Config::default(), 0);
+    let store: InstanceStore<PoolEntry<MockPool>> = InstanceStore::new(None);
+    let entry = topo
+        .create_pool_entry(&resource, &PoolTestConfig, &test_ctx())
+        .await
+        .expect("create");
+    let _ = store.return_entry(entry, store.stamp_epoch()).await;
+    let checkout = || async {
+        store
+            .checkout()
+            .await
+            .fresh
+            .expect("idle entry")
+            .into_parts()
+            .0
+    };
+
+    resource.slot_epoch.store(1, Ordering::SeqCst);
+    refresh_idle(&topo, &resource, &store)
+        .await
+        .expect("refresh dispatch");
+    let mut entry = checkout().await;
+    assert!(topo.accept(&mut entry, &resource, &test_ctx()).await);
+    assert_eq!(
+        resource.refresh_calls.load(Ordering::SeqCst),
+        1,
+        "the fan-out already brought the idle entry up to date"
+    );
+    let _ = store.return_entry(entry, store.stamp_epoch()).await;
+
+    resource.slot_epoch.store(2, Ordering::SeqCst);
+    resource.fail_refresh.store(true, Ordering::SeqCst);
+    assert!(refresh_idle(&topo, &resource, &store).await.is_err());
+    resource.fail_refresh.store(false, Ordering::SeqCst);
+    let mut entry = checkout().await;
+    assert!(
+        topo.accept(&mut entry, &resource, &test_ctx()).await,
+        "a hook that succeeds at checkout recovers the entry"
+    );
+    assert_eq!(resource.refresh_calls.load(Ordering::SeqCst), 3);
+    let _ = store.return_entry(entry, store.stamp_epoch()).await;
+
+    resource.slot_epoch.store(3, Ordering::SeqCst);
+    resource.fail_refresh.store(true, Ordering::SeqCst);
+    let mut entry = checkout().await;
+    assert!(
+        !topo.accept(&mut entry, &resource, &test_ctx()).await,
+        "an entry behind the live credentials whose hook fails is refused"
     );
 }
 

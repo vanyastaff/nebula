@@ -224,6 +224,18 @@ impl LeaseBackend {
             .await?)
     }
 
+    /// Whether a cancel was recorded for this execution while another worker
+    /// could not reach this runner's cancel registry.
+    pub(crate) async fn cancel_requested(
+        &self,
+        execution_id: nebula_core::id::ExecutionId,
+    ) -> Result<bool, LeaseBackendError> {
+        Ok(self
+            .store
+            .cancel_requested(&self.scope, &execution_id.to_string())
+            .await?)
+    }
+
     /// Release the lease (best-effort). Returns `Ok(true)` when released,
     /// `Ok(false)` when it was no longer owned.
     pub(crate) async fn release(

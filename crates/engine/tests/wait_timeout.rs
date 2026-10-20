@@ -806,6 +806,14 @@ impl ExecutionStore for FenceArmStore {
         self.inner.release_lease(scope, id, token).await
     }
 
+    async fn request_cancel(&self, scope: &Scope, id: &str) -> Result<bool, StorageError> {
+        self.inner.request_cancel(scope, id).await
+    }
+
+    async fn cancel_requested(&self, scope: &Scope, id: &str) -> Result<bool, StorageError> {
+        self.inner.cancel_requested(scope, id).await
+    }
+
     async fn list_all_running(&self) -> Result<Vec<ExecutionRecord>, StorageError> {
         self.inner.list_all_running().await
     }

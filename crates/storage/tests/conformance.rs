@@ -25,7 +25,8 @@ mod harness;
 
 use harness::{
     Backend, InMemoryBackend, PostgresBackend, ScopedBackend, SqliteBackend, assert_atomic_triple,
-    assert_cas_conflict, assert_control_queue_outbox_and_fencing,
+    assert_cancel_request_is_durable_and_scoped, assert_cas_conflict,
+    assert_control_queue_outbox_and_fencing,
     assert_control_queue_release_returns_row_for_redelivery,
     assert_control_queue_same_processor_aba_is_fenced, assert_create_get_roundtrip,
     assert_cross_scope_commit_is_rejected, assert_cross_scope_get_is_none,
@@ -153,6 +154,10 @@ matrix!(
     assert_idempotency_first_writer_wins
 );
 matrix!(cross_scope_get_is_none, assert_cross_scope_get_is_none);
+matrix!(
+    cancel_request_is_durable_and_scoped,
+    assert_cancel_request_is_durable_and_scoped
+);
 matrix!(
     cross_scope_commit_is_rejected,
     assert_cross_scope_commit_is_rejected

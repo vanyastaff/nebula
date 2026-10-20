@@ -320,6 +320,35 @@ impl ExecutionStore for SqliteExecutionStore {
         Ok(res.rows_affected() == 1)
     }
 
+    async fn request_cancel(&self, scope: &Scope, id: &str) -> Result<bool, StorageError> {
+        let sql = format!(
+            "UPDATE executions SET cancel_requested_at = COALESCE(cancel_requested_at, {NOW_MICROS}) \
+             WHERE org_id = ? AND workspace_id = ? AND id = ?"
+        );
+        let res = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(&scope.org_id)
+            .bind(&scope.workspace_id)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(storage_error)?;
+        Ok(res.rows_affected() == 1)
+    }
+
+    async fn cancel_requested(&self, scope: &Scope, id: &str) -> Result<bool, StorageError> {
+        let requested: Option<bool> = sqlx::query_scalar(
+            "SELECT cancel_requested_at IS NOT NULL FROM executions \
+             WHERE org_id = ? AND workspace_id = ? AND id = ?",
+        )
+        .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage_error)?;
+        Ok(requested.unwrap_or(false))
+    }
+
     async fn list_all_running(&self) -> Result<Vec<ExecutionRecord>, StorageError> {
         let sql = format!(
             "SELECT {EXECUTION_COLUMNS} FROM executions \

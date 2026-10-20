@@ -1383,6 +1383,14 @@ impl ExecutionStore for CommitFenceInterceptor {
         self.inner.release_lease(scope, id, token).await
     }
 
+    async fn request_cancel(&self, scope: &Scope, id: &str) -> Result<bool, StorageError> {
+        self.inner.request_cancel(scope, id).await
+    }
+
+    async fn cancel_requested(&self, scope: &Scope, id: &str) -> Result<bool, StorageError> {
+        self.inner.cancel_requested(scope, id).await
+    }
+
     async fn list_all_running(&self) -> Result<Vec<ExecutionRecord>, StorageError> {
         self.inner.list_all_running().await
     }
@@ -1702,6 +1710,14 @@ impl ExecutionStore for CancelDuringSatisfyInterceptor {
         token: FencingToken,
     ) -> Result<bool, StorageError> {
         self.inner.release_lease(scope, id, token).await
+    }
+
+    async fn request_cancel(&self, scope: &Scope, id: &str) -> Result<bool, StorageError> {
+        self.inner.request_cancel(scope, id).await
+    }
+
+    async fn cancel_requested(&self, scope: &Scope, id: &str) -> Result<bool, StorageError> {
+        self.inner.cancel_requested(scope, id).await
     }
 
     async fn list_all_running(&self) -> Result<Vec<ExecutionRecord>, StorageError> {
@@ -2197,6 +2213,14 @@ impl ExecutionStore for LeaseFailAfterArmInterceptor {
         self.inner.release_lease(scope, id, token).await
     }
 
+    async fn request_cancel(&self, scope: &Scope, id: &str) -> Result<bool, StorageError> {
+        self.inner.request_cancel(scope, id).await
+    }
+
+    async fn cancel_requested(&self, scope: &Scope, id: &str) -> Result<bool, StorageError> {
+        self.inner.cancel_requested(scope, id).await
+    }
+
     async fn list_all_running(&self) -> Result<Vec<ExecutionRecord>, StorageError> {
         self.inner.list_all_running().await
     }
@@ -2537,6 +2561,14 @@ impl ExecutionStore for CommitStatusRecorder {
         self.inner.release_lease(scope, id, token).await
     }
 
+    async fn request_cancel(&self, scope: &Scope, id: &str) -> Result<bool, StorageError> {
+        self.inner.request_cancel(scope, id).await
+    }
+
+    async fn cancel_requested(&self, scope: &Scope, id: &str) -> Result<bool, StorageError> {
+        self.inner.cancel_requested(scope, id).await
+    }
+
     async fn list_all_running(&self) -> Result<Vec<ExecutionRecord>, StorageError> {
         self.inner.list_all_running().await
     }
@@ -2835,23 +2867,20 @@ async fn dispatch_cancel_honors_a_cancel_that_no_one_pre_recorded() {
     );
 }
 
-/// **Lease held by a live owner on another runner — `dispatch_cancel` DEFERS
-/// rather than acking an undelivered cancel; once the lease frees, a
-/// redelivered Cancel terminalizes the execution.**
+/// **Lease held by a live owner on another runner — `dispatch_cancel` records
+/// the request for the holder and acks; once the lease frees, a redelivered
+/// Cancel still terminalizes the execution.**
 ///
-/// Acking used to be right, because the API wrote `Cancelled` durably before
-/// enqueuing and the holder saw it on its next checkpoint CAS. Nothing writes
-/// that state ahead of the runtime any more, so this dispatcher cannot reach
-/// the holder *and* cannot leave a durable trace — acking would drop the
-/// cancel outright. Deferring keeps the row alive for redelivery, which is
-/// untargeted and so can land on the holder itself; and the holder's lease is
-/// short-lived by construction, so a later delivery finds it free.
+/// This dispatcher can neither signal the remote holder nor write under its
+/// fence. It records the request on the execution row instead, where the
+/// holder's heartbeat and any later lease holder observe it, so the cancel is
+/// delivered and the command row is acked rather than churned through
+/// untargeted redelivery.
 ///
-/// **Falsifiability**: restore the `Ok(())` ack on the `Leased` arm → the
-/// held-lease `dispatch_cancel` returns `Ok` → the `Deferred` assertion fails
-/// → RED.
+/// **Falsifiability**: drop the `request_cancel` write from `dispatch_cancel`
+/// → the recorded-request assertion fails → RED.
 #[tokio::test]
-async fn dispatch_cancel_defers_when_another_runner_holds_the_lease() {
+async fn dispatch_cancel_records_the_request_when_another_runner_holds_the_lease() {
     let harness = SignalHarness::new().await;
     let workflow_id = harness.persist_signal_workflow().await;
     let execution_id = harness.persist_created_execution(workflow_id).await;
@@ -2876,12 +2905,19 @@ async fn dispatch_cancel_defers_when_another_runner_holds_the_lease() {
         .unwrap()
         .expect("lease must be free before the contention test");
 
-    // This dispatcher can neither signal the remote holder nor write under its
-    // fence, so it must not claim the cancel was delivered.
-    let result = harness.dispatch.dispatch_cancel(&scope, execution_id).await;
+    harness
+        .dispatch
+        .dispatch_cancel(&scope, execution_id)
+        .await
+        .expect("a cancel recorded for the lease holder is delivered, so it is acked");
     assert!(
-        matches!(result, Err(ControlDispatchError::Deferred(_))),
-        "dispatch_cancel must Defer an undeliverable cancel rather than ack it; got {result:?}"
+        harness
+            .stores
+            .execution
+            .cancel_requested(&scope, &execution_id.to_string())
+            .await
+            .unwrap(),
+        "the dispatcher must record the request for the holder to observe"
     );
 
     // This dispatcher did not touch node state (the owner owns cleanup) — the

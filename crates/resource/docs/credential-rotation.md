@@ -137,6 +137,13 @@ nebula-credential                nebula-resource
                           (or SlotRefreshFailed { .. } on Err/timeout)
 ```
 
+On a pooled resource the fan-out hooks only the idle instances, under the
+idle lock. An instance that was leased while it ran (or created while the
+refresh landed, or whose hook failed) is behind the live credential slot
+epoch, so it gets every declared slot's `on_credential_refresh` when it is
+returned and again at checkout before it is handed out. If that hook fails
+the instance is destroyed instead of pooled.
+
 ---
 
 ## Revoke sequence
