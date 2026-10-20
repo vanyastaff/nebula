@@ -31,6 +31,11 @@ impl CheckpointRowKey {
             key.action_version().to_owned(),
         ])
     }
+
+    /// The execution this checkpoint belongs to.
+    pub(super) fn execution_id(&self) -> &str {
+        &self.0[2]
+    }
 }
 
 /// In-memory reference implementation of the fenced iteration-checkpoint

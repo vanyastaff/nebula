@@ -19,7 +19,7 @@ use tokio::time::Instant;
 use chrono::{DateTime, Utc};
 use nebula_storage_port::dto::ResumeTokenRow;
 use nebula_storage_port::dto::{ControlMsg, DueTimer, DueTimerCursor, ExecutionRecord};
-use nebula_storage_port::store::{ExecutionStore, IdempotencyGuard};
+use nebula_storage_port::store::{ExecutionRetention, ExecutionStore, IdempotencyGuard};
 use nebula_storage_port::{
     ExecutionHistoryPage, ExecutionHistoryQuery, ExecutionListing, ExecutionSummary, FencingToken,
     MicrosInstant, Scope, StorageError, TransitionBatch, TransitionOutcome,
@@ -517,6 +517,77 @@ impl ExecutionStore for InMemoryExecutionStore {
             .filter(|r| &r.scope == scope && workflow_id.is_none_or(|w| r.workflow_id == w))
             .count();
         Ok(n as u64)
+    }
+}
+
+#[async_trait::async_trait]
+impl ExecutionRetention for InMemoryExecutionStore {
+    async fn delete_finished_executions(
+        &self,
+        retention: Duration,
+        limit: u32,
+    ) -> Result<u64, StorageError> {
+        let now = self.clock.now();
+        // A retention past the representable range keeps everything.
+        let Some(cutoff) = chrono::Duration::from_std(retention)
+            .ok()
+            .and_then(|retention| now.checked_sub_signed(retention))
+            .map(MicrosInstant::floor)
+        else {
+            return Ok(0);
+        };
+        let mut st = self.inner.lock();
+        let mut expired: Vec<(MicrosInstant, String)> = st
+            .rows
+            .iter()
+            .filter(|(_, row)| row.listing.status().is_terminal())
+            .filter_map(|(id, row)| {
+                let finished = row.listing.finished_at()?;
+                (finished < cutoff).then(|| (finished, id.clone()))
+            })
+            .filter(|(_, id)| {
+                id.parse::<nebula_core::id::ExecutionId>()
+                    .map_or(true, |execution_id| {
+                        !super::plan_flavor_catalog::holds_unexpired_rollback(
+                            &st.revision_catalog,
+                            execution_id,
+                            now,
+                        )
+                    })
+            })
+            .collect();
+        expired.sort();
+        expired.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+        for (_, id) in &expired {
+            forget_execution_locked(&mut st, id);
+        }
+        Ok(u64::try_from(expired.len()).unwrap_or(u64::MAX))
+    }
+}
+
+/// Remove `id` and everything recorded beneath it, mirroring the SQL
+/// backends' `ON DELETE CASCADE` children. Node results live in their own
+/// store ([`super::InMemoryNodeResultStore`]) and are not reached from here.
+fn forget_execution_locked(st: &mut State, id: &str) {
+    st.rows.remove(id);
+    st.next_seq.remove(id);
+    st.accepted_turns.remove(id);
+    st.materialized_starts.remove(id);
+    st.queue.retain(|_, queued| queued.msg.execution_id != id);
+    st.dedup.retain(|_, owner| owner != id);
+    st.start_keys
+        .retain(|_, reservation| reservation.execution_id != id);
+    st.resume_tokens.retain(|_, token| token.execution_id != id);
+    st.iteration_checkpoints
+        .retain(|key, _| key.execution_id() != id);
+    st.control_observation_receipts.retain(|key, _| key.0 != id);
+    st.materialized_bundle_owners.retain(|_, owner| owner != id);
+    st.operation_ledger.forget_execution(id);
+    if let Ok(execution_id) = id.parse::<nebula_core::id::ExecutionId>() {
+        super::plan_flavor_catalog::forget_execution_reference(
+            &mut st.revision_catalog,
+            execution_id,
+        );
     }
 }
 

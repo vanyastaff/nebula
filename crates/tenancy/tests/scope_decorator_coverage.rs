@@ -152,6 +152,10 @@ const INTENTIONALLY_UNSCOPED_PORTS: &[&str] = &[
     // caller-supplied scope, so tenant substitution is neither possible nor
     // appropriate at this port.
     "CredentialRefreshSchedule",
+    // Finished-execution retention is a deployment-wide sweep held only by the
+    // server composition root. It takes no `&Scope`, and a tenant-bound handle
+    // must never be able to delete another tenant's executions through it.
+    "ExecutionRetention",
     "MembershipStore",
     "OrgStore",
     "PlanFlavorCatalog",

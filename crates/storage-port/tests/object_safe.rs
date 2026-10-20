@@ -28,6 +28,7 @@ fn _assert_runtime_authority_object_safe(
     _d: &dyn OperationLedgerAdjudicator,
     _e: &dyn TurnRecovery,
     _f: &dyn StartReservationMaintenance,
+    _g: &dyn ExecutionRetention,
 ) {
 }
 

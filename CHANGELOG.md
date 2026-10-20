@@ -60,6 +60,18 @@ changes are expected between minor releases — call them out here.
   for an execution the database does not hold is `NotFound`, and the bulk loads
   answer in node-id byte order on every backend.
 
+### Added
+
+- **Opt-in retention for finished executions.** Set `API_EXECUTION_RETENTION`
+  (for example `30d`, at least `1h`) and the server deletes executions that
+  finished more than that long ago, with their journal, node results, queued
+  commands and other child rows, once at startup and then hourly in batches of
+  500. Unset or `0` keeps executions forever, as before. Live executions and
+  executions holding a revision in an unexpired rollback window are never
+  deleted. `nebula-storage-port` adds the deployment-wide `ExecutionRetention`
+  port, implemented by the SQLite, PostgreSQL and in-memory execution stores;
+  migration 0015 indexes terminal executions by `finished_at`.
+
 ## [0.33.0] - 2026-10-07
 
 This is the first versioned section. Workspace versions before 0.33.0 were

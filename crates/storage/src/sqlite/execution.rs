@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use nebula_storage_port::dto::{DueTimer, DueTimerCursor, ExecutionRecord};
-use nebula_storage_port::store::{ExecutionStore, IdempotencyGuard};
+use nebula_storage_port::store::{ExecutionRetention, ExecutionStore, IdempotencyGuard};
 use nebula_storage_port::{
     ExecutionHistoryPage, ExecutionHistoryQuery, ExecutionListingStatus, ExecutionSummary,
     FencingToken, MicrosInstant, Scope, StorageError, TransitionBatch, TransitionOutcome,
@@ -461,6 +461,41 @@ impl ExecutionStore for SqliteExecutionStore {
         .await
         .map_err(storage_error)?;
         decode_u64(n, "count")
+    }
+}
+
+#[async_trait::async_trait]
+impl ExecutionRetention for SqliteExecutionStore {
+    async fn delete_finished_executions(
+        &self,
+        retention: Duration,
+        limit: u32,
+    ) -> Result<u64, StorageError> {
+        // One statement: SQLite runs it, and every `ON DELETE CASCADE` child,
+        // as one write. `finished_at` is projected from the snapshot on every
+        // commit; the partial index `ix_executions__finished_at__terminal`
+        // serves the scan. An execution still holding a revision in an
+        // unexpired rollback window is kept until the window ends.
+        let sql = format!(
+            "DELETE FROM executions WHERE id IN ( \
+                SELECT e.id FROM executions AS e \
+                WHERE e.status IN ('completed', 'failed', 'cancelled', 'timed_out') \
+                  AND e.finished_at < {NOW_MICROS} - ?1 \
+                  AND NOT EXISTS ( \
+                      SELECT 1 FROM execution_revision_references AS r \
+                      WHERE r.execution_id = e.id AND r.reference_state = 'rollback' \
+                        AND r.retain_until > {NOW_MICROS}) \
+                ORDER BY e.finished_at, e.id \
+                LIMIT ?2)"
+        );
+        let deleted = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(super::control_queue::age_micros(retention))
+            .bind(i64::from(limit))
+            .execute(&self.pool)
+            .await
+            .map_err(storage_error)?
+            .rows_affected();
+        Ok(deleted)
     }
 }
 

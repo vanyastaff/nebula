@@ -41,7 +41,7 @@ pub use credential_refresh_schedule::{
     CredentialRefreshPageSize, CredentialRefreshPageSizeError, CredentialRefreshSchedule,
     CredentialRefreshScheduleError, DueCredentialRefresh, MAX_CREDENTIAL_REFRESH_HORIZON_SECS,
 };
-pub use execution::ExecutionStore;
+pub use execution::{ExecutionRetention, ExecutionStore};
 pub use idempotency::IdempotencyGuard;
 pub use identity::{
     MembershipStore, OrgStore, ResourceStore, TenantProvisioningStore, TriggerStore, WorkspaceStore,

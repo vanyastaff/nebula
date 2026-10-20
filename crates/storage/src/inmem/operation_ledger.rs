@@ -81,6 +81,16 @@ pub(super) struct LedgerState {
     rows: HashMap<EffectSlotId, LedgerRow>,
 }
 
+impl LedgerState {
+    /// Drop every slot of `execution_id`, as its SQL rows cascade with the
+    /// execution.
+    pub(super) fn forget_execution(&mut self, execution_id: &str) {
+        self.rows.retain(|_, row| row.execution_id != execution_id);
+        self.by_key
+            .retain(|key, _| key.execution_id != execution_id);
+    }
+}
+
 /// In-memory reference implementation of the durable operation ledger.
 #[derive(Clone, Debug)]
 pub struct InMemoryOperationLedger {
