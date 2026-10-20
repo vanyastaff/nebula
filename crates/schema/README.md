@@ -229,7 +229,7 @@ Old empty record snapshots remain records, never implicitly become `null`.
   predicate arrays remain opaque leaves.
 - Built-in value rules inspect actual protected values through a private,
   temporary zeroizing projection; redaction markers never satisfy a value rule.
-  Predicate context remains scrubbed, and custom deferred evaluators cannot
+  Predicate context remains scrubbed, and deferred rules such as `unique_by` cannot
   receive protected input. Secret-bearing declarations protect aggregate rules
   even for malformed, absent, or inactive values. Errors and source chains remain
   redacted.

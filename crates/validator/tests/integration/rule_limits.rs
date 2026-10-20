@@ -123,11 +123,11 @@ fn operand_limit_rejects_large_value_set() {
 
 #[test]
 fn text_limit_is_byte_exact_and_redacted() {
-    let accepted = Rule::custom("x".repeat(MAX_RULE_TEXT_BYTES));
+    let accepted = Rule::email().with_message("x".repeat(MAX_RULE_TEXT_BYTES));
     assert!(accepted.is_ok());
 
     let secret = "s".repeat(MAX_RULE_TEXT_BYTES + 1);
-    let error = Rule::custom(secret.clone()).unwrap_err();
+    let error = Rule::email().with_message(secret.clone()).unwrap_err();
     assert_eq!(
         error,
         RuleBuildError::TextLimit {
@@ -160,7 +160,7 @@ fn hostile_deserialization_stops_at_rule_depth_limit() {
 #[test]
 fn deserialization_rejects_aggregate_text_and_operands() {
     let text_wire = serde_json::to_string(&json!({
-        "custom": "x".repeat(MAX_RULE_TEXT_BYTES + 1)
+        "described": ["email", "x".repeat(MAX_RULE_TEXT_BYTES + 1)]
     }))
     .unwrap();
     let text_error = serde_json::from_str::<Rule>(&text_wire).unwrap_err();
@@ -296,12 +296,12 @@ fn public_rule_debug_graph_is_payload_free() {
     let pattern = RulePattern::new(SECRET).unwrap();
     let predicate = Predicate::Eq(FieldPath::single(SECRET), json!({(SECRET): SECRET}));
     let value_rule = ValueRule::OneOf(vec![json!({(SECRET): SECRET})]);
-    let deferred = DeferredRule::Custom(SECRET.to_owned());
+    let deferred = DeferredRule::UniqueBy(FieldPath::single(SECRET));
     let operands = RuleOperands::from([json!({(SECRET): SECRET})]);
     let composite = Rule::all([
         Rule::predicate(predicate.clone()).unwrap(),
         Rule::value(value_rule.clone()).unwrap(),
-        Rule::custom(SECRET).unwrap(),
+        Rule::unique_by(SECRET).unwrap(),
     ])
     .unwrap();
     let children = match composite.view() {

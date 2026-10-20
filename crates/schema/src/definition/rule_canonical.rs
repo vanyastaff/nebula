@@ -116,10 +116,6 @@ fn write_predicate(output: &mut Writer, predicate: &Predicate) -> Result<(), Adm
 
 fn write_deferred(output: &mut Writer, rule: &DeferredRule) -> Result<(), AdmissionIssue> {
     match rule {
-        DeferredRule::Custom(expression) => {
-            output.u8(0x60)?;
-            output.string(expression)
-        },
         DeferredRule::UniqueBy(path) => {
             output.u8(0x61)?;
             output.string(path.as_str())

@@ -104,9 +104,6 @@
 //! use serde_json::json;
 //!
 //! #[derive(Schema, Deserialize)]
-//! // `Rule::custom` is deferred; `ValidSchema::validate` does not execute the
-//! // expression string (engine hook). This still type-checks the value tree.
-//! #[schema(custom = "engine_deferred")]
 //! struct Example {
 //!     name: String,
 //! }

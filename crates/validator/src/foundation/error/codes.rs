@@ -18,3 +18,5 @@ pub const EXACT_LENGTH: &str = "exact_length";
 pub const LENGTH_RANGE: &str = "length_range";
 /// Custom validation error.
 pub const CUSTOM: &str = "custom";
+/// Two array items share the value a uniqueness rule compares.
+pub const UNIQUE_BY: &str = "unique_by";
