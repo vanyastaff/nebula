@@ -131,6 +131,21 @@ Use `task --list` for the full catalog.
 - **Squash-merge to `main`.** Never force-push shared history.
 - One concern per PR. If you find an unrelated issue, file it.
 
+## Versions and Releases
+
+- **The workspace version changes only in a release PR.** A breaking change
+  records itself under `## [Unreleased]` → `### Breaking` in `CHANGELOG.md` and
+  leaves `version` in `Cargo.toml` alone. While the workspace is `0.x`, the next
+  release bumps the minor version once for every breaking change it collects.
+- **A release PR** bumps `[workspace.package].version`, updates the exact pins
+  under `crates/sdk/tests/fixtures/`, and renames `## [Unreleased]` to
+  `## [X.Y.Z] - YYYY-MM-DD` with a fresh empty `## [Unreleased]` above it.
+- **After the release PR merges**, tag its squash commit `vX.Y.Z` and push the
+  tag. The comparison links at the end of `CHANGELOG.md` point at these tags.
+- **Exception:** the SemVer Checks workflow compares `nebula-sdk` and
+  `nebula-api-contract` against the pull request's base commit, so a PR that
+  breaks either one still has to bump the version itself.
+
 ## Issue Guidelines
 
 Use the templates in `.github/ISSUE_TEMPLATE/`:
