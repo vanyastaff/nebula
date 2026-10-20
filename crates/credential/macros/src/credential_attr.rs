@@ -421,17 +421,19 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
             }
         }
     } else {
-        // MACRO SYNTHESIS NOTE: the auto-generated `policy()` always emits
-        // `RefreshStrategy::RefreshToken` for credentials with `fn refresh`.
-        // This covers the `OAuth2` / `ActiveFamily` common case. If your
-        // credential's `AuthScheme::Family` declares a different refresh class
-        // (e.g. `ReMintLocal` or `ReAcquire`), you MUST hand-write the
-        // `policy()` method by providing a `#[policy]` item inside the
-        // `#[credential]` attribute block — the macro will forward it verbatim
-        // and skip synthesis. Failing to do so will trigger the F3 containment
-        // guard in `resolve_with_refresh` at runtime.
+        // The synthesized refresh strategy follows the scheme family's declared
+        // refresh classes (`RefreshToken`, else `ReMintLocal`, else a silent
+        // `ReAcquire`), so a credential with `fn refresh` on a `ReAcquire`- or
+        // `ReMintLocal`-only family stays inside the F3 containment law that
+        // `resolve_with_refresh` enforces. A state-dependent strategy still needs
+        // a hand-written `fn policy`.
         let refresh_strategy = if is_refreshable {
-            quote! { ::nebula_credential::RefreshStrategy::RefreshToken }
+            quote! {
+                ::nebula_credential::synthesized_refresh_strategy::<
+                    <<Self as ::nebula_credential::Credential>::Scheme
+                        as ::nebula_credential::AuthScheme>::Family,
+                >()
+            }
         } else if is_dynamic {
             quote! { ::nebula_credential::RefreshStrategy::Lease }
         } else {

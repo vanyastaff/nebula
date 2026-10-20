@@ -19,10 +19,11 @@
 use std::time::Duration;
 
 use nebula_credential::{
-    Capabilities, Credential, CredentialContext, CredentialLifecycle, CredentialPolicy,
-    CredentialRegistry, LeaseRef, PendingState, RefreshAttempt, RefreshExecutionMode,
-    RefreshPolicy, RefreshReport, RefreshStrategy, RegisterError, RetryDelay, RevokeStrategy,
-    SecretString, compute_capabilities,
+    AuthPattern, AuthScheme, Capabilities, Credential, CredentialContext, CredentialLifecycle,
+    CredentialPolicy, CredentialRegistry, EgressShape, InstanceBinding, LeaseRef, PendingState,
+    RefreshAttempt, RefreshExecutionMode, RefreshPolicy, RefreshReport, RefreshStrategy,
+    RefreshStrategyKind, RegisterError, RetryDelay, RevokeStrategy, SchemeFamily, SecretString,
+    compute_capabilities,
     error::CredentialError,
     resolve::{InteractionRequest, ResolveResult, StaticResolveResult, TestResult, UserInput},
     scheme::{OAuth2Token, SecretToken},
@@ -70,10 +71,7 @@ fn synthesized_metadata_uses_curated_inline_icon() {
         .expect("registered metadata is available");
 
     assert_eq!(metadata.icon(), &nebula_credential::Icon::inline("key"));
-    assert_eq!(
-        metadata.pattern(),
-        nebula_credential::AuthPattern::SecretToken
-    );
+    assert_eq!(metadata.pattern(), AuthPattern::SecretToken);
     assert_eq!(
         metadata.documentation_url(),
         Some("https://example.test/credentials/metadata-only")
@@ -360,6 +358,132 @@ fn register_accepts_non_refreshable_on_static_family() {
     registry
         .register(RevTest, "test_crate")
         .expect("non-Refreshable credential on a Static family is sound");
+}
+
+// ── Refreshable on non-`RefreshToken` families: synth policy follows the family ──
+//
+// The synthesized refresh strategy must be one the scheme family declares, or the
+// F3 containment guard in `resolve_with_refresh` rejects every resolve at runtime.
+
+struct ReAcquireOnly;
+
+#[nebula_credential::credential(key = "test_reacquire_only", name = "ReAcquire Only")]
+impl ReAcquireOnly {
+    type Properties = serde_json::Value;
+    // `InstanceBindingFamily` declares only `ReAcquire`.
+    type Scheme = InstanceBinding;
+    type State = SecretToken;
+
+    const REFRESH_EXECUTION_MODE: RefreshExecutionMode = RefreshExecutionMode::Local;
+
+    fn project(_state: &SecretToken) -> InstanceBinding {
+        InstanceBinding::new("aws", "arn:aws:iam::123456789012:role/Test")
+    }
+
+    async fn resolve(
+        _properties: &serde_json::Value,
+        _ctx: &CredentialContext,
+    ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
+        Ok(StaticResolveResult::Complete(token()))
+    }
+
+    async fn refresh(_state: &mut SecretToken, attempt: RefreshAttempt<'_>) -> RefreshReport {
+        attempt.local_refresh_completed()
+    }
+}
+
+/// A plugin-style family whose only renewal is a local key-to-token mint.
+struct LocalMintFamily;
+
+impl SchemeFamily for LocalMintFamily {
+    const EGRESS: &'static [EgressShape] = &[EgressShape::InlineSecret];
+    fn refresh_classes() -> &'static [RefreshStrategyKind] {
+        &[RefreshStrategyKind::ReMintLocal]
+    }
+    fn pattern() -> AuthPattern {
+        AuthPattern::Custom
+    }
+}
+
+#[derive(AuthScheme)]
+#[auth_scheme(pattern = Custom, family = LocalMintFamily, public)]
+struct LocalMintAssertion {
+    audience: String,
+}
+
+struct ReMintOnly;
+
+#[nebula_credential::credential(key = "test_remint_only", name = "ReMint Only")]
+impl ReMintOnly {
+    type Properties = serde_json::Value;
+    type Scheme = LocalMintAssertion;
+    type State = SecretToken;
+
+    const REFRESH_EXECUTION_MODE: RefreshExecutionMode = RefreshExecutionMode::Local;
+
+    fn project(_state: &SecretToken) -> LocalMintAssertion {
+        LocalMintAssertion {
+            audience: "https://example.test".to_owned(),
+        }
+    }
+
+    async fn resolve(
+        _properties: &serde_json::Value,
+        _ctx: &CredentialContext,
+    ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
+        Ok(StaticResolveResult::Complete(token()))
+    }
+
+    async fn refresh(_state: &mut SecretToken, attempt: RefreshAttempt<'_>) -> RefreshReport {
+        attempt.local_refresh_completed()
+    }
+}
+
+/// Whether the F3 containment guard in `resolve_with_refresh` admits `C`'s
+/// synthesized policy.
+fn family_permits_synthesized_policy<C: CredentialLifecycle<State = SecretToken>>() -> bool {
+    let policy = C::policy(&token());
+    <C::Scheme as AuthScheme>::Family::permits_refresh(policy.refresh.kind())
+}
+
+#[test]
+fn synthesized_policy_follows_reacquire_only_family() {
+    let p = ReAcquireOnly::policy(&token());
+    assert_eq!(
+        p.refresh,
+        RefreshStrategy::ReAcquire {
+            from: None,
+            interactive: false,
+        }
+    );
+    assert!(family_permits_synthesized_policy::<ReAcquireOnly>());
+    CredentialRegistry::new()
+        .register(ReAcquireOnly, "test_crate")
+        .expect("Refreshable credential on a ReAcquire family is sound");
+}
+
+#[test]
+fn synthesized_policy_follows_remint_local_only_family() {
+    let p = ReMintOnly::policy(&token());
+    assert_eq!(p.refresh, RefreshStrategy::ReMintLocal);
+    assert!(p.is_auto_renewable());
+    assert!(family_permits_synthesized_policy::<ReMintOnly>());
+    assert_eq!(
+        ReMintOnly::project(&token()).audience,
+        "https://example.test"
+    );
+    CredentialRegistry::new()
+        .register(ReMintOnly, "test_crate")
+        .expect("Refreshable credential on a ReMintLocal family is sound");
+}
+
+#[test]
+fn synthesized_policy_prefers_refresh_token_on_oauth2_family() {
+    // `OAuth2Family` declares `[RefreshToken, ReAcquire]`; a constant synthesized
+    // strategy keeps the refresh-token grant.
+    let p = InvalidRetryFloor::policy(&token());
+    assert_eq!(p.refresh, RefreshStrategy::RefreshToken);
+    assert!(family_permits_synthesized_policy::<InvalidRetryFloor>());
 }
 
 struct InvalidRetryFloor;
