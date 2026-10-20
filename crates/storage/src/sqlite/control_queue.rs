@@ -290,7 +290,11 @@ impl ControlQueue for SqliteControlQueue {
         processor: &[u8; 16],
         batch_size: u32,
     ) -> Result<Vec<ControlClaim>, StorageError> {
-        let mut tx = self.pool.begin().await.map_err(storage_error)?;
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(storage_error)?;
         let rows = sqlx::query(
             "SELECT id, execution_id, workspace_id, org_id, command, \
                     w3c_traceparent, reclaim_count, resume_target \
@@ -443,7 +447,11 @@ impl ControlQueue for SqliteControlQueue {
         // A claim is stuck once SQLite's clock passed its claim instant by
         // `reclaim_after`; the same clock stamped `processed_at`.
         let reclaim_after = age_micros(reclaim_after);
-        let mut tx = self.pool.begin().await.map_err(storage_error)?;
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(storage_error)?;
         // Exhausted rows (past the reclaim budget) → Failed.
         //
         // A `command = 'Resume'` row is EXEMPT (ADR-0099 W-S3b): a Resume does
