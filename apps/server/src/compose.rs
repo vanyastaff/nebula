@@ -1439,6 +1439,7 @@ mod tests {
                 .to_str()
                 .expect("utf-8 path")
                 .to_owned(),
+            ..nebula_api::config::ExecutionStoreConfig::default()
         };
         let metrics = std::sync::Arc::new(nebula_metrics::MetricsRegistry::new());
         let stores = super::build_execution_stores(&api_config, None, &metrics)
