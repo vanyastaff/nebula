@@ -93,6 +93,30 @@ impl LabelSet {
             .map(|(k, v)| (interner.resolve(*k), interner.resolve(*v)))
             .collect()
     }
+
+    /// Copy of this set without the pairs whose key is in `denied_keys`.
+    pub(crate) fn without_keys(&self, denied_keys: &[LabelKey]) -> Self {
+        Self {
+            pairs: self
+                .iter()
+                .filter(|(k, _)| !denied_keys.contains(k))
+                .collect(),
+        }
+    }
+
+    /// Copy of this set with the same keys and every value set to `value`.
+    ///
+    /// Key order is unchanged, so the result keeps the sorted invariant.
+    pub(crate) fn with_every_value(&self, value: LabelValue) -> Self {
+        Self {
+            pairs: self.iter().map(|(k, _)| (k, value)).collect(),
+        }
+    }
+
+    /// Whether the set is non-empty and every value equals `value`.
+    pub(crate) fn has_every_value(&self, value: LabelValue) -> bool {
+        !self.is_empty() && self.iter().all(|(_, v)| v == value)
+    }
 }
 
 // ── LabelInterner ─────────────────────────────────────────────────────────────
@@ -164,6 +188,11 @@ impl LabelInterner {
     #[must_use]
     pub fn resolve(&self, spur: Spur) -> &str {
         self.rodeo.resolve(&spur)
+    }
+
+    /// The handle of `s` if it was already interned, without interning it.
+    pub(crate) fn get(&self, s: &str) -> Option<Spur> {
+        self.rodeo.get(s)
     }
 
     /// Try to resolve a [`Spur`] without panicking.
