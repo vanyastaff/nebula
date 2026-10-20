@@ -62,6 +62,13 @@ changes are expected between minor releases — call them out here.
 
 ### Security
 
+- **Credential ciphertext is bound to its owner.** The encryption layer used
+  the credential ID alone as AAD, so ciphertext copied into a row with the same
+  ID under another owner decrypted there. New and rewritten material now binds
+  a domain tag, the owner partition and the credential ID (envelope field
+  `aad: 2`). Rows sealed before this change still decrypt with the ID-only AAD
+  and are re-sealed with the owner bound at their next material write.
+
 - **The credential resolver's handle cache is bounded.** Every resolved
   handle, with its decrypted scheme material, stayed in
   `CredentialResolver`'s cache for the life of the process, including
