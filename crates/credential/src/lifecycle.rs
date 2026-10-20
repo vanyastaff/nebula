@@ -381,8 +381,12 @@ pub trait CredentialLifecycle: crate::Credential {
 ///
 /// Picks the first engine-drivable class `F` declares, in the order
 /// [`RefreshStrategy::RefreshToken`], [`RefreshStrategy::ReMintLocal`],
-/// [`RefreshStrategy::ReAcquire`], so the synthesized policy always passes the F3
-/// containment guard in `resolve_with_refresh`. A synthesized re-acquisition is
+/// [`RefreshStrategy::ReAcquire`], so the synthesized policy passes the F3
+/// containment guard in `resolve_with_refresh`. `ReMintLocal` is a local,
+/// no-network derivation, so it is picked only when `mode` is
+/// [`RefreshExecutionMode::Local`](crate::RefreshExecutionMode::Local); a
+/// provider-mode credential on a `ReMintLocal`-only family falls through and
+/// stays rejected by the guard. A synthesized re-acquisition is
 /// standalone and silent (`from: None, interactive: false`): the engine drives it
 /// through the credential's own `fn refresh`. A family with no engine-drivable class
 /// gets `RefreshToken`; registration rejects that credential as
@@ -392,11 +396,15 @@ pub trait CredentialLifecycle: crate::Credential {
 /// [`RefreshStrategy`] directly.
 #[doc(hidden)]
 #[must_use]
-pub fn synthesized_refresh_strategy<F: SchemeFamily>() -> RefreshStrategy {
+pub fn synthesized_refresh_strategy<F: SchemeFamily>(
+    mode: crate::RefreshExecutionMode,
+) -> RefreshStrategy {
     let classes = F::refresh_classes();
     if classes.contains(&RefreshStrategyKind::RefreshToken) {
         RefreshStrategy::RefreshToken
-    } else if classes.contains(&RefreshStrategyKind::ReMintLocal) {
+    } else if mode == crate::RefreshExecutionMode::Local
+        && classes.contains(&RefreshStrategyKind::ReMintLocal)
+    {
         RefreshStrategy::ReMintLocal
     } else if classes.contains(&RefreshStrategyKind::ReAcquire) {
         RefreshStrategy::ReAcquire {

@@ -439,6 +439,33 @@ impl ReMintOnly {
     }
 }
 
+/// A `ReMintLocal`-only credential that keeps the default provider-mode refresh.
+struct ReMintProviderMode;
+
+#[nebula_credential::credential(key = "test_remint_provider_mode", name = "ReMint Provider Mode")]
+impl ReMintProviderMode {
+    type Properties = serde_json::Value;
+    type Scheme = LocalMintAssertion;
+    type State = SecretToken;
+
+    fn project(_state: &SecretToken) -> LocalMintAssertion {
+        LocalMintAssertion {
+            audience: "https://example.test".to_owned(),
+        }
+    }
+
+    async fn resolve(
+        _properties: &serde_json::Value,
+        _ctx: &CredentialContext,
+    ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
+        Ok(StaticResolveResult::Complete(token()))
+    }
+
+    async fn refresh(_state: &mut SecretToken, attempt: RefreshAttempt<'_>) -> RefreshReport {
+        attempt.local_refresh_completed()
+    }
+}
+
 /// Whether the F3 containment guard in `resolve_with_refresh` admits `C`'s
 /// synthesized policy.
 fn family_permits_synthesized_policy<C: CredentialLifecycle<State = SecretToken>>() -> bool {
@@ -460,6 +487,13 @@ fn synthesized_policy_follows_reacquire_only_family() {
     CredentialRegistry::new()
         .register(ReAcquireOnly, "test_crate")
         .expect("Refreshable credential on a ReAcquire family is sound");
+}
+
+#[test]
+fn provider_mode_refresh_is_not_synthesized_as_a_local_remint() {
+    let p = ReMintProviderMode::policy(&token());
+    assert_eq!(p.refresh, RefreshStrategy::RefreshToken);
+    assert!(!family_permits_synthesized_policy::<ReMintProviderMode>());
 }
 
 #[test]

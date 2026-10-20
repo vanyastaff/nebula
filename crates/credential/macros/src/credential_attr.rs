@@ -422,8 +422,8 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
         }
     } else {
         // The synthesized refresh strategy follows the scheme family's declared
-        // refresh classes (`RefreshToken`, else `ReMintLocal`, else a silent
-        // `ReAcquire`), so a credential with `fn refresh` on a `ReAcquire`- or
+        // refresh classes (`RefreshToken`, else `ReMintLocal` for a local-mode
+        // refresh, else a silent `ReAcquire`), so a credential with `fn refresh` on a `ReAcquire`- or
         // `ReMintLocal`-only family stays inside the F3 containment law that
         // `resolve_with_refresh` enforces. A state-dependent strategy still needs
         // a hand-written `fn policy`.
@@ -432,7 +432,7 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
                 ::nebula_credential::synthesized_refresh_strategy::<
                     <<Self as ::nebula_credential::Credential>::Scheme
                         as ::nebula_credential::AuthScheme>::Family,
-                >()
+                >(<Self as ::nebula_credential::Refreshable>::REFRESH_EXECUTION_MODE)
             }
         } else if is_dynamic {
             quote! { ::nebula_credential::RefreshStrategy::Lease }
