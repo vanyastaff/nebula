@@ -40,6 +40,15 @@ pub enum AttemptOutcome {
         /// post-mortem audit).
         output_bytes: u64,
     },
+    /// The action returned an `ActionResult` whose output the execution owner
+    /// records once, in the node's checkpoint evidence. The attempt keeps
+    /// only the byte size, so the persisted snapshot does not hold the
+    /// output a second time.
+    CheckpointedSuccess {
+        /// Output size in bytes (used for budget accounting and
+        /// post-mortem audit).
+        output_bytes: u64,
+    },
     /// The action surfaced an error before producing a result.
     /// Carries the failure record for the audit log.
     Failure {
@@ -768,6 +777,9 @@ impl ExecutionState {
                 output_bytes,
             } => {
                 attempt.complete_success(output, output_bytes);
+            },
+            AttemptOutcome::CheckpointedSuccess { output_bytes } => {
+                attempt.complete_checkpointed_success(output_bytes);
             },
             AttemptOutcome::Failure { error } => {
                 attempt.complete_failure(error);

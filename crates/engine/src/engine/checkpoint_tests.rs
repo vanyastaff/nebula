@@ -515,6 +515,80 @@ async fn failed_checkpoint_does_not_install_candidate_for_a_later_write() {
         .unwrap();
 }
 
+/// Every snapshot write carries the outputs of all completed nodes, so each
+/// output must ride there once: in the node's checkpoint evidence, not again
+/// as an inline copy in its successful attempt.
+#[tokio::test]
+async fn linear_run_snapshot_carries_each_node_output_once() {
+    const NODES: usize = 100;
+    const PAYLOAD_BYTES: usize = 4096;
+    let registry = Arc::new(ActionRegistry::new());
+    registry
+        .register_stateless_instance(
+            pure_metadata(
+                action_key!("core.echo"),
+                nebula_action::metadata_name!("Echo"),
+                "echoes input",
+            ),
+            EchoHandler,
+        )
+        .unwrap();
+    let keys: Vec<NodeKey> = (0..NODES)
+        .map(|index| NodeKey::new(format!("n{index:03}")).unwrap())
+        .collect();
+    let workflow = make_workflow(
+        keys.iter()
+            .map(|key| NodeDefinition::new(key.clone(), "echo", "core", "echo").unwrap())
+            .collect(),
+        keys.windows(2)
+            .map(|pair| Connection::new(pair[0].clone(), pair[1].clone()))
+            .collect(),
+    );
+    let base = Arc::new(nebula_storage::InMemoryExecutionStore::new());
+    let stores = TestStores::with_execution(base.clone());
+    stores.save_workflow(&workflow).await;
+    let recorder = Arc::new(FailAtCommitN::new(base, 0));
+    let payload = "p".repeat(PAYLOAD_BYTES);
+    let (engine, _) = make_engine(registry);
+    let (engine, id) = stores
+        .accepted_engine_fixture(
+            engine,
+            &workflow,
+            serde_json::json!(payload),
+            ExecutionBudget::default(),
+        )
+        .await;
+    let engine = engine.with_execution_stores(crate::store_seam::ExecutionStores {
+        execution: recorder.clone(),
+        ..stores.execution_stores()
+    });
+
+    let result = engine
+        .resume_execution(&crate::store_seam::single_tenant_scope(), id)
+        .await
+        .unwrap();
+    assert!(result.is_success());
+
+    let sizes = recorder.committed_state_bytes.lock().unwrap().clone();
+    assert!(sizes.len() >= NODES, "one commit per node: {sizes:?}");
+    // Each node commit adds one copy of the echoed payload plus bounded
+    // per-node metadata. An inline attempt copy would add a second copy.
+    let growth_per_node = (sizes[NODES - 1] - sizes[0]) / (NODES - 1);
+    assert!(
+        growth_per_node < PAYLOAD_BYTES + PAYLOAD_BYTES / 2,
+        "snapshot grows {growth_per_node} bytes per {PAYLOAD_BYTES}-byte node output"
+    );
+    let (_, saved) = stores.get_state(id).await.unwrap().unwrap();
+    assert_eq!(
+        saved.to_string().matches(payload.as_str()).count(),
+        NODES + 1,
+        "one checkpoint copy per node plus the workflow input"
+    );
+    let attempt = &saved["node_states"]["n050"]["attempts"][0];
+    assert!(attempt["output"].is_null(), "{attempt}");
+    assert_eq!(attempt["output_bytes"], PAYLOAD_BYTES + 2);
+}
+
 /// Listing projection of a fixture snapshot read straight from its JSON: some
 /// fixtures store deliberately undecodable states, which list as `created`.
 fn listing_of(state: &serde_json::Value) -> nebula_storage_port::ExecutionListing {

@@ -2637,15 +2637,18 @@ async fn setup_failure_persists_before_final_checkpoint() {
 // -- Crash-window regression tests for #297 / D2 --
 
 /// Wraps an inner [`ExecutionStore`] and returns `Err` on the Nth
-/// `commit()` call (1-indexed). All other trait methods delegate.
-/// Used to simulate a storage failure during `checkpoint_node`'s
+/// `commit()` call (1-indexed; `0` never fails). All other trait methods
+/// delegate. Used to simulate a storage failure during `checkpoint_node`'s
 /// fencing-gated transition commit (the port analog of the legacy
-/// `transition()` failure point).
+/// `transition()` failure point), and to measure the snapshot each
+/// forwarded commit writes.
 #[derive(Debug)]
 struct FailAtCommitN {
     inner: Arc<nebula_storage::InMemoryExecutionStore>,
     fail_on: u32,
     calls: AtomicU32,
+    /// Serialized size of each forwarded commit's snapshot, in commit order.
+    committed_state_bytes: std::sync::Mutex<Vec<usize>>,
 }
 
 impl FailAtCommitN {
@@ -2654,6 +2657,7 @@ impl FailAtCommitN {
             inner,
             fail_on,
             calls: AtomicU32::new(0),
+            committed_state_bytes: std::sync::Mutex::new(Vec::new()),
         }
     }
 }
@@ -2701,6 +2705,8 @@ impl ExecutionStore for FailAtCommitN {
                 "injected commit failure at call #{n}"
             )));
         }
+        let state_bytes = serde_json::to_vec(batch.new_state()).unwrap().len();
+        self.committed_state_bytes.lock().unwrap().push(state_bytes);
         self.inner.commit(batch).await
     }
 
