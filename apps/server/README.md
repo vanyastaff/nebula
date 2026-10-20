@@ -17,7 +17,7 @@ package. Ordinary launch serves HTTP and runs executions in one process.
 Run the default profile locally:
 
 ```bash
-cargo run -p nebula-server                       # NEBULA_TRANSPORT=all
+cargo run -p nebula-server                       # NEBULA_TRANSPORT=all: REST + webhooks
 cargo run -p nebula-server -- --transport api    # REST only
 cargo run -p nebula-server -- --transport webhook
 cargo run -p nebula-server -- --transport realtime
@@ -214,6 +214,12 @@ through the shared `CredentialService`, enforces the activation row's tenant
 scope, and converts stored `whsec_` material to raw HMAC bytes. Its failures
 cross the API port as a closed, secret-free classification; credential or
 provider error text is never forwarded to API logs or problem responses.
+
+The `all` and `webhook` transports mount webhook ingress. Trigger rows and the
+capability tokens minted at activation are stored on the selected execution
+backend. The live route table is still held by the process that activated the
+webhook: after a restart, or on another replica, a webhook must be activated
+again before it receives deliveries.
 
 Webhook registration still generates and returns the one-time `whsec_` value
 inside the HTTP boundary. That generator is API-private and is not a public
