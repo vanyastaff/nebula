@@ -11,12 +11,6 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
-- **Workspace version advances to 0.33.0.** This minor release records the
-  breaking execution-history and inspection API changes: consumers must replace
-  `RunningExecutionSummary` and `ExecutionOutputsResponse`, and migrate
-  `ListExecutionsResponse` from offset pagination to the cursor-based contract.
-  All workspace packages and external SDK fixture pins move in lockstep.
-
 - **Leftover job-dispatch routing and leased resume are removed.** They had
   no caller once the job-dispatch channel was gone. `nebula-engine` drops the
   `daemon::routing` module with `RoutingResolver`, `DefinitionRoutingResolver`,
@@ -36,6 +30,48 @@ changes are expected between minor releases — call them out here.
   `nebula_orchestrator_*` metric names are removed. Migration 0014
   drops the `job_dispatch_queue` table; the persisted observation vocabulary
   keeps decoding historical job-dispatch sources.
+
+### Fixed
+
+- **Registered webhooks survive restarts and route on every replica.**
+  The server never attached the webhook provider registry or context factory,
+  so webhook registration answered 503, and the routing table only held
+  activations minted by the process itself: storage bootstrap validated rows
+  but routed none. The `all` and `webhook` transports now attach both, the
+  routing key is the token hash `webhook_activations` stores, and the server
+  routes every active row before serving and every 30 seconds after.
+  Registered and restored handlers are started before their URL answers, so
+  signed deliveries no longer fail with 500. A route whose row is no longer
+  active answers 404 and is dropped at the next sync.
+  `nebula-api` adds `sync_webhook_routes`, `spawn_webhook_route_sync`,
+  `RecordWebhookContextFactory`, `default_webhook_providers` and
+  `AppState::with_webhook_providers`; `bootstrap_webhook_activations` takes
+  the transport to route on, and `WebhookActivationContextFactory::build`
+  returns a `Result`.
+
+- **Node results live in the deployment database.**
+  The server and worker composition roots wired an in-memory `NodeResultStore`
+  (with a startup warning) even on SQLite and PostgreSQL, so node outputs, typed
+  results and workflow inputs were lost on restart and not shared between
+  replicas. They now use `SqliteNodeResultStore` / `PgNodeResultStore` on the
+  admitted deployment pool. Migration `0013_node_results.sql` adds
+  `node_outputs`, `node_results` and `workflow_inputs`, children of their
+  execution that cascade with it; it only creates empty tables. A durable save
+  for an execution the database does not hold is `NotFound`, and the bulk loads
+  answer in node-id byte order on every backend.
+
+## [0.33.0] - 2026-10-07
+
+This is the first versioned section. Workspace versions before 0.33.0 were
+never tagged, so every change up to 0.33.0 is collected here.
+
+### Breaking
+
+- **Workspace version advances to 0.33.0.** This minor release records the
+  breaking execution-history and inspection API changes: consumers must replace
+  `RunningExecutionSummary` and `ExecutionOutputsResponse`, and migrate
+  `ListExecutionsResponse` from offset pagination to the cursor-based contract.
+  All workspace packages and external SDK fixture pins move in lockstep.
 
 - **Ordinary serving consumes accepted executions.** The server now owns an
   in-process worker by default, using its admitted deployment pool, linked release
@@ -1117,33 +1153,6 @@ let admitted = recorded.readmit_against(fresh)?;
   `SlotDispatchOutcome::Deferred` instead of an error.
 
 ### Fixed
-
-- **Registered webhooks survive restarts and route on every replica.**
-  The server never attached the webhook provider registry or context factory,
-  so webhook registration answered 503, and the routing table only held
-  activations minted by the process itself: storage bootstrap validated rows
-  but routed none. The `all` and `webhook` transports now attach both, the
-  routing key is the token hash `webhook_activations` stores, and the server
-  routes every active row before serving and every 30 seconds after.
-  Registered and restored handlers are started before their URL answers, so
-  signed deliveries no longer fail with 500. A route whose row is no longer
-  active answers 404 and is dropped at the next sync.
-  `nebula-api` adds `sync_webhook_routes`, `spawn_webhook_route_sync`,
-  `RecordWebhookContextFactory`, `default_webhook_providers` and
-  `AppState::with_webhook_providers`; `bootstrap_webhook_activations` takes
-  the transport to route on, and `WebhookActivationContextFactory::build`
-  returns a `Result`.
-
-- **Node results live in the deployment database.**
-  The server and worker composition roots wired an in-memory `NodeResultStore`
-  (with a startup warning) even on SQLite and PostgreSQL, so node outputs, typed
-  results and workflow inputs were lost on restart and not shared between
-  replicas. They now use `SqliteNodeResultStore` / `PgNodeResultStore` on the
-  admitted deployment pool. Migration `0013_node_results.sql` adds
-  `node_outputs`, `node_results` and `workflow_inputs`, children of their
-  execution that cascade with it; it only creates empty tables. A durable save
-  for an execution the database does not hold is `NotFound`, and the bulk loads
-  answer in node-id byte order on every backend.
 
 - **Shutdown failures remain failures.** The standalone worker cancels its
   runtime when signal registration fails and aborts/joins its owned task after
@@ -2528,3 +2537,6 @@ let admitted = recorded.readmit_against(fresh)?;
 Per-crate changelogs may appear under `crates/<name>/CHANGELOG.md` once a
 crate stabilises. Until then, this workspace-level changelog is the single
 source of truth.
+
+[Unreleased]: https://github.com/vanyastaff/nebula/compare/v0.33.0...HEAD
+[0.33.0]: https://github.com/vanyastaff/nebula/releases/tag/v0.33.0
