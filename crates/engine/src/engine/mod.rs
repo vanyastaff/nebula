@@ -2229,11 +2229,11 @@ impl WorkflowEngine {
         )))
     }
 
-    /// Adopt a lease the durable handoff already minted (#976) and run the
-    /// same heartbeat loop an acquired lease gets.
+    /// Adopt a lease a durable handoff already minted and run the same
+    /// heartbeat loop an acquired lease gets.
     ///
-    /// The handoff (an `ExecutionTurnHandoff` acceptance) acquires the lease
-    /// and completes the queue row in one transaction; the engine must
+    /// The handoff (a control-start acceptance or a turn recovery) acquires
+    /// the lease and records the turn in one transaction; the engine must
     /// drive the turn under that fence rather than acquire again — a live
     /// lease blocks acquisition outright, even for the same holder. Renewal
     /// and release are fence-gated, so the holder string recorded at handoff
@@ -2278,7 +2278,7 @@ impl WorkflowEngine {
             fence_generation = fence.generation(),
             ttl_secs = ttl.as_secs(),
             heartbeat_ms = heartbeat_interval.as_millis(),
-            "adopting handoff-minted execution lease (#976)"
+            "adopting handoff-minted execution lease"
         );
         let backend =
             crate::store_seam::LeaseBackend::new(stores.execution.clone(), scope.clone(), fence);

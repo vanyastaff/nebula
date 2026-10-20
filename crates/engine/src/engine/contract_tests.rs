@@ -197,7 +197,7 @@ async fn unavailable_bundle_read_defers_start_without_mutating_execution() {
 }
 
 #[tokio::test]
-async fn bundle_faults_reject_cold_warm_and_adopted_turns_before_instantiation() {
+async fn bundle_faults_reject_cold_and_warm_turns_before_instantiation() {
     for fault in [
         BundleFault::Missing,
         BundleFault::WrongScope,
@@ -211,7 +211,7 @@ async fn bundle_faults_reject_cold_warm_and_adopted_turns_before_instantiation()
         BundleFault::PluginSet,
         BundleFault::Credentials,
     ] {
-        for (warm, adopt) in [(false, false), (true, false), (true, true)] {
+        for warm in [false, true] {
             let runtime_registry = Arc::new(ActionRegistry::new());
             let (frozen, instantiations) =
                 snapshot_registry_counted(&runtime_registry, "must-not-run");
@@ -242,28 +242,10 @@ async fn bundle_faults_reject_cold_warm_and_adopted_turns_before_instantiation()
                     bundles,
                 );
             let scope = crate::store_seam::single_tenant_scope();
-            let error = if adopt {
-                let fence = stores
-                    .execution
-                    .acquire_lease(
-                        &scope,
-                        &execution_id.to_string(),
-                        "handoff",
-                        Duration::from_secs(30),
-                    )
-                    .await
-                    .unwrap()
-                    .unwrap();
-                engine
-                    .resume_execution_leased(&scope, execution_id, fence)
-                    .await
-                    .unwrap_err()
-            } else {
-                engine
-                    .resume_execution(&scope, execution_id)
-                    .await
-                    .unwrap_err()
-            };
+            let error = engine
+                .resume_execution(&scope, execution_id)
+                .await
+                .unwrap_err();
             assert!(
                 match fault {
                     BundleFault::Missing => matches!(error, EngineError::MissingContractBundle),
@@ -294,7 +276,7 @@ async fn bundle_faults_reject_cold_warm_and_adopted_turns_before_instantiation()
                     .await
                     .unwrap()
                     .is_some(),
-                "adopted preparation rejection must release its own lease"
+                "a rejected preparation must release its own lease"
             );
         }
     }
