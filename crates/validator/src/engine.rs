@@ -7,7 +7,7 @@
 //!
 //! | Mode | Runs | Skips |
 //! |------|------|-------|
-//! | [`StaticOnly`](ExecutionMode::StaticOnly) | Value rules, combinators | Deferred (`Custom`, `UniqueBy`) |
+//! | [`StaticOnly`](ExecutionMode::StaticOnly) | Value rules, combinators | Deferred (`UniqueBy`) |
 //! | [`Deferred`](ExecutionMode::Deferred) | Deferred rules only | Everything else |
 //! | [`Full`](ExecutionMode::Full) | All value + deferred rules | — |
 //!
@@ -202,7 +202,7 @@ mod tests {
 
     #[test]
     fn static_only_skips_deferred() {
-        let rules = vec![Rule::min_length(3), Rule::custom("should_skip").unwrap()];
+        let rules = vec![Rule::min_length(3), Rule::unique_by("id").unwrap()];
         assert_eq!(
             validate_rules(
                 &json!("alice"),
@@ -239,10 +239,8 @@ mod tests {
             DiagnosticDisclosure::IncludeValue,
         )
         .unwrap_err();
-        assert_eq!(
-            errors.errors()[0].kind(),
-            crate::ValidationErrorKind::Unavailable
-        );
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors.errors()[0].code.as_ref(), "type_mismatch");
     }
 
     #[test]
@@ -282,25 +280,28 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(errors.len(), 1);
-        assert_eq!(
-            errors.errors()[0].kind(),
-            crate::ValidationErrorKind::Unavailable
-        );
+        assert_eq!(errors.errors()[0].code.as_ref(), "type_mismatch");
     }
 
     #[test]
     fn deferred_mode_runs_deferred_rules() {
         let rules = vec![Rule::unique_by("id").unwrap()];
         let errors = validate_rules(
-            &json!([1, 2]),
+            &json!([{"id": 1}, {"id": 1}]),
             &rules,
             ExecutionMode::Deferred,
             DiagnosticDisclosure::IncludeValue,
         )
         .unwrap_err();
-        assert_eq!(
-            errors.errors()[0].kind(),
-            crate::ValidationErrorKind::Unavailable
+        assert_eq!(errors.errors()[0].code.as_ref(), "unique_by");
+        assert!(
+            validate_rules(
+                &json!([{"id": 1}, {"id": 2}]),
+                &rules,
+                ExecutionMode::Deferred,
+                DiagnosticDisclosure::IncludeValue,
+            )
+            .is_ok()
         );
     }
 

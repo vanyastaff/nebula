@@ -80,7 +80,7 @@ It covers:
 - **Context predicates** — `Eq`, `Ne`, `Gt`, `In`, `Set`, `Empty`, `Contains`, `Matches`, …
   (test sibling fields through a `PredicateContext`)
 - **Logical combinators** — `All`, `Any`, `Not`
-- **Deferred rules** — `Custom`, `UniqueBy` (runtime-owned evaluation)
+- **Deferred rules** — `UniqueBy` (runs on the whole array in `Full` and `Deferred` modes)
 
 Rules are evaluated by
 `validate_rules(value, &rules, mode, disclosure) -> Result<EvaluationOutcome, ValidationErrors>`.
@@ -256,7 +256,7 @@ Engine::evaluate
   │     RuleView::Value(v)     → v.validate_value(value, disclosure)
   │     RuleView::Predicate(p) → p.evaluate(context?) with mode-aware deferral
   │     RuleView::All/Any/Not  → recurse; a non-violation diagnostic aborts
-  │     RuleView::Deferred(d)  → unavailable evaluator diagnostic in Full
+  │     RuleView::Deferred(d)  → d.validate(value) outside StaticOnly
   │  3. Collect failures into ValidationErrors; accumulate deferred reasons
   ▼
 Result<EvaluationOutcome, ValidationErrors>

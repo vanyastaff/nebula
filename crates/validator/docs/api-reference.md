@@ -380,7 +380,6 @@ impl Rule {
     pub fn any(rules: impl IntoIterator<Item = Rule>) -> Result<Self, RuleBuildError>;
     pub fn not(inner: Rule) -> Result<Self, RuleBuildError>;
     pub fn described(rule: Rule, message: impl Into<String>) -> Result<Self, RuleBuildError>;
-    pub fn custom(expression: impl Into<String>) -> Result<Self, RuleBuildError>;
     pub fn unique_by(path: impl AsRef<str>) -> Result<Self, RuleBuildError>;
     pub fn check_limits(&self) -> Result<(), RuleBuildError>;
     pub fn kind(&self) -> RuleKind;
@@ -506,6 +505,7 @@ entire rule tree.
 | `all_of` / `any_of` | `AllOf` / `AnyOf` |
 | `multiple_field_errors` | `MultiField` (2+ failures) |
 | `custom` | `ValidationError::custom` |
+| `unique_by` | `DeferredRule::UniqueBy` (params `path`, `index`) |
 | `invalid_range` | `LengthRange::new` when `min > max` |
 
 ---

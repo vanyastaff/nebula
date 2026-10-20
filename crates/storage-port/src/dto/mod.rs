@@ -47,7 +47,7 @@ pub use credential_refresh_retry::{
     RefreshRetryGate, RefreshRetryKind, RefreshRetryPhase, RefreshRetryProjection,
     RefreshRetrySnapshot, RefreshRetryTransition,
 };
-pub use execution::{ExecutionRecord, NewExecution};
+pub use execution::{DueTimer, DueTimerCursor, ExecutionRecord, NewExecution};
 pub use execution_history::{
     ExecutionHistoryCursor, ExecutionHistoryPage, ExecutionHistoryPageSize,
     ExecutionHistoryPageSizeError, ExecutionHistoryQuery, ExecutionSummary,

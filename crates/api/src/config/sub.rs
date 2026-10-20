@@ -306,9 +306,8 @@ pub enum ExecutionBackendKind {
 /// Execution-store and control-queue configuration.
 ///
 /// Parallel to [`IdempotencyApiConfig`]: one `backend` selector plus a
-/// `db_path` field consumed by the SQLite arm. Future PRs (pool size, schema
-/// namespace) extend this struct under the `API_EXECUTION_*` prefix without
-/// changing the overall shape.
+/// `db_path` field consumed by the SQLite arm and a pool size for the
+/// PostgreSQL arm, all under the `API_EXECUTION_*` prefix.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ExecutionStoreConfig {
     /// Selected execution-store backend. Defaults to
@@ -322,9 +321,29 @@ pub struct ExecutionStoreConfig {
     /// `"nebula-server-execution.db"` (relative to the working directory).
     /// Env var: `API_EXECUTION_DB_PATH`.
     pub db_path: String,
+
+    /// PostgreSQL-only: connections the deployment pool may open.
+    ///
+    /// Every store, the control consumer, lease heartbeats and HTTP handlers
+    /// share this one pool. Defaults to [`Self::DEFAULT_MAX_CONNECTIONS`]; must
+    /// be between 1 and [`Self::MAX_MAX_CONNECTIONS`].
+    /// Env var: `API_EXECUTION_MAX_CONNECTIONS`.
+    #[serde(default = "ExecutionStoreConfig::default_max_connections")]
+    pub max_connections: u32,
 }
 
 impl ExecutionStoreConfig {
+    /// Default PostgreSQL pool size.
+    pub const DEFAULT_MAX_CONNECTIONS: u32 = 8;
+
+    /// Largest accepted PostgreSQL pool size; PostgreSQL's own
+    /// `max_connections` is usually far lower.
+    pub const MAX_MAX_CONNECTIONS: u32 = 1000;
+
+    const fn default_max_connections() -> u32 {
+        Self::DEFAULT_MAX_CONNECTIONS
+    }
+
     /// Read only deployment storage selection from the environment.
     ///
     /// Operator commands share this parser with [`super::ApiConfig`] without
@@ -332,7 +351,9 @@ impl ExecutionStoreConfig {
     /// credentials are resolved by deployment composition when opening its pool.
     ///
     /// # Errors
-    /// Returns [`super::ApiConfigError::ParseEnum`] for an unsupported backend.
+    /// Returns [`super::ApiConfigError::ParseEnum`] for an unsupported backend,
+    /// and `ParseInt`, `ZeroValue` or `TooLarge` for an invalid
+    /// `API_EXECUTION_MAX_CONNECTIONS`.
     /// Returns [`super::ApiConfigError::IndependentAuthBackendRemoved`] when
     /// the removed `API_AUTH_BACKEND` variable is present, regardless of value.
     #[tracing::instrument(name = "deployment_configuration", skip_all)]
@@ -366,7 +387,22 @@ impl ExecutionStoreConfig {
         };
         let db_path =
             std::env::var("API_EXECUTION_DB_PATH").unwrap_or_else(|_| Self::default().db_path);
-        Ok(Self { backend, db_path })
+        let max_connections = super::env::parse_positive_u64_env(
+            "EXECUTION_MAX_CONNECTIONS",
+            u64::from(Self::DEFAULT_MAX_CONNECTIONS),
+        )?;
+        let max_connections = u32::try_from(max_connections)
+            .ok()
+            .filter(|value| *value <= Self::MAX_MAX_CONNECTIONS)
+            .ok_or(super::ApiConfigError::TooLarge {
+                var: "EXECUTION_MAX_CONNECTIONS",
+                max: Self::MAX_MAX_CONNECTIONS as usize,
+            })?;
+        Ok(Self {
+            backend,
+            db_path,
+            max_connections,
+        })
     }
 }
 
@@ -375,6 +411,7 @@ impl std::fmt::Debug for ExecutionStoreConfig {
         formatter
             .debug_struct("ExecutionStoreConfig")
             .field("backend", &self.backend)
+            .field("max_connections", &self.max_connections)
             .finish_non_exhaustive()
     }
 }
@@ -384,6 +421,7 @@ impl Default for ExecutionStoreConfig {
         Self {
             backend: ExecutionBackendKind::Sqlite,
             db_path: "nebula-server-execution.db".to_string(),
+            max_connections: Self::DEFAULT_MAX_CONNECTIONS,
         }
     }
 }
@@ -429,6 +467,35 @@ mod tests {
         assert_eq!(config.db_path, "private-deployment.db");
         assert!(!format!("{config:?}").contains("private-deployment"));
         assert!(ApiConfig::from_env().is_err());
+    }
+
+    #[test]
+    fn execution_pool_size_defaults_and_must_be_in_range() {
+        let mut env = env_guard();
+        assert_eq!(
+            ExecutionStoreConfig::from_env().unwrap().max_connections,
+            ExecutionStoreConfig::DEFAULT_MAX_CONNECTIONS
+        );
+        env.set("API_EXECUTION_MAX_CONNECTIONS", "64");
+        assert_eq!(
+            ExecutionStoreConfig::from_env().unwrap().max_connections,
+            64
+        );
+        env.set("API_EXECUTION_MAX_CONNECTIONS", "0");
+        assert!(matches!(
+            ExecutionStoreConfig::from_env(),
+            Err(crate::config::ApiConfigError::ZeroValue { .. })
+        ));
+        env.set("API_EXECUTION_MAX_CONNECTIONS", "1001");
+        assert!(matches!(
+            ExecutionStoreConfig::from_env(),
+            Err(crate::config::ApiConfigError::TooLarge { max: 1000, .. })
+        ));
+        env.set("API_EXECUTION_MAX_CONNECTIONS", "many");
+        assert!(matches!(
+            ExecutionStoreConfig::from_env(),
+            Err(crate::config::ApiConfigError::ParseInt { .. })
+        ));
     }
 
     #[test]

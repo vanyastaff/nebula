@@ -7,10 +7,8 @@
 //!   `enum_select`, …); retained for existing in-workspace declarations
 //! - `#[validate(...)]`  — value rules (required, length, range, pattern, url, email)
 //!
-//! Struct-level `#[schema(...)]` on `#[derive(Schema)]` supports:
-//!
-//! - `custom = "..."` — emits a deferred `Rule::custom` on the built schema (wire-level expression
-//!   string; engine evaluation is Phase 3+).
+//! Struct-level `#[schema(...)]` on `#[derive(Schema)]` supports `reserved("...")` and
+//! `condition(name, expression)`.
 //!
 //! The parsers are intentionally forgiving on ordering and strict on
 //! semantics: unknown keys inside a namespace produce a compile error at
@@ -1263,8 +1261,6 @@ fn lit_to_i64(expr: &Expr) -> syn::Result<i64> {
 /// Options gathered from `#[schema(...)]` on the derive target struct.
 #[derive(Default, Debug)]
 pub(crate) struct SchemaStructAttrs {
-    /// Wire-level custom-rule expression strings.
-    pub custom: Vec<LitStr>,
     /// Field keys reserved against reuse (`#[schema(reserved("old_key"))]`). A
     /// reserved key may not be used by any field of this struct — the derive
     /// rejects a collision at expansion. Kept as `LitStr` so the span points at
@@ -1289,7 +1285,6 @@ impl SchemaStructAttrs {
 }
 
 enum SchemaEntry {
-    Custom { value: LitStr },
     Reserved { keys: Vec<LitStr> },
     Condition { name: syn::Ident, expression: Expr },
 }
@@ -1297,10 +1292,6 @@ enum SchemaEntry {
 impl SchemaEntry {
     fn apply(self, out: &mut SchemaStructAttrs) -> syn::Result<()> {
         match self {
-            Self::Custom { value } => {
-                out.custom.push(value);
-                Ok(())
-            },
             Self::Reserved { keys } => {
                 out.reserved.extend(keys);
                 Ok(())
@@ -1353,17 +1344,22 @@ impl Parse for SchemaEntry {
             };
         }
 
-        // Assignment-form options: `custom = "..."`.
+        // No option takes the assignment form; parse it anyway to point at the
+        // right syntax.
         if !input.peek(Token![=]) {
             return Err(syn::Error::new(
                 name.span(),
-                "expected `#[schema(custom = \"...\")]` or `#[schema(reserved(\"...\"))]`",
+                "expected `#[schema(reserved(\"...\"))]` or `#[schema(condition(name, expr))]`",
             ));
         }
         input.parse::<Token![=]>()?;
-        let value: LitStr = input.parse()?;
+        let _value: LitStr = input.parse()?;
         match name.to_string().as_str() {
-            "custom" => Ok(Self::Custom { value }),
+            "custom" => Err(syn::Error::new(
+                name.span(),
+                "#[schema(custom)] was removed: no evaluator ever ran its expression, so \
+                 every value of the schema failed full validation",
+            )),
             // `reserved` is a valid option used with the wrong (assignment) form —
             // point at the list syntax instead of claiming the option is unknown.
             "reserved" => Err(syn::Error::new(

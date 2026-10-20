@@ -11,7 +11,7 @@
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use nebula_storage_port::dto::ExecutionRecord;
+use nebula_storage_port::dto::{DueTimer, DueTimerCursor, ExecutionRecord};
 use nebula_storage_port::store::{ExecutionStore, IdempotencyGuard};
 use nebula_storage_port::{
     ExecutionHistoryPage, ExecutionHistoryQuery, ExecutionListingStatus, ExecutionSummary,
@@ -349,17 +349,39 @@ impl ExecutionStore for SqliteExecutionStore {
         Ok(requested.unwrap_or(false))
     }
 
-    async fn list_all_running(&self) -> Result<Vec<ExecutionRecord>, StorageError> {
+    async fn list_due_timers(
+        &self,
+        due_at: DateTime<Utc>,
+        after: Option<&DueTimerCursor>,
+        limit: u32,
+    ) -> Result<Vec<DueTimer>, StorageError> {
         let sql = format!(
-            "SELECT {EXECUTION_COLUMNS} FROM executions \
-             WHERE status IN ('created', 'running', 'paused', 'cancelling')"
+            "SELECT {EXECUTION_COLUMNS}, next_wake_at FROM executions \
+             WHERE next_wake_at IS NOT NULL AND next_wake_at <= ?2 \
+               AND (?3 IS NULL OR next_wake_at > ?3 OR (next_wake_at = ?3 AND id > ?4)) \
+             ORDER BY next_wake_at, id \
+             LIMIT ?5"
         );
         let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(crate::execution_state::MAX_PERSISTED_EXECUTION_STATE_BYTES)
+            .bind(MicrosInstant::floor(due_at).as_micros())
+            .bind(after.map(|cursor| cursor.next_wake_at().as_micros()))
+            .bind(after.map_or("", DueTimerCursor::id))
+            .bind(i64::from(limit))
             .fetch_all(&self.pool)
             .await
             .map_err(storage_error)?;
-        rows.iter().map(decode_execution).collect()
+        rows.iter()
+            .map(|row| {
+                let next_wake_at = optional_instant(row, "next_wake_at")?.ok_or_else(|| {
+                    StorageError::Internal("due timer row without next_wake_at".into())
+                })?;
+                Ok(DueTimer {
+                    next_wake_at,
+                    record: decode_execution(row)?,
+                })
+            })
+            .collect()
     }
 
     async fn list_history(
@@ -612,7 +634,7 @@ pub(super) async fn commit_locked(
     let projection = batch.listing();
     sqlx::query(
         "UPDATE executions SET state = ?, version = ?, updated_at = ?, \
-                status = ?, started_at = ?, finished_at = ? \
+                status = ?, started_at = ?, finished_at = ?, next_wake_at = ? \
          WHERE org_id = ? AND workspace_id = ? AND id = ?",
     )
     .bind(&new_state)
@@ -621,6 +643,7 @@ pub(super) async fn commit_locked(
     .bind(projection.status().as_str())
     .bind(projection.started_at().map(MicrosInstant::as_micros))
     .bind(projection.finished_at().map(MicrosInstant::as_micros))
+    .bind(projection.next_wake_at().map(MicrosInstant::as_micros))
     .bind(&scope.org_id)
     .bind(&scope.workspace_id)
     .bind(&id)

@@ -697,8 +697,8 @@ pub(crate) use dispatch::{
     assert_queue_rows_require_their_execution, assert_triggers_cascade_with_their_workflow,
 };
 pub(crate) use history::{
-    assert_history_is_scope_isolated, assert_history_orders_filters_and_pages,
-    assert_status_projection_follows_commit,
+    assert_due_timers_page_in_wake_order, assert_history_is_scope_isolated,
+    assert_history_orders_filters_and_pages, assert_status_projection_follows_commit,
 };
 
 /// Postgres skip decision, resolved by feature flag so there is exactly
