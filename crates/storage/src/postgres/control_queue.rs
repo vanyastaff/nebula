@@ -467,12 +467,21 @@ impl ControlQueue for PgControlQueue {
         })
     }
 
-    async fn cleanup(&self, _retention: Duration) -> Result<u64, StorageError> {
-        // Terminal rows are pruned by the consumer's retention sweep;
-        // `execution_control_queue` has no enqueue instant and its rows are
-        // purged with their execution, so age-based pruning is a deliberate no-op here (parity with the
-        // sqlite and in-memory backends — not an unimplemented stub).
-        Ok(0)
+    async fn cleanup(&self, retention: Duration) -> Result<u64, StorageError> {
+        // A terminal row keeps the `processed_at` of its last claim, stamped
+        // by the database clock this cutoff reads too. Pending and Processing
+        // rows are never pruned.
+        let deleted = sqlx::query(
+            "DELETE FROM execution_control_queue \
+             WHERE status IN ('Completed', 'Failed') \
+               AND processed_at < clock_timestamp() - $1 * INTERVAL '1 microsecond'",
+        )
+        .bind(age_micros(retention))
+        .execute(&self.pool)
+        .await
+        .map_err(storage_error)?
+        .rows_affected();
+        Ok(deleted)
     }
 }
 

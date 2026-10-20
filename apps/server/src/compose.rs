@@ -504,6 +504,9 @@ impl ServerRuntime {
                     Duration::from_secs(api_config.idempotency.ttl_secs),
                     Duration::from_secs(api_config.idempotency.sweep_interval_secs),
                 );
+                let auth_sweep = state.auth_expiry_sweeper(Duration::from_secs(
+                    api_config.idempotency.sweep_interval_secs,
+                ));
                 let app = transport.build_router(state, &api_config)?;
                 let worker_runtime = match execution {
                     crate::execution_runtime::ExecutionTopology::InProcess => {
@@ -543,6 +546,15 @@ impl ServerRuntime {
                         sweeper.run(token).await;
                     }))
                 });
+                // Expired sessions, verification tokens and OAuth states on the
+                // same cadence: refused on read already, deleted here so the
+                // tables stay bounded.
+                let auth_sweep = auth_sweep.map(|sweeper| {
+                    let token = shutdown.clone();
+                    tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+                        sweeper.run(token).await;
+                    }))
+                });
                 if reservation_sweep.is_none() {
                     tracing::warn!(
                         "start-key reservation sweep disabled (idempotency sweep interval is 0); \
@@ -567,6 +579,11 @@ impl ServerRuntime {
                     && let Err(error) = handle.await
                 {
                     tracing::warn!(%error, "start-key reservation sweep did not stop cleanly");
+                }
+                if let Some(handle) = auth_sweep
+                    && let Err(error) = handle.await
+                {
+                    tracing::warn!(%error, "auth expiry sweep did not stop cleanly");
                 }
                 serve_result
             }
