@@ -266,7 +266,7 @@ impl RuntimeRepairHarness {
             ProfileBackend::InMemory => {
                 api_config.execution = ExecutionStoreConfig {
                     backend: ExecutionBackendKind::Memory,
-                    db_path: String::new(),
+                    ..ExecutionStoreConfig::default()
                 };
                 None
             },
@@ -274,6 +274,7 @@ impl RuntimeRepairHarness {
                 api_config.execution = ExecutionStoreConfig {
                     backend: ExecutionBackendKind::Sqlite,
                     db_path: controller.database_path().to_string_lossy().into_owned(),
+                    ..ExecutionStoreConfig::default()
                 };
                 None
             },
@@ -284,7 +285,7 @@ impl RuntimeRepairHarness {
                     .map_err(ProfileErrorKind::Evidence)?;
                 api_config.execution = ExecutionStoreConfig {
                     backend: ExecutionBackendKind::Postgres,
-                    db_path: String::new(),
+                    ..ExecutionStoreConfig::default()
                 };
                 Some(probe.database_dsn())
             },

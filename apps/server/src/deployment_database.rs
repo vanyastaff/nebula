@@ -76,12 +76,17 @@ impl DeploymentDatabase {
                 tracing::info!(backend = "sqlite", "deployment database admitted");
                 Ok(Self::Sqlite(deployment))
             },
-            ExecutionBackendKind::Postgres => Self::open_postgres(postgres_dsn_override).await,
+            ExecutionBackendKind::Postgres => {
+                Self::open_postgres(postgres_dsn_override, config.max_connections).await
+            },
         }
     }
 
     #[cfg(feature = "postgres")]
-    async fn open_postgres(dsn_override: Option<&str>) -> Result<Self, TransportInitError> {
+    async fn open_postgres(
+        dsn_override: Option<&str>,
+        max_connections: u32,
+    ) -> Result<Self, TransportInitError> {
         let environment_dsn;
         let dsn = if let Some(explicit) = dsn_override {
             explicit
@@ -95,7 +100,7 @@ impl DeploymentDatabase {
             &environment_dsn
         };
         let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(8)
+            .max_connections(max_connections)
             .connect(dsn)
             .await
             .map_err(|error| {
@@ -120,7 +125,10 @@ impl DeploymentDatabase {
     }
 
     #[cfg(not(feature = "postgres"))]
-    async fn open_postgres(_dsn_override: Option<&str>) -> Result<Self, TransportInitError> {
+    async fn open_postgres(
+        _dsn_override: Option<&str>,
+        _max_connections: u32,
+    ) -> Result<Self, TransportInitError> {
         Err(TransportInitError::ExecutionBackendUnavailable {
             requested: "postgres",
             requirement: "build with the `postgres` cargo feature to link PostgreSQL storage",
@@ -217,6 +225,7 @@ mod tests {
         let config = ExecutionStoreConfig {
             backend: ExecutionBackendKind::Sqlite,
             db_path: path.to_str().unwrap().to_owned(),
+            ..ExecutionStoreConfig::default()
         };
         let error = DeploymentDatabase::open(&config, None).await.unwrap_err();
         assert!(matches!(
