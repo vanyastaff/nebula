@@ -1319,6 +1319,27 @@ impl AuthBackend for DurableAuthBackend {
         )
         .await
     }
+
+    async fn sweep_expired(&self) -> Result<u64, AuthError> {
+        let sessions = self
+            .persistence
+            .sessions()
+            .cleanup_expired()
+            .await
+            .map_err(session_repo_error)?;
+        let tokens = self
+            .persistence
+            .verification_tokens()
+            .cleanup_expired()
+            .await?;
+        let states = self
+            .persistence
+            .oauth_states()
+            .cleanup_expired()
+            .await
+            .map_err(oauth_state_repo_error)?;
+        Ok(sessions.saturating_add(tokens).saturating_add(states))
+    }
 }
 
 /// Convert a `std::time::Duration` into a `chrono::Duration` for use

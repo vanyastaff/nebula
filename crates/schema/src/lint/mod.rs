@@ -1128,6 +1128,7 @@ fn lint_single_compat_new(
                 pending.push(inner);
                 true
             },
+            RuleView::Deferred(DeferredRule::UniqueBy(_)) => supports_collection_rules(field),
             RuleView::Predicate(_) | RuleView::Deferred(_) => true,
             _ => true,
         };
@@ -1243,11 +1244,8 @@ fn rule_ref_name(mut rule: RuleRef<'_>) -> &'static str {
                 ValueRule::Url => "url",
                 _ => "unknown_rule",
             },
-            RuleView::Deferred(d) => match d {
-                DeferredRule::UniqueBy(_) => "unique_by",
-                DeferredRule::Custom(_) => "custom",
-                _ => "unknown_rule",
-            },
+            RuleView::Deferred(DeferredRule::UniqueBy(_)) => "unique_by",
+            RuleView::Deferred(_) => "unknown_rule",
             RuleView::Predicate(p) => match p {
                 Predicate::Eq(..) => "eq",
                 Predicate::Ne(..) => "ne",

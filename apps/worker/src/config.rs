@@ -14,6 +14,12 @@ fn hex_id(bytes: &[u8]) -> String {
 
 // ── Config helpers (used by main) ─────────────────────────────────────────────
 
+/// Default Postgres pool size for one worker process.
+pub const DEFAULT_DB_MAX_CONNECTIONS: u32 = 8;
+
+/// Largest accepted `NEBULA_WORKER_DB_MAX_CONNECTIONS`.
+pub const MAX_DB_MAX_CONNECTIONS: u32 = 1000;
+
 /// Worker config read from environment variables.
 ///
 /// Artifact identity comes from the trusted deployment manifest; storage and
@@ -43,6 +49,12 @@ pub struct WorkerConfig {
     /// Ignored when `database_url` is `Some` (Postgres path takes precedence).
     pub db_path: String,
 
+    /// Connections the Postgres pool may open (`NEBULA_WORKER_DB_MAX_CONNECTIONS`).
+    ///
+    /// Defaults to [`DEFAULT_DB_MAX_CONNECTIONS`]; must be between 1 and
+    /// [`MAX_DB_MAX_CONNECTIONS`]. Ignored on the SQLite path.
+    pub db_max_connections: u32,
+
     /// 16-byte processor identity, hex-encoded (32 hex chars).
     ///
     /// Read from `NEBULA_WORKER_PROCESSOR_ID`. When absent, a fresh random
@@ -68,6 +80,7 @@ impl std::fmt::Debug for WorkerConfig {
                 &self.database_url.as_ref().map(|_| "[REDACTED]"),
             )
             .field("db_path", &self.db_path)
+            .field("db_max_connections", &self.db_max_connections)
             .field("processor_id", &self.processor_id)
             .finish()
     }
@@ -113,6 +126,11 @@ pub enum WorkerConfigError {
     /// set-but-malformed DSN is always a hard startup error.
     #[error("NEBULA_WORKER_DATABASE_URL is set but not valid UTF-8")]
     DatabaseUrlNotUnicode,
+    /// `NEBULA_WORKER_DB_MAX_CONNECTIONS` is not an integer in the accepted range.
+    #[error(
+        "NEBULA_WORKER_DB_MAX_CONNECTIONS must be an integer from 1 to {MAX_DB_MAX_CONNECTIONS}"
+    )]
+    DbMaxConnections,
 }
 
 impl WorkerConfig {
@@ -132,6 +150,9 @@ impl WorkerConfig {
         let db_path = std::env::var("NEBULA_WORKER_DB_PATH")
             .unwrap_or_else(|_| "nebula-worker.db".to_owned());
 
+        let db_max_connections =
+            parse_db_max_connections(std::env::var("NEBULA_WORKER_DB_MAX_CONNECTIONS"))?;
+
         let processor_id = match std::env::var("NEBULA_WORKER_PROCESSOR_ID") {
             Ok(raw) => parse_processor_id(&raw)?,
             Err(_) => generate_ephemeral_processor_id(),
@@ -141,8 +162,24 @@ impl WorkerConfig {
             artifact_set_digest,
             database_url,
             db_path,
+            db_max_connections,
             processor_id,
         })
+    }
+}
+
+fn parse_db_max_connections(
+    raw: Result<String, std::env::VarError>,
+) -> Result<u32, WorkerConfigError> {
+    match raw {
+        Ok(value) => value
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|count| (1..=MAX_DB_MAX_CONNECTIONS).contains(count))
+            .ok_or(WorkerConfigError::DbMaxConnections),
+        Err(std::env::VarError::NotPresent) => Ok(DEFAULT_DB_MAX_CONNECTIONS),
+        Err(std::env::VarError::NotUnicode(_)) => Err(WorkerConfigError::DbMaxConnections),
     }
 }
 
@@ -225,6 +262,28 @@ fn generate_ephemeral_processor_id() -> [u8; 16] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn db_max_connections_defaults_and_rejects_out_of_range_values() {
+        assert_eq!(
+            parse_db_max_connections(Err(std::env::VarError::NotPresent)).unwrap(),
+            DEFAULT_DB_MAX_CONNECTIONS
+        );
+        assert_eq!(parse_db_max_connections(Ok(" 32 ".to_owned())).unwrap(), 32);
+        assert_eq!(
+            parse_db_max_connections(Ok(MAX_DB_MAX_CONNECTIONS.to_string())).unwrap(),
+            MAX_DB_MAX_CONNECTIONS
+        );
+        for invalid in ["0", "1001", "-1", "eight", ""] {
+            assert!(
+                matches!(
+                    parse_db_max_connections(Ok(invalid.to_owned())),
+                    Err(WorkerConfigError::DbMaxConnections)
+                ),
+                "{invalid:?} must be rejected"
+            );
+        }
+    }
 
     #[test]
     fn artifact_activation_requires_canonical_deployment_identity() {

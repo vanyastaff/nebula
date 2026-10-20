@@ -1,7 +1,7 @@
 use nebula_schema::Schema;
 
 #[derive(Schema)]
-#[schema(custom = "validate")]
+#[schema(reserved("old"))]
 enum Choice {
     First,
 }

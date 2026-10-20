@@ -54,6 +54,7 @@ fn port_queue() -> (Arc<InMemoryExecutionStore>, Arc<TestControlQueue>) {
     let queue = Arc::new(TestControlQueue {
         inner: InMemoryControlQueue::new(&store),
         claimed_flavors: Mutex::new(Vec::new()),
+        cleanups: Mutex::new(Vec::new()),
     });
     (store, queue)
 }
@@ -62,6 +63,8 @@ fn port_queue() -> (Arc<InMemoryExecutionStore>, Arc<TestControlQueue>) {
 struct TestControlQueue {
     inner: InMemoryControlQueue,
     claimed_flavors: Mutex<Vec<nebula_core::WorkerFlavorRevisionId>>,
+    /// The retention every `cleanup` call asked for, in order.
+    cleanups: Mutex<Vec<Duration>>,
 }
 
 impl TestControlQueue {
@@ -158,6 +161,7 @@ impl ControlQueue for TestControlQueue {
     }
 
     async fn cleanup(&self, retention: Duration) -> Result<u64, nebula_storage_port::StorageError> {
+        self.cleanups.lock().expect("poisoned").push(retention);
         self.inner.cleanup(retention).await
     }
 }
@@ -335,6 +339,38 @@ impl ControlDispatch for RecordingDispatch {
 /// Isolate consumer acknowledgement discipline from owner implementation.
 /// The mock deliberately leaves the row Processing; only an unauthorized
 /// consumer ack/fail/release could change it before the explicit reclaim below.
+/// The consumer prunes terminal rows on its retention cadence, starting at
+/// startup, and never when retention is turned off.
+#[tokio::test]
+async fn consumer_runs_the_retention_sweep_unless_disabled() {
+    for retention in [Some(Duration::from_secs(42)), None] {
+        let (_store, queue) = port_queue();
+        let shutdown = CancellationToken::new();
+        let handle = ControlConsumer::for_flavor(
+            queue.clone(),
+            RecordingDispatch::new(),
+            proc16(b"retention"),
+            worker_flavor(),
+        )
+        .with_poll_interval(Duration::from_millis(10))
+        .with_reclaim_interval(Duration::from_hours(1))
+        .with_retention(retention)
+        .with_retention_interval(Duration::from_millis(20))
+        .spawn(shutdown.clone());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        shutdown.cancel();
+        handle.await.unwrap();
+        let cleanups = queue.cleanups.lock().expect("poisoned").clone();
+        match retention {
+            Some(retention) => {
+                assert!(cleanups.len() >= 2, "swept on its cadence: {cleanups:?}");
+                assert!(cleanups.iter().all(|asked| *asked == retention));
+            },
+            None => assert!(cleanups.is_empty(), "retention off never deletes"),
+        }
+    }
+}
+
 #[tokio::test]
 async fn transferred_or_uncertain_start_never_mutates_delivery_again() {
     use nebula_engine::ClaimedControlDispatchOutcome as Outcome;

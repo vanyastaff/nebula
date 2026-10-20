@@ -227,10 +227,6 @@ impl<'de> Visitor<'de> for RuleVisitor<'_> {
                 })?;
                 admitted(Rule::not(inner))?
             },
-            RuleKey::Custom => {
-                let expression = map.next_value_seed(BoundedTextSeed { budget })?;
-                admitted(Rule::custom(expression))?
-            },
             RuleKey::UniqueBy => {
                 let path = next_path(&mut map, budget)?;
                 admitted(Rule::unique_by(path.as_str()))?
@@ -279,7 +275,6 @@ enum RuleKey {
     All,
     Any,
     Not,
-    Custom,
     UniqueBy,
     Described,
     Unknown,
@@ -334,7 +329,6 @@ impl Visitor<'_> for RuleKeyVisitor {
             "all" => RuleKey::All,
             "any" => RuleKey::Any,
             "not" => RuleKey::Not,
-            "custom" => RuleKey::Custom,
             "unique_by" => RuleKey::UniqueBy,
             "described" => RuleKey::Described,
             _ => RuleKey::Unknown,

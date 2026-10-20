@@ -42,7 +42,9 @@
 //!   is idempotent.
 //!
 //! - **Cancel / Terminate** always signal the engine's cancel registry (except for orphan commands,
-//!   which are [`ControlDispatchError::Rejected`]). The underlying
+//!   which are [`ControlDispatchError::Rejected`]). With no local runner they record the request on
+//!   the execution row and cancel under the lease when it is free; a holder on another worker
+//!   observes the recorded request from its lease heartbeat. The underlying
 //!   [`tokio_util::sync::CancellationToken::cancel`] is idempotent per token, and a missing
 //!   registry entry — cross-runner case or this runner already cleaned up — is a no-op that returns
 //!   [`WorkflowEngine::cancel_execution`] `= false` without side effects. Short-circuiting on
@@ -1190,52 +1192,72 @@ impl ControlDispatch for EngineControlDispatch {
                 }
                 // No in-process runner: either a `Paused` (signal-wait)
                 // execution with no live frontier, or a cross-runner live
-                // execution. Durably terminalize any parked nodes so a
-                // `Cancelled` execution never retains a non-terminal node.
-                // Lease-guarded: a held lease (acquire fails ⇒ TTL not expired)
-                // means another runner is alive and owns this execution. That
-                // owner observes the API's durable `Cancelled` write via its next
-                // checkpoint CAS and tears its own frontier down — so we ACK
-                // (below) rather than Defer. Deferring would churn the
-                // control-queue row through untargeted, budget-capped queue reclaim
-                // (which cannot route to the lease holder) until it is marked
-                // failed, while never delivering anything to the owner. A
-                // genuinely no-live-runner Paused execution has a FREE lease, so
-                // `cancel_dangling_nodes` acquires it and terminalizes there.
+                // execution. A no-live-runner execution has a FREE lease, so
+                // `cancel_dangling_nodes` acquires it and cancels there. A held
+                // lease means another runner is alive and owns the execution;
+                // deferring would churn the row through untargeted,
+                // budget-capped queue reclaim, which cannot route to the holder.
+                //
+                // Record the request on the execution row first. A holder on
+                // another worker reads it from its heartbeat, and a turn that
+                // releases the lease reads it again afterwards; recording
+                // before the lease attempt below is what makes that second
+                // read sufficient (see `release_turn_lease`).
+                let recorded = match self
+                    .execution
+                    .request_cancel(scope, &execution_id.to_string())
+                    .await
+                {
+                    Ok(recorded) => recorded,
+                    Err(error) => {
+                        tracing::warn!(
+                            %execution_id,
+                            %error,
+                            "dispatch_cancel: could not record the cancel request"
+                        );
+                        false
+                    },
+                };
                 match self.engine.cancel_dangling_nodes(scope, execution_id).await {
                     Ok(
                         CancelDanglingOutcome::Cancelled(_)
                         | CancelDanglingOutcome::NothingToCancel,
                     ) => Ok(()),
-                    Err(EngineError::Leased { ref holder, .. }) => {
+                    Err(EngineError::Leased { ref holder, .. }) if recorded => {
                         // A live owner on another runner holds the lease, and
-                        // this process cannot reach its cancel registry.
-                        //
-                        // Acking here used to be safe because the API wrote
-                        // `Cancelled` durably before enqueuing, so the holder
-                        // saw the cancel on its next checkpoint CAS. Nothing
-                        // writes that state ahead of the runtime any more — the
-                        // command row *is* the cancel — so an ack now would drop
-                        // the request outright.
-                        //
-                        // Defer instead. Redelivery is untargeted, so the row
-                        // can land on the holder itself, where the local signal
-                        // works; and the holder's lease is short-lived by
-                        // construction (released on graceful stop, expired on
-                        // crash), so a later delivery finds it free. If reclaim
-                        // exhausts its budget first the row is marked failed with
-                        // this reason attached — an undelivered cancel that is
-                        // visible beats one that was acked and lost.
+                        // this process cannot reach its cancel registry. The
+                        // recorded request reaches it instead: its heartbeat
+                        // trips the frontier's cancel token, and a successor
+                        // holder observes the request on acquire. Ack.
+                        tracing::info!(
+                            %execution_id,
+                            %holder,
+                            "dispatch_cancel: execution lease held by another runner; cancel \
+                             recorded for the holder to observe"
+                        );
+                        Ok(())
+                    },
+                    Err(EngineError::Leased { ref holder, .. }) => {
+                        // The request could not be recorded, so nothing would
+                        // reach the holder: acking would drop the cancel.
+                        // Defer. Redelivery is untargeted, so the row can land
+                        // on the holder itself, where the local signal works,
+                        // or find the lease free once the holder stops. If
+                        // reclaim exhausts its budget first the row is marked
+                        // failed with this reason attached — an undelivered
+                        // cancel that is visible beats one that was acked and
+                        // lost.
                         tracing::warn!(
                             %execution_id,
                             %holder,
                             "dispatch_cancel: execution lease held by a live owner on another \
-                             runner; deferring for redelivery rather than acking an undelivered \
-                             cancel"
+                             runner and the cancel request was not recorded; deferring for \
+                             redelivery"
                         );
                         Err(ControlDispatchError::Deferred(format!(
                             "execution {execution_id} cancel could not be delivered: lease held \
-                             by another runner; deferred for redelivery"
+                             by another runner and the request was not recorded; deferred for \
+                             redelivery"
                         )))
                     },
                     Err(e) => {

@@ -184,6 +184,8 @@ pub trait ControlQueue: Send + Sync + std::fmt::Debug {
         max_reclaim_count: u32,
     ) -> Result<ReclaimOutcome, StorageError>;
 
-    /// Delete rows older than `retention`; returns the count deleted.
+    /// Delete `Completed` and `Failed` rows last claimed more than
+    /// `retention` ago; returns the count deleted. `Pending` and `Processing`
+    /// rows are never deleted.
     async fn cleanup(&self, retention: Duration) -> Result<u64, StorageError>;
 }

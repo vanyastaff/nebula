@@ -2285,6 +2285,64 @@ impl WorkflowEngine {
         Ok(self.spawn_lease_guard(backend, execution_id, holder, frontier_cancel))
     }
 
+    /// Release a turn's lease, then finish a cancel recorded after the
+    /// heartbeat last looked.
+    ///
+    /// A turn that parks the execution releases the lease while the execution
+    /// is still non-terminal. A `Cancel` drained on another worker meanwhile
+    /// recorded the request first and then found the lease held, so it left
+    /// the cancel to the holder. This read, strictly after the release, closes
+    /// that window: either it sees the request and cancels here, or the
+    /// request was recorded after it and the consumer's own lease attempt,
+    /// which follows the record, finds the lease free and cancels there.
+    async fn release_turn_lease(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        lease: Option<LeaseGuard>,
+        status: ExecutionStatus,
+    ) {
+        let Some(guard) = lease else {
+            return;
+        };
+        if !guard.shutdown().await || status.is_terminal() {
+            return;
+        }
+        let Some(stores) = &self.stores else {
+            return;
+        };
+        match stores
+            .execution
+            .cancel_requested(scope, &execution_id.to_string())
+            .await
+        {
+            Ok(false) => {},
+            Ok(true) => match self.cancel_dangling_nodes(scope, execution_id).await {
+                Ok(outcome) => tracing::info!(
+                    %execution_id,
+                    ?outcome,
+                    "applied a cancel recorded while this turn held the lease"
+                ),
+                // Another runner holds the lease: the consumer finishing this
+                // cancel itself, or a new turn that observes the request on
+                // acquire.
+                Err(EngineError::Leased { .. }) => {},
+                Err(error) => tracing::warn!(
+                    %execution_id,
+                    %error,
+                    "could not apply a cancel recorded while this turn held the lease; \
+                     the next lease holder applies it"
+                ),
+            },
+            Err(error) => tracing::warn!(
+                %execution_id,
+                %error,
+                "could not read the recorded cancel request after releasing the lease; \
+                 the next lease holder applies it"
+            ),
+        }
+    }
+
     fn execution_lease_policy(&self) -> (Duration, Duration) {
         let ttl = self
             .lease_ttl
@@ -2329,6 +2387,9 @@ impl WorkflowEngine {
             // acquired.
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             ticker.tick().await;
+            // A cancel recorded while no runner held the lease, or while a
+            // previous holder did, is this turn's to honour from the start.
+            observe_recorded_cancel(&heartbeat_backend, execution_id, &frontier_cancel).await;
             loop {
                 tokio::select! {
                     () = heartbeat_shutdown_cloned.cancelled() => {
@@ -2346,6 +2407,12 @@ impl WorkflowEngine {
                                     holder = %heartbeat_holder,
                                     "execution lease renewed"
                                 );
+                                observe_recorded_cancel(
+                                    &heartbeat_backend,
+                                    execution_id,
+                                    &frontier_cancel,
+                                )
+                                .await;
                             }
                             Ok(false) => {
                                 let labels = metrics
@@ -2977,9 +3044,8 @@ impl WorkflowEngine {
         // strictly after persist is load-bearing: a sibling runner
         // must not observe an available lease while our terminal
         // write is still in flight.
-        if let Some(guard) = lease {
-            guard.shutdown().await;
-        }
+        self.release_turn_lease(scope, execution_id, lease, reported_status)
+            .await;
 
         self.emit_final_event(execution_id, reported_status, elapsed, &failed_node);
         self.emit_frontier_integrity_if_violated(execution_id, integrity_violation);
@@ -4202,7 +4268,7 @@ fn mark_node_failed(
 ///
 /// **Known residual channels, recorded rather than silently widened in scope.**
 /// `PlanningFailed` interpolates the underlying error at
-/// several construction sites — `timer_scan`'s `list_all_running`, this module's
+/// several construction sites — `timer_scan`'s `list_due_timers`, this module's
 /// `acquire lease`, and `DependencyGraph::from_definition` — so it carries
 /// storage and workflow text, not only a timer-scan message. Its messages are
 /// therefore bounded and escaped but *not* provenance-verified. Closing that
@@ -4397,12 +4463,13 @@ impl LeaseGuard {
         self.backend.fencing_token()
     }
 
-    /// Stop the heartbeat loop and release the lease.
+    /// Stop the heartbeat loop and release the lease. Returns whether this
+    /// call released it.
     ///
     /// Best-effort: release failures (storage unavailable, holder
     /// already reassigned) are logged but do not surface as engine
     /// errors — a TTL-driven natural expiry is the ultimate fallback.
-    async fn shutdown(mut self) {
+    async fn shutdown(mut self) -> bool {
         self.shutdown.cancel();
         if let Some(handle) = self.handle.take() {
             // Wait for the heartbeat loop to notice and exit cleanly.
@@ -4417,7 +4484,7 @@ impl LeaseGuard {
                 holder = %self.holder,
                 "lease heartbeat lost; skipping explicit release (TTL will expire)"
             );
-            return;
+            return false;
         }
         match self.backend.release(self.execution_id).await {
             Ok(true) => {
@@ -4426,6 +4493,7 @@ impl LeaseGuard {
                     holder = %self.holder,
                     "execution lease released"
                 );
+                true
             },
             Ok(false) => {
                 // Lease not owned at release time — could be a race
@@ -4435,6 +4503,7 @@ impl LeaseGuard {
                     holder = %self.holder,
                     "release_lease returned false; lease was not owned at release time"
                 );
+                false
             },
             Err(e) => {
                 tracing::warn!(
@@ -4443,8 +4512,44 @@ impl LeaseGuard {
                     error = %e,
                     "release_lease failed; TTL will eventually expire the lease"
                 );
+                false
             },
         }
+    }
+}
+
+/// Trip `frontier_cancel` when a cancel was recorded for this execution.
+///
+/// A `Cancel` drained on a worker that cannot reach this runner's cancel
+/// registry records the request on the execution row instead (see
+/// `dispatch_cancel`). The heartbeat reads it after acquiring and after every
+/// renewal. The token is the same one the local cancel path trips, so the
+/// frontier tears down exactly as for a local cancel. A failed read is logged
+/// and retried on the next beat: it says nothing about lease ownership.
+async fn observe_recorded_cancel(
+    backend: &crate::store_seam::LeaseBackend,
+    execution_id: ExecutionId,
+    frontier_cancel: &CancellationToken,
+) {
+    if frontier_cancel.is_cancelled() {
+        return;
+    }
+    match backend.cancel_requested(execution_id).await {
+        Ok(true) => {
+            tracing::info!(
+                %execution_id,
+                "execution cancel was recorded by another worker; cancelling this runner's frontier"
+            );
+            frontier_cancel.cancel();
+        },
+        Ok(false) => {},
+        Err(error) => {
+            tracing::warn!(
+                %execution_id,
+                %error,
+                "could not read the recorded cancel request; retrying on the next heartbeat"
+            );
+        },
     }
 }
 

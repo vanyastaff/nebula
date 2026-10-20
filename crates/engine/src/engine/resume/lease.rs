@@ -120,7 +120,8 @@ impl WorkflowEngine {
                     },
                 };
                 if no_work {
-                    guard.shutdown().await;
+                    self.release_turn_lease(scope, execution_id, Some(guard), original_status)
+                        .await;
                     return Ok(LeasePreparation::Completed(ExecutionResult {
                         execution_id,
                         status: original_status,

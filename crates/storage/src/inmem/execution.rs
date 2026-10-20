@@ -18,7 +18,7 @@ use tokio::time::Instant;
 
 use chrono::{DateTime, Utc};
 use nebula_storage_port::dto::ResumeTokenRow;
-use nebula_storage_port::dto::{ControlMsg, ExecutionRecord};
+use nebula_storage_port::dto::{ControlMsg, DueTimer, DueTimerCursor, ExecutionRecord};
 use nebula_storage_port::store::{ExecutionStore, IdempotencyGuard};
 use nebula_storage_port::{
     ExecutionHistoryPage, ExecutionHistoryQuery, ExecutionListing, ExecutionSummary, FencingToken,
@@ -78,6 +78,8 @@ pub(super) struct Row {
     /// (re)acquired by a different/expired holder, so a superseded
     /// holder's token no longer matches.
     pub(super) fencing_generation: u64,
+    /// Set once by [`ExecutionStore::request_cancel`]; never cleared.
+    pub(super) cancel_requested: bool,
     /// Append-only journal: `(seq, payload)` oldest first.
     pub(super) journal: Vec<(u64, serde_json::Value)>,
 }
@@ -312,6 +314,7 @@ pub(super) fn insert_created_row(
             lease_holder: None,
             lease_expires_at: None,
             fencing_generation: 0,
+            cancel_requested: false,
             journal: Vec::new(),
         },
     );
@@ -458,13 +461,51 @@ impl ExecutionStore for InMemoryExecutionStore {
         Ok(true)
     }
 
-    async fn list_all_running(&self) -> Result<Vec<ExecutionRecord>, StorageError> {
+    async fn request_cancel(&self, scope: &Scope, id: &str) -> Result<bool, StorageError> {
+        let mut st = self.inner.lock();
+        match st.rows.get_mut(id) {
+            Some(row) if &row.scope == scope => {
+                row.cancel_requested = true;
+                Ok(true)
+            },
+            _ => Ok(false),
+        }
+    }
+
+    async fn cancel_requested(&self, scope: &Scope, id: &str) -> Result<bool, StorageError> {
         let st = self.inner.lock();
         Ok(st
             .rows
+            .get(id)
+            .is_some_and(|row| &row.scope == scope && row.cancel_requested))
+    }
+
+    async fn list_due_timers(
+        &self,
+        due_at: DateTime<Utc>,
+        after: Option<&DueTimerCursor>,
+        limit: u32,
+    ) -> Result<Vec<DueTimer>, StorageError> {
+        let due_at = MicrosInstant::floor(due_at);
+        let after = after.map(|cursor| (cursor.next_wake_at(), cursor.id()));
+        let st = self.inner.lock();
+        let mut due: Vec<(MicrosInstant, &String, &Row)> = st
+            .rows
             .iter()
-            .filter(|(_, row)| !row.listing.status().is_terminal())
-            .map(|(id, row)| row.record(id))
+            .filter_map(|(id, row)| {
+                let wake = row.listing.next_wake_at()?;
+                (wake <= due_at && after.is_none_or(|key| (wake, id.as_str()) > key))
+                    .then_some((wake, id, row))
+            })
+            .collect();
+        due.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+        Ok(due
+            .into_iter()
+            .take(usize::try_from(limit).unwrap_or(usize::MAX))
+            .map(|(next_wake_at, id, row)| DueTimer {
+                next_wake_at,
+                record: row.record(id),
+            })
             .collect())
     }
 

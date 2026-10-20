@@ -1673,22 +1673,15 @@ fn current_root_rules_cannot_discard_unresolved_parameter_obligations() {
             })
         );
     }
-    let custom = root_rule_record(
+    // A scalar passthrough has no payload to prove its root rules against.
+    let mut scalar = root_rule_record(
         PlanEpoch::CURRENT,
-        nebula_schema::Rule::custom("runtime_only").unwrap(),
+        presence,
         Some(RecordedParameterValueV1::Literal { value: json!([]) }),
     );
-    assert_matches!(
-        ExecutablePlanRevision::try_from(custom.clone()),
-        Err(ExecutablePlanIntegrityError::NonCanonical {
-            section: "nodes.parameters.root_rules"
-        })
-    );
-    let mut scalar = custom;
     scalar.content.actions[0].input_schema = RecordedSchemaV1::new(
         ValidSchema::scalar(
-            nebula_schema::ScalarSchema::string()
-                .root_rule(nebula_schema::Rule::custom("runtime_only").unwrap()),
+            nebula_schema::ScalarSchema::string().root_rule(nebula_schema::Rule::min_length(1)),
         )
         .unwrap(),
     );

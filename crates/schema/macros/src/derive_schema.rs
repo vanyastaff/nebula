@@ -94,21 +94,6 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
 
     let schema_attrs = SchemaStructAttrs::from_attrs(&input.attrs)?;
     let container_serde = SerdeAttrs::from_attrs(&input.attrs)?;
-    let root_rule_tokens: Vec<TokenStream2> = schema_attrs
-        .custom
-        .iter()
-        .map(|lit| {
-            quote! {
-                .root_rule(
-                    #crate_path::Rule::custom(#lit).map_err(|error| {
-                        #crate_path::ValidationError::builder("rule.budget_exceeded")
-                            .message(error.to_string())
-                            .build()
-                    })?
-                )
-            }
-        })
-        .collect();
 
     let mut field_exprs = Vec::with_capacity(fields.len());
     let mut field_keys: Vec<(String, Span)> = Vec::with_capacity(fields.len());
@@ -200,7 +185,6 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
         quote! {
             #crate_path::Schema::builder()
                 #( .property(#field_exprs) )*
-                #( #root_rule_tokens )*
                 .build()
         },
     ))
@@ -280,21 +264,10 @@ fn expand_unit(input: &DeriveInput) -> syn::Result<TokenStream2> {
             }
         }
     }
-    let rules = schema_attrs.custom.iter().map(|rule| {
-        quote! {
-            .root_rule(
-                #crate_path::Rule::custom(#rule).map_err(|error| {
-                    #crate_path::ValidationError::builder("rule.budget_exceeded")
-                        .message(error.to_string())
-                        .build()
-                })?
-            )
-        }
-    });
     Ok(cached_schema_impl(
         input,
         quote! {
-            #crate_path::ValidSchema::scalar(#crate_path::ScalarSchema::null() #(#rules)*)
+            #crate_path::ValidSchema::scalar(#crate_path::ScalarSchema::null())
         },
     ))
 }

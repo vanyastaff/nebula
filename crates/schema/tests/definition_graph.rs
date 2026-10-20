@@ -278,7 +278,7 @@ fn validator_owned_rule_budget_rejection_has_a_stable_graph_diagnostic() {
             "key": "root",
             "body": {
                 "kind": "string",
-                "intrinsic_rules": [{"custom": oversized_rule}]
+                "intrinsic_rules": [{"described": ["email", oversized_rule]}]
             }
         }]),
         "root",
@@ -334,7 +334,7 @@ fn facet_applicability_and_intrinsic_context_are_rejected_after_shape_checks() {
             "key": "root",
             "body": {
                 "kind": "string",
-                "intrinsic_rules": [{"custom":"requires_runtime_context"}]
+                "intrinsic_rules": [{"eq":["/other",1]}]
             }
         }]),
         "root",
@@ -539,7 +539,7 @@ fn every_semantic_facet_changes_the_semantic_commitment() {
         ),
         (
             "/definitions/0/body/properties/0/rules",
-            json!([{"custom": "check_name"}]),
+            json!([{"eq": ["/enabled", true]}]),
         ),
         (
             "/definitions/0/body/properties/0/transformers",
@@ -730,7 +730,7 @@ fn root_string_occurrence_policies_are_committed() {
     let mutations = [
         ("/root/empty_string", json!("reject")),
         ("/root/expression", json!("allowed")),
-        ("/root/rules", json!([{"custom":"root_rule"}])),
+        ("/root/rules", json!(["email"])),
         ("/root/transformers", json!([{"kind":"trim"}])),
     ];
     for (pointer, replacement) in mutations {
@@ -1327,8 +1327,6 @@ fn every_current_rule_variant_has_a_distinct_committed_encoding() {
         ("string", json!({"contains":["/x",1]})),
         ("string", json!({"matches":["/x","^x"]})),
         ("string", json!({"in":["/x",[1,2]]})),
-        ("string", json!({"custom":"runtime"})),
-        ("string", json!({"unique_by":"/id"})),
         ("string", json!({"all":[]})),
         ("string", json!({"any":[]})),
         ("string", json!({"not":{"eq":["/x",1]}})),
@@ -1358,6 +1356,30 @@ fn every_current_rule_variant_has_a_distinct_committed_encoding() {
             .0
         );
     }
+
+    let unique = |rules: Value| {
+        serde_json::from_value::<SchemaGraphDocument>(json!({
+            "version": 3,
+            "root": { "target": "root", "rules": rules },
+            "definitions": [
+                {"key":"root","body":{"kind":"array","element":{"target":"leaf"}}},
+                scalar("leaf", "string")
+            ],
+        }))
+        .unwrap()
+    };
+    assert_ne!(
+        admitted(unique(json!([{"unique_by":"/id"}]))).0,
+        admitted(unique(json!([]))).0
+    );
+    assert_eq!(
+        codes(
+            &ruled("string", json!({"unique_by":"/id"}))
+                .admit()
+                .unwrap_err()
+        ),
+        ["schema.graph.inapplicable_facet"]
+    );
 }
 
 #[test]
@@ -2025,7 +2047,7 @@ fn input_default_is_property_only_context_free_semantics() {
             .is_err()
     );
     assert!(
-        graph(json!("x"), json!([{"custom":"runtime"}]))
+        graph(json!("x"), json!([{"unique_by":"/id"}]))
             .admit()
             .is_err()
     );

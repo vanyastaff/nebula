@@ -596,6 +596,19 @@ impl AppState {
         ))
     }
 
+    /// Build the process-wide expired-authentication sweep, or `None` when no
+    /// auth backend is mounted or `interval` is zero.
+    #[must_use]
+    pub fn auth_expiry_sweeper(
+        &self,
+        interval: std::time::Duration,
+    ) -> Option<crate::auth_expiry_sweep::AuthExpirySweeper> {
+        crate::auth_expiry_sweep::AuthExpirySweeper::new(
+            Arc::clone(self.auth_backend.as_ref()?),
+            interval,
+        )
+    }
+
     /// Build the process-wide reservation retention task without exposing the
     /// raw storage capability to request handlers.
     #[must_use]

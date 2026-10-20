@@ -1269,6 +1269,26 @@ impl AuthBackend for InMemoryAuthBackend {
         )
         .await
     }
+
+    async fn sweep_expired(&self) -> Result<u64, AuthError> {
+        let now = Self::now_secs();
+        let before =
+            self.sessions.len() + self.verification_tokens.len() + self.mfa_challenges.len();
+        self.sessions.retain(|_, session| session.expires_at > now);
+        self.verification_tokens
+            .retain(|_, token| token.expires_at > now);
+        self.mfa_challenges
+            .retain(|_, challenge| challenge.expires_at > now);
+        let after =
+            self.sessions.len() + self.verification_tokens.len() + self.mfa_challenges.len();
+        let states = {
+            let mut states = self.oauth_state.lock();
+            let before = states.len();
+            states.retain(|_, entry| entry.expires_at > now);
+            before - states.len()
+        };
+        Ok(u64::try_from(before.saturating_sub(after) + states).unwrap_or(u64::MAX))
+    }
 }
 
 #[cfg(test)]

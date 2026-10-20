@@ -25,16 +25,17 @@ mod harness;
 
 use harness::{
     Backend, InMemoryBackend, PostgresBackend, ScopedBackend, SqliteBackend, assert_atomic_triple,
-    assert_cas_conflict, assert_control_queue_outbox_and_fencing,
+    assert_cancel_request_is_durable_and_scoped, assert_cas_conflict,
+    assert_control_queue_outbox_and_fencing,
     assert_control_queue_release_returns_row_for_redelivery,
     assert_control_queue_same_processor_aba_is_fenced, assert_create_get_roundtrip,
     assert_cross_scope_commit_is_rejected, assert_cross_scope_get_is_none,
-    assert_deleted_workflow_hides_its_versions, assert_expired_rollbacks_are_released,
-    assert_get_published_is_highest_numbered, assert_history_is_scope_isolated,
-    assert_history_orders_filters_and_pages, assert_idempotency_first_writer_wins,
-    assert_job_dispatch_exact_flavor, assert_job_dispatch_fencing,
-    assert_job_dispatch_requires_primary_plugin, assert_job_dispatch_routes_by_plugin,
-    assert_job_dispatch_routes_by_plugin_superset,
+    assert_deleted_workflow_hides_its_versions, assert_due_timers_page_in_wake_order,
+    assert_expired_rollbacks_are_released, assert_get_published_is_highest_numbered,
+    assert_history_is_scope_isolated, assert_history_orders_filters_and_pages,
+    assert_idempotency_first_writer_wins, assert_job_dispatch_exact_flavor,
+    assert_job_dispatch_fencing, assert_job_dispatch_requires_primary_plugin,
+    assert_job_dispatch_routes_by_plugin, assert_job_dispatch_routes_by_plugin_superset,
     assert_job_dispatch_same_processor_aba_is_fenced, assert_journal_visibility_and_scope,
     assert_live_lease_blocks_acquire, assert_non_resume_row_still_exhausts,
     assert_resume_row_exempt_from_reclaim_budget, assert_resume_target_survives_queue_round_trip,
@@ -158,6 +159,10 @@ matrix!(
 );
 matrix!(cross_scope_get_is_none, assert_cross_scope_get_is_none);
 matrix!(
+    cancel_request_is_durable_and_scoped,
+    assert_cancel_request_is_durable_and_scoped
+);
+matrix!(
     cross_scope_commit_is_rejected,
     assert_cross_scope_commit_is_rejected
 );
@@ -195,6 +200,10 @@ matrix!(
     assert_history_orders_filters_and_pages
 );
 matrix!(history_is_scope_isolated, assert_history_is_scope_isolated);
+matrix!(
+    due_timers_page_in_wake_order,
+    assert_due_timers_page_in_wake_order
+);
 matrix!(workflow_store_contract, assert_workflow_store_contract);
 matrix!(
     save_with_published_version_is_atomic,
