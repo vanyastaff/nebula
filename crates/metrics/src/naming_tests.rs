@@ -20,13 +20,11 @@ use super::{
     NEBULA_CREDENTIAL_REFRESH_SCHEDULER_CYCLES_TOTAL,
     NEBULA_CREDENTIAL_RESOLVER_REAUTH_PERSIST_CAS_EXHAUSTED_TOTAL,
     NEBULA_CREDENTIAL_ROTATION_DURATION_SECONDS, NEBULA_CREDENTIAL_ROTATION_FAILURES_TOTAL,
-    NEBULA_CREDENTIAL_ROTATIONS_TOTAL, NEBULA_ORCHESTRATOR_DISPATCH_TOTAL,
-    NEBULA_ORCHESTRATOR_HANDOFF_TOTAL, NEBULA_ORCHESTRATOR_RECLAIM_TOTAL,
-    NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL, NEBULA_RESOURCE_ACQUIRE_TOTAL,
-    NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS, NEBULA_RESOURCE_CALL_ATTEMPTS_TOTAL,
-    NEBULA_RESOURCE_CALL_UNITS_SETTLED_TOTAL, NEBULA_RESOURCE_CLEANUP_TOTAL,
-    NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL, NEBULA_RESOURCE_CREATE_TOTAL,
-    NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL,
+    NEBULA_CREDENTIAL_ROTATIONS_TOTAL, NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL,
+    NEBULA_RESOURCE_ACQUIRE_TOTAL, NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
+    NEBULA_RESOURCE_CALL_ATTEMPTS_TOTAL, NEBULA_RESOURCE_CALL_UNITS_SETTLED_TOTAL,
+    NEBULA_RESOURCE_CLEANUP_TOTAL, NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL,
+    NEBULA_RESOURCE_CREATE_TOTAL, NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL,
     NEBULA_RESOURCE_CREDENTIAL_REVOKE_OBSERVATIONS_TOTAL, NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL,
     NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL,
     NEBULA_RESOURCE_CREDENTIAL_ROTATION_DISPATCH_LATENCY_SECONDS,
@@ -38,8 +36,7 @@ use super::{
     NEBULA_RESOURCE_RECYCLE_OUTCOME_TOTAL, NEBULA_RESOURCE_RELEASE_ERROR_TOTAL,
     NEBULA_RESOURCE_RELEASE_TOTAL, NEBULA_RESOURCE_USAGE_DURATION_SECONDS,
     NEBULA_STORAGE_REVISION_CATALOG_OPERATIONS_TOTAL, auth_oauth_provider, auth_outcome,
-    call_attempt_outcome, call_unit_sent, idempotency_reject_reason, orchestrator_dispatch_outcome,
-    orchestrator_handoff_outcome, orchestrator_reclaim_outcome, recycle_outcome,
+    call_attempt_outcome, call_unit_sent, idempotency_reject_reason, recycle_outcome,
     refresh_coord_circuit_outcome, refresh_coord_claim_outcome, refresh_coord_coalesced_tier,
     refresh_coord_reclaim_outcome, refresh_coord_result_outcome, refresh_coord_sentinel_action,
     refresh_scheduler_candidate_outcome, refresh_scheduler_cycle_outcome,
@@ -730,91 +727,6 @@ fn idempotency_reject_reason_labels_are_closed_set() {
         "idempotency reject-reason labels must be unique"
     );
     for label in labels {
-        assert!(label.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'));
-    }
-}
-
-/// Orchestrator metrics (ADR-0095 pull loop).
-///
-/// 3 counters — all labeled by `outcome` with a closed label set.
-const ORCHESTRATOR_METRIC_NAMES: [&str; 3] = [
-    NEBULA_ORCHESTRATOR_DISPATCH_TOTAL,
-    NEBULA_ORCHESTRATOR_HANDOFF_TOTAL,
-    NEBULA_ORCHESTRATOR_RECLAIM_TOTAL,
-];
-
-#[test]
-fn orchestrator_constants_are_accessible_unique_and_registry_safe() {
-    let registry = MetricsRegistry::new();
-    let mut unique = HashSet::new();
-
-    for metric_name in ORCHESTRATOR_METRIC_NAMES {
-        assert!(!metric_name.is_empty());
-        assert!(metric_name.starts_with("nebula_orchestrator_"));
-        assert!(
-            metric_name
-                .chars()
-                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
-        );
-        assert!(unique.insert(metric_name));
-
-        // All orchestrator metrics are labeled counters.
-        let labels = registry.interner().single("outcome", "dispatched");
-        let counter = registry.counter_labeled(metric_name, &labels).unwrap();
-        counter.inc();
-        assert_eq!(counter.get(), 1);
-    }
-
-    assert_eq!(unique.len(), 3);
-}
-
-#[test]
-fn orchestrator_dispatch_outcome_labels_are_closed_set() {
-    // Closed label set — adding a value permanently inflates cardinality on
-    // the dispatch counter; this test is the CI gate against silent expansion.
-    let labels = [
-        orchestrator_dispatch_outcome::DISPATCHED,
-        orchestrator_dispatch_outcome::FAILED,
-    ];
-    let unique: HashSet<&str> = labels.iter().copied().collect();
-    assert_eq!(unique.len(), 2, "dispatch outcome labels must be unique");
-    for label in labels {
-        assert!(!label.is_empty());
-        assert!(label.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'));
-    }
-}
-
-#[test]
-fn orchestrator_reclaim_outcome_labels_are_closed_set() {
-    // Closed label set — adding a value permanently inflates cardinality on
-    // the reclaim counter; this test is the CI gate against silent expansion.
-    let labels = [
-        orchestrator_reclaim_outcome::RECLAIMED,
-        orchestrator_reclaim_outcome::EXHAUSTED,
-    ];
-    let unique: HashSet<&str> = labels.iter().copied().collect();
-    assert_eq!(unique.len(), 2, "reclaim outcome labels must be unique");
-    for label in labels {
-        assert!(!label.is_empty());
-        assert!(label.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'));
-    }
-}
-
-#[test]
-fn orchestrator_handoff_outcome_labels_are_closed_set() {
-    // Closed label set — same CI gate as the other orchestrator counters.
-    // The vocabulary mirrors the storage crate's `acceptance_label` so a
-    // dashboard and the backend spans agree on what happened.
-    let labels = [
-        orchestrator_handoff_outcome::ACCEPTED,
-        orchestrator_handoff_outcome::CLAIM_SUPERSEDED,
-        orchestrator_handoff_outcome::TURN_HELD,
-        orchestrator_handoff_outcome::ERROR,
-    ];
-    let unique: HashSet<&str> = labels.iter().copied().collect();
-    assert_eq!(unique.len(), 4, "handoff outcome labels must be unique");
-    for label in labels {
-        assert!(!label.is_empty());
         assert!(label.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'));
     }
 }

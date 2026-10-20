@@ -24,7 +24,6 @@
 
 pub mod durable_emitter;
 pub mod event_source;
-pub mod execution_sink;
 pub mod registry;
 pub mod routing;
 pub mod runtime;
@@ -101,7 +100,6 @@ pub mod config {
 pub use config::Config as DaemonConfig;
 pub use durable_emitter::DurableExecutionEmitter;
 pub use event_source::{EventSource, EventSourceAdapter, EventSourceRuntime};
-pub use execution_sink::EngineExecutionSink;
 pub use registry::{AnyDaemonHandle, DaemonError, DaemonRegistry};
 pub use routing::{DefinitionRoutingResolver, DispatchRoute, RoutingError, RoutingResolver};
 pub use runtime::DaemonRuntime;

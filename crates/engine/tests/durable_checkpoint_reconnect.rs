@@ -702,13 +702,6 @@ impl nebula_storage_port::ExecutionTurnHandoff for LostHandoffAcknowledgement {
             operation: "control_start_handoff",
         })
     }
-
-    async fn accept_turn(
-        &self,
-        request: &nebula_storage_port::TurnHandoff<'_>,
-    ) -> Result<nebula_storage_port::TurnAcceptance, nebula_storage_port::StorageError> {
-        self.0.accept_turn(request).await
-    }
 }
 
 #[tokio::test]

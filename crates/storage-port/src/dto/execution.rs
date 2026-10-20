@@ -7,9 +7,9 @@ use crate::Scope;
 
 /// Parameters for inserting a new execution row inside a compose transaction.
 ///
-/// The execution id is taken from `JobDispatchMsg::execution_id` and the
-/// tenant scope from `JobDispatchMsg::scope` — single source of truth in the
-/// compose method; this struct carries only the fields that differ.
+/// The execution id and tenant scope travel on the enclosing
+/// [`crate::dto::MaterializedStart`] — single source of truth in the compose
+/// method; this struct carries only the fields that differ.
 ///
 /// Construct via [`NewExecution::new`]; struct literal syntax is
 /// unavailable from external crates (`#[non_exhaustive]`).

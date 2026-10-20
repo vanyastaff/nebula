@@ -1,6 +1,4 @@
-//! Same-processor ABA policy for both durable queues.
-
-use std::collections::BTreeSet;
+//! Same-processor ABA policy for the durable control queue.
 
 use serde_json::{Map, Value};
 use thiserror::Error;
@@ -32,7 +30,7 @@ pub(crate) fn verify(value: &Value) -> Result<(), ClaimFencingError> {
     )?;
     if root["contract"].as_str() != Some("claim-generation-fencing")
         || root["producer_version"].as_u64() != Some(1)
-        || root["scenario_inventory_version"].as_u64() != Some(1)
+        || root["scenario_inventory_version"].as_u64() != Some(2)
     {
         return Err(ClaimFencingError::Version);
     }
@@ -45,10 +43,9 @@ pub(crate) fn verify(value: &Value) -> Result<(), ClaimFencingError> {
     let queues = root["queues"]
         .as_array()
         .ok_or(ClaimFencingError::Inventory)?;
-    if queues.len() != 2 {
+    if queues.len() != 1 {
         return Err(ClaimFencingError::Inventory);
     }
-    let mut seen = BTreeSet::new();
     for queue in queues {
         let fields = object(
             queue,
@@ -67,7 +64,7 @@ pub(crate) fn verify(value: &Value) -> Result<(), ClaimFencingError> {
         let name = fields["queue"]
             .as_str()
             .ok_or(ClaimFencingError::Inventory)?;
-        if !matches!(name, "control" | "job") || !seen.insert(name) {
+        if name != "control" {
             return Err(ClaimFencingError::Inventory);
         }
         let row = fields["row_id"]

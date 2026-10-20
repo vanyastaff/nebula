@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use nebula_storage_port::store::{
     ControlStartAcceptance, ControlStartHandoff, ControlTurnCommit, ControlTurnCommitOutcome,
-    ControlTurnTransition, ExecutionTurnHandoff, TurnAcceptance, TurnHandoff,
+    ControlTurnTransition, ExecutionTurnHandoff,
 };
 use nebula_storage_port::{Scope, StorageError};
 
@@ -114,16 +114,5 @@ impl ExecutionTurnHandoff for ScopedExecutionTurnHandoff {
         .at_version(handoff.expected_execution_version())
         .lease_to(handoff.holder(), handoff.lease_ttl());
         self.inner.accept_control_start(&scoped_handoff).await
-    }
-
-    async fn accept_turn(&self, handoff: &TurnHandoff<'_>) -> Result<TurnAcceptance, StorageError> {
-        let scoped_handoff = TurnHandoff::for_claim(
-            &self.bound,
-            handoff.execution_id(),
-            handoff.claim().clone(),
-            handoff.worker_flavor_revision_id(),
-        )
-        .lease_to(handoff.holder(), handoff.lease_ttl());
-        self.inner.accept_turn(&scoped_handoff).await
     }
 }

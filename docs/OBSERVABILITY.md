@@ -80,9 +80,11 @@ The one production journal writer today is the execution owner's control decisio
 `JournalEntry::ControlObserved` (`event = "control_observed"`) carries a versioned
 `ExecutionControlObservationV1` (`crates/execution/src/control_observation.rs`):
 a closed `outcome`, a typed framework `reason` (no provider text), the retained
-`source` (control-queue or job-dispatch row and queue claim generation, or the
-accepted-turn marker), the execution lease generation, an optional node attempt,
-and for `flavor-mismatch` the expected and actual worker-flavor revisions.
+`source` (control-queue row and queue claim generation, or the accepted-turn
+marker; a job-dispatch source survives only in historical observations, since
+the job-dispatch channel was removed), the execution lease generation, an
+optional node attempt, and for `flavor-mismatch` the expected and actual
+worker-flavor revisions.
 
 | `outcome` | Recorded when | `reason` codes |
 |---|---|---|

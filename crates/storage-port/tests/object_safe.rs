@@ -24,11 +24,10 @@ fn _assert_object_safe(
 fn _assert_runtime_authority_object_safe(
     _a: &dyn ExecutionTurnHandoff,
     _b: &dyn StartAcceptanceStore,
-    _c: &dyn JobDispatchQueue,
-    _d: &dyn OperationLedger,
-    _e: &dyn OperationLedgerAdjudicator,
-    _f: &dyn TurnRecovery,
-    _g: &dyn StartReservationMaintenance,
+    _c: &dyn OperationLedger,
+    _d: &dyn OperationLedgerAdjudicator,
+    _e: &dyn TurnRecovery,
+    _f: &dyn StartReservationMaintenance,
 ) {
 }
 

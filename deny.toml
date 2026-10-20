@@ -115,7 +115,7 @@ deny = [
     # integration is limited to accessor/wiring bridges. The api crate's direct
     # engine consumption is already listed above (ADR-0092).
     # nebula-worker is reusable exec-layer assembly: it wires the engine into
-    # the orchestrator pull-loop without choosing deployment policy
+    # the durable control-queue consumer without choosing deployment policy
     # (ADR-0095 D1, U-D1.3).
     "nebula-worker",
     # Dev-only: `crates/plugin-core/tests/plugin_wiring_e2e.rs` exercises the
@@ -138,11 +138,8 @@ deny = [
     # wires the internal InMemory test/reference adapter directly (same
     # non-deployment pattern as nebula-server's current default_state).
     "nebula-examples",
-    # orchestrator dev-depends on the in-memory JobDispatchQueue adapter as its
-    # test baseline (the InMemory backend is the no-DATABASE_URL conformance double).
-    "nebula-orchestrator",
     # nebula-worker dev-depends on the InMemory adapter for its integration test
-    # (the no-DATABASE_URL conformance double), same as nebula-orchestrator.
+    # (the no-DATABASE_URL conformance double).
     "nebula-worker",
     # The core-flavor worker binary wires the SQLite store adapters (supported local path)
     # and the InMemory adapters (smoke test dev-dep path).
@@ -170,14 +167,12 @@ deny = [
     "nebula-engine",
     "nebula-api",
     "nebula-credential",
-    # exec-layer consumer of the JobDispatchQueue port (capability-routed dispatch).
-    "nebula-orchestrator",
-    # nebula-worker assembles the orchestrator + engine over the storage ports.
+    # nebula-worker assembles the control consumer + engine over the storage ports.
     "nebula-worker",
     # Dev-only: e2e test uses `single_tenant_scope()` which returns `Scope` from storage-port.
     "nebula-plugin-core",
     # The core-flavor worker binary uses StorageError (schema init) and the
-    # JobDispatchQueue / ExecutionStore traits via the store bundles.
+    # ControlQueue / ExecutionStore traits via the store bundles.
     "nebula-worker-bin",
     # apps/server integration tests (execution_store_durability) use ControlQueue,
     # ControlMsg, ControlCommand, and Scope from storage-port to drive the durability
@@ -233,7 +228,6 @@ deny = [
     "nebula-deployment",
     "nebula-api",
     "nebula-engine",
-    "nebula-orchestrator",
     "nebula-plugin-core",
     "nebula-sdk",
     "nebula-server",
@@ -318,7 +312,6 @@ deny = [
     "nebula-examples",
     "nebula-execution",
     "nebula-metadata",
-    "nebula-orchestrator",
     "nebula-plugin",
     "nebula-plugin-core",
     "nebula-resource",
@@ -384,7 +377,6 @@ deny = [
     "nebula-api",
     "nebula-engine",
     "nebula-examples",
-    "nebula-orchestrator",
     "nebula-plugin-core",  # dev-only
     "nebula-server",
     "nebula-storage",
@@ -417,7 +409,6 @@ deny = [
     "nebula-deployment",
     "nebula-engine",
     "nebula-examples",
-    "nebula-orchestrator",
     "nebula-plugin-core",  # dev-only
     "nebula-resource",
     "nebula-server",
@@ -425,10 +416,6 @@ deny = [
     "nebula-worker",  # dev-only
     "nebula-worker-bin",
   ], reason = "Cross-cutting metrics; consumers are listed so a new dependent is a reviewed change" },
-  { crate = "nebula-orchestrator", wrappers = [
-    "nebula-engine",
-    "nebula-worker",  # dev-only
-  ], reason = "Exec-layer dispatch loop; only the engine and worker assembly use it" },
   { crate = "nebula-plugin-core", wrappers = [
     "nebula-deployment",
     "nebula-examples",

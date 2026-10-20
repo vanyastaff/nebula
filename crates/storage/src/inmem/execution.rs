@@ -99,23 +99,6 @@ pub(super) struct QueuedMsg {
     pub(super) claim_generation: u64,
 }
 
-/// One queued job-dispatch row plus its processing bookkeeping.
-///
-/// Lives in `State::jobs` alongside the control queue and execution rows.
-#[derive(Debug, Clone)]
-pub(super) struct QueuedJob {
-    pub(super) msg: nebula_storage_port::dto::JobDispatchMsg,
-    pub(super) status: String,
-    pub(super) processed_by: Option<[u8; 16]>,
-    pub(super) processed_at: Option<Instant>,
-    pub(super) reclaim_count: u32,
-    pub(super) error_message: Option<String>,
-    /// Monotonic claim attempt, mirroring the SQL backends' `claim_generation`
-    /// column: incremented on every claim, never decremented or reused, and
-    /// the sole authority for acknowledging the row.
-    pub(super) claim_generation: u64,
-}
-
 /// Receipt identity, mirroring the SQL primary key of
 /// `execution_control_observation_receipts`: execution, source kind,
 /// source row, source generation, decision key and outcome.
@@ -155,8 +138,6 @@ pub(super) struct State {
     pub(super) queue: HashMap<[u8; 16], QueuedMsg>,
     /// Per-execution next journal sequence number.
     pub(super) next_seq: HashMap<String, u64>,
-    /// Job-dispatch queue rows keyed by the message's 16-byte id.
-    pub(super) jobs: HashMap<[u8; 16], QueuedJob>,
     /// Dedup guard set: `(workspace_id, org_id, trigger_id, event_id)` →
     /// winner execution_id.  The value enables Duplicate read-back without a
     /// separate store lookup.

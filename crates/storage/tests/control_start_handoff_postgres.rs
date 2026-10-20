@@ -37,7 +37,6 @@ async fn postgres_control_start_handoff() {
     ));
     oracle(Ports {
         journal: Arc::new(PgJournalReader::new(pool.clone())),
-        jobs: Arc::new(PgJobDispatchQueue::new(pool.clone())),
         execution: Arc::new(PgExecutionStore::new(pool.clone())),
         queue: Arc::new(PgControlQueue::new(pool.clone())),
         handoff: Arc::new(PgTurnHandoff::new(pool.clone())),
@@ -51,6 +50,88 @@ async fn postgres_control_start_handoff() {
         )),
     })
     .await;
+}
+
+/// Ports over one private-schema pool, as each evidence case wires them.
+fn postgres_ports(pool: &sqlx::PgPool) -> Ports {
+    use nebula_storage::postgres::*;
+    let catalog = Arc::new(PgPlanFlavorCatalog::new(
+        pool.clone(),
+        &nebula_metrics::MetricsRegistry::new(),
+    ));
+    Ports {
+        journal: Arc::new(PgJournalReader::new(pool.clone())),
+        execution: Arc::new(PgExecutionStore::new(pool.clone())),
+        queue: Arc::new(PgControlQueue::new(pool.clone())),
+        handoff: Arc::new(PgTurnHandoff::new(pool.clone())),
+        recovery: Arc::new(PgTurnHandoff::new(pool.clone())),
+        starts: Arc::new(PgStartAcceptanceStore::new(pool.clone())),
+        catalog: catalog.clone(),
+        admin: catalog,
+        parents: Some((
+            Arc::new(PgTenantProvisioningStore::new(pool.clone())),
+            Arc::new(PgWorkflowStore::new(pool.clone())),
+        )),
+    }
+}
+
+/// Each private schema is its own recovery universe: an accepted turn in one
+/// fixture must never surface in another fixture's recovery scan.
+#[tokio::test]
+async fn postgres_recovery_scans_are_isolated_between_fixtures() {
+    use nebula_storage::postgres::init_schema;
+    let url = std::env::var("DATABASE_URL").expect(
+        "control_start_handoff_postgres needs a live PostgreSQL: DATABASE_URL is unset or not Unicode",
+    );
+    let first_pool = postgres_schema::connect_with_private_schema(&url, "recovery_isolation_a")
+        .await
+        .unwrap();
+    init_schema(&first_pool).await.unwrap();
+    let second_pool = postgres_schema::connect_with_private_schema(&url, "recovery_isolation_b")
+        .await
+        .unwrap();
+    init_schema(&second_pool).await.unwrap();
+    let first = postgres_ports(&first_pool);
+    let second = postgres_ports(&second_pool);
+
+    let accepted = seed(&first).await;
+    let ControlStartAcceptance::Accepted { fence } = first
+        .handoff
+        .accept_control_start(&accepted.request())
+        .await
+        .unwrap()
+    else {
+        panic!("the first fixture accepts its Start")
+    };
+    assert!(
+        first
+            .execution
+            .release_lease(&accepted.scope, &accepted.execution, fence)
+            .await
+            .unwrap(),
+        "the first fixture must own the lease it releases"
+    );
+
+    let first_candidates = first
+        .recovery
+        .list_recoverable_turns(accepted.flavor, None, 16)
+        .await
+        .unwrap();
+    assert_eq!(first_candidates.turns().len(), 1);
+    assert_eq!(
+        first_candidates.turns()[0].execution_id(),
+        accepted.execution
+    );
+    assert!(
+        second
+            .recovery
+            .list_recoverable_turns(accepted.flavor, None, 16)
+            .await
+            .unwrap()
+            .turns()
+            .is_empty(),
+        "a fixture must not observe another fixture's accepted turn"
+    );
 }
 
 #[tokio::test]
@@ -69,7 +150,6 @@ async fn postgres_refusals_survive_observation_faults() {
     ));
     let ports = Ports {
         journal: Arc::new(PgJournalReader::new(pool.clone())),
-        jobs: Arc::new(PgJobDispatchQueue::new(pool.clone())),
         execution: Arc::new(PgExecutionStore::new(pool.clone())),
         queue: Arc::new(PgControlQueue::new(pool.clone())),
         handoff: Arc::new(PgTurnHandoff::new(pool.clone())),

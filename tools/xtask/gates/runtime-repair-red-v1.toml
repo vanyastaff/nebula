@@ -14,8 +14,10 @@
 # pass. A regression therefore fails the gate as a plain unexpected failure.
 #
 # Repaired and promoted to ordinary coverage:
-#   - same-processor claim-generation fencing (in-memory, file SQLite, live PostgreSQL) —
-#     acknowledgement is fenced on a storage-minted claim generation.
+#   - same-processor claim-generation fencing — acknowledgement is fenced on a
+#     storage-minted claim generation. Its component-only probe exercised the
+#     job-dispatch queue, which was removed as an unused second control channel;
+#     the control queue's fencing is covered by the storage conformance matrix.
 #   - StartKey (in-memory, file SQLite, live PostgreSQL) — keyed start
 #     acceptance reserves the key, creates the aggregate, and enqueues the
 #     Start command in one commit.

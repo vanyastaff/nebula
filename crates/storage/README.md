@@ -486,9 +486,9 @@ only control-command outbox.
 | SQLite (file or `sqlite::memory:`) | `sqlite` | `implemented` — local + test default; feature-gated since the wave-2 review (driver footprint not unconditional) |
 | PostgreSQL | `postgres` | `implemented` — production path |
 
-Job-dispatch claims require both exact worker-flavor revision equality and a
-superset of required plugin keys. The exact identity is mandatory on the port
-DTO and persisted by ordinary enqueue.
-The dispatch baseline `0005_dispatch.sql` requires a 32-byte worker-flavor identity
-without a default. Queue admission never invents a flavor or substitutes a
-plugin-superset match for exact revision equality.
+Control-queue claims for a worker flavor require exact worker-flavor revision
+equality with the execution's live revision reference. Queue admission never
+invents a flavor.
+The dispatch baseline `0005_dispatch.sql` still creates the `job_dispatch_queue`
+table, but no adapter reads or writes it any more: the job-dispatch channel was
+removed as an unused second control path, and a later migration drops the table.
