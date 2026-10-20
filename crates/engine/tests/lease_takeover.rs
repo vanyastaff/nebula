@@ -31,7 +31,7 @@ use std::{
     collections::HashMap,
     sync::{
         Arc, OnceLock,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicI64, AtomicU32, Ordering},
     },
     time::Duration,
 };
@@ -80,6 +80,7 @@ struct LeaseStores {
     checkpoints: Arc<nebula_storage::InMemoryCheckpointStore>,
     idempotency: Arc<nebula_storage::InMemoryIdempotencyGuard>,
     versions: Arc<InMemoryWorkflowVersionStore>,
+    clock: TestClock,
 }
 
 impl LeaseStores {
@@ -89,9 +90,8 @@ impl LeaseStores {
         // cannot hand one in. Both runners here share this single in-memory
         // store, so wiring it to the same `TestClock` the engines use keeps
         // the whole scenario in one era.
-        let execution = Arc::new(InMemoryExecutionStore::with_clock(Arc::new(
-            TestClock::shared(),
-        )));
+        let clock = TestClock::default();
+        let execution = Arc::new(InMemoryExecutionStore::with_clock(Arc::new(clock.clone())));
         let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
         let versions = InMemoryWorkflowVersionStore::new();
         Self {
@@ -101,6 +101,7 @@ impl LeaseStores {
             node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
             versions: Arc::new(versions),
+            clock,
         }
     }
 
@@ -286,7 +287,7 @@ fn make_workflow(nodes: Vec<NodeDefinition>, connections: Vec<Connection>) -> Wo
     }
 }
 
-fn make_engine(registry: Arc<ActionRegistry>) -> WorkflowEngine {
+fn make_engine(registry: Arc<ActionRegistry>, clock: &TestClock) -> WorkflowEngine {
     let metrics = MetricsRegistry::new();
     let runner = Arc::new(InProcessRunner::new());
     let runtime = Arc::new(
@@ -300,7 +301,7 @@ fn make_engine(registry: Arc<ActionRegistry>) -> WorkflowEngine {
     );
     WorkflowEngine::new(runtime, metrics)
         .unwrap()
-        .with_clock(Arc::new(TestClock::shared()))
+        .with_clock(Arc::new(clock.clone()))
 }
 
 // ---------------------------------------------------------------------------
@@ -393,7 +394,7 @@ async fn engine_b_takes_over_after_engine_a_runner_dies() {
 
     let engine_a = Arc::new(
         stores
-            .attach(make_engine(registry_a))
+            .attach(make_engine(registry_a, &stores.clock))
             .with_plan_flavor_runtime(
                 Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(Arc::new(
                     stores.execution.plan_flavor_catalog(),
@@ -409,7 +410,7 @@ async fn engine_b_takes_over_after_engine_a_runner_dies() {
     );
     let engine_b = Arc::new(
         stores
-            .attach(make_engine(registry_b))
+            .attach(make_engine(registry_b, &stores.clock))
             .with_plan_flavor_runtime(
                 Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(Arc::new(
                     stores.execution.plan_flavor_catalog(),
@@ -500,7 +501,7 @@ async fn engine_b_takes_over_after_engine_a_runner_dies() {
     // without sleeping; the SQL backends decide in the database precisely so
     // no caller can. Buffer = 200ms past TTL covers any heartbeat-induced
     // expiry bump that landed before abort.
-    TestClock::advance(lease_ttl + Duration::from_millis(200));
+    stores.clock.advance(lease_ttl + Duration::from_millis(200));
     tokio::time::advance(lease_ttl + Duration::from_millis(200)).await;
 
     // Runner B resumes. Should:
@@ -645,7 +646,7 @@ async fn engine_b_cancels_execution_after_runner_a_death_via_reclaim_redeliver()
 
     let engine_a = Arc::new(
         stores
-            .attach(make_engine(registry_a))
+            .attach(make_engine(registry_a, &stores.clock))
             .with_plan_flavor_runtime(
                 Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(Arc::new(
                     stores.execution.plan_flavor_catalog(),
@@ -661,7 +662,7 @@ async fn engine_b_cancels_execution_after_runner_a_death_via_reclaim_redeliver()
     );
     let engine_b = Arc::new(
         stores
-            .attach(make_engine(registry_b))
+            .attach(make_engine(registry_b, &stores.clock))
             .with_plan_flavor_runtime(
                 Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(Arc::new(
                     stores.execution.plan_flavor_catalog(),
@@ -899,7 +900,7 @@ async fn a_cancel_drained_on_another_worker_reaches_the_lease_holder() {
     let mut events_rx = event_bus.subscribe();
     let engine_a = Arc::new(
         stores
-            .attach(make_engine(Arc::clone(&registry_a)))
+            .attach(make_engine(Arc::clone(&registry_a), &stores.clock))
             .with_plan_flavor_runtime(
                 Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(Arc::new(
                     stores.execution.plan_flavor_catalog(),
@@ -915,7 +916,7 @@ async fn a_cancel_drained_on_another_worker_reaches_the_lease_holder() {
     );
     let engine_b = Arc::new(
         stores
-            .attach(make_engine(Arc::clone(&registry_a)))
+            .attach(make_engine(Arc::clone(&registry_a), &stores.clock))
             .with_plan_flavor_runtime(
                 Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(Arc::new(
                     stores.execution.plan_flavor_catalog(),
@@ -1058,7 +1059,7 @@ async fn replay_does_not_contend_for_held_lease() {
     let mut events_rx = event_bus.subscribe();
 
     let engine_a = Arc::new(
-        make_engine(registry_a)
+        make_engine(registry_a, &stores.clock)
             .with_execution_stores(stores.execution_stores())
             .with_plan_flavor_runtime(
                 Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(Arc::new(
@@ -1081,7 +1082,7 @@ async fn replay_does_not_contend_for_held_lease() {
     // workflow. The test still observes runner A's lease through the
     // shared `stores.execution` directly — that is what the invariant
     // cares about.
-    let engine_b = make_engine(registry_b)
+    let engine_b = make_engine(registry_b, &stores.clock)
         .with_lease_ttl(lease_ttl)
         .with_lease_heartbeat_interval(heartbeat_interval);
 
@@ -1191,34 +1192,30 @@ async fn replay_does_not_contend_for_held_lease() {
     let _ = task_a.await;
 }
 
-/// A process-wide clock the test can move forward.
+/// A clock the test can move forward, one per scenario.
 ///
-/// Both engines share it, because both must agree on whether a lease deadline
-/// has passed — that agreement is the property under test. Offsets are added
-/// to the real clock rather than replacing it so persisted timestamps stay in
-/// a sane era alongside anything the storage layer stamps for itself.
-#[derive(Debug, Default)]
-struct TestClock;
+/// Both engines and the store of one scenario share it, because they must
+/// agree on whether a lease deadline has passed — that agreement is the
+/// property under test. Each scenario owns its offset: the tests in this binary
+/// run concurrently, and a process-wide offset let one scenario's advance
+/// expire a lease another scenario still holds. Offsets are added to the real
+/// clock rather than replacing it so persisted timestamps stay in a sane era
+/// alongside anything the storage layer stamps for itself.
+#[derive(Debug, Clone, Default)]
+struct TestClock {
+    offset_ms: Arc<AtomicI64>,
+}
 
 impl TestClock {
-    fn shared() -> Self {
-        Self
-    }
-
-    fn offset() -> &'static std::sync::atomic::AtomicI64 {
-        static OFFSET_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
-        &OFFSET_MS
-    }
-
-    fn advance(by: Duration) {
+    fn advance(&self, by: Duration) {
         let millis = i64::try_from(by.as_millis()).expect("test advance fits in i64");
-        Self::offset().fetch_add(millis, Ordering::SeqCst);
+        self.offset_ms.fetch_add(millis, Ordering::SeqCst);
     }
 }
 
 impl nebula_core::accessor::Clock for TestClock {
     fn now(&self) -> chrono::DateTime<chrono::Utc> {
-        chrono::Utc::now() + chrono::Duration::milliseconds(Self::offset().load(Ordering::SeqCst))
+        chrono::Utc::now() + chrono::Duration::milliseconds(self.offset_ms.load(Ordering::SeqCst))
     }
 
     fn monotonic(&self) -> std::time::Instant {
