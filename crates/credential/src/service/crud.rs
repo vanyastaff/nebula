@@ -424,6 +424,7 @@ impl CredentialService {
             .tombstone(&selector, CredentialTombstone::new(existing.version()))
             .await
             .map_err(|error| Self::map_store_err_for(id, error))?;
+        self.resolver.evict_cached_handles(&selector);
         tracing::info!(credential.id = %id, "credential tombstoned");
         Ok(())
     }
