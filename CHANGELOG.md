@@ -60,6 +60,18 @@ changes are expected between minor releases — call them out here.
   for an execution the database does not hold is `NotFound`, and the bulk loads
   answer in node-id byte order on every backend.
 
+### Changed
+
+- **SQLite execution reads no longer wait for writes.** A file-backed SQLite
+  deployment in WAL mode now opens four read-only connections beside its one
+  writer (`sqlite::DeploymentPool::read_pool`). The server serves execution
+  reads (`get`, cancel checks, the due-timer scan, history and counts) and the
+  execution journal from them, so they no longer queue behind writes on the
+  single connection. Every write, and every other store's reads, stay on the
+  writer; in-memory databases keep one connection. `SqliteExecutionStore`
+  gains `with_read_pool`, and `DeploymentPool` gains `close`, which closes both
+  pools. The storage README now describes the SQLite deployment class.
+
 ## [0.33.0] - 2026-10-07
 
 This is the first versioned section. Workspace versions before 0.33.0 were
