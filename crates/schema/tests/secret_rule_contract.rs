@@ -37,8 +37,8 @@ fn not_rule(rule: Rule) -> Rule {
     Rule::not(rule).expect("bounded negation")
 }
 
-fn custom_rule(expression: &str) -> Rule {
-    Rule::custom(expression).expect("bounded custom rule")
+fn deferred_rule() -> Rule {
+    Rule::unique_by("/id").expect("bounded deferred rule")
 }
 
 fn described_rule(rule: Rule, message: impl Into<String>) -> Rule {
@@ -59,6 +59,28 @@ fn object_schema(rule: Rule) -> ValidSchema {
         )
         .build()
         .unwrap()
+}
+
+/// Deferred rules only apply to arrays, so they reach secrets through a list.
+fn secret_list_schema(rule: Rule) -> ValidSchema {
+    Schema::builder()
+        .property(
+            Property::list(field_key!("tokens"))
+                .item(Property::secret(field_key!("token")))
+                .with_rule(rule),
+        )
+        .build()
+        .unwrap()
+}
+
+fn secret_list_input(tokens: &[&str]) -> AuthoredValue {
+    let mut input = AuthoredValue::object();
+    let tokens = tokens
+        .iter()
+        .map(|token| AuthoredValue::Secret(SecretValue::string((*token).to_owned())))
+        .collect();
+    input.insert("tokens", AuthoredValue::List(tokens)).unwrap();
+    input
 }
 
 fn input(token: &str, count: Value) -> AuthoredValue {
@@ -174,18 +196,8 @@ fn hidden_malformed_secrets_still_fail_without_exposing_their_payload() {
 
 #[test]
 fn secret_declarations_require_full_rule_access_preflight_even_when_absent() {
-    let wire = json!({});
-    let schema = Schema::builder()
-        .property(Property::secret(field_key!("token")))
-        .root_rule(any_rule([
-            one_of_rule([wire.clone()]),
-            custom_rule("UNSUPPORTED_CALLBACK"),
-        ]))
-        .build()
-        .unwrap();
-    let prepared = schema
-        .validate(AuthoredValue::from_data(wire).unwrap())
-        .unwrap();
+    let schema = secret_list_schema(any_rule([one_of_rule([json!([])]), deferred_rule()]));
+    let prepared = schema.validate(secret_list_input(&[])).unwrap();
     let report = prepared
         .resolve_data()
         .expect_err("aggregate access is governed by the declaration");
@@ -414,15 +426,15 @@ fn select_membership_does_not_compare_redaction(#[case] allowed: &str, #[case] a
 }
 
 #[rstest::rstest]
-#[case::direct(custom_rule("UNSUPPORTED_CALLBACK"))]
-#[case::negated(not_rule(custom_rule("UNSUPPORTED_CALLBACK")))]
-#[case::alternative(any_rule([one_of_rule([json!({"token": SECRET, "count": 1})]), custom_rule("UNSUPPORTED_CALLBACK")]))]
+#[case::direct(deferred_rule())]
+#[case::negated(not_rule(deferred_rule()))]
+#[case::alternative(any_rule([one_of_rule([json!([SECRET])]), deferred_rule()]))]
 fn unsupported_execution_cannot_mint_a_secret_proof(#[case] rule: Rule) {
-    let schema = object_schema(rule);
-    let prepared = schema.validate(input(SECRET, json!(1))).unwrap();
+    let schema = secret_list_schema(rule);
+    let prepared = schema.validate(secret_list_input(&[SECRET])).unwrap();
     let report = prepared
         .resolve_data()
-        .expect_err("no custom evaluator is admitted to plaintext");
+        .expect_err("no deferred evaluator is admitted to plaintext");
     assert_eq!(
         report.errors().next().unwrap().code(),
         "evaluation_unavailable"

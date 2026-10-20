@@ -672,16 +672,63 @@ async fn durable_timer_scanner_logs_a_row_whose_state_does_not_decode() {
     // A row whose stored body is a bare JSON string — the pre-envelope shape —
     // carrying text the engine must never re-publish.
     let undecodable_id = ExecutionId::new();
+    let undecodable_body = serde_json::json!(format!("provider rejected token {MARKER}"));
     stores
         .execution
         .create(
             &scope,
             &undecodable_id.to_string(),
             &nebula_core::WorkflowId::new().to_string(),
-            serde_json::json!(format!("provider rejected token {MARKER}")),
+            undecodable_body.clone(),
         )
         .await
         .expect("the in-memory store admits a row with any body");
+    // List it as due, as a row parked by an older build would be after the
+    // migration backfill, so the sweep reaches the decode.
+    let token = stores
+        .execution
+        .acquire_lease(
+            &scope,
+            &undecodable_id.to_string(),
+            "older-build",
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("acquire_lease")
+        .expect("lease is free");
+    let listing = nebula_storage_port::ExecutionListing::new(
+        nebula_storage_port::ExecutionListingStatus::Running,
+        None,
+        None,
+    )
+    .with_next_wake_at(Some(chrono::Utc::now() - chrono::Duration::minutes(1)));
+    let committed = stores
+        .execution
+        .commit(nebula_storage_port::TransitionBatch::new(
+            scope.clone(),
+            undecodable_id.to_string(),
+            0,
+            token,
+            undecodable_body,
+            listing,
+        ))
+        .await
+        .expect("commit");
+    assert!(
+        matches!(
+            committed,
+            nebula_storage_port::TransitionOutcome::Applied { .. }
+        ),
+        "the due listing must apply: {committed:?}"
+    );
+    assert!(
+        stores
+            .execution
+            .release_lease(&scope, &undecodable_id.to_string(), token)
+            .await
+            .expect("release_lease"),
+        "the older build's lease is released"
+    );
 
     let engine = stores
         .attach(make_engine(

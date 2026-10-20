@@ -190,7 +190,7 @@ mod tests {
         assert!(serde_json::from_value::<Condition>(wire).is_err());
         let decorated = Rule::described(predicate(), "private").unwrap();
         assert!(Condition::try_from(decorated).is_err());
-        let deferred = Rule::not(Rule::custom("private()").unwrap()).unwrap();
+        let deferred = Rule::not(Rule::unique_by("id").unwrap()).unwrap();
         assert!(Condition::try_from(deferred.clone()).is_err());
         assert!(
             serde_json::from_value::<Condition>(serde_json::to_value(deferred).unwrap()).is_err()

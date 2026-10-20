@@ -94,6 +94,15 @@ pub const DEFAULT_RECLAIM_INTERVAL: Duration = Duration::from_secs(30);
 /// itself the suspect, not the runners.
 pub const DEFAULT_MAX_RECLAIM_COUNT: u32 = 3;
 
+/// Default age past which a `Completed` or `Failed` row is deleted.
+///
+/// A terminal row is never read again; the week only keeps recent command
+/// history around for an operator inspecting the table.
+pub const DEFAULT_RETENTION: Duration = Duration::from_hours(7 * 24);
+
+/// Default cadence of the retention sweep.
+pub const DEFAULT_RETENTION_INTERVAL: Duration = Duration::from_hours(1);
+
 /// Errors returned from [`ControlDispatch`] methods.
 ///
 /// Kept dedicated (rather than reusing [`crate::EngineError`]) so the
@@ -406,6 +415,9 @@ pub struct ControlConsumer {
     reclaim_after: Duration,
     reclaim_interval: Duration,
     max_reclaim_count: u32,
+    /// Age past which terminal rows are deleted; `None` keeps them.
+    retention: Option<Duration>,
+    retention_interval: Duration,
     /// Registry the reclaim sweep increments
     /// `nebula_engine_control_reclaim_total{outcome}` against. Defaults to a
     /// private fresh [`MetricsRegistry`] so the
@@ -438,6 +450,8 @@ impl ControlConsumer {
             reclaim_after: DEFAULT_RECLAIM_AFTER,
             reclaim_interval: DEFAULT_RECLAIM_INTERVAL,
             max_reclaim_count: DEFAULT_MAX_RECLAIM_COUNT,
+            retention: Some(DEFAULT_RETENTION),
+            retention_interval: DEFAULT_RETENTION_INTERVAL,
             metrics: MetricsRegistry::new(),
         }
     }
@@ -478,6 +492,22 @@ impl ControlConsumer {
     #[must_use]
     pub fn with_max_reclaim_count(mut self, max_reclaim_count: u32) -> Self {
         self.max_reclaim_count = max_reclaim_count;
+        self
+    }
+
+    /// Override how long `Completed` and `Failed` rows are kept; `None`
+    /// keeps them forever. Default: [`DEFAULT_RETENTION`].
+    #[must_use]
+    pub fn with_retention(mut self, retention: Option<Duration>) -> Self {
+        self.retention = retention;
+        self
+    }
+
+    /// Override the cadence of the retention sweep. Default:
+    /// [`DEFAULT_RETENTION_INTERVAL`].
+    #[must_use]
+    pub fn with_retention_interval(mut self, retention_interval: Duration) -> Self {
+        self.retention_interval = retention_interval;
         self
     }
 
@@ -553,6 +583,10 @@ impl ControlConsumer {
         // yet and the first `claim_pending` call has priority.
         reclaim_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let _ = reclaim_ticker.tick().await;
+        // The first tick fires at once: a restart prunes what accumulated
+        // while the process was down.
+        let mut retention_ticker = tokio::time::interval(self.retention_interval);
+        retention_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         // Deadline at which the next `claim_pending` is allowed to fire. Held
         // in scope across the `tokio::select!` below so that a reclaim
@@ -591,6 +625,9 @@ impl ControlConsumer {
                     // `claim_deadline` is preserved — reclaim does not
                     // short-circuit the backoff or the idle poll delay.
                 }
+                _ = retention_ticker.tick(), if self.retention.is_some() => {
+                    self.sweep_retention().await;
+                }
                 () = &mut claim_sleep, if !at_capacity => {
                     let next_delay = self
                         .clone()
@@ -600,6 +637,27 @@ impl ControlConsumer {
                         + next_delay.unwrap_or(Duration::ZERO);
                 }
             }
+        }
+    }
+
+    /// Delete terminal rows past the retention window, logging the outcome.
+    /// A storage error is logged and retried on the next tick.
+    async fn sweep_retention(&self) {
+        let Some(retention) = self.retention else {
+            return;
+        };
+        match self.queue.cleanup(retention).await {
+            Ok(0) => {},
+            Ok(deleted) => tracing::debug!(
+                processor = %hex_display(&self.processor_id),
+                deleted,
+                "control-queue retention sweep deleted terminal rows"
+            ),
+            Err(error) => tracing::warn!(
+                processor = %hex_display(&self.processor_id),
+                %error,
+                "control-queue retention sweep failed; retrying next tick"
+            ),
         }
     }
 

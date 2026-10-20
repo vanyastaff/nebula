@@ -1,4 +1,4 @@
-//! PostgreSQL node-result store (`0011_node_results.sql`).
+//! PostgreSQL node-result store (`0013_node_results.sql`).
 //!
 //! Three tables back the engine's resume seam: `node_outputs` (the raw
 //! payload a node emitted), `node_results` (its typed result record) and

@@ -93,11 +93,11 @@ fn custom_message_overrides_default() {
 fn deferred_rules_are_skipped_in_static_mode() {
     let rules = vec![
         Rule::min_length(3),
-        Rule::custom("sibling_match('email')").unwrap(),
         Rule::unique_by("id").unwrap(),
+        Rule::unique_by("name").unwrap(),
     ];
 
-    // Only MinLength runs; Custom and UniqueBy are deferred.
+    // Only MinLength runs; both UniqueBy rules are deferred.
     assert_eq!(
         validate_rules(
             &json!("alice"),
@@ -120,10 +120,7 @@ fn deferred_rules_are_skipped_in_static_mode() {
     .unwrap_err();
     assert_eq!(errors.len(), 2);
     for error in errors.errors() {
-        assert_eq!(
-            error.kind(),
-            nebula_validator::ValidationErrorKind::Unavailable
-        );
+        assert_eq!(error.code.as_ref(), "type_mismatch");
     }
 }
 

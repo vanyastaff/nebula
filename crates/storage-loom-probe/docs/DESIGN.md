@@ -47,7 +47,7 @@ Standalone-крейт с loom-модельными пробами для CAS-к�
 - `src/lib.rs` — refresh-claim проба: `Repo::try_claim` поверх `Mutex<HashMap<u32, ClaimRow>>` + crate-level docs «почему отдельный крейт».
 - `src/lease_handoff.rs` — execution-lease проба: acquire/renew/release с fencing-generation + test-хелперы (`flag_expired`, `snapshot`).
 - `tests/refresh_claim_loom.rs` — loom-модель: 2 конкурирующих `try_claim` → ровно один `Acquired`.
-- `tests/lease_handoff_loom.rs` — loom-модели: single-winner acquire, отклонение superseded-токена после takeover, stale release после expiry-takeover = no-op. Companion runtime-тесты: `crates/engine/tests/lease_takeover.rs`, `crates/storage/tests/execution_lease_pg_integration.rs`.
+- `tests/lease_handoff_loom.rs` — loom-модели: single-winner acquire, отклонение superseded-токена после takeover, stale release после expiry-takeover = no-op. Companion runtime-тесты: `crates/engine/tests/lease_takeover.rs`, `crates/storage/tests/conformance.rs`.
 
 Поток данных: каждый тест строит `Repo`/`LeaseRepo`, под `loom::model` запускает конкурирующие потоки на shared `Arc`, и проверяет, что финальное состояние удовлетворяет single-winner инварианту во всех чередованиях.
 

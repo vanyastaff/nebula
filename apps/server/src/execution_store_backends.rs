@@ -120,9 +120,10 @@ fn build_memory_execution_stores(
         resource_status_store,
         execution_store: Arc::new(execution_store),
         node_result_store: Arc::new(node_results),
-        // In-memory workflows are not rows of the deployment database, so the
-        // trigger store that checks a trigger's workflow is in-memory too.
         trigger_store: Arc::new(nebula_storage::inmem::InMemoryTriggerStore::new()),
+        webhook_activation_store: Arc::new(
+            nebula_storage::inmem::InMemoryWebhookActivationStore::new(),
+        ),
         journal_reader: Arc::new(journal),
         control_queue: Arc::clone(&shared_control_queue),
         start_acceptance: start_acceptance.clone(),
@@ -143,7 +144,7 @@ fn build_sqlite_execution_stores(
     use nebula_storage::sqlite::{
         SqliteControlQueue, SqliteExecutionStore, SqliteJournalReader, SqliteNodeResultStore,
         SqliteResourceStore, SqliteResumeProducer, SqliteResumeTokenStore,
-        SqliteStartAcceptanceStore, SqliteTriggerStore, SqliteTurnHandoff, SqliteWorkflowStore,
+        SqliteStartAcceptanceStore, SqliteTurnHandoff, SqliteWorkflowStore,
         SqliteWorkflowVersionStore,
     };
     use nebula_storage::sqlite::{SqliteIdempotencyGuard, SqliteOperationLedger};
@@ -224,7 +225,12 @@ fn build_sqlite_execution_stores(
         )),
         execution_store,
         node_result_store: node_results,
-        trigger_store: Arc::new(SqliteTriggerStore::new(pool.clone())),
+        trigger_store: Arc::new(nebula_storage::sqlite::SqliteTriggerStore::new(
+            pool.clone(),
+        )),
+        webhook_activation_store: Arc::new(
+            nebula_storage::sqlite::SqliteWebhookActivationStore::new(pool.clone()),
+        ),
         journal_reader,
         control_queue,
         start_acceptance: start_acceptance.clone(),
@@ -245,8 +251,8 @@ fn build_postgres_execution_stores(
 ) -> ExecutionStoreBundle {
     use nebula_storage::postgres::{
         PgControlQueue, PgExecutionStore, PgJournalReader, PgNodeResultStore, PgResourceStore,
-        PgResumeProducer, PgResumeTokenStore, PgStartAcceptanceStore, PgTriggerStore,
-        PgTurnHandoff, PgWorkflowStore, PgWorkflowVersionStore,
+        PgResumeProducer, PgResumeTokenStore, PgStartAcceptanceStore, PgTurnHandoff,
+        PgWorkflowStore, PgWorkflowVersionStore,
     };
     use nebula_storage::postgres::{PgIdempotencyGuard, PgOperationLedger};
     let workflow_store: Arc<dyn nebula_storage_port::store::WorkflowStore> =
@@ -329,7 +335,10 @@ fn build_postgres_execution_stores(
         )),
         execution_store,
         node_result_store,
-        trigger_store: Arc::new(PgTriggerStore::new(pool.clone())),
+        trigger_store: Arc::new(nebula_storage::postgres::PgTriggerStore::new(pool.clone())),
+        webhook_activation_store: Arc::new(
+            nebula_storage::postgres::PgWebhookActivationStore::new(pool.clone()),
+        ),
         journal_reader,
         control_queue,
         start_acceptance: start_acceptance.clone(),

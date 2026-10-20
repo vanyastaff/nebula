@@ -351,8 +351,8 @@ impl SchemaBuilder {
     /// [`nebula_validator::PredicateContext`] built from
     /// [`AuthoredValue::to_json`](crate::AuthoredValue::to_json).
     /// [`ExecutionMode::StaticOnly`](nebula_validator::ExecutionMode::StaticOnly) is used, so
-    /// **deferred** rules (including [`Rule::custom`](nebula_validator::Rule::custom))
-    /// are skipped here and remain wire hooks for the workflow engine.
+    /// **deferred** rules (such as [`Rule::unique_by`](nebula_validator::Rule::unique_by))
+    /// are skipped here and run when the runtime completes the value.
     #[must_use]
     pub fn root_rule(mut self, rule: nebula_validator::Rule) -> Self {
         self.root_rules.push(rule);

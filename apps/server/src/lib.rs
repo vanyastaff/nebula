@@ -27,7 +27,9 @@ mod webhook_credential_resolver;
 pub mod runtime_repair_red;
 
 use clap::Parser;
-use transport::{ApiTransport, RealtimeTransport, Transport, WebhookIngressTransport};
+use transport::{
+    AllTransport, ApiTransport, RealtimeTransport, Transport, WebhookIngressTransport,
+};
 
 /// Failure from serving or an operator setup command.
 #[derive(Debug, thiserror::Error)]
@@ -100,11 +102,12 @@ pub async fn run_from_env() -> Result<(), ServerRunError> {
         .map_err(compose::ServerRunError::Telemetry)
         .map_err(ServerRunError::from)?;
     match cli.transport {
-        Transport::Api | Transport::All => {
-            compose::run_transport(ApiTransport, telemetry_guard, cli.execution)
-                .await
-                .map_err(ServerRunError::from)
-        },
+        Transport::Api => compose::run_transport(ApiTransport, telemetry_guard, cli.execution)
+            .await
+            .map_err(ServerRunError::from),
+        Transport::All => compose::run_transport(AllTransport, telemetry_guard, cli.execution)
+            .await
+            .map_err(ServerRunError::from),
         Transport::Webhook => {
             compose::run_transport(WebhookIngressTransport, telemetry_guard, cli.execution)
                 .await

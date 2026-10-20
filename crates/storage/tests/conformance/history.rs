@@ -72,7 +72,8 @@ pub(crate) async fn assert_status_projection_follows_commit(backend: &dyn Backen
     );
 
     let token = lease(store.as_ref(), &s, "exe_listing").await;
-    let running = ExecutionListing::new(Status::Running, Some(micros(1)), None);
+    let running = ExecutionListing::new(Status::Running, Some(micros(1)), None)
+        .with_next_wake_at(Some(micros(3)));
     let version = commit_listing(
         store.as_ref(),
         &s,
@@ -90,16 +91,17 @@ pub(crate) async fn assert_status_projection_follows_commit(backend: &dyn Backen
     );
     assert!(
         store
-            .list_all_running()
+            .list_due_timers(micros(4), None, 100)
             .await
-            .expect("active scan")
+            .expect("due scan")
             .iter()
-            .any(|row| row.id == "exe_listing"),
-        "[{}] a running execution is in the active scan",
+            .any(|row| row.record.id == "exe_listing"),
+        "[{}] a running execution with a due timer is in the due scan",
         backend.name()
     );
 
-    let failed = ExecutionListing::new(Status::Failed, Some(micros(1)), Some(micros(2)));
+    let failed = ExecutionListing::new(Status::Failed, Some(micros(1)), Some(micros(2)))
+        .with_next_wake_at(Some(micros(3)));
     commit_listing(store.as_ref(), &s, "exe_listing", version, token, failed).await;
     let page = store
         .list_history(&s, &whole_history())
@@ -126,12 +128,78 @@ pub(crate) async fn assert_status_projection_follows_commit(backend: &dyn Backen
     );
     assert!(
         !store
-            .list_all_running()
+            .list_due_timers(micros(4), None, 100)
             .await
-            .expect("active scan")
+            .expect("due scan")
             .iter()
-            .any(|row| row.id == "exe_listing"),
-        "[{}] a terminal execution leaves the active scan",
+            .any(|row| row.record.id == "exe_listing"),
+        "[{}] a terminal execution leaves the due scan",
+        backend.name()
+    );
+}
+
+/// Due timers are listed across scopes in `(next_wake_at, id)` order, at or
+/// before the due instant only, and page by keyset without gaps or repeats.
+/// Rows without a timer, with a future timer, or terminal are never listed.
+pub(crate) async fn assert_due_timers_page_in_wake_order(backend: &dyn Backend) {
+    let store = backend.execution_store().await;
+    let (a, b) = (scope_a(), scope_b());
+    seed_workflow(backend, &a, "wf_due").await;
+    seed_workflow(backend, &b, "wf_due").await;
+    // (scope, id, status, timer)
+    let rows = [
+        (&a, "exe_due_1", Status::Running, Some(micros(5))),
+        (&b, "exe_due_2", Status::Paused, Some(micros(5))),
+        (&a, "exe_due_3", Status::Running, Some(micros(9))),
+        (&b, "exe_due_none", Status::Running, None),
+        (&a, "exe_due_later", Status::Running, Some(micros(20))),
+        (&b, "exe_due_done", Status::Completed, Some(micros(5))),
+    ];
+    for (scope, id, status, timer) in rows {
+        store
+            .create(scope, id, "wf_due", serde_json::json!({}))
+            .await
+            .expect("create");
+        let token = lease(store.as_ref(), scope, id).await;
+        let finished = status.is_terminal().then(|| micros(6));
+        let listing =
+            ExecutionListing::new(status, Some(micros(1)), finished).with_next_wake_at(timer);
+        commit_listing(store.as_ref(), scope, id, 0, token, listing).await;
+    }
+
+    let mut listed = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = store
+            .list_due_timers(micros(9), cursor.as_ref(), 2)
+            .await
+            .expect("due scan");
+        assert!(
+            page.len() <= 2,
+            "[{}] the limit bounds a page",
+            backend.name()
+        );
+        let Some(last) = page.last() else { break };
+        cursor = Some(last.cursor());
+        listed.extend(
+            page.into_iter()
+                .filter(|row| row.record.id.starts_with("exe_due_"))
+                .map(|row| (row.record.id, row.record.scope, row.next_wake_at)),
+        );
+    }
+    assert_eq!(
+        listed,
+        vec![
+            (
+                "exe_due_1".to_owned(),
+                a.clone(),
+                MicrosInstant::floor(micros(5))
+            ),
+            ("exe_due_2".to_owned(), b, MicrosInstant::floor(micros(5))),
+            ("exe_due_3".to_owned(), a, MicrosInstant::floor(micros(9))),
+        ],
+        "[{}] due rows in wake order with an id tiebreak, across scopes, \
+         including a timer exactly at the due instant",
         backend.name()
     );
 }

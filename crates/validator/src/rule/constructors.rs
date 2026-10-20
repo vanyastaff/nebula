@@ -196,14 +196,6 @@ impl Rule {
         trusted_value(ValueRule::Url)
     }
 
-    /// Creates a deferred custom-expression rule.
-    ///
-    /// # Errors
-    /// Returns the exhausted text budget.
-    pub fn custom(expression: impl Into<String>) -> Result<Self, RuleBuildError> {
-        Self::from_leaf(RuleNode::Deferred(DeferredRule::Custom(expression.into())))
-    }
-
     /// Creates a deferred uniqueness rule.
     ///
     /// # Errors

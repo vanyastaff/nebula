@@ -14,10 +14,16 @@ Linked plugin release selection is shared with the standalone worker through
 package's runtime assembly; the server does not depend on the worker executable
 package. Ordinary launch serves HTTP and runs executions in one process.
 
-Run the default profile locally:
+Run the default profile locally with `task server:dev`, or set the three
+variables it sets yourself. Without them startup stops: outside development
+mode `API_JWT_SECRET` and `NEBULA_CRED_MASTER_KEY` are required, and the worker
+artifact digest is always required.
 
 ```bash
-cargo run -p nebula-server                       # NEBULA_TRANSPORT=all
+export NEBULA_ENV=development              # dev JWT secret; admits the dev key
+export NEBULA_CRED_DEV_KEY=1               # fixed insecure credential key
+export NEBULA_WORKER_ARTIFACT_SET_DIGEST=0000000000000000000000000000000000000000000000000000000000000000
+cargo run -p nebula-server                       # NEBULA_TRANSPORT=all: REST + webhooks
 cargo run -p nebula-server -- --transport api    # REST only
 cargo run -p nebula-server -- --transport webhook
 cargo run -p nebula-server -- --transport realtime
@@ -215,6 +221,12 @@ scope, and converts stored `whsec_` material to raw HMAC bytes. Its failures
 cross the API port as a closed, secret-free classification; credential or
 provider error text is never forwarded to API logs or problem responses.
 
+The `all` and `webhook` transports mount webhook ingress. Trigger rows and the
+capability tokens minted at activation are stored on the selected execution
+backend. The live route table is still held by the process that activated the
+webhook: after a restart, or on another replica, a webhook must be activated
+again before it receives deliveries.
+
 Webhook registration still generates and returns the one-time `whsec_` value
 inside the HTTP boundary. That generator is API-private and is not a public
 credential-runtime or integration surface.
@@ -254,11 +266,12 @@ same SQLite file. `memory` is rejected before creating storage.
 | `NEBULA_EXECUTION` | enum | `in-process` | `in-process` or `separate-workers`; CLI `--execution` takes precedence. |
 | `API_EXECUTION_DB_PATH` | string | `nebula-server-execution.db` | SQLite only. Path relative to the working directory. |
 | `DATABASE_URL` | string | — | Postgres only. Standard sqlx DSN (`postgres://user:pass@host/db`). Required when `API_EXECUTION_BACKEND=postgres`. |
+| `API_EXECUTION_MAX_CONNECTIONS` | integer | `8` | Postgres only. Size of the one pool every store, the control consumer and HTTP handlers share; 1 to 1000. |
 
 ### NodeResult and Checkpoint stores
 
 `NodeResultStore` follows the execution backend (`SqliteNodeResultStore` or
-`PgNodeResultStore`, migration `0011_node_results.sql`): node outputs, typed node
+`PgNodeResultStore`, migration `0013_node_results.sql`): node outputs, typed node
 results and workflow inputs are rows beside their execution, survive a restart, are
 shared by every server and worker on the same database, and are purged with the
 execution. The authoritative execution state remains the `ExecutionStore` row.

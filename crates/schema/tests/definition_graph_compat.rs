@@ -209,7 +209,7 @@ fn rules_prove_only_identical_context_free_constraints() {
     ));
     let contextual = graph(
         json!({"target":"text","null":"reject",
-        "rules":[{"custom":"requires_runtime_context"}]}),
+        "rules":[{"eq":["/other",1]}]}),
         json!([scalar("text", "string")]),
     );
     assert!(matches!(

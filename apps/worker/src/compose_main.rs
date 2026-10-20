@@ -156,7 +156,7 @@ async fn build_stores(
     metrics: &nebula_metrics::MetricsRegistry,
 ) -> Result<WorkerStores, WorkerRunError> {
     if let Some(dsn) = config.database_url.as_deref() {
-        return build_pg_stores(dsn, metrics).await;
+        return build_pg_stores(dsn, config.db_max_connections, metrics).await;
     }
 
     // SQLite is the single-process default. One connection serializes writes;
@@ -241,6 +241,7 @@ async fn build_stores(
 #[cfg(feature = "postgres")]
 async fn build_pg_stores(
     dsn: &str,
+    max_connections: u32,
     metrics: &nebula_metrics::MetricsRegistry,
 ) -> Result<WorkerStores, WorkerRunError> {
     use nebula_storage::postgres::{
@@ -251,7 +252,7 @@ async fn build_pg_stores(
     use sqlx::postgres::PgPoolOptions;
 
     let pool = PgPoolOptions::new()
-        .max_connections(8)
+        .max_connections(max_connections)
         .connect(dsn)
         .await
         .map_err(WorkerRunError::PostgresDatabase)?;
@@ -262,7 +263,7 @@ async fn build_pg_stores(
     tracing::info!("Postgres migrations ready");
 
     // Every store clone shares the same `PgPool` `Arc`; the pool manages
-    // connections internally (max_connections(8)).
+    // connections internally, up to `max_connections`.
     let execution_store = Arc::new(PgExecutionStore::new(pool.clone()));
     let journal_reader = Arc::new(PgJournalReader::new(pool.clone()));
     // Node results reference their execution row, so they share its pool —
@@ -333,6 +334,7 @@ async fn build_pg_stores(
 #[cfg(not(feature = "postgres"))]
 async fn build_pg_stores(
     _dsn: &str,
+    _max_connections: u32,
     _metrics: &nebula_metrics::MetricsRegistry,
 ) -> Result<WorkerStores, WorkerRunError> {
     Err(WorkerRunError::PostgresFeatureNotEnabled)
@@ -693,6 +695,7 @@ mod tests {
             database_url: Some("postgres://localhost/nebula_test".to_owned()),
             // A file name that would be obviously wrong if SQLite opened it.
             db_path: "nebula-worker-MUST-NOT-BE-OPENED.db".to_owned(),
+            db_max_connections: nebula_worker_bin::config::DEFAULT_DB_MAX_CONNECTIONS,
             processor_id: [0u8; 16],
         };
 
@@ -714,6 +717,7 @@ mod tests {
             artifact_set_digest: nebula_core::ArtifactSetDigest::from_bytes([0x72; 32]),
             database_url: None,
             db_path: database_path.to_string_lossy().into_owned(),
+            db_max_connections: nebula_worker_bin::config::DEFAULT_DB_MAX_CONNECTIONS,
             processor_id: [0x24; 16],
         };
         let metrics = nebula_metrics::MetricsRegistry::new();

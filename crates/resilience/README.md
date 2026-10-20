@@ -142,8 +142,12 @@ Read the rustdoc of `src/lib.rs` for the exhaustive re-export surface. The entry
 
 See the `nebula-resilience` row in `docs/MATURITY.md`.
 
-- API stability: `stable` — `ResiliencePipeline`, `RetryConfig`, `CircuitBreaker`, and `CallError`
-  are in active use by `nebula-engine`, `nebula-credential`, and `nebula-api`.
+- API stability: `stable`. In-workspace consumers today: the rate limiters (`TokenBucket` in
+  `nebula-engine`, `SlidingWindow` in `nebula-api`'s webhook transport, the GCRA `LimitStore` in
+  `nebula-resource` and `nebula-storage`), `CircuitBreaker` in `nebula-credential`'s refresh
+  coordinator, `BackoffConfig` in `nebula-resource`, and `Gate` in the server shutdown drain.
+  `ResiliencePipeline`, `RetryConfig` and `CallError` have no production consumer yet; their
+  contract is pinned by this crate's own suites.
 - Test coverage: nextest suites plus benchmarks for the seven patterns, stress tests at 5K–10K
   concurrent tasks, and property-based tests over backoff arithmetic.
 - The hedge pattern and the adaptive rate limiter have no in-repo consumer yet; their contract is

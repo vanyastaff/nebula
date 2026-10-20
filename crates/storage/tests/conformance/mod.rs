@@ -795,8 +795,8 @@ pub(crate) use dispatch::{
     assert_queue_rows_require_their_execution, assert_triggers_cascade_with_their_workflow,
 };
 pub(crate) use history::{
-    assert_history_is_scope_isolated, assert_history_orders_filters_and_pages,
-    assert_status_projection_follows_commit,
+    assert_due_timers_page_in_wake_order, assert_history_is_scope_isolated,
+    assert_history_orders_filters_and_pages, assert_status_projection_follows_commit,
 };
 
 /// Postgres skip decision, resolved by feature flag so there is exactly
@@ -1229,6 +1229,101 @@ pub(crate) async fn assert_cross_scope_get_is_none(backend: &dyn Backend) {
         miss.is_none(),
         "[{}] cross-scope get must not leak the row",
         backend.name()
+    );
+}
+
+/// A recorded cancel request is visible to readers in the same scope only, is
+/// idempotent, needs no lease, and survives the holder's commits.
+pub(crate) async fn assert_cancel_request_is_durable_and_scoped(backend: &dyn Backend) {
+    let store = backend.execution_store().await;
+    let s = scope_a();
+    seed_workflow(backend, &s, "wf_1").await;
+    store
+        .create(&s, "exe_cancel", "wf_1", serde_json::json!({}))
+        .await
+        .expect("create");
+    let name = backend.name();
+    assert!(
+        !store
+            .cancel_requested(&s, "exe_cancel")
+            .await
+            .expect("read"),
+        "[{name}] a new execution has no cancel request"
+    );
+    assert!(
+        !store
+            .request_cancel(&scope_b(), "exe_cancel")
+            .await
+            .expect("write"),
+        "[{name}] another tenant cannot record a cancel"
+    );
+    assert!(
+        !store
+            .request_cancel(&s, "exe_missing")
+            .await
+            .expect("write"),
+        "[{name}] a missing execution records nothing"
+    );
+    assert!(
+        !store
+            .cancel_requested(&s, "exe_cancel")
+            .await
+            .expect("read"),
+        "[{name}] a refused request leaves nothing behind"
+    );
+
+    let token = store
+        .acquire_lease(
+            &s,
+            "exe_cancel",
+            "holder",
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .expect("acquire_lease")
+        .unwrap_or_else(|| panic!("[{name}] acquire must grant a token"));
+    assert!(
+        store.request_cancel(&s, "exe_cancel").await.expect("write"),
+        "[{name}] a cancel is recorded while another holder owns the lease"
+    );
+    assert!(
+        store.request_cancel(&s, "exe_cancel").await.expect("write"),
+        "[{name}] recording again is idempotent"
+    );
+    let version = store
+        .get(&s, "exe_cancel")
+        .await
+        .expect("get")
+        .expect("row")
+        .version;
+    let outcome = store
+        .commit(TransitionBatch::new(
+            s.clone(),
+            "exe_cancel",
+            version,
+            token,
+            serde_json::json!({"step": 1}),
+            nebula_storage_port::ExecutionListing::CREATED,
+        ))
+        .await
+        .expect("commit");
+    assert!(
+        matches!(outcome, TransitionOutcome::Applied { .. }),
+        "[{name}] the request does not conflict with the holder's commit, got {outcome:?}"
+    );
+    assert!(
+        store
+            .cancel_requested(&s, "exe_cancel")
+            .await
+            .expect("read"),
+        "[{name}] the request survives the holder's commit"
+    );
+    assert!(
+        !store
+            .cancel_requested(&scope_b(), "exe_cancel")
+            .await
+            .expect("read"),
+        "[{name}] another tenant cannot observe the request"
     );
 }
 

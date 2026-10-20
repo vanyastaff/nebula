@@ -240,10 +240,13 @@ pub(crate) struct ExecutionStoreBundle {
     /// deployment database as `execution_store` (their rows reference the
     /// execution); the worker projection shares this handle.
     pub(super) node_result_store: Arc<dyn nebula_storage_port::store::NodeResultStore>,
-    /// Undecorated trigger-config store on the deployment database the
-    /// workflow store uses (a trigger belongs to its live workflow). The API
-    /// scopes it per call with `ScopedTriggerStore`.
+    /// Trigger configuration rows on the deployment database, shared by every
+    /// replica instead of living in one process's memory.
     pub(super) trigger_store: Arc<dyn nebula_storage_port::store::TriggerStore>,
+    /// Capability tokens minted at webhook activation, on the same database
+    /// as `trigger_store`; the activation endpoint refuses to run without it.
+    pub(super) webhook_activation_store:
+        Arc<dyn nebula_storage_port::store::WebhookActivationStore>,
     pub(super) journal_reader: Arc<dyn nebula_storage_port::store::ExecutionJournalReader>,
     pub(super) control_queue: Arc<dyn nebula_storage_port::store::ControlQueue>,
     /// Owner of keyed start acceptance — the reservation, the execution
@@ -504,6 +507,9 @@ impl ServerRuntime {
                     Duration::from_secs(api_config.idempotency.ttl_secs),
                     Duration::from_secs(api_config.idempotency.sweep_interval_secs),
                 );
+                let auth_sweep = state.auth_expiry_sweeper(Duration::from_secs(
+                    api_config.idempotency.sweep_interval_secs,
+                ));
                 let app = transport.build_router(state, &api_config)?;
                 let worker_runtime = match execution {
                     crate::execution_runtime::ExecutionTopology::InProcess => {
@@ -543,6 +549,15 @@ impl ServerRuntime {
                         sweeper.run(token).await;
                     }))
                 });
+                // Expired sessions, verification tokens and OAuth states on the
+                // same cadence: refused on read already, deleted here so the
+                // tables stay bounded.
+                let auth_sweep = auth_sweep.map(|sweeper| {
+                    let token = shutdown.clone();
+                    tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+                        sweeper.run(token).await;
+                    }))
+                });
                 if reservation_sweep.is_none() {
                     tracing::warn!(
                         "start-key reservation sweep disabled (idempotency sweep interval is 0); \
@@ -567,6 +582,11 @@ impl ServerRuntime {
                     && let Err(error) = handle.await
                 {
                     tracing::warn!(%error, "start-key reservation sweep did not stop cleanly");
+                }
+                if let Some(handle) = auth_sweep
+                    && let Err(error) = handle.await
+                {
+                    tracing::warn!(%error, "auth expiry sweep did not stop cleanly");
                 }
                 serve_result
             }
@@ -777,16 +797,6 @@ pub(crate) fn default_state(
             reason: e.reason,
         })?;
 
-    // Wire the trigger config store (ADR-0096 READ path) selected with the
-    // execution backend, so webhook trigger configs survive a restart and are
-    // shared by every replica on the same database. `TriggerStoreSpecLookup`
-    // applies `ScopedTriggerStore` per call so tenant isolation is
-    // structural; the same handle backs the AppState trigger-store slot.
-    let trigger_store = Arc::clone(&execution_bundle.trigger_store);
-    let trigger_spec_lookup = Arc::new(
-        nebula_api::transport::webhook::TriggerStoreSpecLookup::new(Arc::clone(&trigger_store)),
-    );
-
     // Activation and start admission share these selected backend handles
     // with AppState and the worker projection.
     let ExecutionStoreBundle {
@@ -806,8 +816,19 @@ pub(crate) fn default_state(
         start_reservation_maintenance,
         resume_token_store,
         resume_producer,
+        trigger_store,
+        webhook_activation_store,
         ..
     } = execution_bundle;
+
+    // Wire the trigger config store (ADR-0096 READ path) from the selected
+    // deployment backend. The undecorated store goes in:
+    // `TriggerStoreSpecLookup` applies `ScopedTriggerStore` per call, so
+    // tenant isolation is structural. The same Arc backs the AppState
+    // trigger-store slot and the spec lookup, so they see the same rows.
+    let trigger_spec_lookup = Arc::new(
+        nebula_api::transport::webhook::TriggerStoreSpecLookup::new(Arc::clone(&trigger_store)),
+    );
 
     let activation = Arc::new(nebula_engine::WorkflowActivationService::new(
         Arc::clone(&workflow_store),
@@ -861,6 +882,7 @@ pub(crate) fn default_state(
     // `auth.oauth.providers` is non-empty.
     .with_public_url(api_config.public_url.clone())
     .with_trigger_store(trigger_store)
+    .with_webhook_activation_store(webhook_activation_store)
     .with_webhook_spec_lookup(trigger_spec_lookup);
 
     // A single adapter instance fronts all tenant reads and membership writes,
@@ -1375,7 +1397,7 @@ mod tests {
         let mut api_config = nebula_api::ApiConfig::for_test();
         api_config.execution = nebula_api::config::ExecutionStoreConfig {
             backend: nebula_api::config::ExecutionBackendKind::Memory,
-            db_path: String::new(),
+            ..nebula_api::config::ExecutionStoreConfig::default()
         };
         let metrics = std::sync::Arc::new(nebula_metrics::MetricsRegistry::new());
         let stores = super::build_execution_stores(&api_config, None, &metrics)
@@ -1399,6 +1421,60 @@ mod tests {
         for kind in &expected {
             assert!(registrars.contains(kind), "`{kind}` must be registrable");
         }
+    }
+
+    /// Webhook triggers and their capability tokens must live on the selected
+    /// deployment database, and the default `all` transport must mount webhook
+    /// ingress. Previously triggers sat in an in-memory store regardless of
+    /// backend, no activation store was attached (so activation answered
+    /// 503), and `all` served REST only.
+    #[tokio::test]
+    async fn sqlite_deployment_keeps_webhook_state_on_its_database() {
+        use crate::transport::{AllTransport, ApiTransport, ServerTransport};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut api_config = nebula_api::ApiConfig::for_test();
+        api_config.execution = nebula_api::config::ExecutionStoreConfig {
+            backend: nebula_api::config::ExecutionBackendKind::Sqlite,
+            db_path: dir
+                .path()
+                .join("nebula.db")
+                .to_str()
+                .expect("utf-8 path")
+                .to_owned(),
+            ..nebula_api::config::ExecutionStoreConfig::default()
+        };
+        let metrics = std::sync::Arc::new(nebula_metrics::MetricsRegistry::new());
+        let stores = super::build_execution_stores(&api_config, None, &metrics)
+            .await
+            .expect("sqlite execution stores");
+        let registry =
+            crate::transport::worker_registry(Ok("71".repeat(32))).expect("linked plugin registry");
+        let state = super::default_state(&api_config, metrics, stores, registry, None)
+            .expect("default state composes");
+
+        let triggers = format!("{:?}", state.trigger_store.as_ref().expect("trigger store"));
+        assert!(triggers.contains("SqliteTriggerStore"), "{triggers}");
+        let tokens = format!(
+            "{:?}",
+            state
+                .webhook_activation_store
+                .as_ref()
+                .expect("webhook activation store")
+        );
+        assert!(tokens.contains("SqliteWebhookActivationStore"), "{tokens}");
+
+        let bind = SocketAddr::from(([127, 0, 0, 1], 8080));
+        let api = ApiTransport
+            .prepare_state(state.clone(), bind)
+            .expect("api state");
+        assert!(api.webhook_transport.is_none(), "`api` stays REST-only");
+        let all = AllTransport.prepare_state(state, bind).expect("all state");
+        assert!(all.webhook_transport.is_some(), "`all` mounts webhooks");
+        // Merging the webhook router next to the REST routes must not collide.
+        let _router = AllTransport
+            .build_router(all, &api_config)
+            .expect("all router builds");
     }
 
     /// Red→green proof that a SIGTERM handler that cannot be registered does

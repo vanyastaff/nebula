@@ -21,7 +21,9 @@ belongs to the executions and dispatch aggregates; it has no separate empty migr
 | `0008_platform.sql` | HTTP response replay cache and PostgreSQL shared GCRA rate-limit state |
 | `0009_tenant_provisioning_receipts.sql` | Permanent provisioning request receipts and identity seals for existing organizations |
 | `0010_initial_owner_enrollment.sql` | Permanent initial-account eligibility and frozen owner enrollment command; ordinary account insertion seals eligibility |
-| `0011_node_results.sql` | Per-node raw outputs, per-node typed result records and workflow inputs of an execution (the engine resume seam); purged with their execution |
+| `0011_execution_cancel_requests.sql` | Durable cancel request on the execution row, observed by the lease holder across workers |
+| `0012_execution_next_wake.sql` | Indexed earliest durable timer of each execution, backfilled from stored state, for the timer sweep |
+| `0013_node_results.sql` | Per-node raw outputs, per-node typed result records and workflow inputs of an execution (the engine resume seam); purged with their execution |
 
 `credential_migration_catalog` checks this inventory against the SQL files, including
 future additions. The baseline is a fixed named prefix, not the maximum catalog size.

@@ -69,6 +69,7 @@
 
 pub mod access;
 pub mod app;
+pub mod auth_expiry_sweep;
 pub mod config;
 pub mod domain;
 pub mod error;

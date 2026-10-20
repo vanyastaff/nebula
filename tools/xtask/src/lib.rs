@@ -1,5 +1,7 @@
 mod changes;
+mod doc_links;
 mod formatting;
+mod layer_map;
 mod model;
 mod north_star;
 mod packaging;
@@ -8,6 +10,7 @@ mod runtime_repair_red;
 mod semver;
 mod workspace;
 
+pub use layer_map::LayerMapError;
 pub use pre_commit::PlanError as PreCommitPlanError;
 
 use std::{ffi::OsString, path::PathBuf};
@@ -42,6 +45,11 @@ enum TopLevelCommand {
     },
     /// Check every local Cargo package in bounded formatter invocations.
     FmtCheck,
+    /// Check that relative links in tracked Markdown files resolve.
+    DocLinks,
+    /// Check the AGENTS.md layer map and the deny.toml layer wrappers
+    /// against the workspace dependency graph.
+    LayerMap,
     /// Plan owner-scoped pre-commit checks without changing CI selection.
     PreCommitPlan {
         /// Workspace-relative staged paths, passed after `--`.
@@ -247,6 +255,14 @@ fn execute_in(cwd: &std::path::Path, cli: Cli) -> Result<Vec<u8>, XtaskError> {
             formatting::check(cwd)?;
             Ok(Vec::new())
         },
+        TopLevelCommand::DocLinks => {
+            doc_links::check(cwd)?;
+            Ok(Vec::new())
+        },
+        TopLevelCommand::LayerMap => {
+            layer_map::check_workspace(&find_root(cwd)?)?;
+            Ok(Vec::new())
+        },
         TopLevelCommand::PreCommitPlan { paths } => pre_commit::plan(cwd, &paths),
         TopLevelCommand::CiPlan { command } => {
             let workspace = Workspace::load(cwd)?;
@@ -370,6 +386,10 @@ pub enum XtaskError {
     Packaging(#[from] packaging::PackagingError),
     #[error(transparent)]
     Formatting(#[from] formatting::FormattingError),
+    #[error(transparent)]
+    DocLinks(#[from] doc_links::DocLinksError),
+    #[error(transparent)]
+    LayerMap(#[from] LayerMapError),
     #[error(transparent)]
     PreCommit(#[from] PreCommitPlanError),
     #[error("cannot determine current directory: {0}")]

@@ -21,10 +21,12 @@ individual action implementations.
 
 ## Role
 
-**Error Taxonomy and Classification Boundary** — the foundation error crate that every library
-crate in the workspace depends on. Pattern: *ErrorClassifier* (canon §4.2).
-Every library crate uses `thiserror` + `Classify` + `NebulaError`; only binaries use `anyhow`.
-`nebula-api` maps `NebulaError` to RFC 9457 `problem+json` at the API boundary.
+**Error Taxonomy and Classification Boundary** — the foundation error crate for typed error
+classification. Pattern: *ErrorClassifier* (canon §4.2). Library errors are `thiserror`
+enums that implement `Classify`; only binaries use `anyhow`. `ErrorCategory` and `RetryHint`
+are consumed by the action, API, credential, engine and resource layers. `NebulaError` has no
+consumer outside this crate yet: `nebula-api` builds RFC 9457 `problem+json` from its own error
+types, not from `NebulaError`.
 
 ## Public API
 
@@ -57,7 +59,7 @@ Every library crate uses `thiserror` + `Classify` + `NebulaError`; only binaries
 
 See `docs/MATURITY.md` row for `nebula-error`.
 
-- API stability: `stable` — `Classify`, `NebulaError`, `ErrorCategory`, and `RetryHint` are in active use across the full workspace; no known planned breaking changes.
+- API stability: `stable` — `Classify`, `ErrorCategory`, and `RetryHint` are in active use across the workspace; `NebulaError` is tested here but unused elsewhere. No known planned breaking changes.
 - `detail_types` module may grow new pre-built detail structs as domain crates identify common error shapes.
 
 ## Related

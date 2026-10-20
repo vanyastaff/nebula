@@ -2,7 +2,7 @@
 //!
 //! Every case runs against a fresh in-memory database whose schema comes from
 //! the ordered migration catalog, so the adapter is exercised against exactly
-//! the keys, foreign keys and `CHECK` constraints `0011_node_results.sql`
+//! the keys, foreign keys and `CHECK` constraints `0013_node_results.sql`
 //! installs.
 
 #![cfg(feature = "sqlite")]

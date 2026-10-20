@@ -18,7 +18,7 @@ use std::{
     marker::PhantomData,
     sync::{
         Arc,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -114,6 +114,17 @@ pub struct PoolEntry<R: Provider> {
     /// connection-bound session runs only on an instance built at the slot
     /// epoch its unit pinned.
     built_slot_epoch: u64,
+    /// The credential slot epoch the instance's refresh hooks have caught
+    /// up to: [`built_slot_epoch`](Self::built_slot_epoch) at creation, then
+    /// the epoch a refresh hook last brought it to. Rotation hooks reach
+    /// only idle entries, so an instance leased across a rotation is behind
+    /// when it comes back and is hooked then
+    /// ([`Pooled::catch_up_credentials`]). Compared for equality only, like
+    /// the epoch itself.
+    hooked_slot_epoch: AtomicU64,
+    /// Set when a credential hook failed for this instance: its credential
+    /// state is unknown until a later hook succeeds.
+    hook_failed: AtomicBool,
 }
 
 impl<R: Provider> PoolEntry<R> {
@@ -127,6 +138,14 @@ impl<R: Provider> PoolEntry<R> {
     pub(crate) fn built_slot_epoch(&self) -> u64 {
         self.built_slot_epoch
     }
+
+    /// Whether every credential rotation since the instance was built has
+    /// reached it: its last hook succeeded and its hooked epoch is
+    /// `live_epoch`.
+    fn credentials_current(&self, live_epoch: u64) -> bool {
+        !self.hook_failed.load(Ordering::Acquire)
+            && self.hooked_slot_epoch.load(Ordering::Acquire) == live_epoch
+    }
 }
 
 impl<R: Provider> std::fmt::Debug for PoolEntry<R> {
@@ -136,6 +155,8 @@ impl<R: Provider> std::fmt::Debug for PoolEntry<R> {
             .field("checkout_count", &self.metrics.checkout_count)
             .field("returned_at", &self.returned_at)
             .field("built_slot_epoch", &self.built_slot_epoch)
+            .field("hooked_slot_epoch", &self.hooked_slot_epoch)
+            .field("hook_failed", &self.hook_failed)
             .finish()
     }
 }
@@ -494,6 +515,51 @@ impl<R> Pooled<R>
 where
     R: PoolProvider + Clone + Send + Sync + 'static,
 {
+    /// Brings `entry` up to the live credential slot epoch before it is
+    /// pooled or handed out again.
+    ///
+    /// Rotation hooks reach only idle entries (under the idle lock), so an
+    /// instance leased across a refresh, created while one landed, or whose
+    /// hook failed has not seen the current material. It gets every
+    /// declared slot's [`on_credential_refresh`](Provider::on_credential_refresh)
+    /// now, each bounded and panic-isolated like the fan-out's. `false` when
+    /// a hook fails: the instance's credential state is unknown and the
+    /// caller destroys it.
+    async fn catch_up_credentials(&self, entry: &PoolEntry<R>, resource: &R) -> bool {
+        // Read before the hooks: a rotation landing while they run moves the
+        // live epoch past this stamp, so the entry is caught up again.
+        let live_epoch = resource.credential_slot_epoch();
+        if entry.credentials_current(live_epoch) {
+            return true;
+        }
+        for &slot in R::credential_slot_names() {
+            let hooked = crate::hook_guard::guard_author_hook(
+                crate::hook_guard::DEFAULT_AUTHOR_HOOK_CEILING,
+                resource.on_credential_refresh(slot, &entry.instance),
+            )
+            .await;
+            let failed = match hooked {
+                Ok(Ok(())) => continue,
+                Ok(Err(error)) => error.to_string(),
+                Err(fault) => {
+                    fault.observe(&R::key(), "rotation");
+                    format!("{fault:?}")
+                },
+            };
+            tracing::warn!(
+                resource = %R::key(),
+                slot,
+                error = %failed,
+                "credential refresh hook failed for a pool instance behind the live \
+                 credentials; destroying it"
+            );
+            entry.hook_failed.store(true, Ordering::Release);
+            return false;
+        }
+        entry.hooked_slot_epoch.store(live_epoch, Ordering::Release);
+        entry.hook_failed.store(false, Ordering::Release);
+        true
+    }
     /// Creates a new pool entry via `resource.create()`.
     ///
     /// All creation goes through this funnel and is gated on `create_semaphore`
@@ -565,6 +631,8 @@ where
                 .max_lifetime
                 .map(|max| crate::jitter::apply_jitter(max, MAX_LIFETIME_JITTER_SPREAD)),
             built_slot_epoch,
+            hooked_slot_epoch: AtomicU64::new(built_slot_epoch),
+            hook_failed: AtomicBool::new(false),
         })
     }
 }
@@ -621,6 +689,11 @@ where
         if self.exceeded_max_lifetime(entry) {
             return false;
         }
+        // An entry pooled while a rotation was fanning out (or whose hook
+        // failed) is still on the old credentials.
+        if !self.catch_up_credentials(entry, resource).await {
+            return false;
+        }
         if resource.is_broken(&entry.instance).is_broken() {
             return false;
         }
@@ -649,6 +722,11 @@ where
             return Ok(false);
         }
         if self.exceeded_max_lifetime(entry) {
+            return Ok(false);
+        }
+        // Rotation hooks reach only idle instances: one leased across a
+        // rotation is hooked now, before it is pooled again.
+        if !self.catch_up_credentials(entry, resource).await {
             return Ok(false);
         }
         if resource.is_broken(&entry.instance).is_broken() {
@@ -733,6 +811,11 @@ where
         // (rotation is rare, and a hung per-entry hook is itself the
         // pathological case this bounds).
         let idle = store.read_idle().await;
+        // The slot already holds the rotated credential, so a hooked entry
+        // is current for this epoch. Read once: a rotation landing during
+        // the fan-out moves the live epoch past it, and that rotation's own
+        // dispatch restamps the entries it reaches.
+        let dispatch_epoch = resource.credential_slot_epoch();
         let mut first_fault: Option<crate::topology::HookFault> = None;
         let hook_op = if refresh {
             "on_credential_refresh"
@@ -778,6 +861,13 @@ where
                     })
                 },
             };
+            match &result {
+                Ok(()) if refresh => entry
+                    .hooked_slot_epoch
+                    .store(dispatch_epoch, Ordering::Release),
+                Ok(()) => {},
+                Err(_) => entry.hook_failed.store(true, Ordering::Release),
+            }
             if let Err(fault) = result {
                 // Surface EVERY per-entry hook failure. Returning only the
                 // first would silently hide a partial rotation where some

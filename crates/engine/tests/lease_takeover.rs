@@ -855,6 +855,140 @@ async fn engine_b_cancels_execution_after_runner_a_death_via_reclaim_redeliver()
     );
 }
 
+/// A `Cancel` drained on a worker that does not hold the lease reaches the
+/// holder through the recorded request.
+///
+/// Runner A drives the execution and parks in Y. Runner B's dispatcher drains
+/// the Cancel: B has no running entry and the lease is A's, so it records the
+/// request on the execution row and acks. A's heartbeat reads the request and
+/// trips the frontier's cancel token, and A finalizes the execution
+/// `Cancelled` while it is still alive. Before the recorded request, B could
+/// only defer the command for untargeted redelivery, and the cancel waited for
+/// A's run to end on its own.
+#[tokio::test]
+async fn a_cancel_drained_on_another_worker_reaches_the_lease_holder() {
+    let stores = LeaseStores::new();
+    let echo_invocations = Arc::new(AtomicU32::new(0));
+    let park_invocations = Arc::new(AtomicU32::new(0));
+    let started_a = Arc::new(tokio::sync::Notify::new());
+
+    let registry_a = Arc::new(ActionRegistry::new());
+    registry_a
+        .register_stateless_instance(
+            meta(action_key!("core.echo")),
+            CountingEchoHandler {
+                invocations: Arc::clone(&echo_invocations),
+            },
+        )
+        .expect("valid test catalog definition");
+    registry_a
+        .register_stateless_instance(
+            meta(action_key!("core.park")),
+            ParkHandler {
+                started: Arc::clone(&started_a),
+                invocations: Arc::clone(&park_invocations),
+            },
+        )
+        .expect("valid test catalog definition");
+    let frozen_a = exact_fixture::freeze_registry(
+        &registry_a,
+        &[("core", "core.echo"), ("core", "core.park")],
+    );
+
+    let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
+    let mut events_rx = event_bus.subscribe();
+    let engine_a = Arc::new(
+        stores
+            .attach(make_engine(Arc::clone(&registry_a)))
+            .with_plan_flavor_runtime(
+                Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(Arc::new(
+                    stores.execution.plan_flavor_catalog(),
+                ))),
+                Arc::clone(&frozen_a),
+                Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+                    &stores.execution,
+                )),
+            )
+            .with_lease_ttl(Duration::from_secs(3))
+            .with_lease_heartbeat_interval(Duration::from_millis(50))
+            .with_event_bus(event_bus),
+    );
+    let engine_b = Arc::new(
+        stores
+            .attach(make_engine(Arc::clone(&registry_a)))
+            .with_plan_flavor_runtime(
+                Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(Arc::new(
+                    stores.execution.plan_flavor_catalog(),
+                ))),
+                Arc::clone(&frozen_a),
+                Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+                    &stores.execution,
+                )),
+            ),
+    );
+
+    let x = node_key!("x");
+    let y = node_key!("y");
+    let wf = make_workflow(
+        vec![
+            NodeDefinition::new(x.clone(), "X", "core", "core.echo").unwrap(),
+            NodeDefinition::new(y.clone(), "Y", "core", "core.park").unwrap(),
+        ],
+        vec![Connection::new(x.clone(), y.clone())],
+    );
+    stores.save_workflow(&wf).await;
+    let admitted_id = stores.admit(&wf, &frozen_a).await;
+    let scope = nebula_engine::store_seam::single_tenant_scope();
+
+    let task_a = {
+        let engine_a = Arc::clone(&engine_a);
+        let scope = scope.clone();
+        tokio::spawn(async move { engine_a.resume_execution(&scope, admitted_id).await })
+    };
+    tokio::time::timeout(Duration::from_secs(5), started_a.notified())
+        .await
+        .expect("runner A must park in Y");
+    let execution_id = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match events_rx.recv().await {
+                Some(ExecutionEvent::NodeStarted { execution_id, .. }) => break execution_id,
+                Some(_) => continue,
+                None => panic!("event bus closed before NodeStarted"),
+            }
+        }
+    })
+    .await
+    .expect("NodeStarted event must arrive");
+
+    let dispatch_b = EngineControlDispatch::new(
+        Arc::clone(&engine_b),
+        stores.execution.clone(),
+        Arc::new(InMemoryTurnHandoff::new(&stores.execution)),
+        "cancel-marker-control".to_owned(),
+        Duration::from_secs(30),
+    );
+    dispatch_b
+        .dispatch_cancel(&scope, execution_id)
+        .await
+        .expect("a cancel recorded for the lease holder is delivered, so it is acked");
+    assert!(
+        stores
+            .execution
+            .cancel_requested(&scope, &execution_id.to_string())
+            .await
+            .unwrap(),
+        "the dispatcher must record the request for the holder"
+    );
+
+    let result_a = tokio::time::timeout(Duration::from_secs(10), task_a)
+        .await
+        .expect("runner A must observe the recorded cancel from its heartbeat")
+        .expect("task_a joined")
+        .expect("resume_execution Ok");
+    assert_eq!(result_a.status, ExecutionStatus::Cancelled);
+    assert_eq!(park_invocations.load(Ordering::SeqCst), 1);
+}
+
 // ---------------------------------------------------------------------------
 // replay_execution does not contend for the source-execution lease
 // ---------------------------------------------------------------------------

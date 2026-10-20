@@ -8,12 +8,14 @@ use serde_json::{Value, json};
 
 const DISCLOSURE: DiagnosticDisclosure = DiagnosticDisclosure::IncludeValue;
 
+/// A rule that full evaluation cannot finish: its predicate has no context.
+fn unavailable() -> Rule {
+    Rule::predicate(Predicate::eq("enabled", true).unwrap()).unwrap()
+}
+
 #[test]
 fn incomplete_rule_cannot_issue_a_complete_proof() {
-    let error = Rule::custom("check()")
-        .unwrap()
-        .validate_into(json!(42))
-        .unwrap_err();
+    let error = unavailable().validate_into(json!(42)).unwrap_err();
     assert_eq!(error.code, "evaluation_unavailable");
 }
 
@@ -26,7 +28,7 @@ fn full_evaluation_requires_predicate_context() {
 
 #[test]
 fn unavailable_evaluation_cannot_be_negated() {
-    let rule = Rule::not(Rule::custom("check()").unwrap()).unwrap();
+    let rule = Rule::not(unavailable()).unwrap();
     let error = rule
         .validate(&json!(42), None, ExecutionMode::Full, DISCLOSURE)
         .unwrap_err();
@@ -97,7 +99,7 @@ fn negative_integer_below_exact_float_minimum_is_rejected() {
 
 #[test]
 fn partial_outcomes_propagate_through_nested_logic() {
-    let deferred = Rule::custom("check()").unwrap();
+    let deferred = Rule::unique_by("id").unwrap();
     for rule in [
         deferred.clone(),
         Rule::any([Rule::min_value(100), deferred.clone()]).unwrap(),
@@ -239,13 +241,13 @@ fn rfc6901_lookup_drives_visibility_and_requiredness() {
 
 #[test]
 fn any_requires_a_satisfied_branch_and_not_preserves_unavailable_errors() {
-    let rule = Rule::any([Rule::custom("check()").unwrap(), Rule::min_value(1)]).unwrap();
+    let rule = Rule::any([unavailable(), Rule::min_value(1)]).unwrap();
     assert_eq!(
         rule.validate(&json!(42), None, ExecutionMode::StaticOnly, DISCLOSURE)
             .unwrap(),
         EvaluationOutcome::Satisfied
     );
-    let rule = Rule::not(Rule::not(Rule::custom("check()").unwrap()).unwrap()).unwrap();
+    let rule = Rule::not(Rule::not(unavailable()).unwrap()).unwrap();
     let error = rule
         .validate(&json!(42), None, ExecutionMode::Full, DISCLOSURE)
         .unwrap_err();
@@ -256,12 +258,17 @@ fn any_requires_a_satisfied_branch_and_not_preserves_unavailable_errors() {
 fn deferred_mode_recurses_into_logic_and_reports_static_obligations() {
     let rule = Rule::all([
         Rule::min_value(100),
-        Rule::not(Rule::custom("check()").unwrap()).unwrap(),
+        Rule::not(Rule::not(Rule::unique_by("id").unwrap()).unwrap()).unwrap(),
     ])
     .unwrap();
-    let error =
-        validate_rules(&json!(42), &[rule], ExecutionMode::Deferred, DISCLOSURE).unwrap_err();
-    assert_eq!(error.errors()[0].kind(), ValidationErrorKind::Unavailable);
+    let error = validate_rules(
+        &json!([{"id": 1}, {"id": 1}]),
+        &[rule],
+        ExecutionMode::Deferred,
+        DISCLOSURE,
+    )
+    .unwrap_err();
+    assert_eq!(error.errors()[0].code, "not_failed");
     let rule = Rule::not(Rule::all([Rule::min_value(100)]).unwrap()).unwrap();
     assert_eq!(
         rule.validate(&json!(42), None, ExecutionMode::Deferred, DISCLOSURE)
@@ -449,28 +456,28 @@ proptest::proptest! {
 
 #[test]
 fn programmatic_not_preserves_unavailable_rule_errors() {
-    let validator = ValidateExt::not(Rule::custom("check()").unwrap());
+    let validator = ValidateExt::not(unavailable());
     let error = validator.validate(&json!(42)).unwrap_err();
     assert_eq!(error.kind(), ValidationErrorKind::Unavailable);
 }
 
 #[test]
 fn programmatic_or_preserves_unavailable_rule_errors() {
-    let validator = Rule::custom("check()").unwrap().or(Rule::min_value(1));
+    let validator = unavailable().or(Rule::min_value(1));
     let error = validator.validate(&json!(42)).unwrap_err();
     assert_eq!(error.kind(), ValidationErrorKind::Unavailable);
 }
 
 #[test]
 fn nested_programmatic_error_preserves_evaluation_classification() {
-    let validator = ValidateExt::not(Rule::custom("check()").unwrap().and(Rule::min_value(100)));
+    let validator = ValidateExt::not(unavailable().and(Rule::min_value(100)));
     let error = validator.validate(&json!(42)).unwrap_err();
     assert_eq!(error.kind(), ValidationErrorKind::Unavailable);
 }
 
 #[test]
 fn serialized_diagnostics_preserve_evaluation_classification() {
-    let error = Validate::validate(&Rule::custom("check()").unwrap(), &json!(42)).unwrap_err();
+    let error = Validate::validate(&unavailable(), &json!(42)).unwrap_err();
     assert_eq!(error.to_json_value()["kind"], json!("unavailable"));
 }
 
