@@ -122,7 +122,7 @@ pub mod __private {
     /// Plugin contracts referenced by generated implementations.
     #[doc(hidden)]
     pub mod plugin {
-        pub use nebula_plugin::{Plugin, PluginManifest};
+        pub use nebula_plugin::{Plugin, PluginKey, PluginManifest};
     }
 
     /// Resource contracts referenced by generated implementations.
