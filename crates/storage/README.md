@@ -496,6 +496,6 @@ only control-command outbox.
 Control-queue claims for a worker flavor require exact worker-flavor revision
 equality with the execution's live revision reference. Queue admission never
 invents a flavor.
-The dispatch baseline `0005_dispatch.sql` still creates the `job_dispatch_queue`
-table, but no adapter reads or writes it any more: the job-dispatch channel was
-removed as an unused second control path, and a later migration drops the table.
+The dispatch baseline `0005_dispatch.sql` creates a `job_dispatch_queue` table
+that `0014_drop_job_dispatch_queue.sql` drops again: the job-dispatch channel was
+removed as an unused second control path, and no adapter ever reads it.
