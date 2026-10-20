@@ -188,10 +188,16 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
         self
     }
 
+    /// The cached handle for `selector` updated to `scheme`, or a new one.
+    ///
+    /// `observed_epoch` is [`HandleCache::epoch`] read before the row behind
+    /// `scheme` was loaded or written; a new handle is cached only when no
+    /// selector eviction ran since (see [`handle_cache`]).
     fn materialize_handle<C: Credential>(
         &self,
         selector: &CredentialSelector,
         scheme: C::Scheme,
+        observed_epoch: u64,
     ) -> CredentialHandle<C::Scheme> {
         let now = Instant::now();
         self.handle_cache.sweep_if_due(now);
@@ -200,7 +206,8 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
             return existing;
         }
         let handle = CredentialHandle::new(scheme, selector.credential_id().to_string());
-        self.handle_cache.insert(selector, handle.clone(), now);
+        self.handle_cache
+            .insert(selector, handle.clone(), now, observed_epoch);
         handle
     }
 
@@ -319,11 +326,12 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
     {
         self.ensure_source_wired()?;
         let credential_id = selector.credential_id();
+        let epoch = self.handle_cache.epoch();
         let (stored, status) = self.load_and_verify::<C>(selector).await?;
         Self::admit_status(selector, &stored, status)?;
         let state: C::State = self.deserialize::<C>(credential_id, &stored)?;
         let scheme = C::project(&state);
-        Ok(self.materialize_handle::<C>(selector, scheme))
+        Ok(self.materialize_handle::<C>(selector, scheme, epoch))
     }
 
     /// Resolve a credential for an action slot through its owner-scoped key.
@@ -354,6 +362,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
         // The port applies the complete owner-bound selector before returning a
         // physical record, closing the cross-tenant existence oracle before
         // this code can inspect lifecycle state or kind.
+        let epoch = self.handle_cache.epoch();
         let (stored, status) = self.load_live(selector).await?;
         let status = status.ok_or(ResolveError::Store(
             CredentialPersistenceError::CorruptRecord,
@@ -372,7 +381,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
 
         let state: C::State = self.deserialize::<C>(selector.credential_id(), &stored)?;
         let scheme = C::project(&state);
-        Ok(self.materialize_handle::<C>(selector, scheme))
+        Ok(self.materialize_handle::<C>(selector, scheme, epoch))
     }
 
     /// Resolve a credential and refresh it when it enters the early-refresh window.
@@ -403,6 +412,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
             loop {
                 let credential_id = selector.credential_id();
                 let credential_id_text = credential_id.to_string();
+                let epoch = self.handle_cache.epoch();
                 let (stored, status) = self.load_and_verify::<C>(selector).await?;
                 if stored.reauth_required() {
                     Self::admit_status(selector, &stored, status)?;
@@ -454,7 +464,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
                     match self.join_in_flight_refresh(selector, &stored, status).await? {
                         MaterialAdmission::Available => {
                             let scheme = C::project(&state);
-                            return Ok(self.materialize_handle::<C>(selector, scheme));
+                            return Ok(self.materialize_handle::<C>(selector, scheme, epoch));
                         },
                         MaterialAdmission::Superseded
                             if reevaluation >= MAX_COORDINATED_REEVALUATIONS =>
@@ -496,7 +506,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
                     );
                     Self::admit_status(selector, &stored, status)?;
                     let scheme = C::project(&state);
-                    return Ok(self.materialize_handle::<C>(selector, scheme));
+                    return Ok(self.materialize_handle::<C>(selector, scheme, epoch));
                 }
 
                 coordinated = true;
@@ -1146,12 +1156,13 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
             )
         };
 
+        let epoch = self.handle_cache.epoch();
         match write_refreshed(self.store.as_ref(), selector, &stored, build).await {
             Ok(_) => {
                 self.emit_refreshed(credential_id);
                 let scheme = C::project(&state);
                 RefreshDisposition::state_advanced(Ok(
-                    self.materialize_handle::<C>(selector, scheme)
+                    self.materialize_handle::<C>(selector, scheme, epoch)
                 ))
             },
             Err(error @ CredentialPersistenceError::OutcomeUnknown)

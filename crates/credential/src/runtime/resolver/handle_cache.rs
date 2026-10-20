@@ -12,6 +12,13 @@
 //! - delete, revoke, and a resolve that finds the row absent or tombstoned drop the
 //!   selector's entries at once ([`HandleCache::evict_selector`]).
 //!
+//! Inserts and selector evictions are serialized by one lock, so the entry bound is
+//! exact under concurrent misses. Every selector eviction also advances an eviction
+//! epoch. A resolve reads the epoch before it loads the row and passes it to
+//! [`HandleCache::insert`], which refuses to cache when an eviction ran in between:
+//! a resolve that admitted a row just before its delete or revoke cannot put the
+//! material back after the cleanup.
+//!
 //! A hit costs one shard read lock plus a relaxed atomic store of the access time.
 //! An evicted handle is not updated in place by later refreshes. The next resolve
 //! returns a new handle, so a holder that has not resolved within the TTL sees its
@@ -27,6 +34,7 @@ use std::{
 };
 
 use dashmap::DashMap;
+use parking_lot::Mutex;
 
 use crate::{AuthScheme, CredentialHandle, CredentialSelector};
 
@@ -56,6 +64,10 @@ pub(super) struct HandleCache {
     max_entries: usize,
     /// Earliest [`Self::origin`]-relative millisecond at which the next idle sweep runs.
     next_sweep_ms: AtomicU64,
+    /// Advanced by every [`Self::evict_selector`]; written only under [`Self::writes`].
+    eviction_epoch: AtomicU64,
+    /// Serializes inserts against each other and against selector evictions.
+    writes: Mutex<()>,
 }
 
 impl Default for HandleCache {
@@ -72,6 +84,8 @@ impl HandleCache {
             idle_ttl,
             max_entries: max_entries.max(1),
             next_sweep_ms: AtomicU64::new(duration_ms(idle_ttl)),
+            eviction_epoch: AtomicU64::new(0),
+            writes: Mutex::new(()),
         }
     }
 
@@ -85,6 +99,12 @@ impl HandleCache {
 
     fn is_idle(&self, last_used_ms: u64, now_ms: u64) -> bool {
         now_ms.saturating_sub(last_used_ms) >= duration_ms(self.idle_ttl)
+    }
+
+    /// The current eviction epoch. Read it before loading the row a handle is
+    /// built from, and pass it to [`Self::insert`].
+    pub(super) fn epoch(&self) -> u64 {
+        self.eviction_epoch.load(Ordering::Acquire)
     }
 
     /// The cached handle for `selector`, marking it used at `now`.
@@ -106,14 +126,23 @@ impl HandleCache {
     }
 
     /// Cache `handle` for `selector`, keeping the cache within its entry bound.
+    ///
+    /// `observed_epoch` is [`Self::epoch`] as read before the row behind `handle`
+    /// was loaded. When a selector eviction has run since, nothing is cached and
+    /// this returns `false`; the caller still owns a usable handle.
     pub(super) fn insert<S: AuthScheme>(
         &self,
         selector: &CredentialSelector,
         handle: CredentialHandle<S>,
         now: Instant,
-    ) {
+        observed_epoch: u64,
+    ) -> bool {
         let key = Self::key::<S>(selector);
         let now_ms = self.millis_at(now);
+        let _writes = self.writes.lock();
+        if self.eviction_epoch.load(Ordering::Acquire) != observed_epoch {
+            return false;
+        }
         if !self.entries.contains_key(&key) && self.entries.len() >= self.max_entries {
             self.evict_idle(now_ms);
             while self.entries.len() >= self.max_entries {
@@ -129,10 +158,13 @@ impl HandleCache {
                 last_used_ms: AtomicU64::new(now_ms),
             },
         );
+        true
     }
 
     /// Drop every handle cached for `selector`, whatever its scheme type.
     pub(super) fn evict_selector(&self, selector: &CredentialSelector) {
+        let _writes = self.writes.lock();
+        self.eviction_epoch.fetch_add(1, Ordering::Release);
         self.entries.retain(|(cached, _), _| cached != selector);
     }
 
@@ -223,7 +255,7 @@ mod tests {
         let now = Instant::now();
         let sel = selector();
         let original = handle("a");
-        cache.insert(&sel, original.clone(), now);
+        cache.insert(&sel, original.clone(), now, cache.epoch());
 
         let cached = cache.get::<SecretToken>(&sel, now).expect("cached");
         cached.replace(SecretToken::new(SecretString::new("b")));
@@ -236,8 +268,8 @@ mod tests {
         let start = Instant::now();
         let idle = selector();
         let busy = selector();
-        cache.insert(&idle, handle("idle"), start);
-        cache.insert(&busy, handle("busy"), start);
+        cache.insert(&idle, handle("idle"), start, cache.epoch());
+        cache.insert(&busy, handle("busy"), start, cache.epoch());
 
         // `busy` is resolved halfway through the TTL; `idle` never again.
         let half = start + TTL / 2;
@@ -254,7 +286,7 @@ mod tests {
         let cache = HandleCache::new(TTL, 8);
         let start = Instant::now();
         let sel = selector();
-        cache.insert(&sel, handle("a"), start);
+        cache.insert(&sel, handle("a"), start, cache.epoch());
 
         cache.sweep_if_due(start + TTL / 2);
         assert_eq!(cache.len(), 1);
@@ -267,8 +299,13 @@ mod tests {
         let first = selector();
         let second = selector();
         let third = selector();
-        cache.insert(&first, handle("1"), start);
-        cache.insert(&second, handle("2"), start + Duration::from_secs(1));
+        cache.insert(&first, handle("1"), start, cache.epoch());
+        cache.insert(
+            &second,
+            handle("2"),
+            start + Duration::from_secs(1),
+            cache.epoch(),
+        );
         // Touch `first` so `second` becomes the least recently used.
         assert!(
             cache
@@ -276,7 +313,12 @@ mod tests {
                 .is_some()
         );
 
-        cache.insert(&third, handle("3"), start + Duration::from_secs(3));
+        cache.insert(
+            &third,
+            handle("3"),
+            start + Duration::from_secs(3),
+            cache.epoch(),
+        );
         assert_eq!(cache.len(), 2);
         let later = start + Duration::from_secs(4);
         assert!(cache.get::<SecretToken>(&first, later).is_some());
@@ -289,8 +331,8 @@ mod tests {
         let cache = HandleCache::new(TTL, 1);
         let now = Instant::now();
         let sel = selector();
-        cache.insert(&sel, handle("1"), now);
-        cache.insert(&sel, handle("2"), now);
+        cache.insert(&sel, handle("1"), now, cache.epoch());
+        cache.insert(&sel, handle("2"), now, cache.epoch());
         assert_eq!(cache.len(), 1);
     }
 
@@ -300,11 +342,48 @@ mod tests {
         let now = Instant::now();
         let gone = selector();
         let kept = selector();
-        cache.insert(&gone, handle("gone"), now);
-        cache.insert(&kept, handle("kept"), now);
+        cache.insert(&gone, handle("gone"), now, cache.epoch());
+        cache.insert(&kept, handle("kept"), now, cache.epoch());
 
         cache.evict_selector(&gone);
         assert!(cache.get::<SecretToken>(&gone, now).is_none());
         assert!(cache.get::<SecretToken>(&kept, now).is_some());
+    }
+
+    #[test]
+    fn insert_after_an_eviction_since_the_load_caches_nothing() {
+        let cache = HandleCache::new(TTL, 8);
+        let now = Instant::now();
+        let sel = selector();
+        // A resolve reads the epoch, then loads the row; a delete evicts meanwhile.
+        let observed = cache.epoch();
+        cache.evict_selector(&sel);
+
+        assert!(!cache.insert(&sel, handle("stale"), now, observed));
+        assert!(cache.get::<SecretToken>(&sel, now).is_none());
+        assert!(cache.insert(&sel, handle("fresh"), now, cache.epoch()));
+    }
+
+    #[test]
+    fn concurrent_misses_never_exceed_the_entry_bound() {
+        const BOUND: usize = 16;
+        let cache = Arc::new(HandleCache::new(TTL, BOUND));
+        let now = Instant::now();
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let cache = Arc::clone(&cache);
+                std::thread::spawn(move || {
+                    for _ in 0..64 {
+                        let sel = selector();
+                        cache.insert(&sel, handle("x"), now, cache.epoch());
+                        assert!(cache.len() <= BOUND);
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().expect("insert thread");
+        }
+        assert_eq!(cache.len(), BOUND);
     }
 }
