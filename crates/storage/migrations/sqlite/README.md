@@ -24,6 +24,7 @@ belongs to the executions and dispatch aggregates; it has no separate empty migr
 | `0011_execution_cancel_requests.sql` | Durable cancel request on the execution row, observed by the lease holder across workers |
 | `0012_execution_next_wake.sql` | Indexed earliest durable timer of each execution, backfilled from stored state, for the timer sweep |
 | `0013_node_results.sql` | Per-node raw outputs, per-node typed result records and workflow inputs of an execution (the engine resume seam); purged with their execution |
+| `0014_drop_job_dispatch_queue.sql` | Drops the unused `job_dispatch_queue` table of the removed job-dispatch channel |
 
 `credential_migration_catalog` checks this inventory against the SQL files, including
 future additions. The baseline is a fixed named prefix, not the maximum catalog size.

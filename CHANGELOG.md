@@ -33,10 +33,9 @@ changes are expected between minor releases — call them out here.
   `ExecutionTurnHandoff::accept_turn` (`ClaimGeneration` moves next to
   `ControlClaimToken`); `nebula-storage` drops the `InMemoryJobDispatchQueue`,
   `SqliteJobDispatchQueue` and `PgJobDispatchQueue` adapters; the
-  `nebula_orchestrator_*` metric names are removed. The `job_dispatch_queue`
-  table stays in the schema until a later migration drops it, and the
-  persisted observation vocabulary keeps decoding historical job-dispatch
-  sources.
+  `nebula_orchestrator_*` metric names are removed. Migration 0014
+  drops the `job_dispatch_queue` table; the persisted observation vocabulary
+  keeps decoding historical job-dispatch sources.
 
 - **Ordinary serving consumes accepted executions.** The server now owns an
   in-process worker by default, using its admitted deployment pool, linked release

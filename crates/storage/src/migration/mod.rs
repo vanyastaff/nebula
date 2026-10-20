@@ -1252,6 +1252,13 @@ mod tests {
     /// empty tables. Nodes of executions that were in flight across the upgrade
     /// have no stored results and re-execute, as they did with the previous
     /// process-local store.
+    ///
+    /// 0014 drops `job_dispatch_queue`, which no adapter has read or written
+    /// since the job-dispatch channel was removed. Every admitted prefix
+    /// reaches 0013 first; any rows left in it were never consumed and no
+    /// other table references it, so dropping it changes no admitted state.
+    /// A build that predates 0014 refuses the schema rather than writing to a
+    /// missing table.
     #[test]
     fn new_catalog_head_requires_explicit_admission_policy_review() {
         use crate::migration_catalog::REVIEWED_HEAD;
