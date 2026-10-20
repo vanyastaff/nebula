@@ -46,7 +46,6 @@ use super::{
         SignatureVerdict, enforce_signature, missing_secret_response,
         prod_requires_signature_response, record_signature_failure, signature_rejected_response,
     },
-    token::token_hash,
     transport::DurableDispatchComponents,
 };
 use crate::transport::webhook::transport::WebhookTransport;
@@ -164,8 +163,7 @@ pub(super) async fn dispatch_inner(
     let mut durable: Option<DurableTarget> = None;
 
     if let Some(store) = transport.inner.activation_store.as_deref() {
-        let hash = token_hash(key.nonce());
-        match store.resolve_by_token(&hash).await {
+        match store.resolve_by_token(key.token_hash()).await {
             Ok(Some(row)) => {
                 debug!(
                     trigger_id = %row.trigger_id,

@@ -25,10 +25,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use axum::{body::Body, http::Request, http::StatusCode};
 use nebula_action::{TriggerRuntimeContext, webhook::providers::default_factories};
 use nebula_api::transport::webhook::{
     SecretResolutionError, TriggerStoreSpecLookup, WebhookActivationContextFactory,
-    WebhookSecretResolver, bootstrap_webhook_activations,
+    WebhookContextError, WebhookSecretResolver, WebhookTransport, WebhookTransportConfig,
+    bootstrap_webhook_activations, token::token_hash,
 };
 use nebula_engine::ActionRegistry;
 use nebula_storage::inmem::{InMemoryTriggerStore, InMemoryWebhookActivationStore};
@@ -39,6 +41,8 @@ use nebula_storage_port::{
     store::{TriggerStore, WebhookActivationStore},
 };
 use tokio_util::sync::CancellationToken;
+use tower::ServiceExt;
+use uuid::Uuid;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -59,6 +63,9 @@ const SECRET_ID_B: &str = "cred_scope_b_secret";
 
 /// HMAC key for scope_b's secret. Not a real secret — used only as a fixture.
 const HMAC_SECRET_B: &[u8] = b"scope-b-hmac-secret-fixture-32b!";
+
+/// Plaintext capability token of the seeded activation; only its hash is stored.
+const NONCE: &str = "0123456789abcdef0123456789abcdef";
 
 // ── Scopes ────────────────────────────────────────────────────────────────────
 
@@ -120,8 +127,11 @@ impl WebhookSecretResolver for EmptySecretResolver {
 struct NoopCtxFactory;
 
 impl WebhookActivationContextFactory for NoopCtxFactory {
-    fn build(&self, _record: &WebhookActivationRecord) -> TriggerRuntimeContext {
-        TriggerRuntimeContext::new(
+    fn build(
+        &self,
+        _record: &WebhookActivationRecord,
+    ) -> Result<TriggerRuntimeContext, WebhookContextError> {
+        Ok(TriggerRuntimeContext::new(
             Arc::new(
                 nebula_core::BaseContext::builder(nebula_core::scope::Scope::default())
                     .principal(nebula_core::scope::Principal::System)
@@ -131,7 +141,7 @@ impl WebhookActivationContextFactory for NoopCtxFactory {
             ),
             nebula_core::WorkflowId::new(),
             nebula_core::node_key!("bootstrap-restart-test"),
-        )
+        ))
     }
 }
 
@@ -191,14 +201,38 @@ async fn seed_trigger_row(
 /// `spec_trigger_id` and the NodeKey goes into `trigger_id`.  In these tests
 /// both happen to be `TRIGGER_ID` (the constant is used as both the `trg_` PK
 /// and the NodeKey for simplicity).
-async fn seed_activation_record(store: &dyn WebhookActivationStore, scope: &Scope) {
+///
+/// Like `activate_and_persist`, the row stores the activation UUID as its slug
+/// and only the hash of the URL nonce. Returns the activation UUID.
+async fn seed_activation_record(store: &dyn WebhookActivationStore, scope: &Scope) -> Uuid {
+    let activation = Uuid::new_v4();
     let mut record =
-        WebhookActivationRecord::new(TRIGGER_ID, scope.clone(), "bootstrap-slug", true);
+        WebhookActivationRecord::new(TRIGGER_ID, scope.clone(), activation.to_string(), true);
     record.spec_trigger_id = Some(TRIGGER_ID.to_string());
+    record.token_hash = token_hash(NONCE);
     store
         .upsert(scope, record)
         .await
         .expect("WebhookActivationRecord upsert must succeed on an empty store");
+    activation
+}
+
+fn fresh_transport() -> WebhookTransport {
+    WebhookTransport::new(WebhookTransportConfig::default())
+}
+
+/// POST an unsigned body to the activation's capability URL on `transport`.
+async fn post_unsigned(transport: &WebhookTransport, activation: Uuid, nonce: &str) -> StatusCode {
+    let request = Request::post(format!("/webhooks/{activation}/{nonce}"))
+        .header("content-type", "application/json")
+        .body(Body::from("{}"))
+        .expect("valid request");
+    transport
+        .router()
+        .oneshot(request)
+        .await
+        .expect("router is infallible")
+        .status()
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -224,6 +258,7 @@ async fn bootstrap_reads_spec_from_trigger_store_after_restart() {
     };
 
     let report = bootstrap_webhook_activations(
+        &fresh_transport(),
         activation_store.as_ref(),
         &registry,
         &secrets,
@@ -256,6 +291,7 @@ async fn bootstrap_skips_empty_resolved_secret_before_factory() {
     seed_activation_record(activation_store.as_ref(), &scope_a()).await;
 
     let report = bootstrap_webhook_activations(
+        &fresh_transport(),
         activation_store.as_ref(),
         &build_action_registry(),
         &EmptySecretResolver,
@@ -313,6 +349,7 @@ async fn bootstrap_scoped_lookup_returns_correct_tenant_spec() {
     };
 
     let report = bootstrap_webhook_activations(
+        &fresh_transport(),
         activation_store.as_ref(),
         &registry,
         &secrets,
@@ -333,6 +370,100 @@ async fn bootstrap_scoped_lookup_returns_correct_tenant_spec() {
         report.skipped, 0,
         "no activation must be skipped when the scoped lookup works correctly; {report:?}"
     );
+}
+
+/// A restarted process (a fresh transport with an empty routing map) answers
+/// the capability URL of an activation persisted before the restart once the
+/// bootstrap has run: before it, the URL is unknown (404); after it, the
+/// request reaches the generic provider's handler, which refuses the unsigned
+/// body (401). A second pass finds the route in place and rebuilds nothing.
+#[tokio::test]
+async fn bootstrap_routes_a_persisted_activation_on_a_fresh_transport() {
+    let trigger_store = Arc::new(InMemoryTriggerStore::new());
+    let activation_store = Arc::new(InMemoryWebhookActivationStore::new());
+    seed_trigger_row(trigger_store.as_ref(), &scope_a(), "generic", SECRET_ID_B).await;
+    let activation = seed_activation_record(activation_store.as_ref(), &scope_a()).await;
+
+    let transport = fresh_transport();
+    assert_eq!(
+        post_unsigned(&transport, activation, NONCE).await,
+        StatusCode::NOT_FOUND,
+        "nothing is routed before the bootstrap"
+    );
+
+    let spec_lookup = TriggerStoreSpecLookup::new(Arc::clone(&trigger_store) as _);
+    let registry = build_action_registry();
+    let secrets = SingleSecretResolver {
+        known_id: SECRET_ID_B,
+        secret: HMAC_SECRET_B,
+    };
+    let first = bootstrap_webhook_activations(
+        &transport,
+        activation_store.as_ref(),
+        &registry,
+        &secrets,
+        &NoopCtxFactory,
+        &spec_lookup,
+        None,
+    )
+    .await
+    .expect("bootstrap succeeds");
+    assert_eq!((first.loaded, first.restored, first.skipped), (1, 1, 0));
+
+    assert_eq!(
+        post_unsigned(&transport, activation, NONCE).await,
+        StatusCode::UNAUTHORIZED,
+        "the restored route reaches the handler, whose signature check refuses the request"
+    );
+    assert_eq!(
+        post_unsigned(&transport, activation, "fedcba9876543210fedcba9876543210").await,
+        StatusCode::NOT_FOUND,
+        "only the nonce whose hash was stored routes"
+    );
+
+    let second = bootstrap_webhook_activations(
+        &transport,
+        activation_store.as_ref(),
+        &registry,
+        &secrets,
+        &NoopCtxFactory,
+        &spec_lookup,
+        None,
+    )
+    .await
+    .expect("bootstrap succeeds");
+    assert_eq!((second.loaded, second.restored, second.skipped), (1, 0, 0));
+}
+
+/// A row without the routable identity `activate_and_persist` writes (UUID
+/// slug and token hash) cannot be routed and is skipped, not guessed at.
+#[tokio::test]
+async fn bootstrap_skips_a_row_without_a_capability_token() {
+    let trigger_store = Arc::new(InMemoryTriggerStore::new());
+    let activation_store = Arc::new(InMemoryWebhookActivationStore::new());
+    seed_trigger_row(trigger_store.as_ref(), &scope_a(), "generic", SECRET_ID_B).await;
+    let mut record = WebhookActivationRecord::new(TRIGGER_ID, scope_a(), "not-a-uuid", true);
+    record.spec_trigger_id = Some(TRIGGER_ID.to_string());
+    activation_store
+        .upsert(&scope_a(), record)
+        .await
+        .expect("upsert succeeds");
+
+    let report = bootstrap_webhook_activations(
+        &fresh_transport(),
+        activation_store.as_ref(),
+        &build_action_registry(),
+        &SingleSecretResolver {
+            known_id: SECRET_ID_B,
+            secret: HMAC_SECRET_B,
+        },
+        &NoopCtxFactory,
+        &TriggerStoreSpecLookup::new(Arc::clone(&trigger_store) as _),
+        None,
+    )
+    .await
+    .expect("per-row failures are isolated");
+    assert_eq!((report.loaded, report.skipped), (0, 1));
 }
 
 /// Serde backward-compat: rows serialised under the old field name `action_kind`

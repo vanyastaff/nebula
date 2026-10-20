@@ -43,15 +43,24 @@ async fn reload_webhooks(State(state): State<AppState>) -> impl IntoResponse {
         )
             .into_response();
     };
-    let Some(registry) = state.action_registry.as_ref() else {
+    let Some(registry) = state.webhook_provider_registry() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            "action registry not attached",
+            "webhook provider registry not attached",
+        )
+            .into_response();
+    };
+
+    let Some(transport) = state.webhook_transport.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "webhook transport not configured",
         )
             .into_response();
     };
 
     match bootstrap_webhook_activations(
+        transport,
         store.as_ref(),
         registry,
         secrets.as_ref(),
@@ -66,7 +75,8 @@ async fn reload_webhooks(State(state): State<AppState>) -> impl IntoResponse {
                 target: "nebula::api::internal::webhook_reload",
                 loaded = report.loaded,
                 skipped = report.skipped,
-                "webhook port store validated",
+                restored = report.restored,
+                "webhook routes reloaded from the port store",
             );
             (
                 StatusCode::OK,

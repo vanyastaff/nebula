@@ -151,33 +151,43 @@ unreconciled second channels).
 ## Webhook subsystem
 
 `crates/api/src/transport/webhook/` is the **single converged** HTTP transport
-for inbound webhook triggers (M3.3 / ADR-0049). Both URL shapes funnel through
-one `dispatch_inner` pipeline:
+for inbound webhook triggers (M3.3 / ADR-0049). Every activation is served at
+`POST /webhooks/{trigger_uuid}/{nonce}` through one `dispatch_inner` pipeline.
+The slug-routed surface was retired (ADR-0096).
 
-- **Programmatic** — `POST /webhooks/{trigger_uuid}/{nonce}`, minted by
-`WebhookTransport::activate(...)` from the typed `nebula_action::WebhookAction`
-runtime path.
-- **Slug-routed** — `POST|GET /api/v1/hooks/{org}/{ws}/{trigger_slug}`,
-loaded from storage at startup via `bootstrap_webhook_activations` and
-mutated by `TriggerLifecycleEvent` consumers / the admin reload endpoint.
+- `POST /api/v1/.../webhooks` registration builds the provider handler, mints
+  the `(uuid, nonce)` pair through `activate_and_persist`, and stores only the
+  nonce's SHA-256 in `webhook_activations` with the activation UUID as `slug`.
+- The routing map is keyed by `(uuid, SHA-256(nonce))`, the same hash the row
+  stores, so a persisted row routes in any process without the plaintext token.
+  `bootstrap_webhook_activations` rebuilds the handler of every active row the
+  transport does not route yet (spec lookup, secret resolution, provider
+  factory) and routes it; rows already routed are left alone.
+- `sync_webhook_routes(&state)` runs that pass for an `AppState`, and
+  `spawn_webhook_route_sync` repeats it on an interval. The server runs one
+  pass before serving and then every 30 seconds, so a restart keeps every
+  registered URL and an activation registered on another replica routes here
+  within one interval. `API_WEBHOOK_BOOTSTRAP_FROM_STORAGE=false` turns both off.
 
 Responsibility split:
 
-- `transport::webhook::WebhookTransport` — activate / deactivate / activate_slug /
-replace_slug_map / axum router. Owns the routing map, rate limiter, signature
-enforcement, replay-window check, and `pre_handle` short-circuit.
-- `bootstrap` — `bootstrap_webhook_activations` / `collect_webhook_activations`,
-`WebhookSecretResolver`, `WebhookActivationContextFactory`. The API owns these
-object-safe, credential-neutral ports; the composition root supplies concrete
-adapters and invokes bootstrap before `build_app`. Admin reload uses
-`collect_*` and `replace_slug_map` for atomic swaps.
+- `transport::webhook::WebhookTransport` — activate / deactivate / restore and
+  the axum router. Owns the routing map, rate limiters, signature enforcement,
+  replay-window check, and `pre_handle` short-circuit.
+- `bootstrap` — `bootstrap_webhook_activations`, `sync_webhook_routes`,
+  `spawn_webhook_route_sync`, `WebhookSecretResolver`,
+  `WebhookActivationContextFactory` (with `RecordWebhookContextFactory`, which
+  builds a context from the row alone) and `default_webhook_providers`. The API
+  owns these object-safe, credential-neutral ports; the composition root
+  supplies the credential-backed secret resolver.
 - `events` — `TriggerLifecycleEvent` { Created / Updated / Deleted } +
 `TriggerLifecycleSubscriber`. M3.3 ships the consumer; producer-side
 wiring is deferred (ADR-0049 § "Out of scope").
 - `transport::webhook::provider::EndpointProviderImpl` — implements
 `nebula_action::WebhookEndpointProvider` so plugins read the public URL
-without knowing the HTTP layer.
-- `transport::webhook::key::WebhookKey` — `Programmatic { uuid, nonce }` | `Slug(TriggerCoordinates)`.
+without knowing the HTTP layer. A route restored from storage carries no
+endpoint provider: the URL was handed out once at registration.
+- `transport::webhook::key::WebhookKey` — `Programmatic { uuid, token_hash }`.
 - `transport::webhook::routing` — private `RoutingMap` (DashMap) keyed by `WebhookKey`.
 - `transport::webhook::ratelimit::WebhookRateLimiter` — per-key sliding-window guard with LRU-capped
 path table (#271 mitigation).
@@ -186,14 +196,8 @@ Provider catalog (Slack `url_verification`, Stripe `pending_webhook` ping,
 Generic `?challenge=…`) lives in `crates/action/src/webhook/providers/`;
 each implements `WebhookAction::pre_handle`.
 
-Operator-configured webhook URLs are documented here (and ADR-0049),
-not in the OpenAPI spec — promoting the slug surface back into
-`/api/v1/openapi.json` is a 1.0 follow-up that requires typed schemas
-for every provider's request envelope.
-
 Internal admin reload: `POST /internal/v1/webhooks/reload` (gated by
-`X-Internal-Token`) atomically swaps the slug map after consulting
-`WebhookActivationRepo::list_active`.
+`X-Internal-Token`) runs one routing pass immediately.
 
 Delivery semantics: at-least-once (§11.3 / §13.4). Duplicate delivery is the
 caller's responsibility via stable event identity + idempotency keys.

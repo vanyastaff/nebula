@@ -133,8 +133,8 @@ pub async fn register_webhook(
     let webhook_activation_store = state.webhook_activation_store.as_ref().ok_or_else(|| {
         ApiError::ServiceUnavailable("webhook activation store not configured".to_string())
     })?;
-    let action_registry = state.action_registry.as_ref().ok_or_else(|| {
-        ApiError::ServiceUnavailable("action registry not configured".to_string())
+    let action_registry = state.webhook_provider_registry().ok_or_else(|| {
+        ApiError::ServiceUnavailable("webhook provider registry not configured".to_string())
     })?;
     let factory = action_registry
         .lookup_webhook_factory(&body.provider)
@@ -373,7 +373,9 @@ pub async fn register_webhook(
         activation_record.workflow_id = Some(body.workflow_id.clone());
         activation_record.mode = WebhookMode::Prod;
 
-        let ctx_template = ctx_factory.build(&activation_record);
+        let ctx_template = ctx_factory.build(&activation_record).map_err(|error| {
+            ApiError::Internal(format!("cannot build the trigger context: {error}"))
+        })?;
 
         let handle = activate_and_persist(
             transport,

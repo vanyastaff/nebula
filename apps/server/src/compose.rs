@@ -355,6 +355,10 @@ pub(crate) async fn run_transport<T: ServerTransport>(
 /// Transport runtime orchestrator for binary composition roots.
 pub(crate) struct ServerRuntime;
 
+/// How often a webhook-serving process re-reads active activations, so a
+/// webhook registered through another replica answers here within this long.
+const WEBHOOK_ROUTE_SYNC_INTERVAL: Duration = Duration::from_secs(30);
+
 /// How long the process waits for in-flight HTTP requests after a shutdown
 /// signal before abandoning them.
 ///
@@ -510,6 +514,28 @@ impl ServerRuntime {
                 let auth_sweep = state.auth_expiry_sweeper(Duration::from_secs(
                     api_config.idempotency.sweep_interval_secs,
                 ));
+                // Route every persisted webhook activation before serving, so a
+                // restart never answers 404 for a URL registered earlier; the sync
+                // task below then picks up activations other replicas register.
+                let route_webhooks = api_config.webhook.bootstrap_from_storage;
+                let startup_routes = if route_webhooks {
+                    nebula_api::transport::webhook::sync_webhook_routes(&state).await
+                } else {
+                    Ok(None)
+                };
+                match startup_routes {
+                    Ok(Some(report)) => tracing::info!(
+                        loaded = report.loaded,
+                        skipped = report.skipped,
+                        "webhook routes restored from the activation store"
+                    ),
+                    Ok(None) => {},
+                    Err(error) => tracing::warn!(
+                        %error,
+                        "webhook routes could not be restored at startup; the sync task retries"
+                    ),
+                }
+                let webhook_route_state = state.clone();
                 let app = transport.build_router(state, &api_config)?;
                 let worker_runtime = match execution {
                     crate::execution_runtime::ExecutionTopology::InProcess => {
@@ -558,6 +584,16 @@ impl ServerRuntime {
                         sweeper.run(token).await;
                     }))
                 });
+                let webhook_route_sync = route_webhooks
+                    .then(|| {
+                        nebula_api::transport::webhook::spawn_webhook_route_sync(
+                            webhook_route_state,
+                            WEBHOOK_ROUTE_SYNC_INTERVAL,
+                            shutdown.clone(),
+                        )
+                    })
+                    .flatten()
+                    .map(tokio_util::task::AbortOnDropHandle::new);
                 if reservation_sweep.is_none() {
                     tracing::warn!(
                         "start-key reservation sweep disabled (idempotency sweep interval is 0); \
@@ -587,6 +623,11 @@ impl ServerRuntime {
                     && let Err(error) = handle.await
                 {
                     tracing::warn!(%error, "auth expiry sweep did not stop cleanly");
+                }
+                if let Some(handle) = webhook_route_sync
+                    && let Err(error) = handle.await
+                {
+                    tracing::warn!(%error, "webhook route sync did not stop cleanly");
                 }
                 serve_result
             }
@@ -1429,8 +1470,9 @@ mod tests {
 
     /// Webhook triggers and their capability tokens must live on the selected
     /// deployment database, and the default `all` transport must mount webhook
-    /// ingress. Previously triggers sat in an in-memory store regardless of
-    /// backend, no activation store was attached (so activation answered
+    /// ingress with what registration needs. Previously triggers sat in an
+    /// in-memory store regardless of backend, no activation store, provider
+    /// registry or context factory was attached (so registration answered
     /// 503), and `all` served REST only.
     #[tokio::test]
     async fn sqlite_deployment_keeps_webhook_state_on_its_database() {
@@ -1475,6 +1517,23 @@ mod tests {
         assert!(api.webhook_transport.is_none(), "`api` stays REST-only");
         let all = AllTransport.prepare_state(state, bind).expect("all state");
         assert!(all.webhook_transport.is_some(), "`all` mounts webhooks");
+        // Registration and route restoration rebuild handlers from the
+        // first-party providers and contexts from the activation row; without
+        // them registration answered 503 and no stored route was ever served.
+        assert!(
+            all.webhook_provider_registry()
+                .and_then(|providers| providers.lookup_webhook_factory("generic"))
+                .is_some(),
+            "`all` resolves first-party webhook providers"
+        );
+        assert!(
+            all.webhook_ctx_factory_b.is_some(),
+            "`all` builds trigger contexts from activation rows"
+        );
+        assert!(
+            all.action_registry.is_none(),
+            "webhook providers do not stand in for the action catalog"
+        );
         // Merging the webhook router next to the REST routes must not collide.
         let _router = AllTransport
             .build_router(all, &api_config)

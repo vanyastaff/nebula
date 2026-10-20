@@ -489,6 +489,38 @@ impl WebhookTransport {
         self.inner.routing.remove(&key);
     }
 
+    /// Route a persisted activation in this process.
+    ///
+    /// `webhook_activations` stores only the token's hash, which is the
+    /// routing key, so a row written by any process (this one before a
+    /// restart, or another replica) becomes routable here without the
+    /// plaintext nonce. The context carries no endpoint provider: the URL
+    /// was handed out once at registration, and dispatch does not read it.
+    ///
+    /// Returns `false` when the activation is already routed; the existing
+    /// entry is kept.
+    pub(crate) fn restore(
+        &self,
+        key: WebhookKey,
+        handler: Arc<dyn TriggerHandler>,
+        action_config: WebhookConfig,
+        ctx: TriggerRuntimeContext,
+    ) -> bool {
+        self.inner.routing.insert(
+            key,
+            ActivationEntry {
+                handler,
+                ctx,
+                config: action_config,
+            },
+        )
+    }
+
+    /// Whether `key` is routed in this process.
+    pub(crate) fn is_routed(&self, key: &WebhookKey) -> bool {
+        self.inner.routing.lookup(key).is_some()
+    }
+
     /// Total active registrations. Used by `/healthz` reporters.
     #[must_use]
     pub fn total_count(&self) -> usize {

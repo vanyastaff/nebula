@@ -203,7 +203,14 @@ fn attach_webhook_transport(
         .as_ref()
         .ok_or(TransportInitError::MissingWorkflowStart)?;
     let transport = transport.with_durable_dispatch(Arc::clone(start));
-    Ok(state.with_webhook_transport(transport))
+    // Registration and route restoration rebuild handlers from the first-party
+    // provider factories, and each activation's context from its own row.
+    Ok(state
+        .with_webhook_transport(transport)
+        .with_webhook_providers(nebula_api::transport::webhook::default_webhook_providers())
+        .with_webhook_ctx_factory_b(Arc::new(
+            nebula_api::transport::webhook::RecordWebhookContextFactory,
+        )))
 }
 
 /// Activation inputs are supplied by the trusted worker deployment manifest.
