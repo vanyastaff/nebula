@@ -10,8 +10,9 @@
 //! otherwise *conditional on the parking runner surviving until the deadline*,
 //! which is not durable.
 //!
-//! The sweep lists `Running` executions, finds any with a `Waiting` node whose
-//! persisted `next_attempt_at` is now overdue, and re-drives each through
+//! The sweep pages through executions whose indexed earliest timer
+//! (`next_wake_at`, projected on every commit) is due, re-checks that a
+//! `Waiting` node's persisted `next_attempt_at` is overdue, and re-drives each through
 //! [`WorkflowEngine::resume_execution`] — the same path a fresh runner takes,
 //! which re-seeds the `wait_heap` from the persisted deadline and fires the
 //! overdue wake in the frontier's Phase 0b.
@@ -28,12 +29,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nebula_execution::ExecutionState;
+use nebula_storage_port::dto::{DueTimer, DueTimerCursor};
 use tokio::task::JoinHandle;
 
 use super::*;
 
 /// Default cadence of the durable-timer wake scanner sweep.
 pub const DEFAULT_TIMER_SCAN_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Due executions read per listing call; a sweep pages until a short page.
+const TIMER_SCAN_PAGE: u32 = 256;
 
 impl WorkflowEngine {
     /// Re-drive every `Running` execution across ALL tenant scopes that has an
@@ -56,81 +61,95 @@ impl WorkflowEngine {
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::PlanningFailed`] only if the initial
-    /// `list_all_running` storage call fails; individual execution failures are
-    /// absorbed so one bad row cannot wedge the sweep.
+    /// Returns [`EngineError::PlanningFailed`] only if a `list_due_timers`
+    /// storage call fails; individual execution failures are absorbed so one
+    /// bad row cannot wedge the sweep.
     pub async fn sweep_overdue_timers(&self) -> Result<usize, EngineError> {
         let Some(stores) = self.stores.clone() else {
             // No durable store wired (library mode) — nothing to scan.
             return Ok(0);
         };
         let now = self.clock.now();
-        let all_records = stores.execution.list_all_running().await.map_err(|e| {
-            EngineError::PlanningFailed(format!("timer-scan list_all_running: {e}"))
-        })?;
-
         let mut redriven = 0usize;
-        for record in all_records {
-            // `from_str` (not `from_value`): `ExecutionState` carries a borrowing
-            // field that `serde_json::from_value` cannot deserialize from an owned
-            // `Value`, so round-trip through the string form (the same convention
-            // the engine's own state-load path uses).
-            let state = match serde_json::from_str::<ExecutionState>(&record.state.to_string()) {
-                Ok(state) => state,
-                Err(e) => {
-                    // The decode error's own `Display` is deliberately NOT
-                    // logged: `serde_json` renders the offending value quoted
-                    // and uncapped ("invalid type: string \"…\", expected …"),
-                    // and on a row written before the typed failure envelope
-                    // that value IS the pre-envelope provider error text.
-                    // Interpolating it would re-publish, into a log line,
-                    // exactly the text the durable record shape removed. Name
-                    // the row and the reason instead, so an operator can still
-                    // tell why an overdue execution stopped being re-driven;
-                    // `reason` carries the same value-free failure kind and
-                    // parser position as a separate field.
+        let mut after: Option<DueTimerCursor> = None;
+        loop {
+            let page = stores
+                .execution
+                .list_due_timers(now, after.as_ref(), TIMER_SCAN_PAGE)
+                .await
+                .map_err(|e| {
+                    EngineError::PlanningFailed(format!("timer-scan list_due_timers: {e}"))
+                })?;
+            let last_page = page.len() < TIMER_SCAN_PAGE as usize;
+            after = page.last().map(DueTimer::cursor);
+            for due in page {
+                let record = due.record;
+                // `from_str` (not `from_value`): `ExecutionState` carries a borrowing
+                // field that `serde_json::from_value` cannot deserialize from an owned
+                // `Value`, so round-trip through the string form (the same convention
+                // the engine's own state-load path uses).
+                let state = match serde_json::from_str::<ExecutionState>(&record.state.to_string())
+                {
+                    Ok(state) => state,
+                    Err(e) => {
+                        // The decode error's own `Display` is deliberately NOT
+                        // logged: `serde_json` renders the offending value quoted
+                        // and uncapped ("invalid type: string \"…\", expected …"),
+                        // and on a row written before the typed failure envelope
+                        // that value IS the pre-envelope provider error text.
+                        // Interpolating it would re-publish, into a log line,
+                        // exactly the text the durable record shape removed. Name
+                        // the row and the reason instead, so an operator can still
+                        // tell why an overdue execution stopped being re-driven;
+                        // `reason` carries the same value-free failure kind and
+                        // parser position as a separate field.
+                        tracing::warn!(
+                            target = "engine::timer_scan",
+                            execution_id = %record.id,
+                            reason = %nebula_error::decode::value_free_decode_summary(&e),
+                            "stored state does not decode as this build's execution-state shape; skipping"
+                        );
+                        continue;
+                    },
+                };
+                let has_overdue_timer = state.node_states.values().any(|ns| {
+                    ns.state == NodeState::Waiting
+                        && ns.next_attempt_at.is_some_and(|when| when <= now)
+                });
+                if !has_overdue_timer {
+                    continue;
+                }
+                let Ok(execution_id) = record.id.parse::<ExecutionId>() else {
                     tracing::warn!(
                         target = "engine::timer_scan",
                         execution_id = %record.id,
-                        reason = %nebula_error::decode::value_free_decode_summary(&e),
-                        "stored state does not decode as this build's execution-state shape; skipping"
+                        "unparseable execution id in running set; skipping"
                     );
                     continue;
-                },
-            };
-            let has_overdue_timer = state.node_states.values().any(|ns| {
-                ns.state == NodeState::Waiting && ns.next_attempt_at.is_some_and(|when| when <= now)
-            });
-            if !has_overdue_timer {
-                continue;
+                };
+                match self.resume_execution(&record.scope, execution_id).await {
+                    Ok(_) => {
+                        redriven += 1;
+                        tracing::debug!(
+                            target = "engine::timer_scan",
+                            %execution_id,
+                            "re-drove overdue timer wake for a no-live-owner execution"
+                        );
+                    },
+                    // Live owner holds the lease — it will fire the wake in-process.
+                    Err(EngineError::Leased { .. }) => {},
+                    Err(e) => {
+                        tracing::warn!(
+                            target = "engine::timer_scan",
+                            %execution_id,
+                            error = %e,
+                            "overdue-timer re-drive failed; will retry next sweep"
+                        );
+                    },
+                }
             }
-            let Ok(execution_id) = record.id.parse::<ExecutionId>() else {
-                tracing::warn!(
-                    target = "engine::timer_scan",
-                    execution_id = %record.id,
-                    "unparseable execution id in running set; skipping"
-                );
-                continue;
-            };
-            match self.resume_execution(&record.scope, execution_id).await {
-                Ok(_) => {
-                    redriven += 1;
-                    tracing::debug!(
-                        target = "engine::timer_scan",
-                        %execution_id,
-                        "re-drove overdue timer wake for a no-live-owner execution"
-                    );
-                },
-                // Live owner holds the lease — it will fire the wake in-process.
-                Err(EngineError::Leased { .. }) => {},
-                Err(e) => {
-                    tracing::warn!(
-                        target = "engine::timer_scan",
-                        %execution_id,
-                        error = %e,
-                        "overdue-timer re-drive failed; will retry next sweep"
-                    );
-                },
+            if last_page {
+                break;
             }
         }
         Ok(redriven)

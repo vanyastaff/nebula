@@ -5,8 +5,10 @@
 //! opaque state. The projection is computed from the very `ExecutionState`
 //! being serialized, so the two cannot disagree.
 
+use chrono::{DateTime, Utc};
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_storage_port::{ExecutionListing, ExecutionListingStatus};
+use nebula_workflow::NodeState;
 
 /// Project `state` onto its queryable listing — what every snapshot write
 /// (engine commits and test fixtures alike) hands storage alongside the state.
@@ -16,6 +18,19 @@ pub fn execution_listing(state: &ExecutionState) -> ExecutionListing {
         state.started_at,
         state.completed_at,
     )
+    .with_next_wake_at(next_wake_at(state))
+}
+
+/// The earliest durable timer the timer sweep would fire for `state`: a
+/// `Waiting` node with a wake instant. Must match the sweep's own predicate
+/// in `timer_scan`, which re-checks the decoded state.
+pub(crate) fn next_wake_at(state: &ExecutionState) -> Option<DateTime<Utc>> {
+    state
+        .node_states
+        .values()
+        .filter(|node| node.state == NodeState::Waiting)
+        .filter_map(|node| node.next_attempt_at)
+        .min()
 }
 
 /// Exhaustive by design: a new execution status must be mapped here before

@@ -4268,7 +4268,7 @@ fn mark_node_failed(
 ///
 /// **Known residual channels, recorded rather than silently widened in scope.**
 /// `PlanningFailed` interpolates the underlying error at
-/// several construction sites — `timer_scan`'s `list_all_running`, this module's
+/// several construction sites — `timer_scan`'s `list_due_timers`, this module's
 /// `acquire lease`, and `DependencyGraph::from_definition` — so it carries
 /// storage and workflow text, not only a timer-scan message. Its messages are
 /// therefore bounded and escaped but *not* provenance-verified. Closing that

@@ -11,7 +11,7 @@
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use nebula_storage_port::dto::ExecutionRecord;
+use nebula_storage_port::dto::{DueTimer, DueTimerCursor, ExecutionRecord};
 use nebula_storage_port::store::{ExecutionStore, IdempotencyGuard};
 use nebula_storage_port::{
     ExecutionHistoryPage, ExecutionHistoryQuery, ExecutionListingStatus, ExecutionSummary,
@@ -369,17 +369,41 @@ impl ExecutionStore for PgExecutionStore {
         Ok(requested.unwrap_or(false))
     }
 
-    async fn list_all_running(&self) -> Result<Vec<ExecutionRecord>, StorageError> {
+    async fn list_due_timers(
+        &self,
+        due_at: DateTime<Utc>,
+        after: Option<&DueTimerCursor>,
+        limit: u32,
+    ) -> Result<Vec<DueTimer>, StorageError> {
         let sql = format!(
-            "SELECT {EXECUTION_COLUMNS} FROM executions \
-             WHERE status IN ('created', 'running', 'paused', 'cancelling')"
+            "SELECT {EXECUTION_COLUMNS}, next_wake_at FROM executions \
+             WHERE next_wake_at IS NOT NULL AND next_wake_at <= $2 \
+               AND ($3::timestamptz IS NULL \
+                    OR next_wake_at > $3 \
+                    OR (next_wake_at = $3 AND id COLLATE \"C\" > $4)) \
+             ORDER BY next_wake_at, id COLLATE \"C\" \
+             LIMIT $5"
         );
         let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(crate::execution_state::MAX_PERSISTED_EXECUTION_STATE_BYTES)
+            .bind(MicrosInstant::floor(due_at).to_datetime())
+            .bind(after.map(|cursor| cursor.next_wake_at().to_datetime()))
+            .bind(after.map_or("", DueTimerCursor::id))
+            .bind(i64::from(limit))
             .fetch_all(&self.pool)
             .await
             .map_err(storage_error)?;
-        rows.iter().map(decode_execution).collect()
+        rows.iter()
+            .map(|row| {
+                let next_wake_at = optional_instant(row, "next_wake_at")?.ok_or_else(|| {
+                    StorageError::Internal("due timer row without next_wake_at".into())
+                })?;
+                Ok(DueTimer {
+                    next_wake_at,
+                    record: decode_execution(row)?,
+                })
+            })
+            .collect()
     }
 
     async fn list_history(
@@ -635,7 +659,7 @@ pub(super) async fn commit_locked(
         .ok_or_else(|| StorageError::Internal("execution version exhausted".into()))?;
     let update = sqlx::query(
         "UPDATE executions SET state = $1, version = $2, updated_at = $3, \
-                status = $4, started_at = $5, finished_at = $6 \
+                status = $4, started_at = $5, finished_at = $6, next_wake_at = $11 \
          WHERE org_id = $7 AND workspace_id = $8 AND id = $9 \
            AND octet_length($1::jsonb::text) <= $10",
     )
@@ -654,6 +678,12 @@ pub(super) async fn commit_locked(
     .bind(&scope.workspace_id)
     .bind(&id)
     .bind(crate::execution_state::MAX_PERSISTED_EXECUTION_STATE_BYTES)
+    .bind(
+        batch
+            .listing()
+            .next_wake_at()
+            .map(MicrosInstant::to_datetime),
+    )
     .execute(&mut **tx)
     .await
     .map_err(storage_error)?;

@@ -1238,6 +1238,12 @@ mod tests {
     /// prefix reaches 0010 first; existing rows read as "no cancel requested",
     /// which is what they were. No row is rewritten, no constraint tightened,
     /// and no older writer depends on the column, so admission is unchanged.
+    ///
+    /// 0012 adds a nullable, indexed `executions.next_wake_at` and backfills it
+    /// for live rows from the stored state (`node_states.*` in `waiting` with a
+    /// `next_attempt_at`). Terminal rows and rows without a timer keep `NULL`.
+    /// No constraint is tightened. A build that predates 0012 refuses the
+    /// schema, so no writer can leave the column stale.
     #[test]
     fn new_catalog_head_requires_explicit_admission_policy_review() {
         use crate::migration_catalog::REVIEWED_HEAD;
