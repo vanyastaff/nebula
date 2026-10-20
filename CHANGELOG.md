@@ -60,6 +60,15 @@ changes are expected between minor releases — call them out here.
   for an execution the database does not hold is `NotFound`, and the bulk loads
   answer in node-id byte order on every backend.
 
+### Security
+
+- **Credential ciphertext is bound to its owner.** The encryption layer used
+  the credential ID alone as AAD, so ciphertext copied into a row with the same
+  ID under another owner decrypted there. New and rewritten material now binds
+  a domain tag, the owner partition and the credential ID (envelope field
+  `aad: 2`). Rows sealed before this change still decrypt with the ID-only AAD
+  and are re-sealed with the owner bound at their next material write.
+
 ## [0.33.0] - 2026-10-07
 
 This is the first versioned section. Workspace versions before 0.33.0 were

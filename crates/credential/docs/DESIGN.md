@@ -219,10 +219,13 @@ reattach to a rejected grant. Refresh fallback to still-valid material is
 permitted only for coordination failures proven to occur before provider
 dispatch.
 
-The resolver cache key includes `CredentialSelector` and output `TypeId`. Encryption retains the
-credential-ID AAD format for existing ciphertext compatibility; owner isolation is enforced by the
-database predicate and cache identity. Any future AAD migration must be ledgered and cannot be
-silently mixed with ordinary reads.
+The resolver cache key includes `CredentialSelector` and output `TypeId`. Encryption binds the
+owner partition and the credential ID as AAD (envelope `aad: 2`), so ciphertext moved to another
+owner's row fails to decrypt, on top of the database predicate and cache identity. Rows sealed
+before owner binding carry no `aad` field, are opened with the credential-ID AAD, and are re-sealed
+as version 2 by the next write that installs material. A write that keeps material copies the
+ciphertext as is, so such a row stays bound to its ID alone until its material changes. The AEAD tag
+covers the AAD used, so removing or changing `aad` on a version-2 row cannot downgrade it.
 
 ## Validation boundary
 
