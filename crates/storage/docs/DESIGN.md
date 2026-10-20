@@ -61,7 +61,7 @@ owner-bound `CredentialPersistence`; `Scope`).
 | credential persistence | `SqliteCredentialPersistence` and `PgCredentialPersistence`, both implementing the port-local object-safe contract |
 | `KeyProvider` / `EnvKeyProvider` / `FileKeyProvider` | `src/credential/key_provider.rs` |
 | credential decorator-слои `EncryptionLayer`/`CacheLayer`/`AuditLayer` | `src/credential/layer/` |
-| `ProviderCacheLayer` / `RotationBackup` (feature rotation) / `InMemoryPendingStore` | `src/credential/provider_cache.rs`, `src/credential/backup.rs`, `src/credential/pending.rs` |
+| `ProviderCacheLayer` / `InMemoryPendingStore` | `src/credential/provider_cache.rs`, `src/credential/pending/` |
 | refresh-claim (ADR-0041) | `InMemoryRefreshClaimRepo` `src/credential/refresh_claim/in_memory.rs:48`, `SqliteRefreshClaimRepo` `…/sqlite.rs:33`, `PgRefreshClaimRepo` `…/postgres.rs:22`; трейт+DTO — алиасы на порт `src/credential/refresh_claim/mod.rs:37-41` |
 
 ## 3. Зависимости и зависимые
@@ -70,8 +70,8 @@ owner-bound `CredentialPersistence`; `Scope`).
   `nebula-storage-port`.
 - **Внешние:** `sqlx` (opt; фичи postgres/sqlite), `moka`, `uuid`, `parking_lot`, `zeroize`,
   `base64`, `sha2`.
-- **Фичи:** `sqlite`, `postgres` (TLS rustls-native-roots по умолчанию), `rotation`
-  (→ `nebula-credential/rotation`), `credential-in-memory`.
+- **Фичи:** `sqlite`, `postgres` (TLS rustls-native-roots по умолчанию), `credential-in-memory`,
+  `chaos-full`.
 - **Зависимые:** `nebula-engine` (`crates/engine/Cargo.toml:39,72`), `nebula-api`
   (`crates/api/Cargo.toml:17,134`), `apps/server` (`apps/server/Cargo.toml:22`),
   `examples` (`examples/Cargo.toml:25`). Соседний `nebula-storage-loom-probe` сознательно
@@ -191,9 +191,8 @@ builtin types), а `nebula-crypto` владеет `Cipher`/`Kdf`-портами.
   Merge runtime→credential + single-public-sdk (`project_single_public_crate_sdk`) делают
   эту границу пересматриваемой: т.к. публичен только `nebula-sdk`, внутреннее
   распределение credential-персистенции между storage и credential — без внешнего semver.
-- **`rotation`-фича** (→ `nebula-credential/rotation`, `RotationBackup`
-  `src/credential/backup.rs`) — durable-сторона rotation-state; пост-0092 fan-out ротации
-  владеет `nebula-resource` (per-slot), а storage остаётся бэкапом состояния, не драйвером.
+- **Ротация:** пост-0092 fan-out ротации владеет `nebula-resource` (per-slot); отдельной
+  `rotation`-фичи и `RotationBackup` в storage больше нет.
 
 **Resource redesign (ADR-0093, bind-population M12.4)** крейт затрагивает _косвенно_:
 портовые resource-runtime адаптеры (`*/resource_runtime.rs`) — место durable bind-state.

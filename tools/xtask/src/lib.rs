@@ -1,4 +1,5 @@
 mod changes;
+mod doc_links;
 mod formatting;
 mod layer_map;
 mod model;
@@ -44,6 +45,8 @@ enum TopLevelCommand {
     },
     /// Check every local Cargo package in bounded formatter invocations.
     FmtCheck,
+    /// Check that relative links in tracked Markdown files resolve.
+    DocLinks,
     /// Check the AGENTS.md layer map and the deny.toml layer wrappers
     /// against the workspace dependency graph.
     LayerMap,
@@ -252,6 +255,10 @@ fn execute_in(cwd: &std::path::Path, cli: Cli) -> Result<Vec<u8>, XtaskError> {
             formatting::check(cwd)?;
             Ok(Vec::new())
         },
+        TopLevelCommand::DocLinks => {
+            doc_links::check(cwd)?;
+            Ok(Vec::new())
+        },
         TopLevelCommand::LayerMap => {
             layer_map::check_workspace(&find_root(cwd)?)?;
             Ok(Vec::new())
@@ -379,6 +386,8 @@ pub enum XtaskError {
     Packaging(#[from] packaging::PackagingError),
     #[error(transparent)]
     Formatting(#[from] formatting::FormattingError),
+    #[error(transparent)]
+    DocLinks(#[from] doc_links::DocLinksError),
     #[error(transparent)]
     LayerMap(#[from] LayerMapError),
     #[error(transparent)]

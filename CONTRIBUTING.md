@@ -76,8 +76,9 @@ Use `task --list` for the full catalog.
 ## Coding Standards
 
 - **No `unwrap()` / `expect()` / `panic!()` in library code.** Tests, `const`,
-  and binaries are exempt per [`clippy.toml`](clippy.toml). The
-  `.claude/hooks/edit-guard.sh` enforces this on every edit.
+  and binaries are exempt per [`clippy.toml`](clippy.toml). No CI check
+  enforces this yet (`.claude/hooks/edit-guard.sh` implements one but is not
+  registered), so reviewers check it.
 - **No `TODO` / `FIXME` / `HACK` / plan-IDs in committed code.** Use ADRs and
   GitHub issues for tracking; comments should read fine after the plan is
   deleted.

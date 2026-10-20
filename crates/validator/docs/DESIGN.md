@@ -61,7 +61,7 @@ in `nebula-api`. There is no KDF or hashing here either (that is
 ## 3. Dependencies and dependents
 
 - **Deps:** `nebula-error` (features `["derive"]`, used **only** for `Classify` in
-  `src/error.rs`), `nebula-validator-macros` (path `macros`, optional behind the `derive`
+  `src/foundation/error/`), `nebula-validator-macros` (path `macros`, optional behind the `derive`
   feature); external — `thiserror`, `smallvec`, `regex`, `serde`, `serde_json`, `num-cmp`,
   `tracing`.
 - **Depended on by:** `nebula-schema`, `nebula-sdk`, `nebula-api` (all path dependencies).

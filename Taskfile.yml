@@ -124,6 +124,11 @@ tasks:
     cmds:
       - cargo xtask fmt-check
 
+  docs:links:
+    desc: Check that relative links in tracked Markdown resolve (CI)
+    cmds:
+      - cargo xtask doc-links
+
   clippy:
     desc: Run Clippy linter (warnings treated as errors)
     cmds:
@@ -338,6 +343,7 @@ tasks:
       - task: clippy
       - cargo nextest run --workspace
       - cargo test --workspace --doc
+      - task: docs:links
       - task: deny
 
   # ── Clean ─────────────────────────────────────────────────────────────────

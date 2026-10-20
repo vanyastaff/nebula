@@ -433,7 +433,7 @@ duplicates” is not a claim unless the source, runtime, and destination contrac
 
 **[L2]** Resources are first-class because **acquisition** and **scope-bounded release** are **engine-owned**. Teardown has **two contracts** (ADR-0093). **Normal release** (`recycle` / `destroy`) is **awaited, deadline-bounded, and fallible**: the framework composes a per-resource teardown deadline (`Provider::teardown_budget`, capped short on credential revoke), abandons a hook that exceeds it with a typed error, and **discards rather than re-pools** a credentialed instance unless the author’s `recycle` wipes per-lease session state. **Crash release** stays **best-effort** — if the host process dies, orphaned resources rely on the next process to drain (mechanism types: see `crates/resource/README.md`). Operators must be told this; authors must not assume “release ran” without an explicit checkpoint.
 
-Seam: `crates/resource/src/release_queue.rs` — `ReleaseQueue`. Test coverage: see `docs/MATURITY.md`.
+Seam: `crates/resource/src/release_queue/` — `ReleaseQueue`. Test coverage: see `docs/MATURITY.md`.
 
 **[L1]** For long-lived exclusive/external resources (locks, leased cloud instances), deployments need external TTL / dead-man strategy; Nebula v1 does not provide an external lease arbiter by itself.
 
@@ -510,7 +510,7 @@ durable result `OutcomeUnknown` with no further effecting call.
   1. The signal is written to **`execution_control_queue`** (outbox) **in the same logical operation** as the corresponding state transition. A handler that flips state to `cancelling` **without** enqueueing — or enqueues **without** transitioning — is broken.
   2. A dispatch worker drains the queue and forwards commands to a consumer that **the engine actually listens to**. Removing rows **before** the engine has acted is broken.
   3. There is **one** consumer wiring story per deployment mode, **documented in code**.
-- **[L2]** **A demo handler that logs the command and discards it does not satisfy this invariant.** Examples and `simple_server.rs` must either wire a **real** engine consumer or be marked `// DEMO ONLY — does not honor cancel` so nothing mistakes them for the contract.
+- **[L2]** **A demo handler that logs the command and discards it does not satisfy this invariant.** Examples and demo servers must either wire a **real** engine consumer or be marked `// DEMO ONLY — does not honor cancel` so nothing mistakes them for the contract.
 - **[L2]** **Batching outbox writes for throughput is valid only if per-transition atomicity is preserved.** Never batch as a workaround that breaks “state transition + control signal” integrity.
 - **[L2]** Any second **authoritative** control channel is forbidden unless this canon is updated with a reconciliation story. An HTTP ingress or ephemeral EventBus wake hint may notify the owner, but correctness must survive its loss, duplication, and reordering by recovering from persisted state/outbox/inbox truth.
 
@@ -518,13 +518,13 @@ durable result `OutcomeUnknown` with no further effecting call.
 
 - **[L3]** The **default developer experience** must allow build, fast unit checks, and core local flows **without** Docker, Redis, or external brokers. **SQLite** is the supported local storage; `sqlite::memory:` is the in-process SQLite path. The distinct InMemory adapter is internal test/reference/conformance infrastructure, not a deployment backend.
 - **[L3]** **SQLite is for local and edge deployments.** It has write-lock contention limits under high concurrency. Once production-readiness gates pass, **Postgres** (with `FOR UPDATE SKIP LOCKED`) is the required high-throughput self-hosted path.
-- **[L2]** “No external service for hello world” does not make Postgres conformance optional. The required pre-PR/release/CI conformance gate must exercise a real Postgres instance and may not be skipped or substituted with SQLite/InMemory. Fast local checks need not start Postgres; `examples/simple_server.rs` (and similar) must continue to start without external services unless explicitly documented as integration-only.
+- **[L2]** “No external service for hello world” does not make Postgres conformance optional. The required pre-PR/release/CI conformance gate must exercise a real Postgres instance and may not be skipped or substituted with SQLite/InMemory. Fast local checks need not start Postgres; the local `apps/server` profile and the `examples/` crate must continue to start without external services unless explicitly documented as integration-only.
 - **[L3]** Later storage or broker paths are additive and remain experimental/planned until separately gated; they do not weaken SQLite and Postgres conformance.
 
 ### 12.4 Errors and contracts
 
 - **[L3]** Library crates: `thiserror`, not `anyhow`, in public library surfaces.
-- **[L2]** API boundary: **RFC 9457 `problem+json`** (see `crates/api/src/errors.rs`). **No new ad-hoc `500`** for business-logic mistakes — map new failure modes into typed `ApiError` variants with an explicit status.
+- **[L2]** API boundary: **RFC 9457 `problem+json`** (see `crates/api/src/error/`). **No new ad-hoc `500`** for business-logic mistakes — map new failure modes into typed `ApiError` variants with an explicit status.
 - **[L3]** `serde_json::Value` is allowed **where it is the deliberate interchange type**; new **stringly protocols** (magic field names without schema validation) require explicit review.
 
 ### 12.5 Secrets and auth
@@ -603,7 +603,7 @@ Tied seams: ADR-0028 cross-crate invariants (rotation/refresh boundaries between
 - **[L2]** **Integration tests** exercise the path end-to-end, including **step 5** (engine-visible cancel), not only DB metadata.
 - **[L2]** Changes to **plugin registration**, **credential refresh**, **resource release**, **trigger ingestion**, or **non-idempotent action execution** that affect §3.5 claims require **coverage** for steps **7–11** where those features are touched — or an explicit canon note that the bar is **narrowed** (not silent regression).
 - **[L2]** No new dispatch path, queue, or in-memory channel without an explicit **§12.2** update.
-- **[L2]** `simple_server.rs` (and similar) either **honors cancel end-to-end** or carries `// DEMO ONLY` naming exactly which steps are stubbed.
+- **[L2]** Every demo server or example either **honors cancel end-to-end** or carries `// DEMO ONLY` naming exactly which steps are stubbed.
 
 ---
 
