@@ -793,3 +793,74 @@ fn default_budget_admits_the_largest_template_the_count_limit_allows() {
         .expect("the default budget must admit the largest permitted template");
     assert_eq!(rendered.matches("ADA").count(), 1000);
 }
+
+/// Source that compiles one distinct regex per array element. Each compile
+/// takes milliseconds but charges no steps: an element costs about 25 steps,
+/// so 3,000 elements stay inside the default 100,000-step budget while running
+/// for about a minute in release builds and several minutes in debug builds.
+#[cfg(feature = "regex")]
+fn distinct_regex_per_element(elements: usize) -> String {
+    let items: Vec<String> = (0..elements).map(|i| i.to_string()).collect();
+    format!(
+        r#"length(filter([{}], x => "a" =~ ("\\w{{60}}" + to_string(x))))"#,
+        items.join(",")
+    )
+}
+
+#[cfg(feature = "regex")]
+#[test]
+fn default_time_budget_stops_an_expression_that_would_run_for_minutes() {
+    let engine = ExpressionEngine::new();
+    let context = EvaluationContext::new();
+
+    // A few elements finish: the expression itself is legitimate.
+    assert_eq!(
+        engine
+            .evaluate(&distinct_regex_per_element(3), &context)
+            .unwrap(),
+        json!(0)
+    );
+
+    let started = std::time::Instant::now();
+    let error = engine
+        .evaluate(&distinct_regex_per_element(3_000), &context)
+        .unwrap_err();
+    let elapsed = started.elapsed();
+
+    assert_matches!(error, ExpressionError::TimeLimitExceeded { limit, .. } if limit == std::time::Duration::from_secs(1));
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "the budget must stop the evaluation early, took {elapsed:?}"
+    );
+}
+
+#[test]
+fn context_time_budget_tightens_the_engine_budget() {
+    let engine = ExpressionEngine::new().with_policy(
+        EvaluationPolicy::new().with_max_eval_duration(std::time::Duration::from_mins(1)),
+    );
+    let context = EvaluationContext::builder()
+        .policy(EvaluationPolicy::new().with_max_eval_duration(std::time::Duration::ZERO))
+        .build();
+
+    let error = engine
+        .evaluate("map([1, 2, 3, 4, 5, 6, 7, 8], x => x + 1)", &context)
+        .unwrap_err();
+    assert_matches!(
+        error,
+        ExpressionError::TimeLimitExceeded { limit, .. } if limit == std::time::Duration::ZERO
+    );
+
+    // A context cannot raise the engine's ceiling.
+    let tight_engine = ExpressionEngine::new()
+        .with_policy(EvaluationPolicy::new().with_max_eval_duration(std::time::Duration::ZERO));
+    let loose_context = EvaluationContext::builder()
+        .policy(EvaluationPolicy::new().with_max_eval_duration(std::time::Duration::from_mins(1)))
+        .build();
+    assert_matches!(
+        tight_engine
+            .evaluate("map([1, 2, 3, 4, 5, 6, 7, 8], x => x + 1)", &loose_context)
+            .unwrap_err(),
+        ExpressionError::TimeLimitExceeded { .. }
+    );
+}

@@ -345,6 +345,42 @@ async fn expression_eval_failure_returns_error() {
 }
 
 #[tokio::test]
+async fn expression_past_its_time_budget_is_a_clear_resolution_error() {
+    let schema = Schema::builder()
+        .property(Property::number(FieldKey::new("slow").unwrap()))
+        .build()
+        .unwrap();
+    // One distinct regex compile per element: milliseconds each, no steps
+    // charged, so without a time budget this runs for about a minute.
+    let elements: Vec<String> = (0..3_000).map(|i| i.to_string()).collect();
+    let expression = format!(
+        r#"length(filter([{}], x => "a" =~ ("\\w{{60}}" + to_string(x))))"#,
+        elements.join(",")
+    );
+    let outputs = DashMap::new();
+    let mut params = HashMap::new();
+    params.insert("slow".to_owned(), ParamValue::expression(expression));
+
+    let started = std::time::Instant::now();
+    let err = resolved_data(&schema, &params, json!(null), &outputs)
+        .await
+        .unwrap_err();
+
+    let EngineError::ParameterResolution { error, .. } = &err else {
+        panic!("expected ParameterResolution, got {err:?}");
+    };
+    assert_eq!(
+        error,
+        "input expression exceeded its evaluation time budget"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "the default budget must stop the evaluation, took {:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
 async fn template_parse_failure_returns_error() {
     let schema = Schema::builder()
         .property(Property::string(FieldKey::new("bad").unwrap()))

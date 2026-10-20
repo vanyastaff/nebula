@@ -32,9 +32,9 @@
 //! - `"loader.missing_config"` — `load_select_options_without_loader_emits_missing_config`.
 
 use nebula_schema::{
-    AuthoredValue, CompiledProgram, EvalFuture, ExpressionContext, FieldKey, InputContract,
-    Property, STANDARD_CODES, Schema, SchemaGraphDocument, SecretValue, ValidationError,
-    ValidationReport, ValuePath, ValueTree, field_key,
+    AuthoredValue, CompiledProgram, EngineExpressionContext, EvalFuture, ExpressionContext,
+    FieldKey, InputContract, Property, STANDARD_CODES, Schema, SchemaGraphDocument, SecretValue,
+    ValidationError, ValidationReport, ValuePath, ValueTree, field_key,
 };
 use serde_json::json;
 
@@ -403,6 +403,33 @@ impl ExpressionContext for ConstCtx {
     fn evaluate<'a>(&'a self, _ast: &'a CompiledProgram) -> EvalFuture<'a> {
         Box::pin(async move { Ok(self.0.clone()) })
     }
+}
+
+#[tokio::test]
+async fn emits_expression_time_limit() {
+    let schema = Schema::builder()
+        .property(Property::string(field_key!("x")))
+        .build()
+        .unwrap();
+    let values = AuthoredValue::from_template_json(
+        json!({"x": {"$expr": "{{ to_string(map([1, 2, 3, 4, 5, 6, 7, 8], x => x + 1)) }}"}}),
+    )
+    .unwrap();
+    let validated = schema.validate(values).unwrap();
+    let engine = nebula_expression::ExpressionEngine::new().with_policy(
+        nebula_expression::EvaluationPolicy::new()
+            .with_max_eval_duration(std::time::Duration::ZERO),
+    );
+    let context = EngineExpressionContext::new(engine, nebula_expression::EvaluationContext::new());
+    let report = validated.resolve(&context).await.unwrap_err();
+    assert!(
+        has_code(&report, "expression.time_limit"),
+        "expected expression.time_limit, got: {:?}",
+        report
+            .errors()
+            .map(ValidationError::code)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test]

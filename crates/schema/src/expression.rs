@@ -26,7 +26,9 @@ pub type EvalFuture<'a> =
 pub trait ExpressionContext: Send + Sync {
     /// Evaluate a parsed expression AST and return the resulting JSON value.
     ///
-    /// Errors should use code `"expression.runtime"`.
+    /// Errors should use code `"expression.runtime"`, or
+    /// `"expression.time_limit"` when the evaluation ran out of its
+    /// wall-clock budget.
     ///
     /// cancel-safe: implementors SHOULD be cancel-safe.
     /// [`ValidValues::resolve`](crate::ValidValues::resolve) drives this future
@@ -176,8 +178,15 @@ impl ExpressionContext for EngineExpressionContext {
             self.engine
                 .evaluate_compiled(program, &self.ctx)
                 .map_err(|error| {
-                    ValidationError::builder("expression.runtime")
-                        .message("expression evaluation failed")
+                    let (code, message) = match error {
+                        nebula_expression::ExpressionError::TimeLimitExceeded { .. } => (
+                            "expression.time_limit",
+                            "expression exceeded its evaluation time budget",
+                        ),
+                        _ => ("expression.runtime", "expression evaluation failed"),
+                    };
+                    ValidationError::builder(code)
+                        .message(message)
                         .private_source(error)
                         .build()
                 })

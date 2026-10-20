@@ -70,6 +70,16 @@ changes are expected between minor releases — call them out here.
 
 ### Security
 
+- **Expressions have a wall-clock budget.** The step budget only counts work
+  the evaluator can see, so an expression that compiled a distinct regex per
+  loop iteration stayed inside it and held a blocking thread for minutes.
+  The evaluator now also checks a per-call time budget (default one second)
+  while it charges steps and before each regex match, and stops with
+  `ExpressionError::TimeLimitExceeded`. `EvaluationPolicy::with_max_eval_duration`
+  sets it; a context can only tighten the engine's budget. Node input
+  resolution reports it as validation code `expression.time_limit` and the
+  error "input expression exceeded its evaluation time budget".
+
 - **Credential ciphertext is bound to its owner.** The encryption layer used
   the credential ID alone as AAD, so ciphertext copied into a row with the same
   ID under another owner decrypted there. New and rewritten material now binds
