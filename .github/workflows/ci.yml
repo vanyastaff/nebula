@@ -277,6 +277,10 @@ jobs:
           tool: cargo-deny
       - name: Run cargo deny
         run: cargo deny check
+      # cargo deny only enforces the wrappers it is given; this keeps the
+      # AGENTS.md layer map and every crate's wrapper list in step with the graph.
+      - name: Check the layer map
+        run: cargo xtask layer-map
 
   # ── Test-dep leak gate (reth pattern, ENGINEERING_2026 §2.3) ──────────────
   # Test-only crates must never reach the release binaries' normal dependency

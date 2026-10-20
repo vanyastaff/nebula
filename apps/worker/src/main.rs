@@ -19,6 +19,7 @@
 //! | `NEBULA_WORKER_ARTIFACT_SET_DIGEST` | required | 64 lowercase hex digits identifying the worker artifact set; supplied by the trusted release/deployment manifest, not derived from plugin metadata |
 //! | `NEBULA_WORKER_DATABASE_URL` | unset | Postgres DSN of the deployment database (executions, tenancy, credentials); when set, uses Postgres backend (requires `--features postgres`). Unset = SQLite default. |
 //! | `NEBULA_WORKER_DB_PATH` | `nebula-worker.db` | SQLite deployment database file path, credentials included (ignored when `NEBULA_WORKER_DATABASE_URL` is set) |
+//! | `NEBULA_WORKER_DB_MAX_CONNECTIONS` | `8` | Postgres pool size for this process, 1 to 1000 (ignored on SQLite) |
 //! | `NEBULA_WORKER_PROCESSOR_ID` | random UUID v4 per boot | 32 hex chars (16 bytes); set explicitly for stable fence identity |
 //! | `NEBULA_CRED_MASTER_KEY` | required | Base64-encoded 32-byte credential encryption key. |
 //! | `NEBULA_CRED_LEGACY_MASTER_KEYS` | unset | Up to eight comma-separated base64 AES-256 keys accepted only for decrypting historical credential envelopes. |

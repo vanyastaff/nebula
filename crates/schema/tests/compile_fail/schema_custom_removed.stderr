@@ -1,0 +1,5 @@
+error: #[schema(custom)] was removed: no evaluator ever ran its expression, so every value of the schema failed full validation
+ --> tests/compile_fail/schema_custom_removed.rs:4:10
+  |
+4 | #[schema(custom = "validate")]
+  |          ^^^^^^

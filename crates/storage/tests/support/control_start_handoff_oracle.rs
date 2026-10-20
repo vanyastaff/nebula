@@ -223,6 +223,57 @@ async fn accepted(ports: &Ports, seed: &Seed) {
     );
 }
 
+/// Retention deletes `Completed` and `Failed` rows past their age and never
+/// touches `Pending` or `Processing` ones.
+async fn terminal_rows_age_out(ports: &Ports) {
+    let seed = seed(ports).await;
+    let resume = enqueue_command(ports, &seed, ControlCommand::Resume).await;
+    let done = ports
+        .queue
+        .claim_pending_for_flavor(&[0x69; 16], 1, seed.flavor)
+        .await
+        .unwrap()
+        .remove(0);
+    assert_eq!(done.msg.id, resume);
+    ports.queue.mark_completed(&done.token).await.unwrap();
+    let pending = enqueue_command(ports, &seed, ControlCommand::Cancel).await;
+
+    assert_eq!(
+        ports.queue.cleanup(Duration::from_hours(1)).await.unwrap(),
+        0,
+        "nothing is past an hour yet"
+    );
+    // SQL timestamps are compared strictly at millisecond precision.
+    tokio::time::sleep(Duration::from_millis(3)).await;
+    assert!(ports.queue.cleanup(Duration::ZERO).await.unwrap() >= 1);
+
+    assert!(
+        matches!(
+            ports.queue.mark_completed(&done.token).await,
+            Err(StorageError::NotFound { .. })
+        ),
+        "the completed row is gone"
+    );
+    let interrupts = ports
+        .queue
+        .claim_pending_interrupts_for_flavor(&[0x69; 16], 16, seed.flavor)
+        .await
+        .unwrap();
+    assert_eq!(
+        interrupts.iter().map(|claim| claim.msg.id).collect::<Vec<_>>(),
+        vec![pending],
+        "a pending row survives retention"
+    );
+    for claim in &interrupts {
+        ports.queue.mark_completed(&claim.token).await.unwrap();
+    }
+    ports
+        .queue
+        .mark_completed(&seed.claim)
+        .await
+        .expect("a processing row survives retention");
+}
+
 /// Enqueue `command` for the seeded execution, with a fresh id.
 async fn enqueue_command(ports: &Ports, seed: &Seed, command: ControlCommand) -> [u8; 16] {
     let msg = ControlMsg {
@@ -630,4 +681,5 @@ async fn oracle(ports: Ports) {
         },
         outcome => panic!("handoff/reclaim must have exactly one winner: {outcome:?}"),
     }
+    terminal_rows_age_out(&ports).await;
 }

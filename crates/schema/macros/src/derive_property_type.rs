@@ -217,25 +217,6 @@ fn expand_projection(
             ));
         },
     };
-    let root_rules = schema_attrs
-        .custom
-        .iter()
-        .map(|value| {
-            quote! {
-                #schema::Rule::custom(#value).map_err(|_| {
-                    #schema::ValidationError::builder("rule.budget_exceeded").build()
-                })?
-            }
-        })
-        .collect::<Vec<_>>();
-    if !root_rules.is_empty()
-        && !matches!(&input.data, Data::Struct(data) if matches!(data.fields, Fields::Named(_)) && !attrs.transparent)
-    {
-        return Err(syn::Error::new_spanned(
-            input,
-            "root rules on non-record PropertyType require an explicit reviewed adapter",
-        ));
-    }
     let mut generics = input.generics.clone();
     for parameter in &mut generics.params {
         if let GenericParam::Type(parameter) = parameter {
@@ -262,13 +243,7 @@ fn expand_projection(
             > {
                 __builder.define::<Self>(|__builder| {
                     #named_conditions
-                    let mut __body = #body;
-                    let __rules: ::std::vec::Vec<#schema::Rule> = ::std::vec![#(#root_rules),*];
-                    if !__rules.is_empty() {
-                        __body["intrinsic_rules"] = #schema::__private::serde_json::to_value(__rules)
-                            .map_err(|_| #schema::ValidationError::builder("schema.codec.rule_encoding").build())?;
-                    }
-                    ::core::result::Result::Ok(__body)
+                    ::core::result::Result::Ok(#body)
                 }) #root_null
             }
         }

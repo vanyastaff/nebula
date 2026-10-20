@@ -104,7 +104,6 @@ deny = [
   ], reason = "Worker is reusable exec-layer assembly; only first-party application assembly may depend on it" },
   { crate = "nebula-engine", wrappers = [
     "nebula-deployment",
-    "nebula-cli",
     # The first-party server is a deployment composition root. It wires the
     # credential resolver/refresh coordinator together with concrete storage
     # and API adapters; no product-layer crate receives this dependency.
@@ -154,7 +153,6 @@ deny = [
   # first-party HTTP client. The client cannot depend on runtime/storage crates.
   { crate = "nebula-api-contract", wrappers = [
     "nebula-api",
-    "nebula-sdk",
     "nebula-client",
   ], reason = "Transport contract is Core shared infrastructure; consumers are API, SDK and first-party HTTP client" },
 
@@ -162,13 +160,12 @@ deny = [
   # repository traits, port-local DTO rows, the plain-data `Scope` value
   # type, `StorageError`, and the `TransitionBatch` unit-of-work. Being a
   # Core-tier contract it is broadly importable: the adapter
-  # (`nebula-storage`), the loom probe, the tenancy decorator, and the
+  # (`nebula-storage`), the tenancy decorator, and the
   # exec/api consumers may depend on it downward. It has no sqlx and no
   # upward deps.
   { crate = "nebula-storage-port", wrappers = [
     "nebula-deployment",
     "nebula-storage",
-    "nebula-storage-loom-probe",
     "nebula-tenancy",
     "nebula-engine",
     "nebula-api",
@@ -293,6 +290,200 @@ deny = [
     # exercise the same evaluator the runtime uses.
     "nebula-action",
   ], reason = "ADR-0043 §9 / Phase 9: register_from_value bridges resource config to expression engine for {{ }} template resolution; schema uses it for parse validation; engine resolver evaluates node parameters; examples consume both" },
+
+  # ---- Layer enforcement: every other depended-on crate ----
+  # Each list is the crate's current set of workspace dependents.
+  # `cargo xtask layer-map` fails when a crate has dependents but no entry,
+  # when a listed wrapper no longer depends on it, or when a dependency
+  # points to a higher layer of the AGENTS.md map (dev-dependencies aside).
+  { crate = "nebula-action", wrappers = [
+    "nebula-api",
+    "nebula-engine",
+    "nebula-examples",
+    "nebula-plugin",
+    "nebula-plugin-core",
+    "nebula-sdk",
+    "nebula-server",  # dev-only
+    "nebula-worker",  # dev-only
+  ], reason = "Action is the Business-tier action contract; its plugin, exec, API/SDK consumers and app roots may depend on it" },
+  { crate = "nebula-action-macros", wrappers = [
+    "nebula-action",
+  ], reason = "Derive crate; only nebula-action re-exports it" },
+  { crate = "nebula-core", wrappers = [
+    "nebula-action",
+    "nebula-api",
+    "nebula-credential",
+    "nebula-deployment",
+    "nebula-engine",
+    "nebula-examples",
+    "nebula-execution",
+    "nebula-metadata",
+    "nebula-orchestrator",
+    "nebula-plugin",
+    "nebula-plugin-core",
+    "nebula-resource",
+    "nebula-resource-macros",  # dev-only
+    "nebula-sdk",
+    "nebula-server",
+    "nebula-storage",
+    "nebula-storage-port",
+    "nebula-tenancy",
+    "nebula-worker",
+    "nebula-worker-bin",
+    "nebula-workflow",
+  ], reason = "Core vocabulary is importable from every tier above it; the list is the declared set of dependents" },
+  { crate = "nebula-credential-macros", wrappers = [
+    "nebula-action",  # dev-only
+    "nebula-credential",
+  ], reason = "Derive crate; consumed by nebula-action, nebula-credential" },
+  { crate = "nebula-crypto", wrappers = [
+    "nebula-credential",
+    "nebula-server",
+    "nebula-storage",
+  ], reason = "Cross-cutting crypto primitives; only the credential layer, its storage adapter and the server root use them" },
+  { crate = "nebula-env", wrappers = [
+    "nebula-api",
+    "nebula-log",  # dev-only
+    "nebula-storage",
+    "nebula-worker-bin",
+  ], reason = "Cross-cutting environment helpers; consumers are listed so a new dependent is a reviewed change" },
+  { crate = "nebula-error", wrappers = [
+    "nebula-action",
+    "nebula-api",
+    "nebula-core",
+    "nebula-credential",
+    "nebula-crypto",
+    "nebula-engine",
+    "nebula-execution",
+    "nebula-expression",
+    "nebula-log",
+    "nebula-metadata",
+    "nebula-metrics",
+    "nebula-plugin",
+    "nebula-resilience",
+    "nebula-resource",
+    "nebula-storage-port",
+    "nebula-workflow",
+  ], reason = "Cross-cutting error vocabulary; consumers are listed so a new dependent is a reviewed change" },
+  { crate = "nebula-error-macros", wrappers = [
+    "nebula-error",
+  ], reason = "Derive crate; only nebula-error re-exports it" },
+  { crate = "nebula-eventbus", wrappers = [
+    "nebula-api",
+    "nebula-credential",
+    "nebula-deployment",
+    "nebula-engine",
+    "nebula-examples",
+    "nebula-metrics",
+    "nebula-plugin-core",  # dev-only
+    "nebula-resource",
+    "nebula-server",
+    "nebula-worker-bin",
+  ], reason = "Ephemeral observations only; consumers are listed so the bus never becomes a hidden coupling path" },
+  { crate = "nebula-execution", wrappers = [
+    "nebula-api",
+    "nebula-engine",
+    "nebula-examples",
+    "nebula-orchestrator",
+    "nebula-plugin-core",  # dev-only
+    "nebula-server",
+    "nebula-storage",
+    "nebula-worker",  # dev-only
+    "nebula-worker-bin",  # dev-only
+  ], reason = "Execution model is Core; exec, API and app roots consume it" },
+  { crate = "nebula-log", wrappers = [
+    "nebula-expression",
+  ], reason = "Cross-cutting logging; consumers are listed so a new dependent is a reviewed change" },
+  { crate = "nebula-macro-support", wrappers = [
+    "nebula-action-macros",
+    "nebula-credential-macros",
+    "nebula-plugin-macros",
+    "nebula-resource-macros",
+    "nebula-schema-macros",
+    "nebula-validator-macros",
+  ], reason = "Shared proc-macro helpers; only the derive crates may depend on them" },
+  { crate = "nebula-metadata", wrappers = [
+    "nebula-action",
+    "nebula-credential",
+    "nebula-plugin",
+    "nebula-plugin-core",
+    "nebula-resource",
+    "nebula-sdk",
+    "nebula-server",
+  ], reason = "Metadata contract is Core; Business, SDK and app consumers are listed" },
+  { crate = "nebula-metrics", wrappers = [
+    "nebula-api",
+    "nebula-credential",
+    "nebula-deployment",
+    "nebula-engine",
+    "nebula-examples",
+    "nebula-orchestrator",
+    "nebula-plugin-core",  # dev-only
+    "nebula-resource",
+    "nebula-server",
+    "nebula-storage",
+    "nebula-worker",  # dev-only
+    "nebula-worker-bin",
+  ], reason = "Cross-cutting metrics; consumers are listed so a new dependent is a reviewed change" },
+  { crate = "nebula-orchestrator", wrappers = [
+    "nebula-engine",
+    "nebula-worker",  # dev-only
+  ], reason = "Exec-layer dispatch loop; only the engine and worker assembly use it" },
+  { crate = "nebula-plugin-core", wrappers = [
+    "nebula-deployment",
+    "nebula-examples",
+    "nebula-worker-bin",  # dev-only
+  ], reason = "Built-in plugin is wired only by deployment roots and examples" },
+  { crate = "nebula-plugin-macros", wrappers = [
+    "nebula-plugin",
+  ], reason = "Derive crate; only nebula-plugin re-exports it" },
+  { crate = "nebula-resilience", wrappers = [
+    "nebula-api",
+    "nebula-credential",
+    "nebula-engine",
+    "nebula-resource",
+    "nebula-storage",
+  ], reason = "Cross-cutting resilience primitives; consumers are listed so a new dependent is a reviewed change" },
+  { crate = "nebula-resource-macros", wrappers = [
+    "nebula-resource",
+  ], reason = "Derive crate; only nebula-resource re-exports it" },
+  { crate = "nebula-schema", wrappers = [
+    "nebula-action",
+    "nebula-api",
+    "nebula-credential",
+    "nebula-engine",
+    "nebula-examples",
+    "nebula-metadata",
+    "nebula-plugin",
+    "nebula-plugin-core",
+    "nebula-resource",
+    "nebula-sdk",
+    "nebula-server",
+    "nebula-workflow",
+  ], reason = "Schema is Core; its consumers are listed so a new dependent is a reviewed change" },
+  { crate = "nebula-schema-macros", wrappers = [
+    "nebula-schema",
+  ], reason = "Derive crate; only nebula-schema re-exports it" },
+  { crate = "nebula-validator", wrappers = [
+    "nebula-api",
+    "nebula-schema",
+    "nebula-sdk",
+  ], reason = "Validator is Core; schema, API and SDK consume it" },
+  { crate = "nebula-validator-macros", wrappers = [
+    "nebula-validator",
+  ], reason = "Derive crate; only nebula-validator re-exports it" },
+  { crate = "nebula-workflow", wrappers = [
+    "nebula-action",
+    "nebula-api",
+    "nebula-engine",
+    "nebula-examples",
+    "nebula-execution",
+    "nebula-plugin",
+    "nebula-plugin-core",
+    "nebula-sdk",
+    "nebula-worker",  # dev-only
+    "nebula-worker-bin",  # dev-only
+  ], reason = "Workflow model is Core; Business, exec, API/SDK and app roots consume it" },
 ]
 skip = [
   "bitflags",

@@ -2,6 +2,7 @@
 //!
 //! Each impl corresponds to one ingress profile:
 //! - [`ApiTransport`]  — full REST API (mirrors the old `nebula-server` binary)
+//! - [`AllTransport`]  — REST API plus webhook ingress on one listener (default)
 //! - [`WebhookIngressTransport`] — webhook-only ingress (mirrors `nebula-webhook`)
 //! - [`RealtimeTransport`] — realtime/WS scaffold (mirrors `nebula-realtime`)
 //!
@@ -28,7 +29,7 @@ pub(crate) enum Transport {
     Webhook,
     /// Realtime / WebSocket scaffold (same behaviour as the former `nebula-realtime` binary).
     Realtime,
-    /// Run the full REST API transport (default; alias for `api`).
+    /// REST API plus webhook ingress on one listener (default).
     All,
 }
 
@@ -83,6 +84,39 @@ impl ServerTransport for ApiTransport {
     }
 }
 
+// ─── AllTransport ──────────────────────────────────────────────────────────
+
+/// REST API and webhook ingress served from one listener.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct AllTransport;
+
+impl ServerTransport for AllTransport {
+    fn name(&self) -> &'static str {
+        "all"
+    }
+
+    fn bind_override_var(&self) -> Option<&'static str> {
+        Some("SERVER_BIND_ADDRESS")
+    }
+
+    fn prepare_state(
+        &self,
+        state: AppState,
+        bind_address: SocketAddr,
+    ) -> Result<AppState, TransportInitError> {
+        attach_webhook_transport(state, bind_address)
+    }
+
+    fn build_router(
+        &self,
+        state: AppState,
+        api_config: &ApiConfig,
+    ) -> Result<Router, TransportInitError> {
+        // `build_app` merges the attached webhook router next to the REST routes.
+        Ok(build_app(state, api_config))
+    }
+}
+
 // ─── WebhookIngressTransport ───────────────────────────────────────────────
 
 /// Webhook ingress transport.
@@ -103,49 +137,7 @@ impl ServerTransport for WebhookIngressTransport {
         state: AppState,
         bind_address: SocketAddr,
     ) -> Result<AppState, TransportInitError> {
-        if state.webhook_transport.is_some() {
-            return Ok(state);
-        }
-
-        let base_url = if let Ok(raw) = std::env::var("WEBHOOK_BASE_URL") {
-            Url::parse(&raw)
-                .map_err(|source| TransportInitError::InvalidWebhookBaseUrl { source })?
-        } else {
-            Url::parse(&format!("http://{bind_address}"))
-                .map_err(|source| TransportInitError::InvalidWebhookBaseUrl { source })?
-        };
-
-        let webhook_config = nebula_api::transport::webhook::WebhookTransportConfig {
-            base_url,
-            ..nebula_api::transport::webhook::WebhookTransportConfig::default()
-        };
-
-        // Build the transport, then attach components in order (refcount 1
-        // at each step so `Arc::try_unwrap` takes the fast path and never
-        // rebuilds the routing map):
-        //   1. activation store  (ADR-0096 — token resolution)
-        //   2. durable dispatch  (ADR-0095 D1 U-D1.4b — Prod-mode spawning)
-        // All builders are called before the transport is distributed to
-        // handlers so refcount stays 1 throughout.
-        //
-        // Rate-limiting: `..default()` leaves `rate_limit_per_minute` and
-        // `tenant_rate_limit_per_minute` as `None`, which is correct here.
-        // `with_durable_dispatch` installs DEFAULT_PER_TOKEN_RPM /
-        // DEFAULT_PER_TENANT_RPM automatically — no composition-root discipline
-        // required.  Override the limits by setting them in `webhook_config`
-        // before calling the builder.
-        let transport = nebula_api::transport::webhook::WebhookTransport::new(webhook_config);
-        let transport = if let Some(store) = state.webhook_activation_store.clone() {
-            transport.with_activation_store(store)
-        } else {
-            transport
-        };
-        let start = state
-            .workflow_start
-            .as_ref()
-            .ok_or(TransportInitError::MissingWorkflowStart)?;
-        let transport = transport.with_durable_dispatch(Arc::clone(start));
-        Ok(state.with_webhook_transport(transport))
+        attach_webhook_transport(state, bind_address)
     }
 
     fn build_router(
@@ -162,6 +154,56 @@ impl ServerTransport for WebhookIngressTransport {
             .route("/ready", get(health_ok))
             .merge(webhook_transport.router()))
     }
+}
+
+/// Builds the webhook transport from deployment settings and attaches it to
+/// `state`, unless one is already attached.
+fn attach_webhook_transport(
+    state: AppState,
+    bind_address: SocketAddr,
+) -> Result<AppState, TransportInitError> {
+    if state.webhook_transport.is_some() {
+        return Ok(state);
+    }
+
+    let base_url = if let Ok(raw) = std::env::var("WEBHOOK_BASE_URL") {
+        Url::parse(&raw).map_err(|source| TransportInitError::InvalidWebhookBaseUrl { source })?
+    } else {
+        Url::parse(&format!("http://{bind_address}"))
+            .map_err(|source| TransportInitError::InvalidWebhookBaseUrl { source })?
+    };
+
+    let webhook_config = nebula_api::transport::webhook::WebhookTransportConfig {
+        base_url,
+        ..nebula_api::transport::webhook::WebhookTransportConfig::default()
+    };
+
+    // Build the transport, then attach components in order (refcount 1
+    // at each step so `Arc::try_unwrap` takes the fast path and never
+    // rebuilds the routing map):
+    //   1. activation store  (ADR-0096 — token resolution)
+    //   2. durable dispatch  (ADR-0095 D1 U-D1.4b — Prod-mode spawning)
+    // All builders are called before the transport is distributed to
+    // handlers so refcount stays 1 throughout.
+    //
+    // Rate-limiting: `..default()` leaves `rate_limit_per_minute` and
+    // `tenant_rate_limit_per_minute` as `None`, which is correct here.
+    // `with_durable_dispatch` installs DEFAULT_PER_TOKEN_RPM /
+    // DEFAULT_PER_TENANT_RPM automatically — no composition-root discipline
+    // required.  Override the limits by setting them in `webhook_config`
+    // before calling the builder.
+    let transport = nebula_api::transport::webhook::WebhookTransport::new(webhook_config);
+    let transport = if let Some(store) = state.webhook_activation_store.clone() {
+        transport.with_activation_store(store)
+    } else {
+        transport
+    };
+    let start = state
+        .workflow_start
+        .as_ref()
+        .ok_or(TransportInitError::MissingWorkflowStart)?;
+    let transport = transport.with_durable_dispatch(Arc::clone(start));
+    Ok(state.with_webhook_transport(transport))
 }
 
 /// Activation inputs are supplied by the trusted worker deployment manifest.

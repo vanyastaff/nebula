@@ -83,11 +83,9 @@ fn golden_logic_not() {
 }
 
 #[test]
-fn golden_deferred_custom() {
-    golden(
-        Rule::custom("check_password()").unwrap(),
-        json!({"custom": "check_password()"}),
-    );
+fn custom_rule_key_is_rejected() {
+    let error = serde_json::from_value::<Rule>(json!({"custom": "check_password()"})).unwrap_err();
+    assert!(error.to_string().contains("unknown rule key"), "{error}");
 }
 
 #[test]
