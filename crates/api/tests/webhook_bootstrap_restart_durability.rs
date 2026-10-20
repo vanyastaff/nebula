@@ -26,6 +26,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::{body::Body, http::Request, http::StatusCode};
+use hmac::{Hmac, KeyInit, Mac};
 use nebula_action::{TriggerRuntimeContext, webhook::providers::default_factories};
 use nebula_api::transport::webhook::{
     SecretResolutionError, TriggerStoreSpecLookup, WebhookActivationContextFactory,
@@ -40,6 +41,7 @@ use nebula_storage_port::{
     dto::{TriggerRow, WebhookActivationRecord},
     store::{TriggerStore, WebhookActivationStore},
 };
+use sha2::Sha256;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -235,6 +237,25 @@ async fn post_unsigned(transport: &WebhookTransport, activation: Uuid, nonce: &s
         .status()
 }
 
+/// POST a body signed with `secret` the way the generic provider expects.
+async fn post_signed(transport: &WebhookTransport, activation: Uuid, secret: &[u8]) -> StatusCode {
+    let body = br#"{"event":"restored"}"#;
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts any key length");
+    mac.update(body);
+    let signature = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
+    let request = Request::post(format!("/webhooks/{activation}/{NONCE}"))
+        .header("content-type", "application/json")
+        .header("x-nebula-signature", signature)
+        .body(Body::from(&body[..]))
+        .expect("valid request");
+    transport
+        .router()
+        .oneshot(request)
+        .await
+        .expect("router is infallible")
+        .status()
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 /// Happy path: one active activation row + matching trigger config row → the
@@ -376,7 +397,9 @@ async fn bootstrap_scoped_lookup_returns_correct_tenant_spec() {
 /// the capability URL of an activation persisted before the restart once the
 /// bootstrap has run: before it, the URL is unknown (404); after it, the
 /// request reaches the generic provider's handler, which refuses the unsigned
-/// body (401). A second pass finds the route in place and rebuilds nothing.
+/// body (401) and serves a signed one, so the restored handler was started. A
+/// second pass finds the route in place and rebuilds nothing; once the row is
+/// deactivated, the next pass drops the route.
 #[tokio::test]
 async fn bootstrap_routes_a_persisted_activation_on_a_fresh_transport() {
     let trigger_store = Arc::new(InMemoryTriggerStore::new());
@@ -420,6 +443,11 @@ async fn bootstrap_routes_a_persisted_activation_on_a_fresh_transport() {
         StatusCode::NOT_FOUND,
         "only the nonce whose hash was stored routes"
     );
+    let signed = post_signed(&transport, activation, HMAC_SECRET_B).await;
+    assert!(
+        signed.is_success(),
+        "a signed delivery reaches the started handler, got {signed}"
+    );
 
     let second = bootstrap_webhook_activations(
         &transport,
@@ -433,6 +461,28 @@ async fn bootstrap_routes_a_persisted_activation_on_a_fresh_transport() {
     .await
     .expect("bootstrap succeeds");
     assert_eq!((second.loaded, second.restored, second.skipped), (1, 0, 0));
+
+    activation_store
+        .deactivate(&scope_a(), TRIGGER_ID)
+        .await
+        .expect("deactivate succeeds");
+    let third = bootstrap_webhook_activations(
+        &transport,
+        activation_store.as_ref(),
+        &registry,
+        &secrets,
+        &NoopCtxFactory,
+        &spec_lookup,
+        None,
+    )
+    .await
+    .expect("bootstrap succeeds");
+    assert_eq!((third.loaded, third.removed), (0, 1));
+    assert_eq!(
+        post_signed(&transport, activation, HMAC_SECRET_B).await,
+        StatusCode::NOT_FOUND,
+        "a deactivated activation no longer routes"
+    );
 }
 
 /// A row without the routable identity `activate_and_persist` writes (UUID

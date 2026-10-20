@@ -22,11 +22,16 @@
 //! [`crate::AppState`] into [`crate::app::build_app`] — the `Router`
 //! builder itself stays synchronous.
 
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{
+    collections::HashSet,
+    future::Future,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use async_trait::async_trait;
 use nebula_action::{
-    BuiltWebhookHandler, FactoryError, TriggerRuntimeContext,
+    ActionError, BuiltWebhookHandler, FactoryError, TriggerRuntimeContext,
     webhook::factory::WebhookActivationSpec as ActionWebhookActivationSpec,
 };
 use nebula_engine::ActionRegistry;
@@ -101,7 +106,9 @@ pub trait WebhookSecretResolver: Send + Sync {
 /// `loaded` is the count of active rows routed on the transport after the
 /// pass, `restored` the subset this pass newly routed. `skipped` is the
 /// count of rows that surfaced a non-storage error (unroutable row, decode
-/// mismatch, factory rejection, secret resolution failure).
+/// mismatch, factory rejection, secret resolution failure, handler start
+/// failure). `removed` is the count of routes dropped because their row is
+/// no longer active.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BootstrapReport {
     /// Active rows routed on the transport after this pass.
@@ -110,6 +117,8 @@ pub struct BootstrapReport {
     pub restored: usize,
     /// Rows that returned a non-storage failure and were skipped.
     pub skipped: usize,
+    /// Routes dropped because their activation row is no longer active.
+    pub removed: usize,
 }
 
 /// Failure modes for the bootstrap pathway (B-world port store).
@@ -162,6 +171,15 @@ pub enum BootstrapError {
         /// Which part of the identity is invalid.
         #[source]
         source: WebhookContextError,
+    },
+    /// The rebuilt handler's lifecycle start failed.
+    #[error("webhook handler for trigger_id={trigger_id} failed to start: {source}")]
+    Start {
+        /// Trigger id of the row.
+        trigger_id: String,
+        /// Error returned by `TriggerHandler::start`.
+        #[source]
+        source: ActionError,
     },
     /// No factory registered for the spec's `action_kind`.
     #[error("no factory registered for kind '{0}'")]
@@ -324,7 +342,9 @@ pub trait TriggerSpecLookup: Send + Sync {
 ///
 /// A row already routed on `transport` is counted as loaded without being
 /// rebuilt. Any other row is rebuilt from its trigger spec (spec lookup,
-/// secret resolution, factory build) and routed under its stored token hash.
+/// secret resolution, factory build), started, and routed under its stored
+/// token hash. Routes whose row was durable before the pass but is no longer
+/// active are dropped and their handlers stopped.
 ///
 /// Failure isolation is per-row: per-row failures are logged and counted;
 /// storage failures bubble out.
@@ -347,6 +367,9 @@ pub async fn bootstrap_webhook_activations(
         "loading active webhook activations from port store"
     );
 
+    // Taken before the snapshot: a route persisted earlier than this has its
+    // row in the snapshot unless the row was deactivated.
+    let cutoff = Instant::now();
     let records = store.list_all_active().await.inspect_err(|_| {
         record_bootstrap_failure(metrics, webhook_bootstrap_failure_reason::STORAGE);
     })?;
@@ -388,11 +411,27 @@ pub async fn bootstrap_webhook_activations(
         "bootstrap accounting must equal list_all_active count"
     );
 
+    let active: HashSet<WebhookKey> = records
+        .iter()
+        .filter_map(|record| routing_key(record).ok())
+        .collect();
+    for entry in transport.prune_persisted(cutoff, &active) {
+        report.removed += 1;
+        if let Err(error) = entry.handler.stop(&entry.ctx).await {
+            tracing::warn!(
+                target: "nebula::api::webhook::bootstrap",
+                error = %error,
+                "stopping a webhook handler whose activation is gone failed"
+            );
+        }
+    }
+
     tracing::debug!(
         target: "nebula::api::webhook::bootstrap",
         loaded = report.loaded,
         restored = report.restored,
         skipped = report.skipped,
+        removed = report.removed,
         total,
         source = "port_store",
         "webhook routes synchronized"
@@ -414,7 +453,8 @@ fn routing_key(record: &PortWebhookActivationRecord) -> Result<WebhookKey, Boots
 }
 
 /// Route one B-world activation row on `transport`: spec lookup + secret
-/// resolution + factory build, then insert under the stored token hash.
+/// resolution + factory build + handler start, then insert under the stored
+/// token hash.
 /// Returns whether this call routed it (`false` when it was already routed).
 async fn route_one(
     transport: &WebhookTransport,
@@ -485,9 +525,26 @@ async fn route_one(
             source,
         })?;
 
+    handler
+        .start(&ctx)
+        .await
+        .map_err(|source| BootstrapError::Start {
+            trigger_id: record.trigger_id.clone(),
+            source,
+        })?;
+
     // A concurrent pass may have routed the same row meanwhile; either entry
-    // serves it, so losing that race is not an error.
-    let restored = transport.restore(key, handler, config, ctx);
+    // serves it, so losing that race is not an error, but this handler is
+    // then unused and must not stay started.
+    let restored = transport.restore(key, Arc::clone(&handler), config, ctx.clone());
+    if !restored && let Err(error) = handler.stop(&ctx).await {
+        tracing::warn!(
+            target: "nebula::api::webhook::bootstrap",
+            trigger_id = %record.trigger_id,
+            error = %error,
+            "stopping a duplicate webhook handler failed"
+        );
+    }
     tracing::debug!(
         target: "nebula::api::webhook::bootstrap",
         trigger_id = %record.trigger_id,
@@ -572,12 +629,15 @@ pub fn spawn_webhook_route_sync(
                 _ = ticks.tick() => {},
             }
             match sync_webhook_routes(&state).await {
-                Ok(Some(report)) if report.restored > 0 || report.skipped > 0 => {
+                Ok(Some(report))
+                    if report.restored > 0 || report.skipped > 0 || report.removed > 0 =>
+                {
                     tracing::info!(
                         target: "nebula::api::webhook::bootstrap",
                         loaded = report.loaded,
                         restored = report.restored,
                         skipped = report.skipped,
+                        removed = report.removed,
                         "webhook routes synchronized from the activation store"
                     );
                 },
@@ -642,7 +702,8 @@ fn bootstrap_failure_reason(err: &BootstrapError) -> &'static str {
         | BootstrapError::SpecLookup { .. }
         | BootstrapError::SecretResolution { .. }
         | BootstrapError::UnknownProvider(_)
-        | BootstrapError::Factory { .. } => webhook_bootstrap_failure_reason::FACTORY,
+        | BootstrapError::Factory { .. }
+        | BootstrapError::Start { .. } => webhook_bootstrap_failure_reason::FACTORY,
     }
 }
 

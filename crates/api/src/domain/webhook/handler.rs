@@ -377,6 +377,7 @@ pub async fn register_webhook(
             ApiError::Internal(format!("cannot build the trigger context: {error}"))
         })?;
 
+        let handler = Arc::clone(&built.handler);
         let handle = activate_and_persist(
             transport,
             webhook_activation_store.as_ref(),
@@ -408,6 +409,26 @@ pub async fn register_webhook(
             );
             ApiError::Internal(format!("activation failed: {e}"))
         })?;
+
+        // The handler serves deliveries only once started. Undo the
+        // activation if it cannot start, so the URL is never handed out.
+        if let Err(error) = handler.start(&handle.ctx).await {
+            transport.deactivate(&handle);
+            if let Err(rollback) = webhook_activation_store
+                .deactivate(&scope, &body.trigger_id)
+                .await
+            {
+                tracing::error!(
+                    target: "nebula::api::webhook::register",
+                    error = %rollback,
+                    trigger_id = %body.trigger_id,
+                    "deactivating the activation row after a failed start failed"
+                );
+            }
+            return Err(ApiError::Internal(format!(
+                "cannot start the webhook trigger: {error}"
+            )));
+        }
 
         Ok(handle)
     }

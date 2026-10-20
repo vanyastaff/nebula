@@ -1119,6 +1119,9 @@ let admitted = recorded.readmit_against(fresh)?;
   but routed none. The `all` and `webhook` transports now attach both, the
   routing key is the token hash `webhook_activations` stores, and the server
   routes every active row before serving and every 30 seconds after.
+  Registered and restored handlers are started before their URL answers, so
+  signed deliveries no longer fail with 500. A route whose row is no longer
+  active answers 404 and is dropped at the next sync.
   `nebula-api` adds `sync_webhook_routes`, `spawn_webhook_route_sync`,
   `RecordWebhookContextFactory`, `default_webhook_providers` and
   `AppState::with_webhook_providers`; `bootstrap_webhook_activations` takes

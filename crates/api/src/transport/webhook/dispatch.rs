@@ -211,6 +211,13 @@ pub(super) async fn dispatch_inner(
                 // Test mode: no durable spawn; fall through to in-memory
                 // dispatch with Noop emitter.
             },
+            Ok(None) if entry.persisted.get().is_some() => {
+                // The route came from a durable row that is no longer active:
+                // the capability was revoked, possibly by another replica.
+                // Fail closed until route sync drops the entry.
+                debug!("capability token's activation row is gone — refusing the route");
+                return (StatusCode::NOT_FOUND, "").into_response();
+            },
             Ok(None) => {
                 // Row not found in port store.  This is expected during the
                 // transition period when the store is wired but the activation

@@ -24,7 +24,11 @@
 //! 5. On trigger stop, runtime calls [`WebhookTransport::deactivate`] with the activation handle,
 //!    which removes the entry from the routing map.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    collections::HashSet,
+    sync::{Arc, OnceLock},
+    time::{Duration, Instant},
+};
 
 use axum::{Router, extract::DefaultBodyLimit, routing::post};
 use nebula_action::{
@@ -467,6 +471,7 @@ impl WebhookTransport {
             handler,
             ctx: ctx.clone(),
             config: action_config,
+            persisted: OnceLock::new(),
         };
         let key = WebhookKey::programmatic(trigger_uuid, nonce.clone());
         if !self.inner.routing.insert(key, entry) {
@@ -512,8 +517,23 @@ impl WebhookTransport {
                 handler,
                 ctx,
                 config: action_config,
+                persisted: OnceLock::from(Instant::now()),
             },
         )
+    }
+
+    /// Drop every route whose activation row was durable before `cutoff`
+    /// and is not in `active`, returning the dropped entries so the caller
+    /// can stop their handlers. Routes that never had a durable row are
+    /// left alone.
+    pub(crate) fn prune_persisted(
+        &self,
+        cutoff: Instant,
+        active: &HashSet<WebhookKey>,
+    ) -> Vec<Arc<ActivationEntry>> {
+        self.inner
+            .routing
+            .prune_persisted(cutoff, |key| active.contains(key))
     }
 
     /// Whether `key` is routed in this process.
@@ -716,6 +736,13 @@ pub async fn activate_and_persist(
         transport.deactivate(&handle);
         return Err(ActivateAndPersistError::Storage(err));
     }
+    transport
+        .inner
+        .routing
+        .mark_persisted(&WebhookKey::programmatic(
+            handle.trigger_uuid,
+            &handle.nonce,
+        ));
 
     tracing::debug!(
         target: "nebula::api::webhook::transport",
@@ -763,7 +790,7 @@ mod tests {
         }
 
         fn dependencies() -> &'static Dependencies {
-            static DEPENDENCIES: std::sync::OnceLock<Dependencies> = std::sync::OnceLock::new();
+            static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
             DEPENDENCIES.get_or_init(Dependencies::new)
         }
     }

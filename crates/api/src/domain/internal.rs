@@ -76,6 +76,7 @@ async fn reload_webhooks(State(state): State<AppState>) -> impl IntoResponse {
                 loaded = report.loaded,
                 skipped = report.skipped,
                 restored = report.restored,
+                removed = report.removed,
                 "webhook routes reloaded from the port store",
             );
             (
