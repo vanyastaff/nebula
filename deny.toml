@@ -312,7 +312,6 @@ deny = [
     "nebula-examples",
     "nebula-execution",
     "nebula-metadata",
-    "nebula-orchestrator",
     "nebula-plugin",
     "nebula-plugin-core",
     "nebula-resource",
@@ -378,7 +377,6 @@ deny = [
     "nebula-api",
     "nebula-engine",
     "nebula-examples",
-    "nebula-orchestrator",
     "nebula-plugin-core",  # dev-only
     "nebula-server",
     "nebula-storage",
@@ -411,7 +409,6 @@ deny = [
     "nebula-deployment",
     "nebula-engine",
     "nebula-examples",
-    "nebula-orchestrator",
     "nebula-plugin-core",  # dev-only
     "nebula-resource",
     "nebula-server",
@@ -419,10 +416,6 @@ deny = [
     "nebula-worker",  # dev-only
     "nebula-worker-bin",
   ], reason = "Cross-cutting metrics; consumers are listed so a new dependent is a reviewed change" },
-  { crate = "nebula-orchestrator", wrappers = [
-    "nebula-engine",
-    "nebula-worker",  # dev-only
-  ], reason = "Exec-layer dispatch loop; only the engine and worker assembly use it" },
   { crate = "nebula-plugin-core", wrappers = [
     "nebula-deployment",
     "nebula-examples",
