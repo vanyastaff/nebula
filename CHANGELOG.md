@@ -13,7 +13,8 @@ changes are expected between minor releases — call them out here.
 
 - **The OAuth PKCE verifier is encrypted at rest.** `oauth_states` held each
   pending sign-in's `code_verifier` in plaintext, so anyone who could read the
-  table held the PKCE half of every in-flight authorization-code exchange. Migration 0015 replaces the column
+  table held the PKCE half of every in-flight authorization-code exchange.
+  Migration 0015 replaces the column
   with `code_verifier_envelope`, sealed by the identity-secret codec (the
   TOTP-seed key) with AAD binding the provider and state. The migration drops
   the short-lived pending states, so sign-ins in flight during the upgrade must
@@ -40,7 +41,45 @@ changes are expected between minor releases — call them out here.
   drops the `job_dispatch_queue` table; the persisted observation vocabulary
   keeps decoding historical job-dispatch sources.
 
+### Added
+
+- **The worker backs off when idle and wakes on enqueue.** An idle control
+  consumer doubles its poll delay after each empty claim, up to a ceiling
+  (default ten poll intervals, so one claim a second instead of ten), and
+  claimed work, a finished dispatch or reclaimed rows reset it. On PostgreSQL
+  every control-queue insert sends `NOTIFY nebula_control_queue` in its
+  transaction and the worker claims as soon as it hears it; the poll stays the
+  source of truth, so a lost notification only costs latency. Without a
+  notification (SQLite, and the server's in-process worker) a command enqueued
+  while the consumer is idle can now wait up to the ceiling. New worker
+  variables `NEBULA_WORKER_CONTROL_POLL_INTERVAL_MS`,
+  `NEBULA_WORKER_CONTROL_IDLE_POLL_MAX_MS` and
+  `NEBULA_WORKER_CONTROL_BATCH_SIZE` set the poll interval, the idle ceiling
+  and the claim batch size, and invalid values fail startup.
+
+- **Opt-in retention for finished executions.** Set `API_EXECUTION_RETENTION`
+  (for example `30d`, at least `1h`) and the server deletes executions that
+  finished more than that long ago, with their journal, node results, queued
+  commands and other child rows, once at startup and then hourly in batches of
+  500. Unset or `0` keeps executions forever, as before. Live executions and
+  executions holding a revision in an unexpired rollback window are never
+  deleted. `nebula-storage-port` adds the deployment-wide `ExecutionRetention`
+  port, implemented by the SQLite, PostgreSQL and in-memory execution stores;
+  migration 0016 indexes terminal executions by `finished_at`.
+
 ### Fixed
+
+- **Metric label sets no longer grow without bound.** Every distinct label set
+  used to create a new series that lived until `retain_recent`, and nothing
+  stopped an id or URL from becoming a label. `MetricsRegistry` now enforces
+  `CardinalityLimits` on series creation: it strips identifier and URL keys
+  (`HIGH_CARDINALITY_LABEL_KEYS`, such as `execution_id` and `url`) and caps
+  each metric at 1 000 label sets. Past the cap, new label sets fold into one
+  overflow series whose label values are all `__overflow__`, so the
+  observations are still recorded; each folded label set increments
+  `nebula_metrics_series_overflow_total{metric}` and the first one logs a
+  warning. `MetricsRegistry::with_cardinality_limits` changes the cap or the
+  denied keys. No in-tree metric uses a denied key or comes near the cap.
 
 - **`#[credential]` synthesizes a refresh strategy the scheme family allows.**
   Without a hand-written `fn policy`, a credential with `fn refresh` always got
@@ -79,6 +118,16 @@ changes are expected between minor releases — call them out here.
 
 ### Security
 
+- **Expressions have a wall-clock budget.** The step budget only counts work
+  the evaluator can see, so an expression that compiled a distinct regex per
+  loop iteration stayed inside it and held a blocking thread for minutes.
+  The evaluator now also checks a per-call time budget (default one second)
+  while it charges steps and before each regex match, and stops with
+  `ExpressionError::TimeLimitExceeded`. `EvaluationPolicy::with_max_eval_duration`
+  sets it; a context can only tighten the engine's budget. Node input
+  resolution reports it as validation code `expression.time_limit` and the
+  error "input expression exceeded its evaluation time budget".
+
 - **Credential ciphertext is bound to its owner.** The encryption layer used
   the credential ID alone as AAD, so ciphertext copied into a row with the same
   ID under another owner decrypted there. New and rewritten material now binds
@@ -96,17 +145,17 @@ changes are expected between minor releases — call them out here.
   evicted while a caller still holds it is no longer updated in place by
   later refreshes; resolving again returns a current one.
 
-### Added
+### Changed
 
-- **Opt-in retention for finished executions.** Set `API_EXECUTION_RETENTION`
-  (for example `30d`, at least `1h`) and the server deletes executions that
-  finished more than that long ago, with their journal, node results, queued
-  commands and other child rows, once at startup and then hourly in batches of
-  500. Unset or `0` keeps executions forever, as before. Live executions and
-  executions holding a revision in an unexpired rollback window are never
-  deleted. `nebula-storage-port` adds the deployment-wide `ExecutionRetention`
-  port, implemented by the SQLite, PostgreSQL and in-memory execution stores;
-  migration 0016 indexes terminal executions by `finished_at`.
+- **A cluster rate-limit slot costs one PostgreSQL round trip.**
+  `PgLimitStore::reserve` used a four-step transaction (`BEGIN`, a locking
+  upsert, an `UPDATE`, `COMMIT`) for every rate-limited provider attempt. A
+  reservation on an existing key is now one statement that locks the row,
+  reads the server clock after the lock, runs the same GCRA steps in SQL and
+  writes the result. A key's first reservation and reservations with a
+  `ReservationId` keep the transaction. Decisions are unchanged: the store
+  still passes the `LimitStore` conformance kit, and a new differential test
+  checks the statement against the Rust `step` functions.
 
 ## [0.33.0] - 2026-10-07
 

@@ -7,7 +7,12 @@
 //! builtin dispatch. Plain JSON appears only at the crate boundary
 //! (`ExpressionEngine::evaluate` and friends call `RuntimeValue::to_json`).
 
-use std::{borrow::Cow, cell::Cell, sync::Arc};
+use std::{
+    borrow::Cow,
+    cell::Cell,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 #[cfg(feature = "regex")]
 use regex::Regex;
@@ -74,6 +79,8 @@ impl Argument<'_> {
 struct EffectivePolicy {
     /// Work ceiling for the call. Never `None`: the engine default applies.
     max_steps: usize,
+    /// Wall-clock ceiling for the call. Never `None`: the engine default applies.
+    max_duration: Duration,
     /// JSON input ceiling for `parse_json`.
     max_json_parse_length: usize,
     /// Strict coercion for boolean contexts (`if`, `&&`, `!`).
@@ -98,6 +105,10 @@ impl EffectivePolicy {
             .and_then(EvaluationPolicy::max_eval_steps)
             .unwrap_or(crate::limits::DEFAULT_MAX_EVAL_STEPS);
         let context_max_steps = context.and_then(EvaluationPolicy::max_eval_steps);
+        let engine_max_duration = engine
+            .and_then(EvaluationPolicy::max_eval_duration)
+            .unwrap_or(crate::limits::DEFAULT_MAX_EVAL_DURATION);
+        let context_max_duration = context.and_then(EvaluationPolicy::max_eval_duration);
         let engine_json = engine
             .and_then(EvaluationPolicy::max_json_parse_length)
             .unwrap_or(crate::limits::MAX_SOURCE_BYTES);
@@ -112,6 +123,8 @@ impl EffectivePolicy {
         Self {
             max_steps: context_max_steps
                 .map_or(engine_max_steps, |limit| limit.min(engine_max_steps)),
+            max_duration: context_max_duration
+                .map_or(engine_max_duration, |limit| limit.min(engine_max_duration)),
             max_json_parse_length: context_json.map_or(engine_json, |limit| limit.min(engine_json)),
             strict_mode: engine.is_some_and(EvaluationPolicy::strict_mode)
                 || context.is_some_and(EvaluationPolicy::strict_mode),
@@ -155,16 +168,30 @@ impl EffectivePolicy {
 pub(crate) struct EvalFrame {
     depth: Cell<usize>,
     steps: Cell<usize>,
+    /// Charges since the clock was last read; see [`Self::charge`].
+    charges_since_clock_check: Cell<u32>,
+    started: Instant,
     policy: EffectivePolicy,
 }
 
+/// How many charges may pass between two reads of the clock.
+///
+/// Reading the clock on every AST node would cost a measurable share of a
+/// cheap evaluation; one read per 16 charges keeps the overshoot past the time
+/// budget to a handful of node evaluations.
+const CHARGES_PER_CLOCK_CHECK: u32 = 16;
+
 impl EvalFrame {
     /// Create a fresh frame around the already-intersected policy.
+    ///
+    /// The time budget starts now.
     #[inline]
     fn new(policy: EffectivePolicy) -> Self {
         Self {
             depth: Cell::new(0),
             steps: Cell::new(0),
+            charges_since_clock_check: Cell::new(0),
+            started: Instant::now(),
             policy,
         }
     }
@@ -201,6 +228,32 @@ impl EvalFrame {
                 "step budget exceeded"
             );
             return Err(ExpressionError::step_limit_exceeded(max, actual));
+        }
+        let charges = self.charges_since_clock_check.get().saturating_add(1);
+        if charges >= CHARGES_PER_CLOCK_CHECK {
+            self.charges_since_clock_check.set(0);
+            return self.check_time_budget();
+        }
+        self.charges_since_clock_check.set(charges);
+        Ok(())
+    }
+
+    /// Fail once this call has run longer than its wall-clock budget.
+    ///
+    /// The evaluator runs on the caller's thread (often a blocking pool
+    /// thread) and cannot be stopped from outside, so the budget is enforced
+    /// here, between operations.
+    pub(crate) fn check_time_budget(&self) -> ExpressionResult<()> {
+        let elapsed = self.started.elapsed();
+        let limit = self.policy.max_duration;
+        if elapsed > limit {
+            tracing::warn!(
+                target: "nebula_expression::dos",
+                limit_ms = u64::try_from(limit.as_millis()).unwrap_or(u64::MAX),
+                elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+                "time budget exceeded"
+            );
+            return Err(ExpressionError::time_limit_exceeded(limit, elapsed));
         }
         Ok(())
     }
@@ -1064,7 +1117,11 @@ impl Evaluator {
                     BinaryOp::GreaterThan => self.greater_than(&left_val, &right_val, frame),
                     BinaryOp::LessEqual => self.less_equal(&left_val, &right_val, frame),
                     BinaryOp::GreaterEqual => self.greater_equal(&left_val, &right_val, frame),
-                    BinaryOp::RegexMatch => self.regex_match(&left_val, &right_val),
+                    BinaryOp::RegexMatch => {
+                        // A regex compile is costly and charges no steps.
+                        frame.check_time_budget()?;
+                        self.regex_match(&left_val, &right_val)
+                    },
                     BinaryOp::And | BinaryOp::Or | BinaryOp::Coalesce => Err(
                         ExpressionError::internal("short-circuit operator escaped dispatch"),
                     ),

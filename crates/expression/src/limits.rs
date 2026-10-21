@@ -1,4 +1,4 @@
-//! Hard allocation bounds and the default per-call work allowance.
+//! Hard allocation bounds and the default per-call work and time allowances.
 
 use crate::{ExpressionError, ExpressionResult, value::RuntimeValue};
 
@@ -9,6 +9,7 @@ pub(crate) const MAX_AST_DEPTH: usize = 256;
 pub(crate) const MAX_RESULT_BYTES: usize = 1_048_576;
 pub(crate) const MAX_RESULT_NODES: usize = 65_536;
 pub(crate) const DEFAULT_MAX_EVAL_STEPS: usize = 100_000;
+pub(crate) const DEFAULT_MAX_EVAL_DURATION: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Upper bound of an RFC 3339 rendering with nanoseconds and an offset:
 /// `2024-03-01T10:00:00.123456789+03:00` is 35 bytes.
