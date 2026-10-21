@@ -41,6 +41,17 @@ changes are expected between minor releases — call them out here.
   drops the `job_dispatch_queue` table; the persisted observation vocabulary
   keeps decoding historical job-dispatch sources.
 
+- **Execution snapshots hold each node output once.** A successful node
+  attempt no longer keeps an inline copy of the output that the node's
+  checkpoint evidence already records. Every node commit rewrites the whole
+  execution state, so this roughly halves what each commit writes and a run
+  now reaches the 16 MiB durable checkpoint ceiling at about twice the output
+  volume. `nebula-execution` adds `AttemptOutcome::CheckpointedSuccess` and
+  `NodeAttempt::complete_checkpointed_success`; `NodeAttempt::is_success` now
+  means "finished without a failure record". The execution detail API still
+  returns the attempt's output, read from the checkpoint evidence. Snapshots
+  written earlier keep their copies and still resume.
+
 ### Added
 
 - **The worker backs off when idle and wakes on enqueue.** An idle control
