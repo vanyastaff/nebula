@@ -31,6 +31,15 @@ changes are expected between minor releases — call them out here.
   drops the `job_dispatch_queue` table; the persisted observation vocabulary
   keeps decoding historical job-dispatch sources.
 
+### Changed
+
+- **The SDK credential client sends the server's own acquisition request
+  types.** `nebula_sdk::client::credential::v1::{ResolveCredentialRequest,
+  ContinueResolveCredentialRequest, ReauthorizeCredentialRequest}` are now
+  re-exports of the `nebula-api-contract` types the server decodes, instead of
+  copies. Their fields and wire form are unchanged, `Debug` stays redacted, and
+  they also implement `Deserialize`. `nebula-sdk` now depends on `nebula-api-contract`.
+
 ### Fixed
 
 - **`#[credential]` synthesizes a refresh strategy the scheme family allows.**
