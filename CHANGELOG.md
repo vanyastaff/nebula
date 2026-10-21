@@ -33,6 +33,14 @@ changes are expected between minor releases — call them out here.
 
 ### Fixed
 
+- **`#[credential]` synthesizes a refresh strategy the scheme family allows.**
+  Without a hand-written `fn policy`, a credential with `fn refresh` always got
+  `RefreshStrategy::RefreshToken`, so one whose `AuthScheme::Family` declares
+  only `ReAcquire` or `ReMintLocal` failed every `resolve_with_refresh` with an
+  F3 containment violation. The synthesized policy now takes the family's
+  declared class: `RefreshToken` if offered, else `ReMintLocal`, else a silent
+  `ReAcquire`. State-dependent strategies still need a hand-written `fn policy`.
+
 - **Registered webhooks survive restarts and route on every replica.**
   The server never attached the webhook provider registry or context factory,
   so webhook registration answered 503, and the routing table only held
