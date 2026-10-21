@@ -20,6 +20,11 @@ pub(crate) const RETENTION_VAR: &str = "API_EXECUTION_RETENTION";
 /// deleting it within minutes of finishing would break both.
 const MIN_RETENTION: Duration = Duration::from_hours(1);
 
+/// The longest accepted retention, 36 500 days. The PostgreSQL store clamps
+/// an age to about 100 years, so a longer value would delete sooner than
+/// configured; unset keeps executions forever instead.
+const MAX_RETENTION: Duration = Duration::from_hours(24 * 36_500);
+
 /// How often the sweep runs.
 const SWEEP_INTERVAL: Duration = Duration::from_hours(1);
 
@@ -36,12 +41,16 @@ pub(crate) enum RetentionConfigError {
     /// The value is shorter than one hour.
     #[error("{RETENTION_VAR} must be at least 1h")]
     TooShort,
+    /// The value is longer than 36 500 days.
+    #[error("{RETENTION_VAR} must be at most 36500d; leave it unset to keep executions forever")]
+    TooLong,
 }
 
 /// Read the retention from the environment: `None` keeps executions forever.
 ///
 /// # Errors
-/// Returns [`RetentionConfigError`] for a malformed or too-short value.
+/// Returns [`RetentionConfigError`] for a malformed, too-short or too-long
+/// value.
 pub(crate) fn retention_from_env() -> Result<Option<Duration>, RetentionConfigError> {
     match std::env::var(RETENTION_VAR) {
         Ok(raw) => parse_retention(&raw),
@@ -75,6 +84,9 @@ fn parse_retention(raw: &str) -> Result<Option<Duration>, RetentionConfigError> 
         .ok_or(RetentionConfigError::Malformed)?;
     if retention < MIN_RETENTION {
         return Err(RetentionConfigError::TooShort);
+    }
+    if retention > MAX_RETENTION {
+        return Err(RetentionConfigError::TooLong);
     }
     Ok(Some(retention))
 }
@@ -122,15 +134,20 @@ impl ExecutionRetentionSweeper {
     }
 
     /// Delete batches until one comes back short, an error occurs, or
-    /// shutdown is requested.
+    /// shutdown is requested. Shutdown also abandons a batch in flight, so a
+    /// slow delete never holds the server's termination; each batch is one
+    /// statement, so it either commits whole or not at all.
     async fn sweep(&self, shutdown: &CancellationToken) {
         let mut deleted_total: u64 = 0;
         loop {
-            match self
-                .store
-                .delete_finished_executions(self.retention, self.batch_size)
-                .await
-            {
+            let batch = tokio::select! {
+                biased;
+                () = shutdown.cancelled() => break,
+                batch = self
+                    .store
+                    .delete_finished_executions(self.retention, self.batch_size) => batch,
+            };
+            match batch {
                 Ok(deleted) => {
                     deleted_total = deleted_total.saturating_add(deleted);
                     if deleted < u64::from(self.batch_size) || shutdown.is_cancelled() {
@@ -211,6 +228,14 @@ mod tests {
             parse_retention("59m"),
             Err(RetentionConfigError::TooShort)
         ));
+        assert_eq!(
+            parse_retention("36500d").ok().flatten(),
+            Some(Duration::from_hours(24 * 36_500))
+        );
+        assert!(matches!(
+            parse_retention("36501d"),
+            Err(RetentionConfigError::TooLong)
+        ));
     }
 
     /// Hands out a scripted sequence of batch results and records each call.
@@ -288,5 +313,37 @@ mod tests {
         );
         shutdown.cancel();
         task.await.expect("the sweep ends cleanly");
+    }
+
+    /// A delete that never returns, like one waiting on a locked child row.
+    #[derive(Debug)]
+    struct StuckStore;
+
+    #[async_trait::async_trait]
+    impl ExecutionRetention for StuckStore {
+        async fn delete_finished_executions(
+            &self,
+            _retention: Duration,
+            _limit: u32,
+        ) -> Result<u64, StorageError> {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_abandons_a_batch_in_flight() {
+        let shutdown = CancellationToken::new();
+        let task = tokio::spawn(
+            ExecutionRetentionSweeper::new(Arc::new(StuckStore), Duration::from_hours(24))
+                .run(shutdown.clone()),
+        );
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        shutdown.cancel();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("shutdown does not wait for the stuck batch")
+            .expect("the sweep ends cleanly");
     }
 }

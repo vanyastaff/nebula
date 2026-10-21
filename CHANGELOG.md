@@ -69,7 +69,7 @@ changes are expected between minor releases — call them out here.
   and the claim batch size, and invalid values fail startup.
 
 - **Opt-in retention for finished executions.** Set `API_EXECUTION_RETENTION`
-  (for example `30d`, at least `1h`) and the server deletes executions that
+  (for example `30d`, from `1h` to `36500d`) and the server deletes executions that
   finished more than that long ago, with their journal, node results, queued
   commands and other child rows, once at startup and then hourly in batches of
   500. Unset or `0` keeps executions forever, as before. Live executions and

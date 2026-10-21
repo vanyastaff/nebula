@@ -278,14 +278,14 @@ same SQLite file. `memory` is rejected before creating storage.
 ### Execution retention
 
 Finished executions are kept forever unless `API_EXECUTION_RETENTION` is set. With
-a value such as `30d` (a whole number with `s`, `m`, `h` or `d`, at least `1h`), the
+a value such as `30d` (a whole number with `s`, `m`, `h` or `d`, from `1h` to `36500d`), the
 server deletes every execution that finished (`completed`, `failed`, `cancelled`,
 `timed_out`) more than that long ago, together with its journal, node results,
 checkpoints, queued control commands, resume tokens and start reservations. It
 sweeps once at startup and then hourly, in batches of 500 executions, across every
 tenant. Executions that are still running, paused or waiting are never deleted, and
 neither is one still holding a workflow revision in an unexpired rollback window.
-`0` or unset turns the sweep off; a malformed or shorter value stops startup.
+`0` or unset turns the sweep off; a malformed, shorter or longer value stops startup.
 
 A deleted execution no longer appears in history, and a start replayed with its
 `Idempotency-Key` after that point starts a new execution, so keep the retention
