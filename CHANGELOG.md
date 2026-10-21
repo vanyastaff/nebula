@@ -11,6 +11,16 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **The OAuth PKCE verifier is encrypted at rest.** `oauth_states` held each
+  pending sign-in's `code_verifier` in plaintext, so anyone who could read the
+  table held the PKCE half of every in-flight authorization-code exchange.
+  Migration 0015 replaces the column
+  with `code_verifier_envelope`, sealed by the identity-secret codec (the
+  TOTP-seed key) with AAD binding the provider and state. The migration drops
+  the short-lived pending states, so sign-ins in flight during the upgrade must
+  restart. `SqliteOAuthStateRepo::new` and `PgOAuthStateRepo::new` now take the
+  `IdentitySecretCodec`; `AuthPersistence` passes it.
+
 - **Leftover job-dispatch routing and leased resume are removed.** They had
   no caller once the job-dispatch channel was gone. `nebula-engine` drops the
   `daemon::routing` module with `RoutingResolver`, `DefinitionRoutingResolver`,
@@ -98,6 +108,16 @@ changes are expected between minor releases — call them out here.
 
 ### Security
 
+- **Expressions have a wall-clock budget.** The step budget only counts work
+  the evaluator can see, so an expression that compiled a distinct regex per
+  loop iteration stayed inside it and held a blocking thread for minutes.
+  The evaluator now also checks a per-call time budget (default one second)
+  while it charges steps and before each regex match, and stops with
+  `ExpressionError::TimeLimitExceeded`. `EvaluationPolicy::with_max_eval_duration`
+  sets it; a context can only tighten the engine's budget. Node input
+  resolution reports it as validation code `expression.time_limit` and the
+  error "input expression exceeded its evaluation time budget".
+
 - **Credential ciphertext is bound to its owner.** The encryption layer used
   the credential ID alone as AAD, so ciphertext copied into a row with the same
   ID under another owner decrypted there. New and rewritten material now binds
@@ -116,14 +136,6 @@ changes are expected between minor releases — call them out here.
   later refreshes; resolving again returns a current one.
 
 ### Changed
-
-- **The SDK credential client sends the server's own acquisition request
-  types.** `nebula_sdk::client::credential::v1::{ResolveCredentialRequest,
-  ContinueResolveCredentialRequest, ReauthorizeCredentialRequest}` are now
-  re-exports of the `nebula-api-contract` types the server decodes, instead of
-  copies. Their fields and wire form are unchanged, `Debug` stays redacted, and
-  they also implement `Deserialize`. `nebula-sdk` now depends on
-  `nebula-api-contract`.
 
 - **A cluster rate-limit slot costs one PostgreSQL round trip.**
   `PgLimitStore::reserve` used a four-step transaction (`BEGIN`, a locking

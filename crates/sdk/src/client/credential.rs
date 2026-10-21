@@ -13,14 +13,21 @@ const REDACTED: &str = "[REDACTED]";
 pub mod v1 {
     use super::*;
 
-    // Acquisition requests whose Rust shape matches the server's contract
-    // exactly are that contract. `ReauthorizeCredentialRequest` is submitted
-    // to POST /credentials/{id}/reauthorize in the selected workspace. Debug
-    // redacts every secret-bearing field.
-    pub use nebula_api_contract::v1::credential::{
-        ContinueResolveRequest as ContinueResolveCredentialRequest, ReauthorizeCredentialRequest,
-        ResolveCredentialRequest,
-    };
+    /// New authorization properties for an existing credential.
+    /// Submit to POST /credentials/{id}/reauthorize in the selected workspace.
+    #[derive(Serialize)]
+    pub struct ReauthorizeCredentialRequest {
+        /// Potentially secret type-specific authorization properties.
+        pub data: serde_json::Value,
+    }
+
+    impl fmt::Debug for ReauthorizeCredentialRequest {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("ReauthorizeCredentialRequest")
+                .field("data", &REDACTED)
+                .finish()
+        }
+    }
 
     /// Existing-id reauthorization returns the universal acquisition outcome.
     pub type ReauthorizeCredentialResponse = ResolveCredentialResponse;
@@ -387,6 +394,24 @@ pub mod v1 {
         pub message: String,
     }
 
+    /// Input for starting universal credential acquisition.
+    #[derive(Serialize)]
+    pub struct ResolveCredentialRequest {
+        /// Registered credential type key.
+        pub credential_key: String,
+        /// Type-specific, potentially secret input.
+        pub data: serde_json::Value,
+    }
+
+    impl fmt::Debug for ResolveCredentialRequest {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("ResolveCredentialRequest")
+                .field("credential_key", &self.credential_key)
+                .field("data", &REDACTED)
+                .finish()
+        }
+    }
+
     /// One field in a form-post interaction.
     #[derive(Deserialize)]
     pub struct FormPostField {
@@ -499,8 +524,29 @@ pub mod v1 {
         }
     }
 
+    /// Input for continuing a pending acquisition.
+    #[derive(Serialize)]
+    pub struct ContinueResolveCredentialRequest {
+        /// Credential type used to start acquisition.
+        pub credential_key: String,
+        /// Sensitive continuation bearer token.
+        pub pending_token: String,
+        /// Potentially sensitive typed continuation input.
+        pub user_input: serde_json::Value,
+    }
+
     /// Response returned when continuing acquisition.
     pub type ContinueResolveCredentialResponse = ResolveCredentialResponse;
+
+    impl fmt::Debug for ContinueResolveCredentialRequest {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("ContinueResolveCredentialRequest")
+                .field("credential_key", &self.credential_key)
+                .field("pending_token", &REDACTED)
+                .field("user_input", &REDACTED)
+                .finish()
+        }
+    }
 
     /// Response from provider-side revocation.
     #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -755,45 +801,6 @@ mod tests {
         assert_eq!(wire["incident"], "5b2c6a51-7e0d-4a8e-9c1f-2d4b3a6e7f80");
         assert_eq!(wire["decision"], "provider_revoked");
         assert!(!format!("{request:?}").contains("secret-canary"));
-    }
-
-    /// Accepts only the server's contract types, so passing an SDK request
-    /// here proves it is that type rather than a lookalike copy.
-    mod server {
-        use nebula_api_contract::v1::credential::{
-            ContinueResolveRequest, ReauthorizeCredentialRequest, ResolveCredentialRequest,
-        };
-
-        pub(super) fn accepts(
-            _: &ResolveCredentialRequest,
-            _: &ContinueResolveRequest,
-            _: &ReauthorizeCredentialRequest,
-        ) {
-        }
-    }
-
-    #[test]
-    fn acquisition_requests_are_the_server_contract_types() {
-        let resolve = ResolveCredentialRequest {
-            credential_key: "oauth2".to_owned(),
-            data: json!({"client_secret": "resolve-secret"}),
-        };
-        let continuation = ContinueResolveCredentialRequest {
-            credential_key: "oauth2".to_owned(),
-            pending_token: "pending-secret".to_owned(),
-            user_input: json!("Poll"),
-        };
-        let reauthorize = ReauthorizeCredentialRequest {
-            data: json!({"client_secret": "reauthorize-secret"}),
-        };
-        server::accepts(&resolve, &continuation, &reauthorize);
-
-        // A request the SDK serializes decodes through the server's own
-        // `Deserialize`, including the reauthorization unknown-field guard.
-        let decoded: ReauthorizeCredentialRequest =
-            serde_json::from_value(serde_json::to_value(&reauthorize).expect("serialize"))
-                .expect("server decodes reauthorization");
-        assert_eq!(decoded.data, reauthorize.data);
     }
 
     #[test]
@@ -1098,5 +1105,58 @@ mod tests {
             delayed_problem.credential_kind().code(),
             Some("API:CREDENTIAL_REFRESH_NOT_APPLIED_AFTER")
         );
+    }
+
+    /// The acquisition requests are SDK copies of the server's contract types
+    /// (a `pub use` of the contract would hide them from the SemVer check,
+    /// which cannot follow cross-crate re-exports). The exhaustive
+    /// destructuring stops compiling when either side gains or loses a field,
+    /// and the server's decoder must accept what the SDK sends.
+    #[test]
+    fn acquisition_requests_match_the_server_contract() {
+        use nebula_api_contract::v1::credential as contract;
+
+        let resolve = ResolveCredentialRequest {
+            credential_key: "oauth2".to_owned(),
+            data: json!({"client_secret": "resolve-secret"}),
+        };
+        let continuation = ContinueResolveCredentialRequest {
+            credential_key: "oauth2".to_owned(),
+            pending_token: "pending-secret".to_owned(),
+            user_input: json!("Poll"),
+        };
+        let reauthorize = ReauthorizeCredentialRequest {
+            data: json!({"client_secret": "reauthorize-secret"}),
+        };
+
+        let contract::ResolveCredentialRequest {
+            credential_key,
+            data,
+        } = serde_json::from_value(serde_json::to_value(&resolve).expect("serialize"))
+            .expect("server decodes resolve");
+        assert_eq!(
+            (credential_key, data),
+            (resolve.credential_key, resolve.data)
+        );
+
+        let contract::ContinueResolveRequest {
+            credential_key,
+            pending_token,
+            user_input,
+        } = serde_json::from_value(serde_json::to_value(&continuation).expect("serialize"))
+            .expect("server decodes continuation");
+        assert_eq!(
+            (credential_key, pending_token, user_input),
+            (
+                continuation.credential_key,
+                continuation.pending_token,
+                continuation.user_input
+            )
+        );
+
+        let contract::ReauthorizeCredentialRequest { data } =
+            serde_json::from_value(serde_json::to_value(&reauthorize).expect("serialize"))
+                .expect("server decodes reauthorization");
+        assert_eq!(data, reauthorize.data);
     }
 }

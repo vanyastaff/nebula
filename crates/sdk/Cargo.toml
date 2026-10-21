@@ -22,8 +22,6 @@ nebula-credential = { path = "../credential" }
 nebula-plugin = { path = "../plugin" }
 nebula-resource = { path = "../resource" }
 nebula-validator = { path = "../validator" }
-# Shared HTTP wire types reused by the `client` persona.
-nebula-api-contract = { path = "../api-contract" }
 
 # Async runtime
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
@@ -62,6 +60,9 @@ quote = { workspace = true }
 syn = { workspace = true, features = ["full", "printing"] }
 rstest = { workspace = true }
 tempfile = { workspace = true }
+# `client::credential` tests: pins the acquisition requests to the server's
+# wire contract.
+nebula-api-contract = { path = "../api-contract" }
 
 [features]
 default = ["derive", "testing"]
