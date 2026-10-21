@@ -45,6 +45,12 @@ exposed flat (`nebula_metrics::Counter`, not `nebula_metrics::primitives::Counte
   with `# HELP`, `# TYPE` metadata and per-bucket histogram output.
 - `content_type() -> &'static str` — standard Prometheus `Content-Type` for HTTP
   exporters.
+- `CardinalityLimits` — the series policy every `MetricsRegistry` enforces on
+  series creation (`MetricsRegistry::with_cardinality_limits`). By default it
+  strips identifier and URL label keys (`HIGH_CARDINALITY_LABEL_KEYS`) and caps
+  each metric at `DEFAULT_MAX_SERIES_PER_METRIC` (1 000) label sets; past the
+  cap, new label sets fold into one overflow series whose values are all
+  `__overflow__`, counted by `nebula_metrics_series_overflow_total{metric}`.
 - `LabelAllowlist` — allowlist that strips high-cardinality label keys before
   they reach the registry.
 - `naming` module — `nebula_*` metric name constants (e.g.

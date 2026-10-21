@@ -8,6 +8,12 @@
 //! fenced by the claiming processor. Claim and reclaim instants come from
 //! the database clock (`clock_timestamp()`), so every replica stamps and
 //! compares them identically.
+//!
+//! Every insert of a `Pending` row also sends `NOTIFY` on
+//! [`CONTROL_QUEUE_CHANNEL`] in the same transaction, so the notification is
+//! delivered only once the row is visible. [`PgControlQueueListener`] turns
+//! those notifications into a consumer's wake hint; the consumer's poll stays
+//! the source of truth.
 
 use std::time::Duration;
 
@@ -17,7 +23,9 @@ use nebula_storage_port::store::{
     ReclaimOutcome,
 };
 use nebula_storage_port::{Scope, StorageError};
+use sqlx::postgres::{PgListener, PgPoolOptions};
 use sqlx::{PgPool, Row};
+use tokio::sync::Notify;
 
 use crate::sql_error::{foreign_key_not_found, storage_error};
 
@@ -64,10 +72,18 @@ pub(super) fn decode_resume_target<T: serde::de::DeserializeOwned>(
         .map_err(|_| StorageError::Corrupt("column `resume_target` is not a resume target".into()))
 }
 
+/// `NOTIFY` channel of control-queue enqueues. The payload is empty: a
+/// notification only says that some `Pending` row was committed.
+pub const CONTROL_QUEUE_CHANNEL: &str = "nebula_control_queue";
+
+/// Longest wait between listener retries while PostgreSQL is unreachable.
+const MAX_LISTEN_RETRY_BACKOFF: Duration = Duration::from_secs(30);
+
 /// Insert one `Pending` control message — the single insert shape of
-/// `enqueue`, the execution outbox and the resume producer. A message that
-/// names no execution in its tenant is `NotFound { entity: "execution" }`;
-/// a taken id is `Duplicate { entity: "control_queue" }`.
+/// `enqueue`, the execution outbox and the resume producer — and notify
+/// [`CONTROL_QUEUE_CHANNEL`] in the same statement. A message that names no
+/// execution in its tenant is `NotFound { entity: "execution" }`; a taken id
+/// is `Duplicate { entity: "control_queue" }`.
 pub(super) async fn insert_control_message<'e, E>(
     executor: E,
     msg: &ControlMsg,
@@ -76,10 +92,13 @@ where
     E: sqlx::Executor<'e, Database = sqlx::Postgres>,
 {
     sqlx::query(
-        "INSERT INTO execution_control_queue \
-         (org_id, workspace_id, execution_id, id, command, status, \
-          resume_target, w3c_traceparent, reclaim_count) \
-         VALUES ($1, $2, $3, $4, $5, 'Pending', $6, $7, $8)",
+        "WITH inserted AS ( \
+           INSERT INTO execution_control_queue \
+           (org_id, workspace_id, execution_id, id, command, status, \
+            resume_target, w3c_traceparent, reclaim_count) \
+           VALUES ($1, $2, $3, $4, $5, 'Pending', $6, $7, $8) \
+           RETURNING 1) \
+         SELECT pg_notify($9, '') FROM inserted",
     )
     .bind(&msg.scope.org_id)
     .bind(&msg.scope.workspace_id)
@@ -89,6 +108,7 @@ where
     .bind(encode_resume_target(msg)?)
     .bind(msg.w3c_traceparent.as_deref())
     .bind(encode_reclaim_count(msg.reclaim_count)?)
+    .bind(CONTROL_QUEUE_CHANNEL)
     .execute(executor)
     .await
     .map_err(
@@ -122,6 +142,80 @@ fn decode_claim(row: sqlx::postgres::PgRow) -> Result<ControlClaim, StorageError
     };
     let token = ControlClaimToken::new(id, decode_generation(generation, &id)?, msg.scope.clone());
     Ok(ControlClaim { msg, token })
+}
+
+/// Forwards control-queue enqueue notifications to a consumer's wake hint.
+///
+/// Holds one dedicated `LISTEN` connection, opened with the options of the
+/// shared pool but outside it, so it never takes a pool slot. Notifications
+/// are hints: one sent while the connection is down is lost, and the
+/// consumer's poll finds that command instead.
+#[derive(Debug)]
+pub struct PgControlQueueListener {
+    listener: PgListener,
+}
+
+impl PgControlQueueListener {
+    /// Open the listening connection and subscribe to
+    /// [`CONTROL_QUEUE_CHANNEL`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StorageError`] when the connection or `LISTEN` fails.
+    pub async fn connect(pool: &PgPool) -> Result<Self, StorageError> {
+        let connection = PgPoolOptions::new()
+            .max_connections(1)
+            .max_lifetime(None)
+            .idle_timeout(None)
+            .connect_with((*pool.connect_options()).clone())
+            .await
+            .map_err(storage_error)?;
+        let mut listener = PgListener::connect_with(&connection)
+            .await
+            .map_err(storage_error)?;
+        listener
+            .listen(CONTROL_QUEUE_CHANNEL)
+            .await
+            .map_err(storage_error)?;
+        Ok(Self { listener })
+    }
+
+    /// Notify `wakeup` for every enqueue notification, until the future is
+    /// dropped.
+    ///
+    /// A lost connection reconnects and resubscribes; because notifications
+    /// sent meanwhile are gone, `wakeup` is notified once after each loss so
+    /// the consumer claims instead of waiting for its next poll. A storage
+    /// error is logged and retried with a backoff of up to 30 s.
+    #[expect(
+        clippy::infinite_loop,
+        reason = "forwards until the caller drops the future; an async fn cannot return `!`"
+    )]
+    pub async fn forward(mut self, wakeup: &Notify) {
+        let mut retry = Duration::from_millis(100);
+        loop {
+            match self.listener.try_recv().await {
+                Ok(Some(_)) => {
+                    retry = Duration::from_millis(100);
+                    wakeup.notify_one();
+                },
+                Ok(None) => {
+                    tracing::debug!("control-queue listener reconnected; waking the consumer");
+                    wakeup.notify_one();
+                },
+                Err(error) => {
+                    tracing::warn!(
+                        error = %storage_error(error),
+                        retry_ms = retry.as_millis() as u64,
+                        "control-queue listener failed; retrying"
+                    );
+                    tokio::time::sleep(retry).await;
+                    retry = (retry * 2).min(MAX_LISTEN_RETRY_BACKOFF);
+                    wakeup.notify_one();
+                },
+            }
+        }
+    }
 }
 
 /// Postgres-backed durable-outbox handle.
