@@ -121,7 +121,8 @@ pub struct ApiConfig {
     #[serde(default)]
     pub jwt_audience: Option<String>,
 
-    /// Rate limiting: requests per second per IP
+    /// Rate limiting: requests per second per client IP, counted by each
+    /// process on its own (`API_RATE_LIMIT`). Replicas do not share buckets.
     pub rate_limit_per_second: u32,
 
     /// Peers whose `X-Forwarded-For` / `X-Real-IP` the rate limiter believes
