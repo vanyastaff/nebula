@@ -23,8 +23,9 @@ or `init_with`, and the subscriber is configured, including the runtime reload h
 
 **Structured Tracing Initialization** — the intended single entry point for `tracing`
 subscriber setup. No binary calls it yet: `apps/server` initializes tracing through
-`nebula-api`'s `telemetry_init`, and `apps/worker` builds a `tracing_subscriber` directly. The
-only workspace consumer is `nebula-expression`, which uses the re-exported `tracing` macros. Cross-cutting infrastructure (no upward
+`nebula-api`'s `telemetry_init`, and `apps/worker` builds a `tracing_subscriber` directly, so
+no workspace crate depends on it. Libraries emit events with `tracing` directly; this crate
+only installs the subscriber. Cross-cutting infrastructure (no upward
 dependencies). The canon observability contract (§4.6, §12.5) is enforced at the logging
 boundary: no secrets in log output, structured events with typed event kinds.
 

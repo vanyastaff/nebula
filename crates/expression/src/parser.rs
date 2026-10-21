@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use nebula_log::trace;
+use tracing::trace;
 
 use crate::{
     ExpressionError,

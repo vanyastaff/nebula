@@ -137,6 +137,12 @@ changes are expected between minor releases — call them out here.
   still passes the `LimitStore` conformance kit, and a new differential test
   checks the statement against the Rust `step` functions.
 
+- **`nebula-expression` no longer depends on `nebula-log`.** It used that
+  crate only for two re-exported `tracing` macros, which pulled the subscriber
+  stack (`tracing-subscriber`, `tokio`) into every expression consumer. It now
+  calls `tracing` directly; its events are unchanged. No workspace crate
+  depends on `nebula-log` any more.
+
 ## [0.33.0] - 2026-10-07
 
 This is the first versioned section. Workspace versions before 0.33.0 were
