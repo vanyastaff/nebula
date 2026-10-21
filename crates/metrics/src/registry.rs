@@ -7,7 +7,8 @@
 //! threads.
 //!
 //! Naming conventions and export formats live alongside this module
-//! (`naming.rs`, `prometheus.rs`); the registry itself is pure storage.
+//! (`naming.rs`, `prometheus.rs`). The registry enforces the series-cardinality
+//! policy from `filter.rs` ([`CardinalityLimits`]) whenever it creates a series.
 
 use std::{
     sync::Arc,
@@ -20,9 +21,11 @@ use lasso::Spur;
 use crate::{
     counter::Counter,
     error::{MetricKind, MetricsError, MetricsResult},
+    filter::{CardinalityLimits, OVERFLOW_LABEL_VALUE},
     gauge::Gauge,
     histogram::{DEFAULT_BUCKETS, Histogram},
-    labels::{LabelInterner, LabelSet, MetricKey},
+    labels::{LabelInterner, LabelKey, LabelSet, MetricKey},
+    naming::NEBULA_METRICS_SERIES_OVERFLOW_TOTAL,
 };
 
 /// Returns the current time as milliseconds since the Unix epoch.
@@ -77,6 +80,15 @@ impl MetricSeries {
 /// Concurrent access uses [`DashMap`] — a sharded lock-free map — so
 /// recording metrics on hot paths does not block other threads.
 ///
+/// # Cardinality
+///
+/// Every new series passes the registry's [`CardinalityLimits`] (default:
+/// [`CardinalityLimits::default`]): denied label keys are stripped, and once a
+/// metric holds `max_series_per_metric` label sets, a new label set resolves to
+/// that metric's overflow series instead of a series of its own. Each folded
+/// lookup increments [`NEBULA_METRICS_SERIES_OVERFLOW_TOTAL`], and the first
+/// fold into an overflow series logs a warning. Existing series are unaffected.
+///
 /// # Snapshots
 ///
 /// [`Self::snapshot_counters`] and [`Self::snapshot_gauges`] return **live handles**
@@ -106,16 +118,46 @@ pub struct MetricsRegistry {
     /// Shared string interner — both metric names and label keys/values.
     pub(crate) interner: LabelInterner,
     series: Arc<DashMap<MetricKey, MetricSeries>>,
+    limits: Arc<CardinalityLimits>,
+    /// `limits.denied_label_keys`, interned in `interner`.
+    denied_label_keys: Arc<[LabelKey]>,
+    /// Series per metric name that count toward the cap (labeled, not overflow).
+    capped_series: Arc<DashMap<Spur, usize>>,
 }
 
 impl MetricsRegistry {
-    /// Create a new empty registry.
+    /// Create a new empty registry with the default [`CardinalityLimits`].
     #[must_use]
     pub fn new() -> Self {
+        Self::with_cardinality_limits(CardinalityLimits::default())
+    }
+
+    /// Create a new empty registry that enforces `limits` on series creation.
+    #[must_use]
+    pub fn with_cardinality_limits(limits: CardinalityLimits) -> Self {
+        let interner = LabelInterner::new();
+        let denied_label_keys = Self::intern_denied_keys(&interner, &limits);
         Self {
-            interner: LabelInterner::new(),
+            interner,
             series: Arc::new(DashMap::new()),
+            limits: Arc::new(limits),
+            denied_label_keys,
+            capped_series: Arc::new(DashMap::new()),
         }
+    }
+
+    /// The cardinality policy this registry enforces.
+    #[must_use]
+    pub fn cardinality_limits(&self) -> &CardinalityLimits {
+        &self.limits
+    }
+
+    fn intern_denied_keys(interner: &LabelInterner, limits: &CardinalityLimits) -> Arc<[LabelKey]> {
+        limits
+            .denied_label_keys()
+            .iter()
+            .map(|k| interner.intern(k))
+            .collect()
     }
 
     fn resolve_metric_name(&self, name: Spur) -> String {
@@ -144,15 +186,13 @@ impl MetricsRegistry {
     /// Get or create an unlabeled counter by name.
     pub fn counter(&self, name: &str) -> MetricsResult<Counter> {
         let name_spur = self.interner.intern(name);
-        let key = MetricKey::unlabeled(name_spur);
-        self.insert_counter(key, name_spur)
+        self.insert_counter(name_spur, &LabelSet::empty())
     }
 
     /// Get or create an unlabeled gauge by name.
     pub fn gauge(&self, name: &str) -> MetricsResult<Gauge> {
         let name_spur = self.interner.intern(name);
-        let key = MetricKey::unlabeled(name_spur);
-        self.insert_gauge(key, name_spur)
+        self.insert_gauge(name_spur, &LabelSet::empty())
     }
 
     /// Get or create an unlabeled histogram using the built-in default bucket layout.
@@ -167,8 +207,7 @@ impl MetricsRegistry {
     ) -> MetricsResult<Histogram> {
         Histogram::validate_bucket_boundaries(boundaries)?;
         let name_spur = self.interner.intern(name);
-        let key = MetricKey::unlabeled(name_spur);
-        self.insert_histogram(key, name_spur, boundaries)
+        self.insert_histogram(name_spur, &LabelSet::empty(), boundaries)
     }
 
     // ── Labeled accessors ───────────────────────────────────────────────────
@@ -190,15 +229,13 @@ impl MetricsRegistry {
     /// ```
     pub fn counter_labeled(&self, name: &str, labels: &LabelSet) -> MetricsResult<Counter> {
         let name_spur = self.interner.intern(name);
-        let key = MetricKey::labeled(name_spur, labels.clone());
-        self.insert_counter(key, name_spur)
+        self.insert_counter(name_spur, labels)
     }
 
     /// Get or create a gauge for the given metric name and label set.
     pub fn gauge_labeled(&self, name: &str, labels: &LabelSet) -> MetricsResult<Gauge> {
         let name_spur = self.interner.intern(name);
-        let key = MetricKey::labeled(name_spur, labels.clone());
-        self.insert_gauge(key, name_spur)
+        self.insert_gauge(name_spur, labels)
     }
 
     /// Get or create a histogram for the given metric name and label set using
@@ -220,46 +257,49 @@ impl MetricsRegistry {
     ) -> MetricsResult<Histogram> {
         Histogram::validate_bucket_boundaries(&boundaries)?;
         let name_spur = self.interner.intern(name);
-        let key = MetricKey::labeled(name_spur, labels.clone());
-        self.insert_histogram(key, name_spur, &boundaries)
+        self.insert_histogram(name_spur, labels, &boundaries)
     }
 
-    fn insert_counter(&self, key: MetricKey, name_spur: Spur) -> MetricsResult<Counter> {
-        match self.series.entry(key) {
-            Entry::Occupied(o) => match o.get() {
+    fn insert_counter(&self, name_spur: Spur, labels: &LabelSet) -> MetricsResult<Counter> {
+        self.get_or_create(
+            name_spur,
+            labels,
+            |series| match series {
                 MetricSeries::Counter(c) => Ok(c.clone()),
                 other => Err(self.kind_conflict(name_spur, MetricKind::Counter, other.kind())),
             },
-            Entry::Vacant(v) => {
+            || {
                 let c = Counter::new();
-                v.insert(MetricSeries::Counter(c.clone()));
-                Ok(c)
+                (MetricSeries::Counter(c.clone()), c)
             },
-        }
+        )
     }
 
-    fn insert_gauge(&self, key: MetricKey, name_spur: Spur) -> MetricsResult<Gauge> {
-        match self.series.entry(key) {
-            Entry::Occupied(o) => match o.get() {
+    fn insert_gauge(&self, name_spur: Spur, labels: &LabelSet) -> MetricsResult<Gauge> {
+        self.get_or_create(
+            name_spur,
+            labels,
+            |series| match series {
                 MetricSeries::Gauge(g) => Ok(g.clone()),
                 other => Err(self.kind_conflict(name_spur, MetricKind::Gauge, other.kind())),
             },
-            Entry::Vacant(v) => {
+            || {
                 let g = Gauge::new();
-                v.insert(MetricSeries::Gauge(g.clone()));
-                Ok(g)
+                (MetricSeries::Gauge(g.clone()), g)
             },
-        }
+        )
     }
 
     fn insert_histogram(
         &self,
-        key: MetricKey,
         name_spur: Spur,
+        labels: &LabelSet,
         boundaries: &[f64],
     ) -> MetricsResult<Histogram> {
-        match self.series.entry(key) {
-            Entry::Occupied(o) => match o.get() {
+        self.get_or_create(
+            name_spur,
+            labels,
+            |series| match series {
                 MetricSeries::Histogram(h) => {
                     if h.boundaries() != boundaries {
                         return Err(MetricsError::HistogramLayoutConflict {
@@ -270,12 +310,107 @@ impl MetricsRegistry {
                 },
                 other => Err(self.kind_conflict(name_spur, MetricKind::Histogram, other.kind())),
             },
-            Entry::Vacant(v) => {
+            || {
                 let h = Histogram::from_validated_boundaries(boundaries.to_vec());
-                v.insert(MetricSeries::Histogram(h.clone()));
-                Ok(h)
+                (MetricSeries::Histogram(h.clone()), h)
             },
+        )
+    }
+
+    /// Look up the series for `(name, labels)`, creating it under the
+    /// cardinality policy.
+    ///
+    /// Denied label keys are stripped first. A new labeled series takes one of
+    /// its metric's `max_series_per_metric` slots; when none is left, the
+    /// observation resolves to the metric's overflow series instead and the
+    /// fold is counted.
+    fn get_or_create<T>(
+        &self,
+        name: Spur,
+        labels: &LabelSet,
+        existing: impl Fn(&MetricSeries) -> MetricsResult<T>,
+        create: impl Fn() -> (MetricSeries, T),
+    ) -> MetricsResult<T> {
+        let key = MetricKey::labeled(name, labels.without_keys(&self.denied_label_keys));
+        let overflow_key = match self.series.entry(key) {
+            Entry::Occupied(o) => return existing(o.get()),
+            Entry::Vacant(v) => {
+                if !Self::counts_toward_cap(&self.interner, &v.key().labels)
+                    || self.take_series_slot(name)
+                {
+                    let (series, handle) = create();
+                    v.insert(series);
+                    return Ok(handle);
+                }
+                let overflow_value = self.interner.intern(OVERFLOW_LABEL_VALUE);
+                MetricKey::labeled(name, v.key().labels.with_every_value(overflow_value))
+            },
+        };
+
+        let handle = match self.series.entry(overflow_key) {
+            Entry::Occupied(o) => existing(o.get())?,
+            Entry::Vacant(v) => {
+                tracing::warn!(
+                    metric = self.interner.resolve(name),
+                    max_series_per_metric = self.limits.max_series_per_metric(),
+                    "metric reached its series cap; new label sets fold into the \
+                     overflow series (label values \"{OVERFLOW_LABEL_VALUE}\")"
+                );
+                let (series, handle) = create();
+                v.insert(series);
+                handle
+            },
+        };
+        self.record_series_overflow(name);
+        Ok(handle)
+    }
+
+    /// Whether a series with `labels` takes one of its metric's capped slots.
+    ///
+    /// The unlabeled series and overflow series are always admitted.
+    fn counts_toward_cap(interner: &LabelInterner, labels: &LabelSet) -> bool {
+        if labels.is_empty() {
+            return false;
         }
+        interner
+            .get(OVERFLOW_LABEL_VALUE)
+            .is_none_or(|overflow| !labels.has_every_value(overflow))
+    }
+
+    /// Reserve one capped slot for metric `name`; `false` once the cap is reached.
+    ///
+    /// Called while the vacant series entry is held, so concurrent creators of
+    /// the same series cannot both take a slot for it.
+    fn take_series_slot(&self, name: Spur) -> bool {
+        let mut count = self.capped_series.entry(name).or_insert(0);
+        if *count >= self.limits.max_series_per_metric() {
+            return false;
+        }
+        *count += 1;
+        true
+    }
+
+    /// Count one fold into `name`'s overflow series.
+    ///
+    /// The counter is keyed by metric name, which is bounded by the code that
+    /// names metrics, so it is created outside the cap.
+    fn record_series_overflow(&self, name: Spur) {
+        let key = MetricKey::labeled(
+            self.interner.intern(NEBULA_METRICS_SERIES_OVERFLOW_TOTAL),
+            self.interner.single("metric", self.interner.resolve(name)),
+        );
+        let counter = match self.series.entry(key) {
+            Entry::Occupied(o) => match o.get() {
+                MetricSeries::Counter(c) => c.clone(),
+                _ => return,
+            },
+            Entry::Vacant(v) => {
+                let c = Counter::new();
+                v.insert(MetricSeries::Counter(c.clone()));
+                c
+            },
+        };
+        counter.inc();
     }
 
     // ── Snapshot / export ───────────────────────────────────────────────────
@@ -394,8 +529,17 @@ impl MetricsRegistry {
             new_series.insert(new_key, cloned);
         }
 
+        let capped_series: DashMap<Spur, usize> = DashMap::new();
+        for entry in &new_series {
+            if Self::counts_toward_cap(&new_interner, &entry.key().labels) {
+                *capped_series.entry(entry.key().name).or_insert(0) += 1;
+            }
+        }
+
+        self.denied_label_keys = Self::intern_denied_keys(&new_interner, &self.limits);
         self.interner = new_interner;
         self.series = Arc::new(new_series);
+        self.capped_series = Arc::new(capped_series);
     }
 }
 
@@ -553,8 +697,167 @@ mod tests {
         std::thread::sleep(Duration::from_millis(2));
         reg.retain_recent(Duration::ZERO);
         assert_eq!(reg.metric_count(), 0);
-        // Compaction rebuilds the interner from live series (none left).
-        assert_eq!(reg.interner_len(), 0);
+        // Compaction rebuilds the interner from live series (none left) plus
+        // the denied label keys the cardinality policy keeps interned.
+        assert_eq!(
+            reg.interner_len(),
+            reg.cardinality_limits().denied_label_keys().len()
+        );
+    }
+
+    fn series_of(reg: &MetricsRegistry, name: &str) -> Vec<Vec<(String, String)>> {
+        reg.snapshot_counters()
+            .into_iter()
+            .filter(|(key, _)| reg.interner().resolve(key.name) == name)
+            .map(|(key, _)| {
+                key.labels
+                    .resolve(reg.interner())
+                    .into_iter()
+                    .map(|(k, v)| (k.to_owned(), v.to_owned()))
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn overflow_count(reg: &MetricsRegistry, metric: &str) -> u64 {
+        let labels = reg.interner().single("metric", metric);
+        reg.counter_labeled(NEBULA_METRICS_SERIES_OVERFLOW_TOTAL, &labels)
+            .unwrap()
+            .get()
+    }
+
+    #[test]
+    fn series_cap_folds_new_label_sets_into_overflow_series() {
+        let reg = MetricsRegistry::with_cardinality_limits(
+            CardinalityLimits::default().with_max_series_per_metric(2),
+        );
+        let tenant = |t: &str| reg.interner().label_set(&[("tenant", t), ("status", "ok")]);
+
+        reg.counter_labeled("requests_total", &tenant("a"))
+            .unwrap()
+            .inc();
+        reg.counter_labeled("requests_total", &tenant("b"))
+            .unwrap()
+            .inc();
+        for i in 0..100 {
+            reg.counter_labeled("requests_total", &tenant(&format!("flood-{i}")))
+                .unwrap()
+                .inc();
+        }
+
+        let series = series_of(&reg, "requests_total");
+        assert_eq!(
+            series.len(),
+            3,
+            "two admitted series plus one overflow: {series:?}"
+        );
+        let overflow = reg.interner().label_set(&[
+            ("tenant", OVERFLOW_LABEL_VALUE),
+            ("status", OVERFLOW_LABEL_VALUE),
+        ]);
+        assert_eq!(
+            reg.counter_labeled("requests_total", &overflow)
+                .unwrap()
+                .get(),
+            100,
+            "every folded observation is still counted"
+        );
+        assert_eq!(overflow_count(&reg, "requests_total"), 100);
+
+        // Admitted series keep resolving to themselves.
+        let a = reg.counter_labeled("requests_total", &tenant("a")).unwrap();
+        assert_eq!(a.get(), 1);
+        assert_eq!(overflow_count(&reg, "requests_total"), 100);
+    }
+
+    #[test]
+    fn series_cap_is_per_metric_and_skips_unlabeled_series() {
+        let reg = MetricsRegistry::with_cardinality_limits(
+            CardinalityLimits::default().with_max_series_per_metric(1),
+        );
+        reg.counter("a_total").unwrap().inc();
+        let one = reg.interner().single("kind", "one");
+        let two = reg.interner().single("kind", "two");
+        reg.counter_labeled("a_total", &one).unwrap().inc();
+        reg.counter_labeled("b_total", &one).unwrap().inc();
+        reg.counter_labeled("b_total", &two).unwrap().inc();
+
+        assert_eq!(
+            series_of(&reg, "a_total").len(),
+            2,
+            "unlabeled + one labeled"
+        );
+        assert_eq!(overflow_count(&reg, "a_total"), 0);
+        assert_eq!(overflow_count(&reg, "b_total"), 1);
+    }
+
+    #[test]
+    fn series_cap_holds_under_concurrent_creation() {
+        let reg = MetricsRegistry::with_cardinality_limits(
+            CardinalityLimits::default().with_max_series_per_metric(10),
+        );
+        std::thread::scope(|scope| {
+            for t in 0..8 {
+                let reg = &reg;
+                scope.spawn(move || {
+                    for i in 0..50 {
+                        let labels = reg.interner().single("k", &format!("{t}-{i}"));
+                        reg.counter_labeled("racy_total", &labels).unwrap().inc();
+                    }
+                });
+            }
+        });
+        assert_eq!(series_of(&reg, "racy_total").len(), 11);
+        assert_eq!(overflow_count(&reg, "racy_total"), 400 - 10);
+    }
+
+    #[test]
+    fn retain_recent_frees_series_slots() {
+        let mut reg = MetricsRegistry::with_cardinality_limits(
+            CardinalityLimits::default().with_max_series_per_metric(1),
+        );
+        let old = reg.interner().single("k", "old");
+        reg.counter_labeled("m_total", &old).unwrap().inc();
+        std::thread::sleep(Duration::from_millis(2));
+        reg.retain_recent(Duration::ZERO);
+
+        let new = reg.interner().single("k", "new");
+        reg.counter_labeled("m_total", &new).unwrap().inc();
+        assert_eq!(
+            series_of(&reg, "m_total"),
+            vec![vec![("k".to_owned(), "new".to_owned())]]
+        );
+    }
+
+    #[test]
+    fn default_limits_strip_identifier_label_keys() {
+        let reg = MetricsRegistry::new();
+        let with_id = reg.interner().label_set(&[
+            ("status", "ok"),
+            ("execution_id", "550e8400-e29b-41d4-a716-446655440000"),
+            ("url", "https://example.com/hook?token=abc"),
+        ]);
+        let without_id = reg.interner().single("status", "ok");
+        reg.counter_labeled("runs_total", &with_id).unwrap().inc();
+        assert_eq!(
+            reg.counter_labeled("runs_total", &without_id)
+                .unwrap()
+                .get(),
+            1
+        );
+        assert_eq!(series_of(&reg, "runs_total").len(), 1);
+    }
+
+    #[test]
+    fn empty_denied_keys_keep_every_label() {
+        let reg = MetricsRegistry::with_cardinality_limits(
+            CardinalityLimits::default().with_denied_label_keys(Vec::<String>::new()),
+        );
+        let labels = reg
+            .interner()
+            .label_set(&[("status", "ok"), ("execution_id", "e-1")]);
+        reg.counter_labeled("runs_total", &labels).unwrap().inc();
+        assert_eq!(series_of(&reg, "runs_total")[0].len(), 2);
     }
 
     #[test]

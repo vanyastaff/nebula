@@ -1400,6 +1400,21 @@ pub mod revision_catalog_operation {
 }
 
 // ---------------------------------------------------------------------------
+// Metrics registry (self-observation)
+// ---------------------------------------------------------------------------
+
+/// Counter: lookups of a new label set that the registry folded into the
+/// metric's overflow series because the metric already had its maximum number
+/// of label sets.
+///
+/// Labeled by `metric` — the name of the metric that hit its series cap, so
+/// cardinality is bounded by the number of metric names. A non-zero rate means
+/// some label carries unbounded values (an id, a URL). The folded observations
+/// are still recorded, on the overflow series whose label values are all
+/// [`crate::OVERFLOW_LABEL_VALUE`].
+pub const NEBULA_METRICS_SERIES_OVERFLOW_TOTAL: &str = "nebula_metrics_series_overflow_total";
+
+// ---------------------------------------------------------------------------
 // Cache (memory crate)
 // ---------------------------------------------------------------------------
 

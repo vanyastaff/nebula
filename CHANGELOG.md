@@ -33,6 +33,18 @@ changes are expected between minor releases — call them out here.
 
 ### Fixed
 
+- **Metric label sets no longer grow without bound.** Every distinct label set
+  used to create a new series that lived until `retain_recent`, and nothing
+  stopped an id or URL from becoming a label. `MetricsRegistry` now enforces
+  `CardinalityLimits` on series creation: it strips identifier and URL keys
+  (`HIGH_CARDINALITY_LABEL_KEYS`, such as `execution_id` and `url`) and caps
+  each metric at 1 000 label sets. Past the cap, new label sets fold into one
+  overflow series whose label values are all `__overflow__`, so the
+  observations are still recorded; each folded label set increments
+  `nebula_metrics_series_overflow_total{metric}` and the first one logs a
+  warning. `MetricsRegistry::with_cardinality_limits` changes the cap or the
+  denied keys. No in-tree metric uses a denied key or comes near the cap.
+
 - **`#[credential]` synthesizes a refresh strategy the scheme family allows.**
   Without a hand-written `fn policy`, a credential with `fn refresh` always got
   `RefreshStrategy::RefreshToken`, so one whose `AuthScheme::Family` declares

@@ -26,6 +26,8 @@
 //!   [`nebula_eventbus::EventBusStats`] snapshot into the four
 //!   `NEBULA_EVENTBUS_*` gauges
 //! - [`snapshot`] — Prometheus text-format export
+//! - [`CardinalityLimits`] — per-metric series cap and denied label keys the
+//!   registry enforces by default
 //! - [`LabelAllowlist`] — strips high-cardinality label keys
 //! - [`MetricsError`], [`MetricsResult`] — typed error and result alias
 //! - [`prelude`] — convenience re-exports
@@ -53,7 +55,10 @@ pub mod prelude;
 pub use counter::Counter;
 pub use error::{MetricKind, MetricsError, MetricsResult};
 pub use eventbus::record_eventbus_stats;
-pub use filter::LabelAllowlist;
+pub use filter::{
+    CardinalityLimits, DEFAULT_MAX_SERIES_PER_METRIC, HIGH_CARDINALITY_LABEL_KEYS, LabelAllowlist,
+    OVERFLOW_LABEL_VALUE,
+};
 pub use gauge::Gauge;
 pub use histogram::{Histogram, HistogramSnapshot};
 pub use labels::{LabelInterner, LabelKey, LabelSet, LabelValue, MetricKey};
