@@ -149,6 +149,10 @@ fn build_sqlite_execution_stores(
     };
     use nebula_storage::sqlite::{SqliteIdempotencyGuard, SqliteOperationLedger};
     let pool = deployment.pool().clone();
+    // Reads outside a write transaction: the read-only pool of a WAL file, or
+    // the writer itself. Only execution reads and the journal use it so far;
+    // every other store reads through the writer.
+    let reads = deployment.read_pool().clone();
     let node_results: Arc<dyn nebula_storage_port::store::NodeResultStore> =
         Arc::new(SqliteNodeResultStore::new(pool.clone()));
     let workflow_store: Arc<dyn nebula_storage_port::store::WorkflowStore> =
@@ -156,9 +160,9 @@ fn build_sqlite_execution_stores(
     let workflow_version_store: Arc<dyn nebula_storage_port::store::WorkflowVersionStore> =
         Arc::new(SqliteWorkflowVersionStore::new(pool.clone()));
     let execution_store: Arc<dyn nebula_storage_port::store::ExecutionStore> =
-        Arc::new(SqliteExecutionStore::new(pool.clone()));
+        Arc::new(SqliteExecutionStore::new(pool.clone()).with_read_pool(reads.clone()));
     let journal_reader: Arc<dyn nebula_storage_port::store::ExecutionJournalReader> =
-        Arc::new(SqliteJournalReader::new(pool.clone()));
+        Arc::new(SqliteJournalReader::new(reads));
     let resume_token_store: Arc<dyn nebula_storage_port::store::ResumeTokenStore> =
         Arc::new(SqliteResumeTokenStore::new(pool.clone()));
     let control_queue: Arc<dyn nebula_storage_port::store::ControlQueue> =

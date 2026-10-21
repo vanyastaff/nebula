@@ -19,7 +19,6 @@ use nebula_core::NodeKey;
 use nebula_core::id::ExecutionId;
 use nebula_execution::ExecutionStatus;
 use nebula_execution::context::ExecutionBudget;
-use nebula_execution::output::ExecutionOutput;
 use nebula_execution::state::{AttemptOutcome, ExecutionState, WaitSignal, WaitWake};
 use nebula_storage_port::Scope;
 use nebula_storage_port::dto::{ResumeTokenRow, ResumeTokenWaitKind};
@@ -552,16 +551,13 @@ impl WorkflowEngine {
             false
         };
 
-        let success_payload = ctx
-            .outputs
-            .get(&node_key)
-            .map_or_else(|| serde_json::Value::Null, |output| output.value().clone());
+        // The attempt keeps only the output size: the checkpoint evidence
+        // committed below is the one durable copy of this node's result, so
+        // an inline attempt copy would ride in every later snapshot write a
+        // second time.
         let attempt = ctx.exec_state.record_node_attempt(
             node_key.clone(),
-            AttemptOutcome::Success {
-                output: ExecutionOutput::inline(success_payload),
-                output_bytes,
-            },
+            AttemptOutcome::CheckpointedSuccess { output_bytes },
         )?;
 
         // Persist node output + execution state, then record the

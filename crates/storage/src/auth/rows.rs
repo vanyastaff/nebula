@@ -253,7 +253,9 @@ pub struct OAuthStateRow {
     /// Runtime-emitted provider key: currently `'google'` or `'github'`.
     /// Persisted text does not authorize custom endpoint profiles.
     pub provider: String,
-    /// PKCE `code_verifier` to be sent on token exchange.
+    /// PKCE `code_verifier` to be sent on token exchange. Plaintext only in
+    /// memory: the SQL repositories store it as an identity-secret envelope
+    /// bound to `provider` and `state`.
     pub code_verifier: String,
     /// Optional `redirect_uri` requested at authorize time.
     pub redirect_uri: Option<String>,

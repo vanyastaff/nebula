@@ -11,6 +11,16 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **The OAuth PKCE verifier is encrypted at rest.** `oauth_states` held each
+  pending sign-in's `code_verifier` in plaintext, so anyone who could read the
+  table held the PKCE half of every in-flight authorization-code exchange.
+  Migration 0015 replaces the column
+  with `code_verifier_envelope`, sealed by the identity-secret codec (the
+  TOTP-seed key) with AAD binding the provider and state. The migration drops
+  the short-lived pending states, so sign-ins in flight during the upgrade must
+  restart. `SqliteOAuthStateRepo::new` and `PgOAuthStateRepo::new` now take the
+  `IdentitySecretCodec`; `AuthPersistence` passes it.
+
 - **Leftover job-dispatch routing and leased resume are removed.** They had
   no caller once the job-dispatch channel was gone. `nebula-engine` drops the
   `daemon::routing` module with `RoutingResolver`, `DefinitionRoutingResolver`,
@@ -30,6 +40,17 @@ changes are expected between minor releases — call them out here.
   `nebula_orchestrator_*` metric names are removed. Migration 0014
   drops the `job_dispatch_queue` table; the persisted observation vocabulary
   keeps decoding historical job-dispatch sources.
+
+- **Execution snapshots hold each node output once.** A successful node
+  attempt no longer keeps an inline copy of the output that the node's
+  checkpoint evidence already records. Every node commit rewrites the whole
+  execution state, so this roughly halves what each commit writes and a run
+  now reaches the 16 MiB durable checkpoint ceiling at about twice the output
+  volume. `nebula-execution` adds `AttemptOutcome::CheckpointedSuccess` and
+  `NodeAttempt::complete_checkpointed_success`; `NodeAttempt::is_success` now
+  means "finished without a failure record". The execution detail API still
+  returns the attempt's output, read from the checkpoint evidence. Snapshots
+  written earlier keep their copies and still resume.
 
 ### Added
 
@@ -142,6 +163,16 @@ changes are expected between minor releases — call them out here.
   stack (`tracing-subscriber`, `tokio`) into every expression consumer. It now
   calls `tracing` directly; its events are unchanged. No workspace crate
   depends on `nebula-log` any more.
+
+- **SQLite execution reads no longer wait for writes.** A file-backed SQLite
+  deployment in WAL mode now opens four read-only connections beside its one
+  writer (`sqlite::DeploymentPool::read_pool`). The server serves execution
+  reads (`get`, cancel checks, the due-timer scan, history and counts) and the
+  execution journal from them, so they no longer queue behind writes on the
+  single connection. Every write, and every other store's reads, stay on the
+  writer; in-memory databases keep one connection. `SqliteExecutionStore`
+  gains `with_read_pool`, and `DeploymentPool` gains `close`, which closes both
+  pools. The storage README now describes the SQLite deployment class.
 
 ## [0.33.0] - 2026-10-07
 

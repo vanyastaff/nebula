@@ -2,31 +2,41 @@
 //!
 //! Acquire the writer before counting or inserting, without SQLite busy waits.
 //! The deployment pool restores connection policy even if admission is cancelled.
+//! The PKCE verifier is stored only as an identity-secret envelope bound to the
+//! row's provider and state.
+
+use std::sync::Arc;
 
 use super::{NOW, instant, optional_instant};
 use crate::sqlite::DeploymentPool;
 use crate::{
     StorageError,
-    auth::{OAUTH_STATE_CAPACITY, OAuthStateAdmission, OAuthStateRepo, OAuthStateRow},
+    auth::{
+        OAUTH_STATE_CAPACITY, OAuthStateAdmission, OAuthStateRepo, OAuthStateRow,
+        identity_secret::IdentitySecretCodec,
+    },
     sql_error::{storage_error, storage_error_for},
 };
 use sqlx::{Connection, Row, SqlitePool, sqlite::SqliteRow};
 
 const COLUMNS: &str =
-    "state, provider, code_verifier, redirect_uri, created_at, expires_at, consumed_at";
+    "state, provider, code_verifier_envelope, redirect_uri, created_at, expires_at, consumed_at";
 
 /// SQLite provider-qualified state admission and single-use consumption.
 #[derive(Clone)]
 pub struct SqliteOAuthStateRepo {
     pool: SqlitePool,
+    identity_secrets: Arc<IdentitySecretCodec>,
 }
 
 impl SqliteOAuthStateRepo {
-    /// Bind to a pool with cancellation-safe release policy restoration.
+    /// Bind to a pool with cancellation-safe release policy restoration, and
+    /// to the codec that seals each PKCE verifier.
     #[must_use]
-    pub fn new(deployment: &DeploymentPool) -> Self {
+    pub fn new(deployment: &DeploymentPool, identity_secrets: Arc<IdentitySecretCodec>) -> Self {
         Self {
             pool: deployment.pool().clone(),
+            identity_secrets,
         }
     }
 
@@ -46,20 +56,31 @@ impl SqliteOAuthStateRepo {
         .fetch_optional(&self.pool)
         .await
         .map_err(storage_error)?
-        .map(decode_state)
+        .map(|row| decode_state(&self.identity_secrets, &row))
         .transpose()
     }
 }
 
-fn decode_state(row: SqliteRow) -> Result<OAuthStateRow, StorageError> {
+fn decode_state(
+    codec: &IdentitySecretCodec,
+    row: &SqliteRow,
+) -> Result<OAuthStateRow, StorageError> {
+    let state: String = row.try_get("state").map_err(storage_error)?;
+    let provider: String = row.try_get("provider").map_err(storage_error)?;
+    let envelope: Vec<u8> = row
+        .try_get("code_verifier_envelope")
+        .map_err(storage_error)?;
+    let code_verifier = codec
+        .open_oauth_verifier(&provider, &state, &envelope)
+        .map_err(|_| StorageError::Corrupt("OAuth state verifier envelope does not open".into()))?;
     Ok(OAuthStateRow {
-        state: row.try_get("state").map_err(storage_error)?,
-        provider: row.try_get("provider").map_err(storage_error)?,
-        code_verifier: row.try_get("code_verifier").map_err(storage_error)?,
+        state,
+        provider,
+        code_verifier: code_verifier.as_str().to_owned(),
         redirect_uri: row.try_get("redirect_uri").map_err(storage_error)?,
-        created_at: instant(&row, "created_at")?,
-        expires_at: instant(&row, "expires_at")?,
-        consumed_at: optional_instant(&row, "consumed_at")?,
+        created_at: instant(row, "created_at")?,
+        expires_at: instant(row, "expires_at")?,
+        consumed_at: optional_instant(row, "consumed_at")?,
     })
 }
 
@@ -85,6 +106,10 @@ impl OAuthStateRepo for SqliteOAuthStateRepo {
                 "invalid OAuth state admission".into(),
             ));
         }
+        let envelope = self
+            .identity_secrets
+            .seal_oauth_verifier(&state.provider, &state.state, &state.code_verifier)
+            .map_err(|_| StorageError::Internal("invalid OAuth state admission".into()))?;
         // Waiting for a free pool slot holds no database connection. Allow a
         // release callback to finish without converting every adjacent request
         // into contention; never wait inside SQLite's physical busy handler.
@@ -119,14 +144,14 @@ impl OAuthStateRepo for SqliteOAuthStateRepo {
             .await?;
             let inserted = sqlx::query(sqlx::AssertSqlSafe(format!(
                 "INSERT INTO oauth_states
-            (state, provider, code_verifier, redirect_uri, created_at, expires_at)
+            (state, provider, code_verifier_envelope, redirect_uri, created_at, expires_at)
             SELECT ?1, ?2, ?3, ?4, ?5, ?6
             WHERE (SELECT count(*) FROM (SELECT 1 FROM oauth_states
                 WHERE consumed_at IS NULL AND expires_at > {NOW} LIMIT ?7)) < ?7"
             )))
             .bind(&state.state)
             .bind(&state.provider)
-            .bind(&state.code_verifier)
+            .bind(&envelope)
             .bind(&state.redirect_uri)
             .bind(state.created_at.timestamp_micros())
             .bind(state.expires_at.timestamp_micros())
@@ -184,7 +209,7 @@ impl OAuthStateRepo for SqliteOAuthStateRepo {
         .fetch_optional(&self.pool)
         .await
         .map_err(storage_error)?
-        .map(decode_state)
+        .map(|row| decode_state(&self.identity_secrets, &row))
         .transpose()
     }
 }
