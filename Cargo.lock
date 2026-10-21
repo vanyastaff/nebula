@@ -4558,7 +4558,6 @@ dependencies = [
  "codspeed-criterion-compat",
  "moka",
  "nebula-error",
- "nebula-log",
  "num-cmp",
  "regex",
  "serde",
