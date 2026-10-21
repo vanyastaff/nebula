@@ -134,6 +134,9 @@ pub(crate) enum TransportInitError {
         /// What is missing for that backend to work.
         requirement: &'static str,
     },
+    /// `API_EXECUTION_RETENTION` is malformed or shorter than one hour.
+    #[error("{0}")]
+    ExecutionRetention(#[from] crate::execution_retention::RetentionConfigError),
     /// Explicit tenant bootstrap was incomplete, invalid, or could not be
     /// reconciled with the selected identity and storage authorities.
     #[error("{0}")]
@@ -236,6 +239,9 @@ pub(crate) struct ExecutionStoreBundle {
     /// Runtime status the workers publish for activated resource rows.
     pub(super) resource_status_store: Arc<dyn nebula_storage_port::store::ResourceStatusStore>,
     pub(super) execution_store: Arc<dyn nebula_storage_port::store::ExecutionStore>,
+    /// Deployment-wide deletion of finished executions over the same backend
+    /// as `execution_store`. Held only here, never by a tenant-bound handle.
+    pub(super) execution_retention: Arc<dyn nebula_storage_port::store::ExecutionRetention>,
     /// Node outputs, typed results and workflow inputs, on the same
     /// deployment database as `execution_store` (their rows reference the
     /// execution); the worker projection shares this handle.
@@ -400,6 +406,8 @@ impl ServerRuntime {
         let keyring = resolve_first_party_keyring()
             .map_err(|error| TransportInitError::CredentialServiceInit(error.to_string()))?;
         let email_port = build_email_port(&api_config)?;
+        let execution_retention =
+            crate::execution_retention::retention_from_env().map_err(TransportInitError::from)?;
         let tenant_bootstrap = crate::tenant_bootstrap::TenantBootstrapConfig::from_env()
             .map_err(TransportInitError::from)?;
         crate::tenant_bootstrap::validate_deployment_backend(
@@ -417,6 +425,13 @@ impl ServerRuntime {
             .map_err(ServerRunError::MetricsExporter)?;
         let execution_bundle = build_execution_stores(&api_config, None, &metrics_registry).await?;
         let deployment_database = execution_bundle.deployment_database.clone();
+        // `None` when `API_EXECUTION_RETENTION` is unset or `0`.
+        let retention_sweep = execution_retention.map(|retention| {
+            crate::execution_retention::ExecutionRetentionSweeper::new(
+                Arc::clone(&execution_bundle.execution_retention),
+                retention,
+            )
+        });
         // Close the admitted pool on every subsequent startup or serving result.
         let result = async {
             // Identity must exist before tenant authority can be granted. The
@@ -584,6 +599,14 @@ impl ServerRuntime {
                         sweeper.run(token).await;
                     }))
                 });
+                // Finished executions past `API_EXECUTION_RETENTION`, with
+                // everything recorded beneath them; off unless configured.
+                let retention_sweep = retention_sweep.map(|sweeper| {
+                    let token = shutdown.clone();
+                    tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+                        sweeper.run(token).await;
+                    }))
+                });
                 let webhook_route_sync = route_webhooks
                     .then(|| {
                         nebula_api::transport::webhook::spawn_webhook_route_sync(
@@ -623,6 +646,11 @@ impl ServerRuntime {
                     && let Err(error) = handle.await
                 {
                     tracing::warn!(%error, "auth expiry sweep did not stop cleanly");
+                }
+                if let Some(handle) = retention_sweep
+                    && let Err(error) = handle.await
+                {
+                    tracing::warn!(%error, "execution retention sweep did not stop cleanly");
                 }
                 if let Some(handle) = webhook_route_sync
                     && let Err(error) = handle.await

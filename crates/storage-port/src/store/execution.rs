@@ -159,3 +159,30 @@ pub trait ExecutionStore: Send + Sync + std::fmt::Debug {
     /// Count executions in `scope`, optionally filtered by workflow.
     async fn count(&self, scope: &Scope, workflow_id: Option<&str>) -> Result<u64, StorageError>;
 }
+
+/// Deployment-wide retention of finished executions.
+///
+/// Deliberately separate from [`ExecutionStore`]: the sweep spans every
+/// tenant, takes no [`Scope`], and must never be reachable through a
+/// tenant-bound store. Only the composition root holds it.
+#[async_trait::async_trait]
+pub trait ExecutionRetention: Send + Sync + std::fmt::Debug {
+    /// Delete up to `limit` terminal executions (`completed`, `failed`,
+    /// `cancelled`, `timed_out`) whose `finished_at` is more than `retention`
+    /// before the backend's clock, oldest first; returns the count deleted.
+    ///
+    /// Everything recorded beneath a deleted execution goes with it: journal,
+    /// control-queue rows, node results, checkpoints, resume tokens, start
+    /// reservations, operation ledger and its revision reference. An
+    /// execution that is not terminal, has no `finished_at`, or still holds a
+    /// revision in an unexpired rollback window is never deleted. Each call
+    /// is one bounded unit; the caller repeats it while it returns `limit`.
+    ///
+    /// # Errors
+    /// Returns [`StorageError`] on a backend failure; nothing is deleted then.
+    async fn delete_finished_executions(
+        &self,
+        retention: Duration,
+        limit: u32,
+    ) -> Result<u64, StorageError>;
+}
