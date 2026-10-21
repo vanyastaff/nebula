@@ -229,6 +229,9 @@ pub use lifecycle::{
     CredentialLifecycleState, CredentialPolicy, Decision, LeaseRef, RefreshStrategy,
     RefreshStrategyKind, RevokeStrategy, SchemeId,
 };
+// `#[credential]` expansion support (synthesized `fn policy`); not an authoring surface.
+#[doc(hidden)]
+pub use lifecycle::synthesized_refresh_strategy;
 // Audit contract — trait + value types (decorator AuditLayer stays in nebula_storage::credential)
 pub use audit::{AuditEvent, AuditOperation, AuditResult, AuditSink};
 pub use nebula_metadata::{DeprecationNotice, Icon, MaturityLevel};

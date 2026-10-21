@@ -1,5 +1,8 @@
 //! Environment configuration for the standalone worker process.
 
+use std::ops::RangeInclusive;
+use std::time::Duration;
+
 use nebula_core::ArtifactSetDigest;
 
 /// Hex-encode a processor-id byte slice for structured log fields.
@@ -19,6 +22,40 @@ pub const DEFAULT_DB_MAX_CONNECTIONS: u32 = 8;
 
 /// Largest accepted `NEBULA_WORKER_DB_MAX_CONNECTIONS`.
 pub const MAX_DB_MAX_CONNECTIONS: u32 = 1000;
+
+/// Accepted `NEBULA_WORKER_CONTROL_POLL_INTERVAL_MS`, in milliseconds.
+pub const CONTROL_POLL_INTERVAL_MS: RangeInclusive<u32> = 1..=60_000;
+
+/// Largest accepted `NEBULA_WORKER_CONTROL_IDLE_POLL_MAX_MS`, in milliseconds.
+pub const MAX_CONTROL_IDLE_POLL_MAX_MS: u32 = 300_000;
+
+/// Accepted `NEBULA_WORKER_CONTROL_BATCH_SIZE`.
+pub const CONTROL_BATCH_SIZE: RangeInclusive<u32> = 1..=1000;
+
+/// How the worker's control consumer polls the durable control queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ControlPollingConfig {
+    /// Delay after a claim that found work, and the first step of the idle
+    /// backoff (`NEBULA_WORKER_CONTROL_POLL_INTERVAL_MS`).
+    pub poll_interval: Duration,
+    /// Ceiling an idle consumer widens its poll delay to
+    /// (`NEBULA_WORKER_CONTROL_IDLE_POLL_MAX_MS`); `None` keeps the
+    /// consumer's default of ten poll intervals.
+    pub idle_poll_max: Option<Duration>,
+    /// Commands one claim takes, which is also the regular dispatch
+    /// concurrency (`NEBULA_WORKER_CONTROL_BATCH_SIZE`).
+    pub batch_size: u32,
+}
+
+impl Default for ControlPollingConfig {
+    fn default() -> Self {
+        Self {
+            poll_interval: nebula_engine::DEFAULT_POLL_INTERVAL,
+            idle_poll_max: None,
+            batch_size: nebula_engine::DEFAULT_BATCH_SIZE,
+        }
+    }
+}
 
 /// Worker config read from environment variables.
 ///
@@ -55,6 +92,9 @@ pub struct WorkerConfig {
     /// [`MAX_DB_MAX_CONNECTIONS`]. Ignored on the SQLite path.
     pub db_max_connections: u32,
 
+    /// Control-queue polling (`NEBULA_WORKER_CONTROL_*`).
+    pub control_polling: ControlPollingConfig,
+
     /// 16-byte processor identity, hex-encoded (32 hex chars).
     ///
     /// Read from `NEBULA_WORKER_PROCESSOR_ID`. When absent, a fresh random
@@ -81,6 +121,7 @@ impl std::fmt::Debug for WorkerConfig {
             )
             .field("db_path", &self.db_path)
             .field("db_max_connections", &self.db_max_connections)
+            .field("control_polling", &self.control_polling)
             .field("processor_id", &self.processor_id)
             .finish()
     }
@@ -131,6 +172,18 @@ pub enum WorkerConfigError {
         "NEBULA_WORKER_DB_MAX_CONNECTIONS must be an integer from 1 to {MAX_DB_MAX_CONNECTIONS}"
     )]
     DbMaxConnections,
+    /// `NEBULA_WORKER_CONTROL_POLL_INTERVAL_MS` is not an integer in the accepted range.
+    #[error("NEBULA_WORKER_CONTROL_POLL_INTERVAL_MS must be an integer from 1 to 60000")]
+    ControlPollInterval,
+    /// `NEBULA_WORKER_CONTROL_IDLE_POLL_MAX_MS` is not an integer from the
+    /// poll interval to [`MAX_CONTROL_IDLE_POLL_MAX_MS`].
+    #[error(
+        "NEBULA_WORKER_CONTROL_IDLE_POLL_MAX_MS must be an integer from the poll interval to {MAX_CONTROL_IDLE_POLL_MAX_MS}"
+    )]
+    ControlIdlePollMax,
+    /// `NEBULA_WORKER_CONTROL_BATCH_SIZE` is not an integer in the accepted range.
+    #[error("NEBULA_WORKER_CONTROL_BATCH_SIZE must be an integer from 1 to 1000")]
+    ControlBatchSize,
 }
 
 impl WorkerConfig {
@@ -152,6 +205,11 @@ impl WorkerConfig {
 
         let db_max_connections =
             parse_db_max_connections(std::env::var("NEBULA_WORKER_DB_MAX_CONNECTIONS"))?;
+        let control_polling = parse_control_polling(
+            std::env::var("NEBULA_WORKER_CONTROL_POLL_INTERVAL_MS"),
+            std::env::var("NEBULA_WORKER_CONTROL_IDLE_POLL_MAX_MS"),
+            std::env::var("NEBULA_WORKER_CONTROL_BATCH_SIZE"),
+        )?;
 
         let processor_id = match std::env::var("NEBULA_WORKER_PROCESSOR_ID") {
             Ok(raw) => parse_processor_id(&raw)?,
@@ -163,24 +221,65 @@ impl WorkerConfig {
             database_url,
             db_path,
             db_max_connections,
+            control_polling,
             processor_id,
         })
+    }
+}
+
+/// An optional integer setting: `Ok(None)` when unset, `Err(())` when set
+/// but not an integer in `range`.
+fn parse_setting(
+    raw: Result<String, std::env::VarError>,
+    range: RangeInclusive<u32>,
+) -> Result<Option<u32>, ()> {
+    match raw {
+        Ok(value) => value
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|setting| range.contains(setting))
+            .map(Some)
+            .ok_or(()),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(()),
     }
 }
 
 fn parse_db_max_connections(
     raw: Result<String, std::env::VarError>,
 ) -> Result<u32, WorkerConfigError> {
-    match raw {
-        Ok(value) => value
-            .trim()
-            .parse::<u32>()
-            .ok()
-            .filter(|count| (1..=MAX_DB_MAX_CONNECTIONS).contains(count))
-            .ok_or(WorkerConfigError::DbMaxConnections),
-        Err(std::env::VarError::NotPresent) => Ok(DEFAULT_DB_MAX_CONNECTIONS),
-        Err(std::env::VarError::NotUnicode(_)) => Err(WorkerConfigError::DbMaxConnections),
-    }
+    parse_setting(raw, 1..=MAX_DB_MAX_CONNECTIONS)
+        .map(|count| count.unwrap_or(DEFAULT_DB_MAX_CONNECTIONS))
+        .map_err(|()| WorkerConfigError::DbMaxConnections)
+}
+
+fn parse_control_polling(
+    poll_interval_ms: Result<String, std::env::VarError>,
+    idle_poll_max_ms: Result<String, std::env::VarError>,
+    batch_size: Result<String, std::env::VarError>,
+) -> Result<ControlPollingConfig, WorkerConfigError> {
+    let defaults = ControlPollingConfig::default();
+    let poll_interval = parse_setting(poll_interval_ms, CONTROL_POLL_INTERVAL_MS)
+        .map_err(|()| WorkerConfigError::ControlPollInterval)?
+        .map_or(defaults.poll_interval, |ms| {
+            Duration::from_millis(u64::from(ms))
+        });
+    let poll_interval_ms = u32::try_from(poll_interval.as_millis()).unwrap_or(u32::MAX);
+    let idle_poll_max = parse_setting(
+        idle_poll_max_ms,
+        poll_interval_ms.max(1)..=MAX_CONTROL_IDLE_POLL_MAX_MS,
+    )
+    .map_err(|()| WorkerConfigError::ControlIdlePollMax)?
+    .map(|ms| Duration::from_millis(u64::from(ms)));
+    let batch_size = parse_setting(batch_size, CONTROL_BATCH_SIZE)
+        .map_err(|()| WorkerConfigError::ControlBatchSize)?
+        .unwrap_or(defaults.batch_size);
+    Ok(ControlPollingConfig {
+        poll_interval,
+        idle_poll_max,
+        batch_size,
+    })
 }
 
 fn parse_artifact_set_digest(
@@ -281,6 +380,59 @@ mod tests {
                     Err(WorkerConfigError::DbMaxConnections)
                 ),
                 "{invalid:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn control_polling_defaults_and_rejects_out_of_range_values() {
+        use std::env::VarError::NotPresent;
+        let set = |value: &str| Ok(value.to_owned());
+        assert_eq!(
+            parse_control_polling(Err(NotPresent), Err(NotPresent), Err(NotPresent)).unwrap(),
+            ControlPollingConfig::default()
+        );
+        assert_eq!(
+            parse_control_polling(set(" 50 "), set("5000"), set("64")).unwrap(),
+            ControlPollingConfig {
+                poll_interval: Duration::from_millis(50),
+                idle_poll_max: Some(Duration::from_secs(5)),
+                batch_size: 64,
+            }
+        );
+        // The ceiling may equal the poll interval: a fixed tick.
+        assert_eq!(
+            parse_control_polling(set("200"), set("200"), Err(NotPresent))
+                .unwrap()
+                .idle_poll_max,
+            Some(Duration::from_millis(200))
+        );
+        for invalid in ["0", "60001", "-1", "fast", ""] {
+            assert!(
+                matches!(
+                    parse_control_polling(set(invalid), Err(NotPresent), Err(NotPresent)),
+                    Err(WorkerConfigError::ControlPollInterval)
+                ),
+                "poll interval {invalid:?} must be rejected"
+            );
+        }
+        // Below the (default 100 ms) poll interval, past the ceiling, or junk.
+        for invalid in ["99", "300001", "slow", ""] {
+            assert!(
+                matches!(
+                    parse_control_polling(Err(NotPresent), set(invalid), Err(NotPresent)),
+                    Err(WorkerConfigError::ControlIdlePollMax)
+                ),
+                "idle poll ceiling {invalid:?} must be rejected"
+            );
+        }
+        for invalid in ["0", "1001", "many", ""] {
+            assert!(
+                matches!(
+                    parse_control_polling(Err(NotPresent), Err(NotPresent), set(invalid)),
+                    Err(WorkerConfigError::ControlBatchSize)
+                ),
+                "batch size {invalid:?} must be rejected"
             );
         }
     }

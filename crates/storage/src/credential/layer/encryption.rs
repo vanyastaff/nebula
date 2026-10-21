@@ -1,14 +1,29 @@
 //! Encryption layer -- encrypts data before storage, decrypts after retrieval.
 //!
 //! Wraps any [`CredentialPersistence`] implementation and applies AES-256-GCM
-//! encryption to the live [`StoredCredential`] payload. The credential ID is
-//! bound as Additional Authenticated Data (AAD), preventing record-swapping
-//! attacks where encrypted data from one credential is copied to another.
-//! Structural tombstones carry no data and bypass cryptography entirely.
+//! encryption to the live [`StoredCredential`] payload. The owner partition and
+//! the credential ID are bound as Additional Authenticated Data (AAD), so
+//! ciphertext copied to another credential's row, or a row moved to another
+//! owner, fails to decrypt. Structural tombstones carry no data and bypass
+//! cryptography entirely.
 //!
 //! AAD validation is mandatory — data encrypted without AAD (or with a
-//! mismatched credential ID) is rejected with a hard error. There is no
-//! legacy fallback path.
+//! mismatched owner or credential ID) is rejected with a hard error.
+//!
+//! # AAD versions
+//!
+//! The stored envelope records which AAD it was sealed with in an `aad` field
+//! next to the [`EncryptedData`] fields:
+//!
+//! - `2` (written by every material write): a domain tag, the owner partition,
+//!   and the credential ID, each length-prefixed.
+//! - absent (`1`): the credential ID alone, written before owner binding.
+//!   These rows still decrypt and are re-sealed as `2` by the next write that
+//!   installs material. Until then they are bound to their ID only.
+//!
+//! The version is not a downgrade lever: the AEAD tag covers the AAD actually
+//! used, so stripping or changing `aad` on a version-2 row makes it fail to
+//! decrypt.
 //!
 //! # Key source: [`KeyProvider`]
 //!
@@ -42,8 +57,57 @@ use nebula_storage_port::{
     RefreshRetrySnapshot, SecretBytes, StoredCredential, StoredCredentialHead,
     StoredCredentialOperationalHead, StoredLiveCredential,
 };
+use serde::{Deserialize, Serialize};
 
 use super::super::key_provider::{KeyProvider, KeySnapshot};
+
+/// AAD version of envelopes sealed before owner binding: the credential ID alone.
+const AAD_CREDENTIAL_ID: u8 = 1;
+
+/// AAD version that binds the owner partition and the credential ID.
+const AAD_OWNER_AND_ID: u8 = 2;
+
+/// Domain tag that opens version-2 AAD.
+const AAD_DOMAIN: &[u8] = b"nebula.credential.material.v2";
+
+/// The serialized `data` column: an [`EncryptedData`] envelope plus the AAD
+/// version it was sealed with.
+#[derive(Serialize, Deserialize)]
+struct SealedMaterial {
+    /// Absent on envelopes written before owner binding.
+    #[serde(default = "legacy_aad_version")]
+    aad: u8,
+    #[serde(flatten)]
+    envelope: EncryptedData,
+}
+
+const fn legacy_aad_version() -> u8 {
+    AAD_CREDENTIAL_ID
+}
+
+/// The AAD for `version`, or `None` for a version this build does not know.
+fn material_aad(
+    version: u8,
+    owner: &CredentialOwner,
+    credential_id: nebula_core::CredentialId,
+) -> Option<Vec<u8>> {
+    let id = credential_id.to_string();
+    match version {
+        AAD_CREDENTIAL_ID => Some(id.into_bytes()),
+        AAD_OWNER_AND_ID => {
+            let owner = owner.as_str().as_bytes();
+            let mut aad = Vec::with_capacity(AAD_DOMAIN.len() + 16 + owner.len() + id.len());
+            aad.extend_from_slice(AAD_DOMAIN);
+            for field in [owner, id.as_bytes()] {
+                let len = u64::try_from(field.len()).ok()?;
+                aad.extend_from_slice(&len.to_be_bytes());
+                aad.extend_from_slice(field);
+            }
+            Some(aad)
+        },
+        _ => None,
+    }
+}
 
 /// Wraps a store with AES-256-GCM encryption on the `data` field.
 ///
@@ -160,14 +224,18 @@ impl<S> EncryptionLayer<S> {
     }
 
     /// Decrypt a live record's material; a tombstone carries none.
+    ///
+    /// `owner` is the selector's owner the row was read under; a row moved to
+    /// another owner was sealed under a different one and fails to decrypt.
     fn decrypt_stored(
         &self,
+        owner: &CredentialOwner,
         stored: StoredCredential,
     ) -> Result<StoredCredential, CredentialPersistenceError> {
         match stored {
             StoredCredential::Live(record) => {
                 let credential_id = record.credential_id();
-                let plaintext = self.decrypt_data(record.data(), credential_id)?;
+                let plaintext = self.decrypt_data(record.data(), owner, credential_id)?;
                 let refresh_retry_gate = record.refresh_retry_gate().cloned();
                 StoredLiveCredential::new(
                     credential_id,
@@ -208,7 +276,7 @@ impl<S: CredentialPersistence> CredentialPersistence for EncryptionLayer<S> {
         selector: &CredentialSelector,
     ) -> Result<StoredCredential, CredentialPersistenceError> {
         let stored = self.inner.get(selector).await?;
-        self.decrypt_stored(stored)
+        self.decrypt_stored(selector.owner(), stored)
     }
 
     async fn get_with_operation_status(
@@ -217,7 +285,7 @@ impl<S: CredentialPersistence> CredentialPersistence for EncryptionLayer<S> {
     ) -> Result<(StoredCredential, Option<CredentialOperationStatus>), CredentialPersistenceError>
     {
         let (stored, status) = self.inner.get_with_operation_status(selector).await?;
-        Ok((self.decrypt_stored(stored)?, status))
+        Ok((self.decrypt_stored(selector.owner(), stored)?, status))
     }
 
     async fn get_head(
@@ -263,7 +331,7 @@ impl<S: CredentialPersistence> CredentialPersistence for EncryptionLayer<S> {
         selector: &CredentialSelector,
         create: CredentialCreate,
     ) -> Result<CredentialCommit, CredentialPersistenceError> {
-        let encrypted = self.encrypt_data(create.data(), selector.credential_id())?;
+        let encrypted = self.encrypt_data(create.data(), selector)?;
         self.inner
             .create(
                 selector,
@@ -294,7 +362,7 @@ impl<S: CredentialPersistence> CredentialPersistence for EncryptionLayer<S> {
                 material: MaterialUpdate::Replace(material),
             } => CredentialMaterialTransition::advance(MaterialUpdate::Replace(
                 CredentialMaterial::new(
-                    SecretBytes::new(self.encrypt_data(material.data(), selector.credential_id())?),
+                    SecretBytes::new(self.encrypt_data(material.data(), selector)?),
                     material.state_kind().to_owned(),
                     material.state_version(),
                     material.expires_at(),
@@ -363,38 +431,52 @@ impl<S: CredentialPersistence> CredentialPersistence for EncryptionLayer<S> {
 }
 
 impl<S> EncryptionLayer<S> {
-    /// Encrypt `plaintext` with the current key, serializing the envelope to bytes.
+    /// Encrypt `plaintext` with the current key under owner-bound AAD,
+    /// serializing the envelope to bytes.
     fn encrypt_data(
         &self,
         plaintext: &[u8],
-        credential_id: nebula_core::CredentialId,
+        selector: &CredentialSelector,
     ) -> Result<Vec<u8>, CredentialPersistenceError> {
         let current = self.current_snapshot()?;
-        let aad = credential_id.to_string();
-        let encrypted =
-            encrypt_with_key_id(current.key(), current.key_id(), plaintext, aad.as_bytes())
-                .map_err(|_| CredentialPersistenceError::Unavailable)?;
-        serde_json::to_vec(&encrypted).map_err(|_| CredentialPersistenceError::Unavailable)
+        let aad = material_aad(AAD_OWNER_AND_ID, selector.owner(), selector.credential_id())
+            .ok_or(CredentialPersistenceError::Unavailable)?;
+        let envelope = encrypt_with_key_id(current.key(), current.key_id(), plaintext, &aad)
+            .map_err(|_| CredentialPersistenceError::Unavailable)?;
+        serde_json::to_vec(&SealedMaterial {
+            aad: AAD_OWNER_AND_ID,
+            envelope,
+        })
+        .map_err(|_| CredentialPersistenceError::Unavailable)
     }
 
     /// Decrypt `ciphertext` with the current or explicitly configured legacy key.
     ///
-    /// AAD (credential ID) is always enforced — data without AAD or with a
-    /// mismatched ID is rejected.
+    /// AAD is always enforced, at the version the envelope records: data
+    /// without AAD, or sealed for another owner or credential ID, is rejected.
     fn decrypt_data(
         &self,
         ciphertext: &[u8],
+        owner: &CredentialOwner,
         credential_id: nebula_core::CredentialId,
     ) -> Result<zeroize::Zeroizing<Vec<u8>>, CredentialPersistenceError> {
-        let encrypted: EncryptedData = serde_json::from_slice(ciphertext)
+        let sealed: SealedMaterial = serde_json::from_slice(ciphertext)
             .map_err(|_| CredentialPersistenceError::CorruptRecord)?;
+        let aad = material_aad(sealed.aad, owner, credential_id)
+            .ok_or(CredentialPersistenceError::CorruptRecord)?;
+        if sealed.aad == AAD_CREDENTIAL_ID {
+            tracing::debug!(
+                credential.id = %credential_id,
+                "credential material sealed without owner binding; the next material write re-seals it"
+            );
+        }
+        let encrypted = sealed.envelope;
 
         let current = self.current_snapshot()?;
-        let aad = credential_id.to_string();
 
         // Data encrypted with the current key — normal path.
         if encrypted.key_id == current.key_id() {
-            let plaintext = decrypt_with_aad(current.key(), &encrypted, aad.as_bytes())
+            let plaintext = decrypt_with_aad(current.key(), &encrypted, &aad)
                 .map_err(|_| CredentialPersistenceError::CorruptRecord)?;
             return Ok(plaintext);
         }
@@ -402,7 +484,7 @@ impl<S> EncryptionLayer<S> {
         // Data encrypted with an older key is readable during the migration
         // window, but a read must never become a hidden durable write.
         let old_key = self.legacy_key(&encrypted.key_id)?;
-        decrypt_with_aad(&old_key, &encrypted, aad.as_bytes())
+        decrypt_with_aad(&old_key, &encrypted, &aad)
             .map_err(|_| CredentialPersistenceError::CorruptRecord)
     }
 }
@@ -798,6 +880,104 @@ mod tests {
         // Reading cred-2 through the encryption layer should fail because
         // the AAD (credential ID) doesn't match
         let err = store.get(&second).await.unwrap_err();
+        assert_eq!(err, CredentialPersistenceError::CorruptRecord);
+        Ok(())
+    }
+
+    /// A row whose ciphertext lands under another owner, with the same
+    /// credential ID, must not decrypt: the AAD binds the owner partition.
+    #[tokio::test]
+    async fn ciphertext_moved_to_another_owner_fails_to_decrypt()
+    -> Result<(), CredentialPersistenceError> {
+        let id = CredentialId::new();
+        let victim = CredentialSelector::new(crate::credential::test_owner::owner("owner-a"), id);
+        let source = crate::credential::test_owner::sqlite_store().await?;
+        EncryptionLayer::new(source.clone(), default_provider())
+            .create(&victim, make_credential(b"owner-a-secret"))
+            .await?;
+        let raw = into_live(source.get(&victim).await?);
+
+        // Separate database: the primary key is the credential ID alone, so the
+        // same ID can only sit under the other owner in a database of its own.
+        let target = crate::credential::test_owner::sqlite_store().await?;
+        let moved = CredentialSelector::new(crate::credential::test_owner::owner("owner-b"), id);
+        target
+            .create(&moved, make_credential(raw.data().as_ref()))
+            .await?;
+
+        let err = EncryptionLayer::new(target, default_provider())
+            .get(&moved)
+            .await
+            .unwrap_err();
+        assert_eq!(err, CredentialPersistenceError::CorruptRecord);
+        Ok(())
+    }
+
+    /// Envelopes sealed before owner binding carry no `aad` field and bind
+    /// the credential ID alone. They still decrypt, and the next material
+    /// write re-seals them with owner-bound AAD.
+    #[tokio::test]
+    async fn id_only_envelope_decrypts_and_is_resealed_on_material_write()
+    -> Result<(), CredentialPersistenceError> {
+        let inner = crate::credential::test_owner::sqlite_store().await?;
+        let key = EncryptionKey::from_bytes([0x42; 32]);
+        let selector = selector(CredentialId::new());
+        let legacy = encrypt_with_key_id(
+            &key,
+            "default",
+            b"legacy-secret",
+            selector.credential_id().to_string().as_bytes(),
+        )
+        .expect("seal legacy envelope");
+        let created = inner
+            .create(
+                &selector,
+                make_credential(&serde_json::to_vec(&legacy).unwrap()),
+            )
+            .await?;
+
+        let store = EncryptionLayer::new(inner.clone(), default_provider());
+        let fetched = into_live(store.get(&selector).await?);
+        assert_eq!(fetched.data().as_ref(), b"legacy-secret");
+
+        store
+            .replace(&selector, make_replacement(created.version(), b"rotated"))
+            .await?;
+        let raw: serde_json::Value =
+            serde_json::from_slice(into_live(inner.get(&selector).await?).data()).unwrap();
+        assert_eq!(raw["aad"], AAD_OWNER_AND_ID);
+        assert_eq!(
+            into_live(store.get(&selector).await?).data().as_ref(),
+            b"rotated"
+        );
+        Ok(())
+    }
+
+    /// The AEAD tag covers the AAD actually used, so relabelling an
+    /// owner-bound envelope as id-only does not make it decrypt.
+    #[tokio::test]
+    async fn stripping_the_aad_version_does_not_downgrade() -> Result<(), CredentialPersistenceError>
+    {
+        let source = crate::credential::test_owner::sqlite_store().await?;
+        let selector = selector(CredentialId::new());
+        EncryptionLayer::new(source.clone(), default_provider())
+            .create(&selector, make_credential(b"bound"))
+            .await?;
+        let mut raw: serde_json::Value =
+            serde_json::from_slice(into_live(source.get(&selector).await?).data()).unwrap();
+        raw.as_object_mut().unwrap().remove("aad");
+
+        let target = crate::credential::test_owner::sqlite_store().await?;
+        target
+            .create(
+                &selector,
+                make_credential(&serde_json::to_vec(&raw).unwrap()),
+            )
+            .await?;
+        let err = EncryptionLayer::new(target, default_provider())
+            .get(&selector)
+            .await
+            .unwrap_err();
         assert_eq!(err, CredentialPersistenceError::CorruptRecord);
         Ok(())
     }

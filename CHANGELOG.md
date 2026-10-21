@@ -42,7 +42,43 @@ changes are expected between minor releases — call them out here.
   returns the attempt's output, read from the checkpoint evidence. Snapshots
   written earlier keep their copies and still resume.
 
+### Added
+
+- **The worker backs off when idle and wakes on enqueue.** An idle control
+  consumer doubles its poll delay after each empty claim, up to a ceiling
+  (default ten poll intervals, so one claim a second instead of ten), and
+  claimed work, a finished dispatch or reclaimed rows reset it. On PostgreSQL
+  every control-queue insert sends `NOTIFY nebula_control_queue` in its
+  transaction and the worker claims as soon as it hears it; the poll stays the
+  source of truth, so a lost notification only costs latency. Without a
+  notification (SQLite, and the server's in-process worker) a command enqueued
+  while the consumer is idle can now wait up to the ceiling. New worker
+  variables `NEBULA_WORKER_CONTROL_POLL_INTERVAL_MS`,
+  `NEBULA_WORKER_CONTROL_IDLE_POLL_MAX_MS` and
+  `NEBULA_WORKER_CONTROL_BATCH_SIZE` set the poll interval, the idle ceiling
+  and the claim batch size, and invalid values fail startup.
+
 ### Fixed
+
+- **Metric label sets no longer grow without bound.** Every distinct label set
+  used to create a new series that lived until `retain_recent`, and nothing
+  stopped an id or URL from becoming a label. `MetricsRegistry` now enforces
+  `CardinalityLimits` on series creation: it strips identifier and URL keys
+  (`HIGH_CARDINALITY_LABEL_KEYS`, such as `execution_id` and `url`) and caps
+  each metric at 1 000 label sets. Past the cap, new label sets fold into one
+  overflow series whose label values are all `__overflow__`, so the
+  observations are still recorded; each folded label set increments
+  `nebula_metrics_series_overflow_total{metric}` and the first one logs a
+  warning. `MetricsRegistry::with_cardinality_limits` changes the cap or the
+  denied keys. No in-tree metric uses a denied key or comes near the cap.
+
+- **`#[credential]` synthesizes a refresh strategy the scheme family allows.**
+  Without a hand-written `fn policy`, a credential with `fn refresh` always got
+  `RefreshStrategy::RefreshToken`, so one whose `AuthScheme::Family` declares
+  only `ReAcquire` or `ReMintLocal` failed every `resolve_with_refresh` with an
+  F3 containment violation. The synthesized policy now takes the family's
+  declared class: `RefreshToken` if offered, else `ReMintLocal`, else a silent
+  `ReAcquire`. State-dependent strategies still need a hand-written `fn policy`.
 
 - **Registered webhooks survive restarts and route on every replica.**
   The server never attached the webhook provider registry or context factory,
@@ -70,6 +106,37 @@ changes are expected between minor releases — call them out here.
   execution that cascade with it; it only creates empty tables. A durable save
   for an execution the database does not hold is `NotFound`, and the bulk loads
   answer in node-id byte order on every backend.
+
+### Security
+
+- **Credential ciphertext is bound to its owner.** The encryption layer used
+  the credential ID alone as AAD, so ciphertext copied into a row with the same
+  ID under another owner decrypted there. New and rewritten material now binds
+  a domain tag, the owner partition and the credential ID (envelope field
+  `aad: 2`). Rows sealed before this change still decrypt with the ID-only AAD
+  and are re-sealed with the owner bound at their next material write.
+
+- **The credential resolver's handle cache is bounded.** Every resolved
+  handle, with its decrypted scheme material, stayed in
+  `CredentialResolver`'s cache for the life of the process, including
+  handles for deleted, revoked or unused credentials. A handle not resolved
+  for 15 minutes is now dropped, the cache holds at most 10,000 handles
+  (least recently used goes first), and delete, revoke, or a resolve that
+  finds the row gone drops that credential's handles at once. A handle
+  evicted while a caller still holds it is no longer updated in place by
+  later refreshes; resolving again returns a current one.
+
+### Changed
+
+- **A cluster rate-limit slot costs one PostgreSQL round trip.**
+  `PgLimitStore::reserve` used a four-step transaction (`BEGIN`, a locking
+  upsert, an `UPDATE`, `COMMIT`) for every rate-limited provider attempt. A
+  reservation on an existing key is now one statement that locks the row,
+  reads the server clock after the lock, runs the same GCRA steps in SQL and
+  writes the result. A key's first reservation and reservations with a
+  `ReservationId` keep the transaction. Decisions are unchanged: the store
+  still passes the `LimitStore` conformance kit, and a new differential test
+  checks the statement against the Rust `step` functions.
 
 ## [0.33.0] - 2026-10-07
 

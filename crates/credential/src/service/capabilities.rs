@@ -816,7 +816,7 @@ impl CredentialService {
             )
             .await;
 
-        match result {
+        let outcome = match result {
             Ok(outcome) => outcome,
             Err(RefreshError::OperationBlocked { operation }) => {
                 Err(CredentialServiceError::OperationBlocked { operation })
@@ -877,6 +877,10 @@ impl CredentialService {
             Err(RefreshError::RetrySuppressed(_)) => Err(CredentialServiceError::Internal(
                 "credential revoke received an invalid refresh-only retry gate signal".to_owned(),
             )),
-        }
+        };
+        // Drop decrypted material cached for this credential whatever the
+        // outcome; a still-live credential is re-read on its next resolve.
+        self.resolver.evict_cached_handles(&selector);
+        outcome
     }
 }

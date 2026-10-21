@@ -100,7 +100,7 @@ pub use binding_resolver::{
 pub use command_service::{CommandReceipt, ExecutionCommandError, ExecutionCommandService, Signal};
 pub use control_consumer::{
     ClaimedControlDispatchOutcome, ControlConsumer, ControlDispatch, ControlDispatchError,
-    DEFAULT_BATCH_SIZE, DEFAULT_POLL_INTERVAL, MAX_CLAIM_ERROR_BACKOFF,
+    DEFAULT_BATCH_SIZE, DEFAULT_IDLE_POLL_FACTOR, DEFAULT_POLL_INTERVAL, MAX_CLAIM_ERROR_BACKOFF,
 };
 pub use control_dispatch::EngineControlDispatch;
 // Credential runtime types (`CredentialResolver`, `ResolveResponse`, …) live in
