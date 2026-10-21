@@ -11,6 +11,17 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **Tenant-bound storage handles refuse worker-global sweeps.** The
+  `nebula-tenancy` decorators passed scope-free methods straight to storage,
+  so a tenant-bound handle could claim, reclaim or clean up every tenant's
+  control commands, list every tenant's due executions with their state, or
+  list every tenant's active webhooks. `ScopedControlQueue::claim_pending*`,
+  `reclaim_stuck` and `cleanup`, `ScopedExecutionStore::list_due_timers` and
+  `ScopedWebhookActivationStore::list_all_active` now return
+  `StorageError::ScopeViolation` without reaching storage. Run the control
+  consumer, timer sweep and webhook bootstrap on the raw ports, as the worker
+  and server composition roots already do.
+
 - **Leftover job-dispatch routing and leased resume are removed.** They had
   no caller once the job-dispatch channel was gone. `nebula-engine` drops the
   `daemon::routing` module with `RoutingResolver`, `DefinitionRoutingResolver`,

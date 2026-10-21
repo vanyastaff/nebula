@@ -18,12 +18,17 @@
 //! 3. Control-queue confused deputy ⇒ a Cancel enqueued by tenant A is
 //!    stamped with A's scope, never B's.
 //!
+//! Worker-global sweeps through a tenant handle are covered too: scope-free
+//! claim, reclaim, cleanup, due-timer and active-webhook listings are refused
+//! with `ScopeViolation` before they reach storage.
+//!
 //! Abuse case 4 (credential scope-layer fail-closed + zeroize + pending
 //! single-use cross-tenant replay) is covered by the credential
 //! scope-layer coverage suite, where the credential layer lives.
 
 use std::assert_matches;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -45,6 +50,7 @@ use nebula_storage_port::dto::{
     ResourceSourceLeaseToken, ResourceSubscriptionId, ResourceSubscriptionState,
     ResourceSubscriptionVersion, SharedResourceId, SharedResourceIdentity, StartReservation,
     StoredContractBundle, TransitionResourceSubscriptionRequest, TriggerRow,
+    WebhookActivationRecord,
 };
 use nebula_storage_port::dto::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
 use nebula_storage_port::store::{
@@ -53,7 +59,7 @@ use nebula_storage_port::store::{
     OperationLedger, OperationLedgerAdjudicator, ReclaimOutcome, ResourceEventFanoutStore,
     ResourceExecutionHandoffStore, ResourceSourceLeaseStore, ResourceStore,
     ResourceSubscriptionStore, SharedResourceStore, StartAcceptanceStore, StartMaterialization,
-    StartMaterializationError, TriggerStore,
+    StartMaterializationError, TriggerStore, WebhookActivationStore,
 };
 use nebula_storage_port::{
     CheckpointSaved, FencingToken, IterationCheckpoint, IterationCheckpointError,
@@ -65,7 +71,7 @@ use nebula_tenancy::{
     ScopedOperationLedger, ScopedOperationLedgerAdjudicator, ScopedResourceEventFanoutStore,
     ScopedResourceExecutionHandoffStore, ScopedResourceSourceLeaseStore, ScopedResourceStore,
     ScopedResourceSubscriptionStore, ScopedSharedResourceStore, ScopedStartAcceptanceStore,
-    ScopedTriggerStore,
+    ScopedTriggerStore, ScopedWebhookActivationStore,
 };
 
 fn scope_a() -> Scope {
@@ -155,6 +161,8 @@ struct MockExecStore {
     rows: Mutex<HashMap<ExecKey, ExecutionRecord>>,
     /// Scopes that admission refusals reached the backend with.
     admission_scopes: Mutex<Vec<Scope>>,
+    /// Calls of the scope-free timer sweep that reached the backend.
+    due_timer_scans: AtomicUsize,
 }
 
 fn exec_key(scope: &Scope, id: &str) -> ExecKey {
@@ -283,7 +291,18 @@ impl ExecutionStore for MockExecStore {
         _after: Option<&nebula_storage_port::dto::DueTimerCursor>,
         _limit: u32,
     ) -> Result<Vec<nebula_storage_port::dto::DueTimer>, StorageError> {
-        Ok(vec![])
+        // Like the real sweep, every tenant's row is due.
+        self.due_timer_scans.fetch_add(1, Ordering::SeqCst);
+        Ok(self
+            .rows
+            .lock()
+            .expect("mock lock")
+            .values()
+            .map(|record| nebula_storage_port::dto::DueTimer {
+                next_wake_at: nebula_storage_port::MicrosInstant::now(),
+                record: record.clone(),
+            })
+            .collect())
     }
 
     async fn list_history(
@@ -308,6 +327,8 @@ struct MockControlQueue {
     enqueued: Mutex<Vec<ControlMsg>>,
     exact_claims: Mutex<Vec<([u8; 16], u32, WorkerFlavorRevisionId)>>,
     acknowledged: Mutex<Vec<Scope>>,
+    /// Scope-free claim and maintenance calls that reached the backend.
+    worker_global_calls: AtomicUsize,
 }
 
 impl std::fmt::Debug for MockControlQueue {
@@ -330,6 +351,7 @@ impl ControlQueue for MockControlQueue {
     ) -> Result<Vec<nebula_storage_port::store::ControlClaim>, StorageError> {
         // The mock records enqueues; it never actually claims, so it mints a
         // placeholder generation. Nothing in this suite acknowledges a claim.
+        self.worker_global_calls.fetch_add(1, Ordering::SeqCst);
         Ok(self
             .enqueued
             .lock()
@@ -353,6 +375,7 @@ impl ControlQueue for MockControlQueue {
         worker_flavor: WorkerFlavorRevisionId,
     ) -> Result<Vec<nebula_storage_port::store::ControlClaim>, StorageError> {
         // This enqueue-only mock has no persisted execution revision references.
+        self.worker_global_calls.fetch_add(1, Ordering::SeqCst);
         self.exact_claims
             .lock()
             .unwrap()
@@ -366,6 +389,7 @@ impl ControlQueue for MockControlQueue {
         _batch_size: u32,
         _worker_flavor: WorkerFlavorRevisionId,
     ) -> Result<Vec<nebula_storage_port::store::ControlClaim>, StorageError> {
+        self.worker_global_calls.fetch_add(1, Ordering::SeqCst);
         Ok(Vec::new())
     }
 
@@ -400,10 +424,12 @@ impl ControlQueue for MockControlQueue {
         _reclaim_after: Duration,
         _max_reclaim_count: u32,
     ) -> Result<ReclaimOutcome, StorageError> {
+        self.worker_global_calls.fetch_add(1, Ordering::SeqCst);
         Ok(ReclaimOutcome::default())
     }
 
     async fn cleanup(&self, _retention: Duration) -> Result<u64, StorageError> {
+        self.worker_global_calls.fetch_add(1, Ordering::SeqCst);
         Ok(0)
     }
 }
@@ -481,21 +507,111 @@ async fn cross_tenant_commit_never_applies() {
 // ── Abuse case 3: control-queue confused deputy ───────────────────────────
 
 #[tokio::test]
-async fn scoped_control_claim_preserves_exact_worker_flavor() {
+async fn tenant_bound_queue_cannot_claim_or_sweep_another_tenants_commands() {
     let mock = Arc::new(MockControlQueue::default());
-    let queue = ScopedControlQueue::new(mock.clone(), scope_a());
+    let tenant_a = ScopedControlQueue::new(mock.clone(), scope_a());
+    let tenant_b = ScopedControlQueue::new(mock.clone(), scope_b());
+    tenant_b
+        .enqueue(&ControlMsg {
+            id: [9u8; 16],
+            execution_id: "exe_b_private".into(),
+            command: ControlCommand::Cancel,
+            scope: scope_b(),
+            w3c_traceparent: None,
+            reclaim_count: 0,
+            resume_target: None,
+        })
+        .await
+        .expect("B enqueues its own command");
+
     let flavor = WorkerFlavorRevisionId::from_bytes([91; 32]);
-    assert!(
-        queue
-            .claim_pending_for_flavor(&[7; 16], 3, flavor)
+    let refused = |result: Result<usize, StorageError>| {
+        assert_matches!(
+            result,
+            Err(StorageError::ScopeViolation {
+                entity: "control_queue"
+            })
+        );
+    };
+    refused(tenant_a.claim_pending(&[7; 16], 16).await.map(|c| c.len()));
+    refused(
+        tenant_a
+            .claim_pending_for_flavor(&[7; 16], 16, flavor)
             .await
-            .unwrap()
-            .is_empty()
+            .map(|c| c.len()),
     );
+    refused(
+        tenant_a
+            .claim_pending_interrupts_for_flavor(&[7; 16], 16, flavor)
+            .await
+            .map(|c| c.len()),
+    );
+    refused(
+        tenant_a
+            .reclaim_stuck(Duration::ZERO, 3)
+            .await
+            .map(|o| o.reclaimed as usize),
+    );
+    refused(tenant_a.cleanup(Duration::ZERO).await.map(|n| n as usize));
+    // The own tenant's handle is refused the same way: these are worker-global.
+    refused(tenant_b.claim_pending(&[7; 16], 16).await.map(|c| c.len()));
+
+    assert_eq!(
+        mock.worker_global_calls.load(Ordering::SeqCst),
+        0,
+        "no scope-free claim or sweep may reach storage through a tenant-bound handle"
+    );
+    assert!(mock.exact_claims.lock().unwrap().is_empty());
+
+    // The raw queue the worker holds still claims, exact flavor included.
+    let claims = mock.claim_pending(&[7; 16], 16).await.expect("raw claim");
+    assert_eq!(claims.len(), 1);
+    assert_eq!(claims[0].msg.scope, scope_b());
+    mock.claim_pending_for_flavor(&[7; 16], 3, flavor)
+        .await
+        .expect("raw flavor claim");
     assert_eq!(
         *mock.exact_claims.lock().unwrap(),
         vec![([7; 16], 3, flavor)]
     );
+}
+
+#[tokio::test]
+async fn tenant_bound_execution_store_cannot_list_another_tenants_due_timers() {
+    let mock = Arc::new(MockExecStore::default());
+    let tenant_a = ScopedExecutionStore::new(mock.clone(), scope_a());
+    let tenant_b = ScopedExecutionStore::new(mock.clone(), scope_b());
+    tenant_b
+        .create(
+            &scope_b(),
+            "exe_b_waiting",
+            "wf_b",
+            serde_json::json!({"secret": 1}),
+        )
+        .await
+        .expect("B creates");
+
+    assert_matches!(
+        tenant_a
+            .list_due_timers(chrono::Utc::now(), None, 100)
+            .await,
+        Err(StorageError::ScopeViolation {
+            entity: "execution"
+        })
+    );
+    assert_eq!(
+        mock.due_timer_scans.load(Ordering::SeqCst),
+        0,
+        "the cross-tenant sweep must not reach storage through a tenant-bound handle"
+    );
+
+    // The raw store the timer scanner holds does return B's row.
+    let due = mock
+        .list_due_timers(chrono::Utc::now(), None, 100)
+        .await
+        .expect("raw sweep");
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].record.scope, scope_b());
 }
 
 #[tokio::test]
@@ -546,6 +662,60 @@ async fn cross_tenant_control_enqueue_is_stamped_with_bound_scope() {
         })
     );
     assert!(mock.acknowledged.lock().expect("mock lock").is_empty());
+}
+
+/// Counts the scope-free listing; every other method is unused here.
+#[derive(Debug, Default)]
+struct ListingWebhookStore {
+    listed: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl WebhookActivationStore for ListingWebhookStore {
+    async fn upsert(
+        &self,
+        _scope: &Scope,
+        _record: WebhookActivationRecord,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    async fn resolve(
+        &self,
+        _scope: &Scope,
+        _slug: &str,
+    ) -> Result<Option<WebhookActivationRecord>, StorageError> {
+        Ok(None)
+    }
+
+    async fn deactivate(&self, _scope: &Scope, _trigger_id: &str) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    async fn resolve_by_token(
+        &self,
+        _token_hash: &[u8; 32],
+    ) -> Result<Option<WebhookActivationRecord>, StorageError> {
+        Ok(None)
+    }
+
+    async fn list_all_active(&self) -> Result<Vec<WebhookActivationRecord>, StorageError> {
+        self.listed.fetch_add(1, Ordering::SeqCst);
+        Ok(Vec::new())
+    }
+}
+
+#[tokio::test]
+async fn tenant_bound_webhook_store_cannot_list_every_tenants_activations() {
+    let mock = Arc::new(ListingWebhookStore::default());
+    let tenant_a = ScopedWebhookActivationStore::new(mock.clone(), scope_a());
+    assert_matches!(
+        tenant_a.list_all_active().await,
+        Err(StorageError::ScopeViolation {
+            entity: "webhook_activation"
+        })
+    );
+    assert_eq!(mock.listed.load(Ordering::SeqCst), 0);
 }
 
 // ── Abuse case 5: ResourceStore / TriggerStore BOLA/IDOR ──────────────────
