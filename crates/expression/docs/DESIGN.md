@@ -96,7 +96,8 @@ Flow: source → compiler → immutable `CompiledProgram` → optional cache →
 property/index chains and builtin dispatch; `Undefined` renders as `null` at the
 boundary. Every template
 part and higher-order body shares one call-local frame. Context limits cannot
-raise engine ceilings (default work 100,000 units; default JSON input 1 MiB).
+raise engine ceilings (default work 100,000 units; default wall-clock budget one
+second, checked by the frame while it charges work; default JSON input 1 MiB).
 Builtin argument/result materialization and allocation-heavy work use that frame.
 Public custom callbacks must return opaque `BuiltinOutput` through the supplied bounded
 builder; standard callbacks remain crate-private and their final values are checked.

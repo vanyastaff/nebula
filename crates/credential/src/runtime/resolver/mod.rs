@@ -4,10 +4,7 @@
 //! credential subsystem lives in one crate. No `nebula-engine` or
 //! `nebula-storage` edge — transport is injected via [`RefreshTransport`].
 
-use std::{
-    any::{Any, TypeId},
-    sync::Arc,
-};
+use std::{sync::Arc, time::Instant};
 
 #[cfg(test)]
 use crate::error::CredentialError;
@@ -85,18 +82,11 @@ fn last_validated_or_created(stored: &StoredLiveCredential) -> chrono::DateTime<
     last_validated_at(stored).unwrap_or_else(|| stored.created_at())
 }
 
-use dashmap::DashMap;
 use nebula_core::auth::{AuthScheme, SchemeFamily};
 use nebula_eventbus::EventBus;
 
-/// Live [`CredentialHandle`] cache keyed by `(credential_id, scheme TypeId)`.
-///
-/// Read-heavy / write-light: `resolve` and `resolve_with_refresh` read on
-/// every call; writes occur only on first resolve (insert) or after a
-/// successful refresh (`replace`). `DashMap`'s per-shard sharding eliminates
-/// the write-lock contention that `Mutex<HashMap>` imposed under concurrent
-/// resolution — a write to one shard does not block reads on others.
-type HandleCache = DashMap<(CredentialSelector, TypeId), Arc<dyn Any + Send + Sync>>;
+mod handle_cache;
+use handle_cache::HandleCache;
 
 enum CoordinatedResolve<S: AuthScheme> {
     Resolved(CredentialHandle<S>),
@@ -129,9 +119,10 @@ pub struct CredentialResolver<S: CredentialPersistence + ?Sized> {
     refresh_coordinator: Arc<RefreshCoordinator>,
     transport: Arc<dyn RefreshTransport>,
     event_bus: Option<Arc<EventBus<CredentialEvent>>>,
-    /// Live [`CredentialHandle`]s keyed by `(credential_id, scheme TypeId)` so
+    /// Live [`CredentialHandle`]s keyed by `(selector, scheme TypeId)` so
     /// refresh can [`CredentialHandle::replace`] in place instead of minting
-    /// disconnected handles on every resolve/refresh cycle.
+    /// disconnected handles on every resolve/refresh cycle. Bounded by idle
+    /// TTL and entry count; see [`handle_cache`].
     handle_cache: Arc<HandleCache>,
     /// When `true`, the service is configured with an external
     /// [`StateSource`](crate::StateSource) whose resolution bridge is not yet wired,
@@ -174,7 +165,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
             refresh_coordinator,
             transport,
             event_bus: None,
-            handle_cache: Arc::new(DashMap::new()),
+            handle_cache: Arc::new(HandleCache::default()),
             external_source_unwired: false,
         }
     }
@@ -197,48 +188,77 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
         self
     }
 
-    fn handle_cache_key<C: Credential>(
-        selector: &CredentialSelector,
-    ) -> (CredentialSelector, TypeId) {
-        (selector.clone(), TypeId::of::<C::Scheme>())
-    }
-
-    fn cached_handle<C: Credential>(
-        &self,
-        selector: &CredentialSelector,
-    ) -> Option<CredentialHandle<C::Scheme>> {
-        let key = Self::handle_cache_key::<C>(selector);
-        self.handle_cache.get(&key).and_then(|entry| {
-            entry
-                .value()
-                .clone()
-                .downcast::<CredentialHandle<C::Scheme>>()
-                .ok()
-                .map(|arc| (*arc).clone())
-        })
-    }
-
-    fn store_handle<C: Credential>(
-        &self,
-        selector: &CredentialSelector,
-        handle: CredentialHandle<C::Scheme>,
-    ) {
-        let key = Self::handle_cache_key::<C>(selector);
-        self.handle_cache.insert(key, Arc::new(handle));
-    }
-
+    /// The cached handle for `selector` updated to `scheme`, or a new one.
+    ///
+    /// `observed_epoch` is [`HandleCache::epoch`] read before the row behind
+    /// `scheme` was loaded or written; a new handle is cached only when no
+    /// selector eviction ran since (see [`handle_cache`]).
     fn materialize_handle<C: Credential>(
         &self,
         selector: &CredentialSelector,
         scheme: C::Scheme,
+        observed_epoch: u64,
     ) -> CredentialHandle<C::Scheme> {
-        if let Some(existing) = self.cached_handle::<C>(selector) {
+        let now = Instant::now();
+        self.handle_cache.sweep_if_due(now);
+        if let Some(existing) = self.handle_cache.get::<C::Scheme>(selector, now) {
             existing.replace(scheme);
             return existing;
         }
         let handle = CredentialHandle::new(scheme, selector.credential_id().to_string());
-        self.store_handle::<C>(selector, handle.clone());
+        self.handle_cache
+            .insert(selector, handle.clone(), now, observed_epoch);
         handle
+    }
+
+    /// Drop every cached handle (and its decrypted material) for `selector`.
+    ///
+    /// Called after delete and revoke, and when a resolve finds the row absent
+    /// or tombstoned. Eviction is always safe: the next resolve re-reads the
+    /// store and mints a fresh handle.
+    pub(crate) fn evict_cached_handles(&self, selector: &CredentialSelector) {
+        self.handle_cache.evict_selector(selector);
+    }
+
+    /// Read the live row and its operation status in one snapshot.
+    ///
+    /// Fail-closed on every load path: a revoked (tombstoned) row must never
+    /// project to a handle, and maps to existence-hiding `NotFound` before any
+    /// kind comparison can leak a `KindMismatch` oracle. This closes the
+    /// tombstone half of the resurrection class for `resolve_scoped` /
+    /// `resolve_with_refresh` / `scheme_factory`; the owner half is enforced
+    /// structurally by the mandatory `CredentialSelector`. An absent or
+    /// tombstoned row also evicts the selector's cached handles, so a deleted
+    /// credential's material does not outlive it in this process.
+    async fn load_live(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<
+        (
+            StoredLiveCredential,
+            Option<nebula_storage_port::store::CredentialOperationStatus>,
+        ),
+        ResolveError,
+    > {
+        let loaded = self
+            .store
+            .get_with_operation_status(selector)
+            .await
+            .map_err(ResolveError::Store)
+            .and_then(|(physical, status)| {
+                reject_tombstoned(&physical)?;
+                let StoredCredential::Live(stored) = physical else {
+                    return Err(ResolveError::Store(CredentialPersistenceError::NotFound));
+                };
+                Ok((stored, status))
+            });
+        if matches!(
+            loaded,
+            Err(ResolveError::Store(CredentialPersistenceError::NotFound))
+        ) {
+            self.evict_cached_handles(selector);
+        }
+        loaded
     }
 
     /// Per-request scheme re-acquisition for long-lived resources (Tech Spec §15.7).
@@ -306,11 +326,12 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
     {
         self.ensure_source_wired()?;
         let credential_id = selector.credential_id();
+        let epoch = self.handle_cache.epoch();
         let (stored, status) = self.load_and_verify::<C>(selector).await?;
         Self::admit_status(selector, &stored, status)?;
         let state: C::State = self.deserialize::<C>(credential_id, &stored)?;
         let scheme = C::project(&state);
-        Ok(self.materialize_handle::<C>(selector, scheme))
+        Ok(self.materialize_handle::<C>(selector, scheme, epoch))
     }
 
     /// Resolve a credential for an action slot through its owner-scoped key.
@@ -341,15 +362,8 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
         // The port applies the complete owner-bound selector before returning a
         // physical record, closing the cross-tenant existence oracle before
         // this code can inspect lifecycle state or kind.
-        let (physical, status) = self
-            .store
-            .get_with_operation_status(selector)
-            .await
-            .map_err(ResolveError::Store)?;
-        reject_tombstoned(&physical)?;
-        let StoredCredential::Live(stored) = physical else {
-            return Err(ResolveError::Store(CredentialPersistenceError::NotFound));
-        };
+        let epoch = self.handle_cache.epoch();
+        let (stored, status) = self.load_live(selector).await?;
         let status = status.ok_or(ResolveError::Store(
             CredentialPersistenceError::CorruptRecord,
         ))?;
@@ -367,7 +381,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
 
         let state: C::State = self.deserialize::<C>(selector.credential_id(), &stored)?;
         let scheme = C::project(&state);
-        Ok(self.materialize_handle::<C>(selector, scheme))
+        Ok(self.materialize_handle::<C>(selector, scheme, epoch))
     }
 
     /// Resolve a credential and refresh it when it enters the early-refresh window.
@@ -398,6 +412,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
             loop {
                 let credential_id = selector.credential_id();
                 let credential_id_text = credential_id.to_string();
+                let epoch = self.handle_cache.epoch();
                 let (stored, status) = self.load_and_verify::<C>(selector).await?;
                 if stored.reauth_required() {
                     Self::admit_status(selector, &stored, status)?;
@@ -449,7 +464,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
                     match self.join_in_flight_refresh(selector, &stored, status).await? {
                         MaterialAdmission::Available => {
                             let scheme = C::project(&state);
-                            return Ok(self.materialize_handle::<C>(selector, scheme));
+                            return Ok(self.materialize_handle::<C>(selector, scheme, epoch));
                         },
                         MaterialAdmission::Superseded
                             if reevaluation >= MAX_COORDINATED_REEVALUATIONS =>
@@ -491,7 +506,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
                     );
                     Self::admit_status(selector, &stored, status)?;
                     let scheme = C::project(&state);
-                    return Ok(self.materialize_handle::<C>(selector, scheme));
+                    return Ok(self.materialize_handle::<C>(selector, scheme, epoch));
                 }
 
                 coordinated = true;
@@ -893,23 +908,8 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
         let credential_id = selector.credential_id();
         // One snapshot: the material and the operation status that admits its
         // use are read together, so nothing can change between the two.
-        let (physical, status) = self
-            .store
-            .get_with_operation_status(selector)
-            .await
-            .map_err(ResolveError::Store)?;
-
-        // Fail-closed on EVERY load path, not just the scoped one: a revoked
-        // (tombstoned) row must never project to a handle. Checked before the
-        // kind comparison so a tombstoned row of the wrong type maps to
-        // existence-hiding `NotFound` instead of leaking a `KindMismatch`
-        // oracle. This closes the tombstone half of the resurrection class for
-        // `resolve` / `resolve_with_refresh` / `scheme_factory`; the owner half
-        // is enforced structurally by the mandatory `CredentialSelector`.
-        reject_tombstoned(&physical)?;
-        let StoredCredential::Live(stored) = physical else {
-            return Err(ResolveError::Store(CredentialPersistenceError::NotFound));
-        };
+        // `load_live` rejects a tombstone before the kind comparison below.
+        let (stored, status) = self.load_live(selector).await?;
         let expected_kind = <C::State as CredentialState>::KIND;
         if stored.state_kind() != expected_kind {
             return Err(ResolveError::KindMismatch {
@@ -1156,12 +1156,13 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
             )
         };
 
+        let epoch = self.handle_cache.epoch();
         match write_refreshed(self.store.as_ref(), selector, &stored, build).await {
             Ok(_) => {
                 self.emit_refreshed(credential_id);
                 let scheme = C::project(&state);
                 RefreshDisposition::state_advanced(Ok(
-                    self.materialize_handle::<C>(selector, scheme)
+                    self.materialize_handle::<C>(selector, scheme, epoch)
                 ))
             },
             Err(error @ CredentialPersistenceError::OutcomeUnknown)

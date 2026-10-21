@@ -1045,6 +1045,35 @@ async fn builder_rejects_a_zero_timer_scan_interval() {
     );
 }
 
+/// A zero control poll interval or claim batch size is rejected at build
+/// time: the first would spin an idle consumer, the second would leave it no
+/// slot for regular commands.
+#[tokio::test]
+async fn builder_rejects_zero_control_polling() {
+    use nebula_worker::WorkerBuildError;
+    for (poll_interval, batch_size) in [(Duration::ZERO, 32), (Duration::from_millis(100), 0)] {
+        let stores = TestStores::new();
+        let (engine, _) = make_engine(&stores).await;
+        let result = WorkerRuntimeBuilder::from_wired_engine(
+            engine,
+            stores.execution_stores(),
+            proc16(0x01),
+        )
+        .with_control_queue(Arc::new(InMemoryControlQueue::new(&stores.execution)))
+        .with_turn_handoff(stores.turn_handoff())
+        .with_turn_recovery(stores.turn_handoff())
+        .with_resource_fanout(stores.resource_fanout(&[TEST_PLUGIN_KEY.parse().unwrap()]))
+        .with_control_poll_interval(poll_interval)
+        .with_control_batch_size(batch_size)
+        .build();
+
+        assert!(
+            matches!(result, Err(WorkerBuildError::ZeroControlPolling)),
+            "{poll_interval:?} / {batch_size} must be rejected at build time; got {result:?}"
+        );
+    }
+}
+
 #[test]
 fn empty_plugins_cannot_construct_a_worker_flavor() {
     let registry = nebula_plugin::PluginRegistry::new();

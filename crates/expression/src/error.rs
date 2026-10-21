@@ -10,10 +10,10 @@
 //! `InvalidDate`, `InvalidJson`, `EvalError`), what was not found
 //! (`VariableNotFound`, `FunctionNotFound`, `PropertyNotFound`, `KeyNotFound`),
 //! what policy forbade (`FunctionNotAllowed`), what a finite budget stopped
-//! (`StepLimitExceeded`, `DepthExceeded`, `ResourceLimitExceeded`,
-//! `BuiltinOutputLimitExceeded`), arithmetic outcomes (`DivisionByZero`,
-//! `NumericOverflow`, `NonFiniteNumber`), and what the crate itself broke
-//! (`Internal`).
+//! (`StepLimitExceeded`, `TimeLimitExceeded`, `DepthExceeded`,
+//! `ResourceLimitExceeded`, `BuiltinOutputLimitExceeded`), arithmetic outcomes
+//! (`DivisionByZero`, `NumericOverflow`, `NonFiniteNumber`), and what the crate
+//! itself broke (`Internal`).
 //!
 //! # Redaction
 //!
@@ -200,6 +200,18 @@ pub enum ExpressionError {
         limit: usize,
         /// Work consumed when the ceiling was crossed.
         actual: usize,
+    },
+
+    /// Time budget exhausted: one top-level evaluation ran longer than its
+    /// wall-clock cap (`max_eval_duration`). The evaluator stops at its next
+    /// clock check, so `elapsed` can exceed `limit` by one operation.
+    #[classify(category = "validation", code = "EXPR:TIME_LIMIT")]
+    #[error("Time budget exhausted: elapsed={elapsed:?} > limit={limit:?}")]
+    TimeLimitExceeded {
+        /// Configured wall-clock ceiling.
+        limit: std::time::Duration,
+        /// Time spent when the ceiling was detected.
+        elapsed: std::time::Duration,
     },
 
     /// Recursion depth exhausted: the per-call AST depth tracker
@@ -395,6 +407,11 @@ impl ExpressionError {
         Self::StepLimitExceeded { limit, actual }
     }
 
+    /// Create a time-limit-exceeded error.
+    pub fn time_limit_exceeded(limit: std::time::Duration, elapsed: std::time::Duration) -> Self {
+        Self::TimeLimitExceeded { limit, elapsed }
+    }
+
     /// Create a recursion-depth-exceeded error.
     pub fn depth_exceeded(limit: usize, actual: usize) -> Self {
         Self::DepthExceeded { limit, actual }
@@ -476,6 +493,10 @@ mod tests {
             ExpressionError::regex_error("x"),
             ExpressionError::index_out_of_bounds(1, 0),
             ExpressionError::step_limit_exceeded(1, 2),
+            ExpressionError::time_limit_exceeded(
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_secs(2),
+            ),
             ExpressionError::depth_exceeded(1, 2),
             ExpressionError::NumericOverflow { operation: "add" },
             ExpressionError::NonFiniteNumber { operation: "add" },

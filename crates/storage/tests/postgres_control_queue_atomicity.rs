@@ -1,8 +1,11 @@
-//! PostgreSQL control-queue claim atomicity regressions.
+//! PostgreSQL control-queue claim atomicity and wake-up regressions.
 
 #![cfg(feature = "postgres")]
 
-use nebula_storage::postgres::{PgControlQueue, PgExecutionStore, init_schema};
+use nebula_storage::postgres::{
+    PgControlQueue, PgControlQueueListener, PgExecutionStore, init_schema,
+};
+use nebula_storage_port::dto::{ControlCommand, ControlMsg};
 use nebula_storage_port::store::{ControlQueue, ExecutionStore};
 use nebula_storage_port::{Scope, StorageError};
 
@@ -80,4 +83,50 @@ async fn decoding_failure_rolls_back_every_claimed_row() {
     .unwrap();
     assert_eq!(status, "Pending");
     assert_eq!(generation, 0);
+}
+
+/// An enqueue wakes a listening consumer once the row is committed.
+#[tokio::test]
+async fn enqueue_wakes_the_control_queue_listener() {
+    let Some(url) = database_url() else {
+        panic!(
+            "enqueue_wakes_the_control_queue_listener: backend unreachable — the case \
+             cannot run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
+    };
+    let pool = postgres_schema::connect_with_private_schema(&url, "control_queue_wakeup")
+        .await
+        .unwrap();
+    init_schema(&pool).await.unwrap();
+    let scope = Scope::new("workspace", "org");
+    pool.seed_execution_parents(&scope, "workflow").await;
+    PgExecutionStore::new(pool.clone())
+        .create(&scope, "execution", "workflow", serde_json::json!({}))
+        .await
+        .unwrap();
+
+    let wakeup = std::sync::Arc::new(tokio::sync::Notify::new());
+    let listener = PgControlQueueListener::connect(&pool).await.unwrap();
+    let forwarding = tokio::spawn({
+        let wakeup = wakeup.clone();
+        async move { listener.forward(&wakeup).await }
+    });
+
+    PgControlQueue::new(pool.clone())
+        .enqueue(&ControlMsg {
+            id: [0x61; 16],
+            execution_id: "execution".to_owned(),
+            command: ControlCommand::Cancel,
+            scope: scope.clone(),
+            w3c_traceparent: None,
+            reclaim_count: 0,
+            resume_target: None,
+        })
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), wakeup.notified())
+        .await
+        .expect("the enqueue notification reaches the listener");
+    forwarding.abort();
 }

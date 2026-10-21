@@ -1,11 +1,18 @@
 //! PostgreSQL [`LimitStore`]: cluster-wide GCRA rate limits.
 //!
-//! Every operation is one transaction over one key row: the row is locked
-//! (created if absent) by an upsert that also reads the server clock *after*
-//! the lock is granted, the same [`step`] functions the in-process store
-//! uses decide, and the new state is written back. Time is
-//! `clock_timestamp()` in nanoseconds since the Unix epoch — never a
-//! worker's clock, and never `now()`, which is frozen for the transaction.
+//! Every operation is one atomic transition of one key row. The server clock
+//! is read *after* the row lock is granted. Time is `clock_timestamp()` in
+//! nanoseconds since the Unix epoch — never a worker's clock, and never
+//! `now()`, which is frozen for the transaction.
+//!
+//! A reservation on an existing key, the call every rate-limited provider
+//! attempt makes, is one statement and one round trip ([`RESERVE_SQL`]): it
+//! locks the row, reads the clock, runs [`step::enforce`] and
+//! [`step::reserve_from`] in SQL, and writes the result. Every other
+//! operation, and a reservation that carries a [`ReservationId`] or finds no
+//! row, is a transaction: the row is locked (created if absent) by an upsert
+//! that also reads the clock, the same [`step`] functions the in-process
+//! store uses decide, and the new state is written back.
 //!
 //! A key's row stores the rate it last enforced next to its state, so
 //! callers that disagree on the rate get the stricter one while the key is
@@ -36,6 +43,75 @@ macro_rules! now_ns {
         "(EXTRACT(EPOCH FROM clock_timestamp()) * 1000000000)::BIGINT"
     };
 }
+
+/// One reservation on an existing key in one statement: [`step::enforce`]
+/// then [`step::reserve_from`], transcribed to SQL.
+///
+/// `cur` locks the row; `clk` reads the clock above that lock, once. All
+/// arithmetic runs in `numeric` and saturates at `u64::MAX` exactly where
+/// the Rust steps saturate; values written back clamp to the column types as
+/// [`to_db`] does. The rewritten state and enforced rate are written whether
+/// or not the request is granted, which is what the transactional path does
+/// when the rate changed and a no-op when it did not. No row selected (the
+/// key has no row yet) returns no row.
+///
+/// Parameters: `$1` key, `$2` interval ns, `$3` burst, `$4` permits,
+/// `$5` max wait ns, `$6` not-before ns (`u64` values as decimal text).
+const RESERVE_SQL: &str = concat!(
+    "WITH cur AS MATERIALIZED (",
+    "SELECT tat_ns, seq, emission_ns, burst FROM rate_limits WHERE limit_key = $1 FOR UPDATE",
+    "), clk AS MATERIALIZED (",
+    "SELECT tat_ns, seq, emission_ns, burst, ",
+    now_ns!(),
+    " AS now_ns FROM cur",
+    "), st AS MATERIALIZED (",
+    "SELECT GREATEST(tat_ns, 0)::numeric AS tat, seq, ",
+    "emission_ns::numeric AS se, burst::numeric AS sb, GREATEST(now_ns, 0)::numeric AS now, ",
+    // `Rate::from_interval` refuses a stored rate whose burst window
+    // overflows; it is then forgotten, never loosened into.
+    "(emission_ns > 0 AND burst > 0 ",
+    "AND emission_ns::numeric * (burst - 1) <= 18446744073709551615) AS stored_valid, ",
+    "$2::text::numeric AS re, $3::text::numeric AS rb, $4::text::numeric AS p, ",
+    "$5::text::numeric AS max_wait, $6::text::numeric AS not_before FROM clk",
+    // step::enforce: a busy key enforces the stricter rate.
+    "), rated AS MATERIALIZED (",
+    "SELECT st.*, (stored_valid AND tat > now) AS busy, ",
+    "CASE WHEN stored_valid AND tat > now THEN GREATEST(se, re) ELSE re END AS e, ",
+    "CASE WHEN stored_valid AND tat > now THEN LEAST(sb, rb) ELSE rb END AS b FROM st",
+    // ... and a tightened interval stretches what is booked past `now`.
+    "), rebased AS MATERIALIZED (",
+    "SELECT rated.*, CASE WHEN busy AND e > se ",
+    "THEN LEAST(now + div((tat - now) * e + se - 1, se), 18446744073709551615) ",
+    "ELSE tat END AS etat, ",
+    "LEAST(e * (b - 1), 18446744073709551615) AS tol, ",
+    "GREATEST(now, not_before) AS t FROM rated",
+    // step::reserve_from: the slot as if requested at max(now, not_before).
+    "), slot AS MATERIALIZED (",
+    "SELECT rebased.*, GREATEST(etat, t) AS base FROM rebased",
+    "), placed AS MATERIALIZED (",
+    "SELECT slot.*, CASE WHEN p = 0 THEN t ELSE GREATEST(GREATEST(",
+    "LEAST(base + e * (p - 1), 18446744073709551615) - tol, 0), t) END AS allow_at ",
+    "FROM slot",
+    "), res AS MATERIALIZED (",
+    "SELECT placed.*, allow_at - now AS wait, ",
+    "CASE WHEN p > b THEN 'never' WHEN allow_at - now > max_wait THEN 'later' ",
+    "ELSE 'grant' END AS kind, ",
+    "(p > 0 AND p <= b AND allow_at - now <= max_wait) AS books, ",
+    "LEAST(base + e * p, 18446744073709551615) AS next_tat, ",
+    "CASE WHEN seq = 9223372036854775807 THEN -9223372036854775807 - 1 ",
+    "ELSE seq + 1 END AS next_seq FROM placed",
+    "), upd AS (",
+    "UPDATE rate_limits SET ",
+    "tat_ns = LEAST(CASE WHEN res.books THEN res.next_tat ELSE res.etat END, ",
+    "9223372036854775807)::bigint, ",
+    "seq = CASE WHEN res.books THEN res.next_seq ELSE res.seq END, ",
+    "emission_ns = LEAST(res.e, 9223372036854775807)::bigint, ",
+    "burst = LEAST(res.b, 2147483647)::integer ",
+    "FROM res WHERE rate_limits.limit_key = $1",
+    ") SELECT kind, wait::text AS wait, allow_at::text AS allow_at, ",
+    "(CASE WHEN books THEN next_tat ELSE etat END)::text AS end_tat, ",
+    "CASE WHEN books THEN next_seq ELSE seq END AS end_seq, b::text AS burst FROM res"
+);
 
 /// PostgreSQL implementation of [`LimitStore`], for limits shared by every
 /// worker process.
@@ -155,9 +231,53 @@ impl PgLimitStore {
     }
 }
 
-impl LimitStore for PgLimitStore {
-    #[tracing::instrument(skip_all, fields(storage.role = "rate_limit", storage.operation = "reserve"))]
-    async fn reserve(
+impl PgLimitStore {
+    /// [`RESERVE_SQL`]: one round trip; `None` when the key has no row.
+    async fn reserve_in_one_statement(
+        &self,
+        key: &LimitKey,
+        rate: &Rate,
+        request: ReserveRequest,
+    ) -> Result<Option<Result<Grant, Denied>>, LimitStoreError> {
+        let Some(row) = sqlx::query(RESERVE_SQL)
+            .bind(key.as_str())
+            .bind(nanos(rate.emission_interval()).to_string())
+            .bind(rate.burst().get().to_string())
+            .bind(request.permits.to_string())
+            .bind(nanos(request.max_wait).to_string())
+            .bind(request.not_before.to_string())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(unavailable)?
+        else {
+            return Ok(None);
+        };
+        let kind: String = row.try_get("kind").map_err(unavailable)?;
+        let wait = Duration::from_nanos(decimal_u64(&row, "wait")?);
+        let decision = match kind.as_str() {
+            "grant" => Ok(Grant {
+                wait,
+                permits: request.permits,
+                allow_at: decimal_u64(&row, "allow_at")?,
+                end_tat: decimal_u64(&row, "end_tat")?,
+                seq: seq_from_db(row.try_get("end_seq").map_err(unavailable)?),
+            }),
+            "later" => Err(Denied::Later { retry_after: wait }),
+            "never" => Err(Denied::Never {
+                burst: u32::try_from(decimal_u64(&row, "burst")?).unwrap_or(u32::MAX),
+            }),
+            other => {
+                return Err(LimitStoreError::Unavailable(
+                    format!("unexpected reservation outcome {other:?}").into(),
+                ));
+            },
+        };
+        Ok(Some(decision))
+    }
+
+    /// A reservation as one transaction: creates a missing row and honours
+    /// [`ReservationId`]s.
+    async fn reserve_in_transaction(
         &self,
         key: &LimitKey,
         rate: &Rate,
@@ -223,6 +343,27 @@ impl LimitStore for PgLimitStore {
             .map_err(unavailable)?;
         }
         tx.commit().await.map_err(unavailable)?;
+        Ok(decision)
+    }
+}
+
+impl LimitStore for PgLimitStore {
+    #[tracing::instrument(skip_all, fields(storage.role = "rate_limit", storage.operation = "reserve"))]
+    async fn reserve(
+        &self,
+        key: &LimitKey,
+        rate: &Rate,
+        request: ReserveRequest,
+    ) -> Result<Result<Grant, Denied>, LimitStoreError> {
+        let fast = if request.id.is_none() {
+            self.reserve_in_one_statement(key, rate, request).await?
+        } else {
+            None
+        };
+        let decision = match fast {
+            Some(decision) => decision,
+            None => self.reserve_in_transaction(key, rate, request).await?,
+        };
         self.maybe_sweep().await;
         Ok(decision)
     }
@@ -334,6 +475,13 @@ impl PgLimitStore {
 
 fn unavailable(error: sqlx::Error) -> LimitStoreError {
     LimitStoreError::Unavailable(Box::new(error))
+}
+
+/// A `u64` [`RESERVE_SQL`] returns as decimal text.
+fn decimal_u64(row: &sqlx::postgres::PgRow, column: &str) -> Result<u64, LimitStoreError> {
+    let text: String = row.try_get(column).map_err(unavailable)?;
+    text.parse()
+        .map_err(|error| LimitStoreError::Unavailable(Box::new(error)))
 }
 
 fn nanos(duration: Duration) -> u64 {

@@ -34,6 +34,7 @@ use nebula_metrics::{
 use nebula_storage_port::Scope;
 use nebula_storage_port::dto::{ControlCommand, ResumeTarget};
 use nebula_storage_port::store::{ControlClaimToken, ControlQueue};
+use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
@@ -53,13 +54,21 @@ pub const DEFAULT_BATCH_SIZE: u32 = 32;
 /// dispatches only signal or terminalize, so a handful of slots is enough.
 const INTERRUPT_LANE: usize = 8;
 
-/// Default poll interval when the queue is empty.
+/// Default poll interval after a claim that found work.
 ///
 /// Short enough that a cancel feels interactive in the in-memory / SQLite
-/// local path (local control-queue path); the Postgres path may shorten this further
-/// once `LISTEN / NOTIFY` wake-up is wired as an optimisation over the
-/// authoritative polling loop.
+/// local path. An idle consumer widens it (see [`DEFAULT_IDLE_POLL_FACTOR`]);
+/// a wake hint ([`ControlConsumer::with_wakeup`]) claims at once.
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Default idle-backoff ceiling, as a multiple of the poll interval.
+///
+/// Each claim that finds the queue empty doubles the delay before the next
+/// one, up to this many poll intervals; claimed work, a finished dispatch,
+/// reclaimed rows and a wake hint drop it back to the poll interval. With the
+/// default poll interval an idle consumer claims once a second instead of ten
+/// times, and a command enqueued while idle waits at most that second.
+pub const DEFAULT_IDLE_POLL_FACTOR: u32 = 10;
 
 /// How long an in-flight dispatch may keep running after shutdown is
 /// requested.
@@ -412,6 +421,13 @@ pub struct ControlConsumer {
     processor_id: [u8; 16],
     batch_size: u32,
     poll_interval: Duration,
+    /// Ceiling of the idle backoff; `None` is [`DEFAULT_IDLE_POLL_FACTOR`]
+    /// poll intervals.
+    idle_poll_max: Option<Duration>,
+    /// Wake hint that a command was enqueued: claim now instead of at the
+    /// next poll. Polling stays the source of truth; a lost hint only costs
+    /// latency.
+    wakeup: Option<Arc<Notify>>,
     reclaim_after: Duration,
     reclaim_interval: Duration,
     max_reclaim_count: u32,
@@ -447,6 +463,8 @@ impl ControlConsumer {
             processor_id,
             batch_size: DEFAULT_BATCH_SIZE,
             poll_interval: DEFAULT_POLL_INTERVAL,
+            idle_poll_max: None,
+            wakeup: None,
             reclaim_after: DEFAULT_RECLAIM_AFTER,
             reclaim_interval: DEFAULT_RECLAIM_INTERVAL,
             max_reclaim_count: DEFAULT_MAX_RECLAIM_COUNT,
@@ -463,11 +481,34 @@ impl ControlConsumer {
         self
     }
 
-    /// Override the poll interval used when the queue is empty.
-    /// Default: [`DEFAULT_POLL_INTERVAL`].
+    /// Override the poll interval after a claim that found work, which is
+    /// also the first delay of the idle backoff. Default:
+    /// [`DEFAULT_POLL_INTERVAL`].
     #[must_use]
     pub fn with_poll_interval(mut self, poll_interval: Duration) -> Self {
         self.poll_interval = poll_interval;
+        self
+    }
+
+    /// Override the ceiling of the idle backoff: consecutive empty claims
+    /// double the poll delay up to this. A value below the poll interval
+    /// disables the backoff. Default: [`DEFAULT_IDLE_POLL_FACTOR`] poll
+    /// intervals.
+    #[must_use]
+    pub fn with_idle_poll_max(mut self, idle_poll_max: Duration) -> Self {
+        self.idle_poll_max = Some(idle_poll_max);
+        self
+    }
+
+    /// Claim as soon as `wakeup` is notified instead of at the next poll.
+    ///
+    /// A hint only: whoever enqueues a command may notify it (the PostgreSQL
+    /// deployment forwards `LISTEN` notifications), and the poll still finds
+    /// any command whose hint was lost. A hint that arrives during a
+    /// storage-error backoff is ignored.
+    #[must_use]
+    pub fn with_wakeup(mut self, wakeup: Arc<Notify>) -> Self {
+        self.wakeup = Some(wakeup);
         self
     }
 
@@ -555,6 +596,13 @@ impl ControlConsumer {
         self.batch_size as usize
     }
 
+    /// The idle-backoff ceiling, never below the poll interval.
+    fn idle_poll_max(&self) -> Duration {
+        self.idle_poll_max
+            .unwrap_or_else(|| self.poll_interval.saturating_mul(DEFAULT_IDLE_POLL_FACTOR))
+            .max(self.poll_interval)
+    }
+
     /// Run the polling loop on the current task. Exits when `shutdown` is
     /// cancelled. Prefer [`spawn`](Self::spawn) unless integrating into a
     /// custom task structure.
@@ -568,6 +616,8 @@ impl ControlConsumer {
                    processor = %hex_display(&self.processor_id),
                    batch_size = self.batch_size,
                    poll_ms = self.poll_interval.as_millis() as u64,
+                   idle_poll_max_ms = self.idle_poll_max().as_millis() as u64,
+                   wakeup = self.wakeup.is_some(),
                    reclaim_after_ms = self.reclaim_after.as_millis() as u64,
                    reclaim_interval_ms = self.reclaim_interval.as_millis() as u64,
                    max_reclaim_count = self.max_reclaim_count,
@@ -575,6 +625,9 @@ impl ControlConsumer {
                );
 
         let mut consecutive_errors: u32 = 0;
+        // Consecutive claims that found the queue empty; drives the idle
+        // backoff.
+        let mut idle_polls: u32 = 0;
         // Dispatches run here rather than inline, so a long or parked one
         // cannot stall the claim loop behind it.
         let mut inflight: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
@@ -617,21 +670,42 @@ impl ControlConsumer {
                     return;
                 }
                 Some(_) = inflight.join_next() => {
-                    // A dispatch finished; capacity freed. Nothing else to do —
-                    // it acked its own row.
+                    // A dispatch finished and acked its own row. The freed
+                    // slot may have pending work behind it, so an idle
+                    // backoff shrinks back to one poll interval.
+                    if consecutive_errors == 0 {
+                        idle_polls = 0;
+                        claim_deadline = claim_deadline
+                            .min(tokio::time::Instant::now() + self.poll_interval);
+                    }
                 }
                 _ = reclaim_ticker.tick() => {
-                    self.sweep_reclaim().await;
-                    // `claim_deadline` is preserved — reclaim does not
-                    // short-circuit the backoff or the idle poll delay.
+                    // Reclaimed rows are pending work: claim them now unless
+                    // a storage-error backoff is running.
+                    if self.sweep_reclaim().await && consecutive_errors == 0 {
+                        idle_polls = 0;
+                        claim_deadline = tokio::time::Instant::now();
+                    }
                 }
                 _ = retention_ticker.tick(), if self.retention.is_some() => {
                     self.sweep_retention().await;
                 }
+                () = wakeup_hint(self.wakeup.as_deref()), if !at_capacity => {
+                    // A command was enqueued. A storage-error backoff keeps
+                    // its deadline; the poll will find the command.
+                    if consecutive_errors == 0 {
+                        tracing::trace!(
+                            processor = %hex_display(&self.processor_id),
+                            "control-queue wake hint; claiming now"
+                        );
+                        idle_polls = 0;
+                        claim_deadline = tokio::time::Instant::now();
+                    }
+                }
                 () = &mut claim_sleep, if !at_capacity => {
                     let next_delay = self
                         .clone()
-                        .tick(&mut consecutive_errors, &shutdown, &mut inflight)
+                        .tick(&mut consecutive_errors, &mut idle_polls, &shutdown, &mut inflight)
                         .await;
                     claim_deadline = tokio::time::Instant::now()
                         + next_delay.unwrap_or(Duration::ZERO);
@@ -663,8 +737,9 @@ impl ControlConsumer {
 
     /// Run a single reclaim sweep, logging the outcome. Does not propagate
     /// storage errors — a transient failure on one sweep should not abort
-    /// the consumer; the next tick will retry.
-    async fn sweep_reclaim(&self) {
+    /// the consumer; the next tick will retry. Returns whether rows went back
+    /// to `Pending`.
+    async fn sweep_reclaim(&self) -> bool {
         // Normalize the port's `ReclaimOutcome` to `(reclaimed,
         // exhausted)` for the metrics/log path.
         let swept: Result<(u64, u64), String> = self
@@ -725,6 +800,7 @@ impl ControlConsumer {
                         "control-queue reclaim sweep: no stuck rows"
                     );
                 }
+                outcome.reclaimed > 0
             },
             Err(e) => {
                 // No counter emit on the Err arm — a transient storage
@@ -734,13 +810,14 @@ impl ControlConsumer {
                     error = %e,
                     "control-queue reclaim sweep failed; will retry next tick"
                 );
+                false
             },
         }
     }
 
     /// Drain a single batch. Returns the duration the caller should wait
-    /// before the next claim attempt (backoff on error, poll interval on
-    /// empty queue) or `None` if a batch was just processed and the loop
+    /// before the next claim attempt (backoff on error, the idle backoff on
+    /// an empty queue) or `None` if a batch was just processed and the loop
     /// should claim again immediately.
     ///
     /// The outer loop persists this delay as a deadline so that a reclaim
@@ -748,6 +825,7 @@ impl ControlConsumer {
     async fn tick(
         self: Arc<Self>,
         consecutive_errors: &mut u32,
+        idle_polls: &mut u32,
         shutdown: &CancellationToken,
         inflight: &mut tokio::task::JoinSet<()>,
     ) -> Option<Duration> {
@@ -800,8 +878,14 @@ impl ControlConsumer {
         };
 
         if claimed.is_empty() {
-            return Some(self.poll_interval);
+            *idle_polls = idle_polls.saturating_add(1);
+            return Some(idle_poll_delay(
+                self.poll_interval,
+                self.idle_poll_max(),
+                *idle_polls,
+            ));
         }
+        *idle_polls = 0;
 
         for row in claimed {
             let consumer = Arc::clone(&self);
@@ -1046,6 +1130,22 @@ fn slots_to_batch(slots: usize) -> u32 {
     u32::try_from(slots).unwrap_or(u32::MAX)
 }
 
+/// Resolve when the consumer's wake hint is notified; never without one.
+async fn wakeup_hint(wakeup: Option<&Notify>) {
+    match wakeup {
+        Some(wakeup) => wakeup.notified().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Delay before the next claim after `idle_polls` consecutive empty claims:
+/// the poll interval, doubled per further empty claim, capped at `max`.
+fn idle_poll_delay(poll_interval: Duration, max: Duration, idle_polls: u32) -> Duration {
+    // 2^16 poll intervals is past any sensible ceiling; the cap decides.
+    let doublings = idle_polls.saturating_sub(1).min(16);
+    poll_interval.saturating_mul(1 << doublings).min(max)
+}
+
 /// Exponential backoff for repeated `claim_pending` storage errors.
 ///
 /// Starts at `base` (the idle poll interval) and doubles per consecutive
@@ -1091,6 +1191,22 @@ mod tests {
         // Cap kicks in well before any overflow (100ms * 2^29 > 30s cap).
         assert_eq!(claim_error_backoff(base, 15), MAX_CLAIM_ERROR_BACKOFF);
         assert_eq!(claim_error_backoff(base, u32::MAX), MAX_CLAIM_ERROR_BACKOFF);
+    }
+
+    #[test]
+    fn idle_poll_delay_doubles_from_the_poll_interval_up_to_its_ceiling() {
+        let poll = Duration::from_millis(100);
+        let max = Duration::from_secs(1);
+        let delays: Vec<_> = (1..=6)
+            .map(|idle| idle_poll_delay(poll, max, idle))
+            .collect();
+        assert_eq!(
+            delays,
+            [100, 200, 400, 800, 1000, 1000].map(Duration::from_millis)
+        );
+        assert_eq!(idle_poll_delay(poll, max, u32::MAX), max);
+        // A ceiling at the poll interval keeps a fixed tick.
+        assert_eq!(idle_poll_delay(poll, poll, 9), poll);
     }
 
     #[test]

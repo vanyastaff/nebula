@@ -8,6 +8,9 @@
 //! 2. **`MetricsRegistry::retain_recent`** — TTL-based eviction of metric series that have not been
 //!    updated within a time window.
 //!
+//! Behind both, the registry's `CardinalityLimits` caps every metric at 1 000 label sets by default
+//! and folds the excess into an `__overflow__` series.
+//!
 //! Run with:
 //! ```bash
 //! cargo run -p nebula-metrics --example cardinality_guard
