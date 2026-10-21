@@ -19,7 +19,12 @@ pub struct NodeAttempt {
     /// When this attempt completed (if finished).
     #[serde(default)]
     pub completed_at: Option<DateTime<Utc>>,
-    /// Output data if the attempt succeeded.
+    /// Inline copy of a successful attempt's output.
+    ///
+    /// Empty for a success recorded with
+    /// [`NodeAttempt::complete_checkpointed_success`]: its output is held once,
+    /// in the node's checkpoint evidence, rather than a second time here.
+    /// Snapshots written before that change still carry the copy.
     #[serde(default)]
     pub output: Option<ExecutionOutput>,
     /// Failure record if the attempt failed.
@@ -56,6 +61,17 @@ impl NodeAttempt {
         self.output_bytes = output_bytes;
     }
 
+    /// Mark this attempt as successfully completed when its output is held in
+    /// the node's checkpoint evidence, keeping only the byte size here.
+    ///
+    /// Attempts ride inside every persisted `ExecutionState` write, so an
+    /// inline copy would store each output twice in every snapshot.
+    pub fn complete_checkpointed_success(&mut self, output_bytes: u64) {
+        self.completed_at = Some(Utc::now());
+        self.output = None;
+        self.output_bytes = output_bytes;
+    }
+
     /// Mark this attempt as failed.
     pub fn complete_failure(&mut self, error: ErrorEnvelope) {
         self.completed_at = Some(Utc::now());
@@ -68,10 +84,11 @@ impl NodeAttempt {
         self.completed_at.is_some()
     }
 
-    /// Returns `true` if this attempt succeeded.
+    /// Returns `true` if this attempt succeeded: it finished without a failure
+    /// record, whether or not it carries an inline output copy.
     #[must_use]
     pub fn is_success(&self) -> bool {
-        self.output.is_some() && self.error.is_none()
+        self.is_complete() && self.error.is_none()
     }
 
     /// Returns `true` if this attempt failed.
@@ -126,6 +143,21 @@ mod tests {
         assert!(attempt.is_success());
         assert!(!attempt.is_failure());
         assert_eq!(attempt.output_bytes, 8);
+    }
+
+    #[test]
+    fn checkpointed_success_keeps_only_the_output_size() {
+        let mut attempt = NodeAttempt::new(1, test_key());
+        attempt.complete_checkpointed_success(4096);
+        assert!(attempt.is_complete());
+        assert!(attempt.is_success());
+        assert!(!attempt.is_failure());
+        assert!(attempt.output.is_none());
+        assert_eq!(attempt.output_bytes, 4096);
+        let back: NodeAttempt =
+            serde_json::from_str(&serde_json::to_string(&attempt).unwrap()).unwrap();
+        assert!(back.is_success());
+        assert!(back.output.is_none());
     }
 
     #[test]

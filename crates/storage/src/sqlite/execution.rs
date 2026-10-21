@@ -37,6 +37,10 @@ const NOW_MICROS: &str = "CAST((julianday('now') - 2440587.5) * 86400000000.0 AS
 #[derive(Clone, Debug)]
 pub struct SqliteExecutionStore {
     pool: SqlitePool,
+    /// Reads outside a transaction: `get`, `cancel_requested`, the due-timer
+    /// scan, history and `count`. The writer itself unless
+    /// [`Self::with_read_pool`] supplied a read-only pool.
+    reads: SqlitePool,
 }
 
 impl SqliteExecutionStore {
@@ -44,7 +48,20 @@ impl SqliteExecutionStore {
     /// [`super::init_schema`]).
     #[must_use]
     pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+        Self {
+            reads: pool.clone(),
+            pool,
+        }
+    }
+
+    /// Serve single-statement reads from `reads`, a read-only pool over the
+    /// same WAL database ([`super::DeploymentPool::read_pool`]), so they do
+    /// not queue behind writes on the writer connection. Every write and
+    /// every read inside a write transaction stays on the writer.
+    #[must_use]
+    pub fn with_read_pool(mut self, reads: SqlitePool) -> Self {
+        self.reads = reads;
+        self
     }
 }
 
@@ -204,7 +221,7 @@ impl ExecutionStore for SqliteExecutionStore {
             .bind(&scope.org_id)
             .bind(&scope.workspace_id)
             .bind(id)
-            .fetch_optional(&self.pool)
+            .fetch_optional(&self.reads)
             .await
             .map_err(storage_error)?
             .as_ref()
@@ -343,7 +360,7 @@ impl ExecutionStore for SqliteExecutionStore {
         .bind(&scope.org_id)
         .bind(&scope.workspace_id)
         .bind(id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&self.reads)
         .await
         .map_err(storage_error)?;
         Ok(requested.unwrap_or(false))
@@ -368,7 +385,7 @@ impl ExecutionStore for SqliteExecutionStore {
             .bind(after.map(|cursor| cursor.next_wake_at().as_micros()))
             .bind(after.map_or("", DueTimerCursor::id))
             .bind(i64::from(limit))
-            .fetch_all(&self.pool)
+            .fetch_all(&self.reads)
             .await
             .map_err(storage_error)?;
         rows.iter()
@@ -427,7 +444,7 @@ impl ExecutionStore for SqliteExecutionStore {
             .push_bind(i64::from(query.fetch_limit()));
         let rows = sql
             .build()
-            .fetch_all(&self.pool)
+            .fetch_all(&self.reads)
             .await
             .map_err(storage_error)?;
         let summaries = rows
@@ -457,7 +474,7 @@ impl ExecutionStore for SqliteExecutionStore {
         .bind(&scope.org_id)
         .bind(&scope.workspace_id)
         .bind(workflow_id)
-        .fetch_one(&self.pool)
+        .fetch_one(&self.reads)
         .await
         .map_err(storage_error)?;
         decode_u64(n, "count")

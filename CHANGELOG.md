@@ -41,6 +41,17 @@ changes are expected between minor releases — call them out here.
   drops the `job_dispatch_queue` table; the persisted observation vocabulary
   keeps decoding historical job-dispatch sources.
 
+- **Execution snapshots hold each node output once.** A successful node
+  attempt no longer keeps an inline copy of the output that the node's
+  checkpoint evidence already records. Every node commit rewrites the whole
+  execution state, so this roughly halves what each commit writes and a run
+  now reaches the 16 MiB durable checkpoint ceiling at about twice the output
+  volume. `nebula-execution` adds `AttemptOutcome::CheckpointedSuccess` and
+  `NodeAttempt::complete_checkpointed_success`; `NodeAttempt::is_success` now
+  means "finished without a failure record". The execution detail API still
+  returns the attempt's output, read from the checkpoint evidence. Snapshots
+  written earlier keep their copies and still resume.
+
 ### Added
 
 - **The worker backs off when idle and wakes on enqueue.** An idle control
@@ -156,6 +167,16 @@ changes are expected between minor releases — call them out here.
   `ReservationId` keep the transaction. Decisions are unchanged: the store
   still passes the `LimitStore` conformance kit, and a new differential test
   checks the statement against the Rust `step` functions.
+
+- **SQLite execution reads no longer wait for writes.** A file-backed SQLite
+  deployment in WAL mode now opens four read-only connections beside its one
+  writer (`sqlite::DeploymentPool::read_pool`). The server serves execution
+  reads (`get`, cancel checks, the due-timer scan, history and counts) and the
+  execution journal from them, so they no longer queue behind writes on the
+  single connection. Every write, and every other store's reads, stay on the
+  writer; in-memory databases keep one connection. `SqliteExecutionStore`
+  gains `with_read_pool`, and `DeploymentPool` gains `close`, which closes both
+  pools. The storage README now describes the SQLite deployment class.
 
 ## [0.33.0] - 2026-10-07
 

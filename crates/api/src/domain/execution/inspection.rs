@@ -89,6 +89,16 @@ fn node(
         S::Waiting => ExecutionNodeStatus::Waiting,
         _ => return Err(InspectionError::NodeStatus),
     };
+    // A success recorded with only its size holds its output once, in the
+    // node's checkpoint evidence. Report it as the inline value earlier
+    // snapshots copied into the attempt: the recorded primary value, or null.
+    let checkpointed_attempt_output = || ExecutionNodeOutput::Inline {
+        value: match &recorded_output {
+            Some(nebula_action::ActionOutput::Value(value)) => value.clone(),
+            _ => serde_json::Value::Null,
+        },
+    };
+    let latest_attempt = state.attempts.len().checked_sub(1);
     Ok(ExecutionNode {
         status,
         scheduled_at: state.scheduled_at.map(instant),
@@ -98,11 +108,18 @@ fn node(
         attempts: state
             .attempts
             .into_iter()
-            .map(|attempt| ExecutionAttempt {
+            .enumerate()
+            .map(|(index, attempt)| ExecutionAttempt {
                 attempt_number: attempt.attempt_number,
                 recorded_at: instant(attempt.started_at),
                 finished_at: attempt.completed_at.map(instant),
-                output: attempt.output.map(output),
+                output: match attempt.output {
+                    Some(value) => Some(output(value)),
+                    None if attempt.is_success() && Some(index) == latest_attempt => {
+                        Some(checkpointed_attempt_output())
+                    },
+                    None => None,
+                },
                 error: attempt.error.as_ref().map(failure),
                 output_bytes: attempt.output_bytes,
             })
