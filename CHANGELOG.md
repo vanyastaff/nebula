@@ -33,6 +33,12 @@ changes are expected between minor releases — call them out here.
 
 ### Fixed
 
+- **The `simple_action!` docs point to an example that exists.** They named
+  `examples/hello_action.rs`, which was never there. The new
+  `sdk_hello_action` example (`cargo run -p nebula-examples --example
+  sdk_hello_action`) is the first example that uses `nebula-sdk` alone, so
+  building the examples now also compile-checks the integration-author path.
+
 - **`#[credential]` synthesizes a refresh strategy the scheme family allows.**
   Without a hand-written `fn policy`, a credential with `fn refresh` always got
   `RefreshStrategy::RefreshToken`, so one whose `AuthScheme::Family` declares

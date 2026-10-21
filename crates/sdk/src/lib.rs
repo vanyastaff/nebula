@@ -430,7 +430,8 @@ macro_rules! workflow {
 ///
 /// # Examples
 ///
-/// See `examples/hello_action.rs` for a runnable end-to-end demo.
+/// See `examples/examples/sdk_hello_action.rs` for a runnable demo
+/// (`cargo run -p nebula-examples --example sdk_hello_action`).
 ///
 /// ```
 /// use nebula_sdk::{prelude::*, simple_action};
