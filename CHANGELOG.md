@@ -13,7 +13,8 @@ changes are expected between minor releases — call them out here.
 
 - **The OAuth PKCE verifier is encrypted at rest.** `oauth_states` held each
   pending sign-in's `code_verifier` in plaintext, so anyone who could read the
-  table held the PKCE half of every in-flight authorization-code exchange. Migration 0015 replaces the column
+  table held the PKCE half of every in-flight authorization-code exchange.
+  Migration 0015 replaces the column
   with `code_verifier_envelope`, sealed by the identity-secret codec (the
   TOTP-seed key) with AAD binding the provider and state. The migration drops
   the short-lived pending states, so sign-ins in flight during the upgrade must
