@@ -420,10 +420,14 @@ impl CredentialService {
             .get_head(&selector)
             .await
             .map_err(|error| Self::map_store_err_for(id, error))?;
-        self.store
+        let tombstoned = self
+            .store
             .tombstone(&selector, CredentialTombstone::new(existing.version()))
-            .await
-            .map_err(|error| Self::map_store_err_for(id, error))?;
+            .await;
+        // Evict whatever the outcome: an `OutcomeUnknown` may have committed,
+        // and dropping a live credential's handles only costs a re-read.
+        self.resolver.evict_cached_handles(&selector);
+        tombstoned.map_err(|error| Self::map_store_err_for(id, error))?;
         tracing::info!(credential.id = %id, "credential tombstoned");
         Ok(())
     }

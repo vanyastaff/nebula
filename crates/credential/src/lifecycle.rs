@@ -16,14 +16,13 @@
 //! 1.0 ships the capability traits as the governing model, and this cut is deliberate
 //! rather than pending.
 //!
-//! **What an author must still write.** The macro synthesizes
-//! [`RefreshStrategy::RefreshToken`] for a credential with `fn refresh`, and
-//! [`RefreshStrategy::Static`] otherwise, so hand-write `fn policy` in three cases: a
-//! leased (`Dynamic`) credential, where the macro rejects the omission outright; a
-//! credential whose refresh strategy depends on live state, where the synthesized policy
-//! emits a constant strategy; and one whose `AuthScheme::Family` declares a refresh class
-//! other than the synthesized one, where the F3 containment guard in `resolve_with_refresh`
-//! rejects the wrong policy at runtime.
+//! **What an author must still write.** For a credential with `fn refresh` the macro
+//! synthesizes the refresh strategy its `AuthScheme::Family` declares
+//! (`RefreshToken`, else `ReMintLocal`, else a silent `ReAcquire`; see
+//! `synthesized_refresh_strategy`), and [`RefreshStrategy::Static`] otherwise, so
+//! hand-write `fn policy` in two cases: a leased (`Dynamic`) credential, where the macro
+//! rejects the omission outright; and a credential whose refresh strategy depends on live
+//! state, where the synthesized policy emits a constant strategy.
 
 use std::time::Duration;
 
@@ -31,6 +30,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
+use nebula_core::auth::SchemeFamily;
 /// `RefreshStrategy` relocated to `nebula-core::auth` (a pure data enum, so it
 /// can back [`crate::SchemeFamily::refresh_classes`] without an inverted
 /// dependency). Re-exported here so existing `nebula_credential::RefreshStrategy`
@@ -359,13 +359,12 @@ impl CredentialPolicy {
 /// The `#[nebula::credential]` macro (ADR-0088 D1) derives this impl, taking the
 /// [`RefreshStrategy`] and [`RevokeStrategy`] from the capability methods the
 /// author wrote, so the policy data cannot disagree with the compile-gated
-/// capability impls. Hand-write `fn policy` in three cases the synthesized value
-/// cannot cover: a leased (`Dynamic`) credential, where the macro rejects the
-/// omission outright; a credential whose refresh strategy depends on live state,
-/// where the synthesized policy emits a constant strategy; and a credential whose
-/// `AuthScheme::Family` declares a refresh class other than the synthesized
-/// [`RefreshStrategy::RefreshToken`], where the F3 containment guard in
-/// `resolve_with_refresh` rejects the wrong policy at runtime.
+/// capability impls, and the refresh class from the scheme family
+/// (`synthesized_refresh_strategy`), so the synthesized policy stays inside the F3
+/// containment law. Hand-write `fn policy` in two cases the synthesized value cannot
+/// cover: a leased (`Dynamic`) credential, where the macro rejects the omission
+/// outright; and a credential whose refresh strategy depends on live state, where the
+/// synthesized policy emits a constant strategy.
 ///
 /// The policy is *computed*, never persisted, so it can reflect live state (e.g.
 /// an OAuth2 credential reporting [`RefreshStrategy::RefreshToken`] only while it
@@ -375,6 +374,46 @@ pub trait CredentialLifecycle: crate::Credential {
     fn policy(state: &Self::State) -> CredentialPolicy
     where
         Self: Sized;
+}
+
+/// The refresh strategy `#[credential]` synthesizes for a credential with `fn refresh`
+/// and no hand-written `fn policy`, taken from the scheme family `F` it projects.
+///
+/// Picks the first engine-drivable class `F` declares, in the order
+/// [`RefreshStrategy::RefreshToken`], [`RefreshStrategy::ReMintLocal`],
+/// [`RefreshStrategy::ReAcquire`], so the synthesized policy passes the F3
+/// containment guard in `resolve_with_refresh`. `ReMintLocal` is a local,
+/// no-network derivation, so it is picked only when `mode` is
+/// [`RefreshExecutionMode::Local`](crate::RefreshExecutionMode::Local); a
+/// provider-mode credential on a `ReMintLocal`-only family falls through and
+/// stays rejected by the guard. A synthesized re-acquisition is
+/// standalone and silent (`from: None, interactive: false`): the engine drives it
+/// through the credential's own `fn refresh`. A family with no engine-drivable class
+/// gets `RefreshToken`; registration rejects that credential as
+/// `RegisterError::UnsoundFamily` before it can resolve.
+///
+/// Macro expansion support, not an authoring surface: hand-written policies name a
+/// [`RefreshStrategy`] directly.
+#[doc(hidden)]
+#[must_use]
+pub fn synthesized_refresh_strategy<F: SchemeFamily>(
+    mode: crate::RefreshExecutionMode,
+) -> RefreshStrategy {
+    let classes = F::refresh_classes();
+    if classes.contains(&RefreshStrategyKind::RefreshToken) {
+        RefreshStrategy::RefreshToken
+    } else if mode == crate::RefreshExecutionMode::Local
+        && classes.contains(&RefreshStrategyKind::ReMintLocal)
+    {
+        RefreshStrategy::ReMintLocal
+    } else if classes.contains(&RefreshStrategyKind::ReAcquire) {
+        RefreshStrategy::ReAcquire {
+            from: None,
+            interactive: false,
+        }
+    } else {
+        RefreshStrategy::RefreshToken
+    }
 }
 
 #[cfg(test)]
