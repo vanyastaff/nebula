@@ -13,6 +13,11 @@ use nebula_storage_port::{Scope, StorageError};
 /// an inbound `POST /hooks/{slug}` dispatches only within the request's
 /// tenant, never fanning out to a colliding slug in a different tenant
 /// (§6.1 confused-deputy).
+///
+/// [`resolve_by_token`](WebhookActivationStore::resolve_by_token) is keyed
+/// by a secret token hash and returns that one row with its scope.
+/// [`list_all_active`](WebhookActivationStore::list_all_active) lists every
+/// tenant and is refused on a tenant-bound handle.
 #[derive(Clone)]
 pub struct ScopedWebhookActivationStore {
     inner: Arc<dyn WebhookActivationStore>,
@@ -72,7 +77,7 @@ impl WebhookActivationStore for ScopedWebhookActivationStore {
     /// `ScopedWebhookActivationStore::new(store, row.scope)` for any
     /// subsequent tenant-scoped operation, never by filtering the query.
     ///
-    /// Mirrors the `reclaim_stuck` / `list_for_org` precedent on other stores.
+    /// The token hash is the capability: it names one row and never lists.
     async fn resolve_by_token(
         &self,
         token_hash: &[u8; 32],
@@ -80,14 +85,15 @@ impl WebhookActivationStore for ScopedWebhookActivationStore {
         self.inner.resolve_by_token(token_hash).await
     }
 
-    /// SYSTEM-SURFACE — delegates straight to `self.inner`, **ignoring the
-    /// bound scope**.
+    /// Worker-global: refused on a tenant-bound handle.
     ///
-    /// Bootstrap map population requires the full cross-tenant set of active
-    /// rows; filtering by the decorator's bound scope would return only one
-    /// tenant's rows and leave the rest of the routing map dark.  Mirrors the
-    /// `reclaim_stuck` / `list_for_org` precedent on other stores.
+    /// Bootstrap map population reads every tenant's active rows, so it runs
+    /// on the raw store held by the composition root. A tenant-bound handle
+    /// refuses it with [`StorageError::ScopeViolation`] without reaching
+    /// storage, rather than listing other tenants' activations.
     async fn list_all_active(&self) -> Result<Vec<WebhookActivationRecord>, StorageError> {
-        self.inner.list_all_active().await
+        Err(StorageError::ScopeViolation {
+            entity: "webhook_activation",
+        })
     }
 }

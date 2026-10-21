@@ -634,10 +634,8 @@ async fn knife_step3_manually_composed_consumer_dispatches_start() {
         Duration::from_secs(30),
     ));
     let consumer = ControlConsumer::for_flavor(
-        Arc::new(nebula_tenancy::ScopedControlQueue::new(
-            Arc::clone(&state.control_queue),
-            s,
-        )),
+        // Claiming is worker-global: the consumer holds the raw queue.
+        Arc::clone(&state.control_queue),
         dispatch,
         proc16(b"knife-a2"),
         handles.runtime.registry.revision().id(),
