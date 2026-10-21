@@ -7,6 +7,10 @@
 //! column: confirmation must decrypt the exact candidate and re-seal it for
 //! the active purpose.
 //!
+//! The same codec seals the PKCE `code_verifier` of a Plane-A OAuth login
+//! between redirect and callback, bound to its provider and state, so the
+//! verifier is never stored in plaintext.
+//!
 //! The codec also owns the explicit decrypt-only legacy-key seam used during
 //! operator-controlled rotation. Opening a legacy envelope returns a current-
 //! key replacement alongside zeroizing plaintext; the repository persists the
@@ -27,6 +31,9 @@ const MAX_KEY_ID_BYTES: usize = 255;
 const MAX_LEGACY_KEYS: usize = 16;
 const ACTIVE_TOTP_AAD_DOMAIN: &[u8] = b"nebula:plane-a:totp:active:v1\0";
 const CANDIDATE_TOTP_AAD_DOMAIN: &[u8] = b"nebula:plane-a:totp:enrollment-candidate:v1\0";
+const OAUTH_VERIFIER_AAD_DOMAIN: &[u8] = b"nebula:plane-a:oauth-pkce-verifier:v1\0";
+/// RFC 7636 §4.1: a verifier is 43 to 128 unreserved characters.
+const OAUTH_VERIFIER_BYTES: std::ops::RangeInclusive<usize> = 43..=128;
 
 /// Lifecycle authority to which a TOTP-seed ciphertext is bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,6 +249,87 @@ impl IdentitySecretCodec {
         })
     }
 
+    /// Encrypt a PKCE `code_verifier` bound to its OAuth `provider` and
+    /// `state`, for the single-use state row it travels in.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a verifier that is not 43 to 128 RFC 7636 unreserved
+    /// characters, and cryptographic or serialization failures. Error values
+    /// never carry the verifier or envelope bytes.
+    pub fn seal_oauth_verifier(
+        &self,
+        provider: &str,
+        state: &str,
+        verifier: &str,
+    ) -> Result<Vec<u8>, IdentitySecretError> {
+        if !is_pkce_verifier(verifier.as_bytes()) {
+            return Err(IdentitySecretError::InvalidPlaintext);
+        }
+        let aad = oauth_verifier_aad(provider, state);
+        let encrypted = encrypt_with_key_id(
+            &self.current_key,
+            &self.current_key_id,
+            verifier.as_bytes(),
+            &aad,
+        )
+        .map_err(|_| IdentitySecretError::EncryptionFailed)?;
+        serde_json::to_vec(&encrypted).map_err(|_| IdentitySecretError::EncryptionFailed)
+    }
+
+    /// Authenticate and decrypt a PKCE verifier sealed for `provider` and
+    /// `state`.
+    ///
+    /// A state row is consumed once and expires within minutes, so an
+    /// envelope under an explicitly configured legacy key is opened without
+    /// re-sealing it.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for malformed or oversized envelopes, an unknown key id,
+    /// another provider or state, tampering, or a wrong key. No error embeds
+    /// stored bytes, key material, or plaintext.
+    pub fn open_oauth_verifier(
+        &self,
+        provider: &str,
+        state: &str,
+        envelope: &[u8],
+    ) -> Result<Zeroizing<String>, IdentitySecretError> {
+        if envelope.is_empty() || envelope.len() > MAX_ENVELOPE_BYTES {
+            return Err(IdentitySecretError::InvalidEnvelope);
+        }
+        let encrypted: EncryptedData =
+            serde_json::from_slice(envelope).map_err(|_| IdentitySecretError::InvalidEnvelope)?;
+        if !encrypted.is_supported_version()
+            || encrypted.key_id.is_empty()
+            || encrypted.key_id.len() > MAX_KEY_ID_BYTES
+            || !OAUTH_VERIFIER_BYTES.contains(&encrypted.ciphertext.len())
+        {
+            return Err(IdentitySecretError::InvalidEnvelope);
+        }
+        let key = if encrypted.key_id == self.current_key_id {
+            Arc::clone(&self.current_key)
+        } else {
+            self.legacy_keys
+                .get(&encrypted.key_id)
+                .cloned()
+                .ok_or(IdentitySecretError::LegacyKeyUnavailable)?
+        };
+        let aad = oauth_verifier_aad(provider, state);
+        let mut plaintext = decrypt_with_aad(&key, &encrypted, &aad)
+            .map_err(|_| IdentitySecretError::AuthenticationFailed)?;
+        if !is_pkce_verifier(&plaintext) {
+            return Err(IdentitySecretError::InvalidPlaintext);
+        }
+        // The buffer moves into the zeroizing string; ASCII is valid UTF-8.
+        String::from_utf8(std::mem::take(&mut *plaintext))
+            .map(Zeroizing::new)
+            .map_err(|error| {
+                drop(Zeroizing::new(error.into_bytes()));
+                IdentitySecretError::InvalidPlaintext
+            })
+    }
+
     /// Non-secret identifier of the key used for newly sealed envelopes.
     #[must_use]
     pub fn current_key_id(&self) -> &str {
@@ -278,6 +366,28 @@ fn totp_aad(purpose: TotpSecretPurpose, user_id: &[u8]) -> Vec<u8> {
     aad.extend_from_slice(domain);
     aad.extend_from_slice(user_id);
     aad
+}
+
+/// Domain, then the provider and state each behind a big-endian `u32`
+/// length, so no two (provider, state) pairs share an AAD.
+fn oauth_verifier_aad(provider: &str, state: &str) -> Vec<u8> {
+    let mut aad =
+        Vec::with_capacity(OAUTH_VERIFIER_AAD_DOMAIN.len() + 8 + provider.len() + state.len());
+    aad.extend_from_slice(OAUTH_VERIFIER_AAD_DOMAIN);
+    for part in [provider, state] {
+        let length = u32::try_from(part.len()).unwrap_or(u32::MAX);
+        aad.extend_from_slice(&length.to_be_bytes());
+        aad.extend_from_slice(part.as_bytes());
+    }
+    aad
+}
+
+/// RFC 7636 §4.1 `code-verifier`: 43 to 128 of `A-Z a-z 0-9 - . _ ~`.
+fn is_pkce_verifier(bytes: &[u8]) -> bool {
+    OAUTH_VERIFIER_BYTES.contains(&bytes.len())
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~'))
 }
 
 /// Validate the historical/current v1 representation: canonical unpadded

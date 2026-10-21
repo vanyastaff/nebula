@@ -3,7 +3,7 @@
 //! Policies can constrain which builtin functions are callable and carry
 //! compatibility flags such as strict mode.
 
-use std::{collections::HashSet, num::NonZeroUsize, sync::Arc};
+use std::{collections::HashSet, num::NonZeroUsize, sync::Arc, time::Duration};
 
 /// A non-zero ceiling for one builtin output dimension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -158,6 +158,7 @@ pub struct EvaluationPolicy {
     missing_lookup: MissingLookup,
     max_json_parse_length: Option<usize>,
     max_eval_steps: Option<EvaluationStepLimit>,
+    max_eval_duration: Option<Duration>,
     builtin_output_limits: BuiltinOutputLimits,
 }
 
@@ -260,6 +261,21 @@ impl EvaluationPolicy {
         self
     }
 
+    /// Set the wall-clock budget of one top-level evaluation.
+    ///
+    /// The step budget bounds work the evaluator can count, but some
+    /// operations (compiling a distinct regex per loop iteration) cost far more
+    /// time than their steps suggest. The evaluator also checks the clock while
+    /// it charges steps and before each regex match, and stops with
+    /// `ExpressionError::TimeLimitExceeded` once the budget is spent. The
+    /// engine default is one second; a context cannot raise the engine's
+    /// effective ceiling.
+    #[must_use]
+    pub fn with_max_eval_duration(mut self, limit: Duration) -> Self {
+        self.max_eval_duration = Some(limit);
+        self
+    }
+
     /// Set the maximum total content bytes in a builtin output tree.
     ///
     /// A raw integer, including zero, is intentionally not accepted:
@@ -352,6 +368,12 @@ impl EvaluationPolicy {
     /// Explicit work limit, or `None` to inherit the engine's default ceiling.
     pub fn max_eval_steps(&self) -> Option<usize> {
         self.max_eval_steps.map(EvaluationStepLimit::get)
+    }
+
+    /// Explicit wall-clock budget, or `None` to inherit the engine's default.
+    #[must_use]
+    pub fn max_eval_duration(&self) -> Option<Duration> {
+        self.max_eval_duration
     }
 
     /// Finite limits applied to results from registered builtins.
