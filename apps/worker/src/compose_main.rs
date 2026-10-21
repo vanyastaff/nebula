@@ -340,6 +340,54 @@ async fn build_pg_stores(
     Err(WorkerRunError::PostgresFeatureNotEnabled)
 }
 
+/// Start forwarding PostgreSQL control-queue notifications into a wake hint
+/// for the control consumer, until `cancel`. Returns the hint and the
+/// forwarding task. `None` on SQLite, and when `LISTEN` fails: the hint is an
+/// optimisation, so the worker then relies on its poll alone.
+#[cfg_attr(
+    not(feature = "postgres"),
+    expect(clippy::unused_async, reason = "only the PostgreSQL arm awaits")
+)]
+async fn spawn_control_wakeup(
+    database: &DeploymentDatabase,
+    #[cfg_attr(
+        not(feature = "postgres"),
+        expect(
+            unused_variables,
+            reason = "only the PostgreSQL arm forwards until cancel"
+        )
+    )]
+    cancel: &CancellationToken,
+) -> Option<(Arc<tokio::sync::Notify>, tokio::task::JoinHandle<()>)> {
+    match database {
+        DeploymentDatabase::Sqlite(_) => None,
+        #[cfg(feature = "postgres")]
+        DeploymentDatabase::Postgres(pool) => {
+            let listener =
+                match nebula_storage::postgres::PgControlQueueListener::connect(pool).await {
+                    Ok(listener) => listener,
+                    Err(error) => {
+                        tracing::warn!(
+                            %error,
+                            "control-queue LISTEN failed; the worker polls without wake hints"
+                        );
+                        return None;
+                    },
+                };
+            let wakeup = Arc::new(tokio::sync::Notify::new());
+            let forwarded = Arc::clone(&wakeup);
+            let cancel = cancel.clone();
+            let task = tokio::spawn(async move {
+                tokio::select! {
+                    () = cancel.cancelled() => {},
+                    () = listener.forward(&forwarded) => {},
+                }
+            });
+            Some((wakeup, task))
+        },
+    }
+}
+
 /// Async startup, durable worker processing, and graceful shutdown.
 ///
 /// All errors are returned as [`WorkerRunError`]; `main` converts them to
@@ -404,7 +452,24 @@ pub(crate) async fn run() -> Result<(), WorkerRunError> {
         resource_fanout,
     )?;
 
-    let runtime = builder.with_control_queue(control_queue).build()?;
+    let polling = config.control_polling;
+    let mut builder = builder
+        .with_control_queue(control_queue)
+        .with_control_poll_interval(polling.poll_interval)
+        .with_control_batch_size(polling.batch_size);
+    if let Some(idle_poll_max) = polling.idle_poll_max {
+        builder = builder.with_control_idle_poll_max(idle_poll_max);
+    }
+    // PostgreSQL enqueues notify; claim on the hint instead of the next poll.
+    let cancel = CancellationToken::new();
+    let control_listener = match spawn_control_wakeup(&deployment_database, &cancel).await {
+        Some((wakeup, listener)) => {
+            builder = builder.with_control_wakeup(wakeup);
+            Some(listener)
+        },
+        None => None,
+    };
+    let runtime = builder.build()?;
 
     tracing::info!(
         plugin = %plugin_key,
@@ -412,15 +477,18 @@ pub(crate) async fn run() -> Result<(), WorkerRunError> {
     );
 
     // Wire graceful shutdown: SIGINT (Ctrl-C) and SIGTERM on Unix.
-    let cancel = CancellationToken::new();
     let handle = runtime.spawn(cancel.clone());
-    supervise_runtime(
+    let supervised = supervise_runtime(
         handle,
         cancel,
         wait_for_shutdown_signal(),
         SHUTDOWN_DRAIN_BUDGET,
     )
-    .await?;
+    .await;
+    if let Some(listener) = control_listener {
+        listener.abort();
+    }
+    supervised?;
     tracing::info!("nebula-worker (core flavor) stopped cleanly");
 
     Ok(())
@@ -696,6 +764,7 @@ mod tests {
             // A file name that would be obviously wrong if SQLite opened it.
             db_path: "nebula-worker-MUST-NOT-BE-OPENED.db".to_owned(),
             db_max_connections: nebula_worker_bin::config::DEFAULT_DB_MAX_CONNECTIONS,
+            control_polling: nebula_worker_bin::config::ControlPollingConfig::default(),
             processor_id: [0u8; 16],
         };
 
@@ -718,6 +787,7 @@ mod tests {
             database_url: None,
             db_path: database_path.to_string_lossy().into_owned(),
             db_max_connections: nebula_worker_bin::config::DEFAULT_DB_MAX_CONNECTIONS,
+            control_polling: nebula_worker_bin::config::ControlPollingConfig::default(),
             processor_id: [0x24; 16],
         };
         let metrics = nebula_metrics::MetricsRegistry::new();

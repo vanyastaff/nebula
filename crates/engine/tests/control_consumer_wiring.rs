@@ -1195,3 +1195,129 @@ async fn cancel_is_delivered_while_every_slot_holds_a_parked_start() {
     // The parked dispatches never finish; drop the consumer outright.
     handle.abort();
 }
+
+/// Number of claim calls the consumer made so far.
+fn claim_count(queue: &TestControlQueue) -> usize {
+    queue.claimed_flavors().len()
+}
+
+/// An idle consumer doubles its poll delay after each empty claim, up to the
+/// ceiling, instead of claiming every poll interval.
+#[tokio::test(start_paused = true)]
+async fn idle_consumer_widens_its_poll_delay_up_to_the_ceiling() {
+    let (_store, queue) = port_queue();
+    let consumer = ControlConsumer::for_flavor(
+        queue.clone(),
+        RecordingDispatch::new(),
+        proc16(b"idle-backoff"),
+        worker_flavor(),
+    )
+    .with_poll_interval(Duration::from_millis(10))
+    .with_idle_poll_max(Duration::from_millis(80))
+    .with_reclaim_interval(Duration::from_hours(1))
+    .with_retention(None);
+    let shutdown = CancellationToken::new();
+    let handle = consumer.spawn(shutdown.clone());
+
+    // Claims at 0, 10, 30, 70, then every 80 ms: 16 by 1 s. A fixed 10 ms
+    // tick would claim 100 times.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let claims = claim_count(&queue);
+    shutdown.cancel();
+    handle.await.unwrap();
+    assert!((14..=18).contains(&claims), "{claims} idle claims in 1 s");
+}
+
+/// Claimed work drops the idle backoff back to the poll interval, so a
+/// command enqueued right after a busy claim does not wait out the ceiling.
+#[tokio::test(start_paused = true)]
+async fn claimed_work_resets_the_idle_backoff() {
+    let (_store, queue) = port_queue();
+    let dispatch = RecordingDispatch::new();
+    let consumer = ControlConsumer::for_flavor(
+        queue.clone(),
+        dispatch.clone(),
+        proc16(b"idle-reset"),
+        worker_flavor(),
+    )
+    .with_poll_interval(Duration::from_millis(10))
+    .with_idle_poll_max(Duration::from_secs(10))
+    .with_reclaim_interval(Duration::from_hours(1))
+    .with_retention(None);
+    let shutdown = CancellationToken::new();
+    let handle = consumer.spawn(shutdown.clone());
+
+    // Idle long enough to reach the 10 s ceiling.
+    tokio::time::sleep(Duration::from_mins(1)).await;
+    let first = ExecutionId::new();
+    queue
+        .enqueue(&port_msg(&first, ControlCommand::Cancel, 1))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(11), async {
+        while dispatch.snapshot().is_empty() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the idle poll finds the first command");
+
+    let second = ExecutionId::new();
+    queue
+        .enqueue(&port_msg(&second, ControlCommand::Cancel, 2))
+        .await
+        .unwrap();
+    let enqueued = tokio::time::Instant::now();
+    while dispatch.snapshot().len() < 2 {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    let waited = enqueued.elapsed();
+    shutdown.cancel();
+    handle.await.unwrap();
+    assert!(
+        waited < Duration::from_millis(100),
+        "second command waited {waited:?} after a busy claim"
+    );
+}
+
+/// A wake hint claims at once; without it the consumer would wait out its
+/// whole poll delay.
+#[tokio::test(start_paused = true)]
+async fn wake_hint_claims_before_the_next_poll() {
+    let (_store, queue) = port_queue();
+    let dispatch = RecordingDispatch::new();
+    let wakeup = Arc::new(Notify::new());
+    let consumer = ControlConsumer::for_flavor(
+        queue.clone(),
+        dispatch.clone(),
+        proc16(b"wake-hint"),
+        worker_flavor(),
+    )
+    .with_poll_interval(Duration::from_secs(30))
+    .with_reclaim_interval(Duration::from_hours(1))
+    .with_retention(None)
+    .with_wakeup(wakeup.clone());
+    let shutdown = CancellationToken::new();
+    let handle = consumer.spawn(shutdown.clone());
+
+    // Let the first (empty) claim run so the next poll is 30 s away.
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    assert_eq!(claim_count(&queue), 1);
+    let id = ExecutionId::new();
+    queue
+        .enqueue(&port_msg(&id, ControlCommand::Cancel, 7))
+        .await
+        .unwrap();
+    let woken = tokio::time::Instant::now();
+    wakeup.notify_one();
+    while dispatch.snapshot().is_empty() {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    let waited = woken.elapsed();
+    shutdown.cancel();
+    handle.await.unwrap();
+    assert!(
+        waited < Duration::from_secs(1),
+        "woken consumer waited {waited:?}"
+    );
+}
