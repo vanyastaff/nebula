@@ -77,6 +77,18 @@ changes are expected between minor releases — call them out here.
   `aad: 2`). Rows sealed before this change still decrypt with the ID-only AAD
   and are re-sealed with the owner bound at their next material write.
 
+### Changed
+
+- **A cluster rate-limit slot costs one PostgreSQL round trip.**
+  `PgLimitStore::reserve` used a four-step transaction (`BEGIN`, a locking
+  upsert, an `UPDATE`, `COMMIT`) for every rate-limited provider attempt. A
+  reservation on an existing key is now one statement that locks the row,
+  reads the server clock after the lock, runs the same GCRA steps in SQL and
+  writes the result. A key's first reservation and reservations with a
+  `ReservationId` keep the transaction. Decisions are unchanged: the store
+  still passes the `LimitStore` conformance kit, and a new differential test
+  checks the statement against the Rust `step` functions.
+
 ## [0.33.0] - 2026-10-07
 
 This is the first versioned section. Workspace versions before 0.33.0 were
