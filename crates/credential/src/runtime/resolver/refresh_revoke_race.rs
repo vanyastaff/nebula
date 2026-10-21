@@ -2559,6 +2559,29 @@ async fn resolve_rejects_tombstoned_row() {
 }
 
 #[tokio::test]
+async fn resolving_a_tombstoned_row_evicts_its_cached_handle() {
+    let store = Arc::new(ScriptedStore::new(live_row(), false));
+    let resolver = resolver_with(Arc::clone(&store));
+    resolver
+        .resolve_scoped::<TestCred>(&test_selector())
+        .await
+        .expect("live row resolves");
+    assert_eq!(resolver.handle_cache.len(), 1);
+
+    // Deleted on another path that bypasses this resolver's service hooks.
+    *store.row.lock() = tombstoned_row();
+    resolver
+        .resolve_scoped::<TestCred>(&test_selector())
+        .await
+        .expect_err("a tombstoned row must not resolve to a handle");
+    assert_eq!(
+        resolver.handle_cache.len(),
+        0,
+        "the deleted credential's decrypted material must leave the cache"
+    );
+}
+
+#[tokio::test]
 async fn persisted_reauth_blocks_plain_and_refresh_resolution_without_provider_work() {
     for path in ["plain", "scoped", "refresh"] {
         let store = Arc::new(ScriptedStore::new(reauth_required_row(), false));

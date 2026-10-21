@@ -33,6 +33,14 @@ changes are expected between minor releases — call them out here.
 
 ### Fixed
 
+- **`#[credential]` synthesizes a refresh strategy the scheme family allows.**
+  Without a hand-written `fn policy`, a credential with `fn refresh` always got
+  `RefreshStrategy::RefreshToken`, so one whose `AuthScheme::Family` declares
+  only `ReAcquire` or `ReMintLocal` failed every `resolve_with_refresh` with an
+  F3 containment violation. The synthesized policy now takes the family's
+  declared class: `RefreshToken` if offered, else `ReMintLocal`, else a silent
+  `ReAcquire`. State-dependent strategies still need a hand-written `fn policy`.
+
 - **Registered webhooks survive restarts and route on every replica.**
   The server never attached the webhook provider registry or context factory,
   so webhook registration answered 503, and the routing table only held
@@ -59,6 +67,25 @@ changes are expected between minor releases — call them out here.
   execution that cascade with it; it only creates empty tables. A durable save
   for an execution the database does not hold is `NotFound`, and the bulk loads
   answer in node-id byte order on every backend.
+
+### Security
+
+- **Credential ciphertext is bound to its owner.** The encryption layer used
+  the credential ID alone as AAD, so ciphertext copied into a row with the same
+  ID under another owner decrypted there. New and rewritten material now binds
+  a domain tag, the owner partition and the credential ID (envelope field
+  `aad: 2`). Rows sealed before this change still decrypt with the ID-only AAD
+  and are re-sealed with the owner bound at their next material write.
+
+- **The credential resolver's handle cache is bounded.** Every resolved
+  handle, with its decrypted scheme material, stayed in
+  `CredentialResolver`'s cache for the life of the process, including
+  handles for deleted, revoked or unused credentials. A handle not resolved
+  for 15 minutes is now dropped, the cache holds at most 10,000 handles
+  (least recently used goes first), and delete, revoke, or a resolve that
+  finds the row gone drops that credential's handles at once. A handle
+  evicted while a caller still holds it is no longer updated in place by
+  later refreshes; resolving again returns a current one.
 
 ### Changed
 
