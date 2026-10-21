@@ -30,7 +30,9 @@ mod turn_recovery;
 mod webhook_activation;
 mod workflow;
 
-pub use control_queue::{PgControlQueue, PgJournalReader};
+pub use control_queue::{
+    CONTROL_QUEUE_CHANNEL, PgControlQueue, PgControlQueueListener, PgJournalReader,
+};
 pub use execution::{PgExecutionStore, PgIdempotencyGuard};
 pub use identity::{
     PgMembershipStore, PgOrgStore, PgResourceStore, PgTenantProvisioningStore, PgTriggerStore,

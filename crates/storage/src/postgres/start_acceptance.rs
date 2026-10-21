@@ -131,6 +131,12 @@ impl StartAcceptanceStore for PgStartAcceptanceStore {
         sqlx::query("INSERT INTO execution_control_queue (id, execution_id, workspace_id, org_id, command, status, w3c_traceparent, reclaim_count, resume_target) VALUES ($1, $2, $3, $4, 'Start', 'Pending', $5, 0, NULL)")
             .bind(start.command().id.as_slice()).bind(start.execution_id()).bind(&start.scope().workspace_id).bind(&start.scope().org_id)
             .bind(start.command().w3c_traceparent.as_deref()).execute(&mut *transaction).await.map_err(sql_error)?;
+        // Wake hint for control-queue consumers, delivered on commit.
+        sqlx::query("SELECT pg_notify($1, '')")
+            .bind(super::control_queue::CONTROL_QUEUE_CHANNEL)
+            .execute(&mut *transaction)
+            .await
+            .map_err(sql_error)?;
         let record_format = match start.bundle().format() {
             nebula_storage_port::dto::ContractBundleFormat::V1Json => "v1_json",
             nebula_storage_port::dto::ContractBundleFormat::V2Json => "v2_json",

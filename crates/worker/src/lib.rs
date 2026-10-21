@@ -67,6 +67,7 @@ use nebula_storage_port::dto::StatusWorkerId;
 use nebula_storage_port::store::{
     ControlQueue, ExecutionTurnHandoff, ResourceStatusStore, TurnRecovery,
 };
+use tokio::sync::Notify;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 
@@ -116,6 +117,13 @@ pub enum WorkerBuildError {
     /// configuration from turning into a panic inside a supervised task.
     #[error("timer scan interval must be greater than zero")]
     ZeroTimerScanInterval,
+
+    /// The control poll interval or claim batch size is zero.
+    ///
+    /// A zero interval turns an idle consumer into a busy claim loop, and a
+    /// zero batch leaves it no dispatch slot for regular commands.
+    #[error("control poll interval and claim batch size must be greater than zero")]
+    ZeroControlPolling,
 
     /// The processor id did not form a valid resource-status worker identity.
     #[error("resource status worker identity is invalid")]
@@ -546,6 +554,11 @@ pub struct WorkerRuntimeBuilder {
     handoff_lease_ttl: Option<Duration>,
     // Optional timer scanner override — None means DEFAULT_TIMER_SCAN_INTERVAL.
     timer_scan_interval: Option<Duration>,
+    // Control-consumer overrides — None keeps the consumer's defaults.
+    control_poll_interval: Option<Duration>,
+    control_idle_poll_max: Option<Duration>,
+    control_batch_size: Option<u32>,
+    control_wakeup: Option<Arc<Notify>>,
 }
 
 impl WorkerRuntimeBuilder {
@@ -591,6 +604,10 @@ impl WorkerRuntimeBuilder {
             processor_id,
             handoff_lease_ttl: None,
             timer_scan_interval: None,
+            control_poll_interval: None,
+            control_idle_poll_max: None,
+            control_batch_size: None,
+            control_wakeup: None,
         }
     }
 
@@ -659,6 +676,38 @@ impl WorkerRuntimeBuilder {
         self
     }
 
+    /// Override the control consumer's poll interval after a claim that found
+    /// work (default: [`nebula_engine::DEFAULT_POLL_INTERVAL`]).
+    pub fn with_control_poll_interval(mut self, d: Duration) -> Self {
+        self.control_poll_interval = Some(d);
+        self
+    }
+
+    /// Override the ceiling an idle control consumer widens its poll delay
+    /// to (default: [`nebula_engine::DEFAULT_IDLE_POLL_FACTOR`] poll
+    /// intervals).
+    pub fn with_control_idle_poll_max(mut self, d: Duration) -> Self {
+        self.control_idle_poll_max = Some(d);
+        self
+    }
+
+    /// Override how many control commands one claim takes, which is also the
+    /// consumer's regular dispatch concurrency (default:
+    /// [`nebula_engine::DEFAULT_BATCH_SIZE`]).
+    pub fn with_control_batch_size(mut self, batch_size: u32) -> Self {
+        self.control_batch_size = Some(batch_size);
+        self
+    }
+
+    /// Claim control commands as soon as `wakeup` is notified rather than at
+    /// the next poll. A hint only: the poll still finds a command whose hint
+    /// was lost. The PostgreSQL deployment notifies it from
+    /// `nebula_storage::postgres::PgControlQueueListener`.
+    pub fn with_control_wakeup(mut self, wakeup: Arc<Notify>) -> Self {
+        self.control_wakeup = Some(wakeup);
+        self
+    }
+
     /// Validate required fields and construct [`WorkerRuntime`].
     ///
     /// # Errors
@@ -670,7 +719,9 @@ impl WorkerRuntimeBuilder {
     /// [`WorkerBuildError::NoResourceFanout`] when the durable resource
     /// coordinator is absent. Returns
     /// [`WorkerBuildError::MissingExactRuntime`] if the engine has no exact
-    /// revision loader and frozen registry.
+    /// revision loader and frozen registry, and
+    /// [`WorkerBuildError::ZeroControlPolling`] for a zero control poll
+    /// interval or claim batch size.
     pub fn build(self) -> Result<WorkerRuntime, WorkerBuildError> {
         let control_queue = self.control_queue.ok_or(WorkerBuildError::NoControlQueue)?;
         let turn_handoff = self.turn_handoff.ok_or(WorkerBuildError::NoTurnHandoff)?;
@@ -683,6 +734,11 @@ impl WorkerRuntimeBuilder {
             .unwrap_or(DEFAULT_TIMER_SCAN_INTERVAL);
         if timer_scan_interval.is_zero() {
             return Err(WorkerBuildError::ZeroTimerScanInterval);
+        }
+        if self.control_poll_interval.is_some_and(|d| d.is_zero())
+            || self.control_batch_size == Some(0)
+        {
+            return Err(WorkerBuildError::ZeroControlPolling);
         }
 
         let flavor = self
@@ -707,6 +763,22 @@ impl WorkerRuntimeBuilder {
             self.processor_id,
             worker_flavor_revision,
         );
+        let control_consumer = match self.control_poll_interval {
+            Some(d) => control_consumer.with_poll_interval(d),
+            None => control_consumer,
+        };
+        let control_consumer = match self.control_idle_poll_max {
+            Some(d) => control_consumer.with_idle_poll_max(d),
+            None => control_consumer,
+        };
+        let control_consumer = match self.control_batch_size {
+            Some(batch_size) => control_consumer.with_batch_size(batch_size),
+            None => control_consumer,
+        };
+        let control_consumer = match self.control_wakeup {
+            Some(wakeup) => control_consumer.with_wakeup(wakeup),
+            None => control_consumer,
+        };
 
         // The status identity carries a per-process incarnation: a restarted
         // process that reuses a configured processor id must not renew its
