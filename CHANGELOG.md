@@ -31,6 +31,22 @@ changes are expected between minor releases — call them out here.
   drops the `job_dispatch_queue` table; the persisted observation vocabulary
   keeps decoding historical job-dispatch sources.
 
+### Added
+
+- **The worker backs off when idle and wakes on enqueue.** An idle control
+  consumer doubles its poll delay after each empty claim, up to a ceiling
+  (default ten poll intervals, so one claim a second instead of ten), and
+  claimed work, a finished dispatch or reclaimed rows reset it. On PostgreSQL
+  every control-queue insert sends `NOTIFY nebula_control_queue` in its
+  transaction and the worker claims as soon as it hears it; the poll stays the
+  source of truth, so a lost notification only costs latency. Without a
+  notification (SQLite, and the server's in-process worker) a command enqueued
+  while the consumer is idle can now wait up to the ceiling. New worker
+  variables `NEBULA_WORKER_CONTROL_POLL_INTERVAL_MS`,
+  `NEBULA_WORKER_CONTROL_IDLE_POLL_MAX_MS` and
+  `NEBULA_WORKER_CONTROL_BATCH_SIZE` set the poll interval, the idle ceiling
+  and the claim batch size, and invalid values fail startup.
+
 ### Fixed
 
 - **Registered webhooks survive restarts and route on every replica.**

@@ -20,6 +20,9 @@
 //! | `NEBULA_WORKER_DATABASE_URL` | unset | Postgres DSN of the deployment database (executions, tenancy, credentials); when set, uses Postgres backend (requires `--features postgres`). Unset = SQLite default. |
 //! | `NEBULA_WORKER_DB_PATH` | `nebula-worker.db` | SQLite deployment database file path, credentials included (ignored when `NEBULA_WORKER_DATABASE_URL` is set) |
 //! | `NEBULA_WORKER_DB_MAX_CONNECTIONS` | `8` | Postgres pool size for this process, 1 to 1000 (ignored on SQLite) |
+//! | `NEBULA_WORKER_CONTROL_POLL_INTERVAL_MS` | `100` | Control-queue poll delay after a claim that found work, 1 to 60000 ms; the first step of the idle backoff |
+//! | `NEBULA_WORKER_CONTROL_IDLE_POLL_MAX_MS` | 10 × the poll interval | Ceiling an idle worker doubles its control-queue poll delay to, from the poll interval to 300000 ms. Claimed work resets it; on Postgres an enqueue wakes the worker at once through `LISTEN`/`NOTIFY` (one extra connection), and the poll still finds a command whose notification was lost |
+//! | `NEBULA_WORKER_CONTROL_BATCH_SIZE` | `32` | Control commands per claim, which is also the number of regular dispatch slots, 1 to 1000 |
 //! | `NEBULA_WORKER_PROCESSOR_ID` | random UUID v4 per boot | 32 hex chars (16 bytes); set explicitly for stable fence identity |
 //! | `NEBULA_CRED_MASTER_KEY` | required | Base64-encoded 32-byte credential encryption key. |
 //! | `NEBULA_CRED_LEGACY_MASTER_KEYS` | unset | Up to eight comma-separated base64 AES-256 keys accepted only for decrypting historical credential envelopes. |
