@@ -115,6 +115,12 @@ provides the adapters:
   grant authority. The codec and credential encryption consume one atomic
   `KeyProvider::current()` snapshot (`key_id` + key) so a live KMS rotation
   cannot pair metadata from one generation with bytes from another.
+- The same codec seals each Plane-A OAuth PKCE `code_verifier` before it reaches
+  `oauth_states.code_verifier_envelope`, with AAD binding the provider and
+  state, so a database read alone does not yield a verifier and an envelope
+  moved to another row does not open. A row seals under the current key and
+  opens under the current or any configured legacy key; it is never re-sealed,
+  because it lives only for the state TTL.
 - `auth::postgres::PgIdentitySecretMigrator` is a startup data migrator, not a schema
   migrator: identity DDL stays in `0001_identity.sql`. It uses a cancellation-
   safe retired advisory-lock connection, bounded reads, equality-guarded CAS,
@@ -472,7 +478,7 @@ only control-command outbox.
 
 | Artifact | Status | Notes |
 |---|---|---|
-| `executions` row + state JSON | **Durable** (CAS via `ExecutionStore` + `TransitionBatch`) | Source of truth. Kept forever unless the deployment opts into `ExecutionRetention`: a terminal execution whose `finished_at` is past the retention is deleted with every row beneath it, oldest first in bounded batches (index `ix_executions__finished_at__terminal`, migration 0015); live executions and ones in an unexpired rollback window are never deleted. Verified by the `retention_*` conformance cases |
+| `executions` row + state JSON | **Durable** (CAS via `ExecutionStore` + `TransitionBatch`) | Source of truth. Kept forever unless the deployment opts into `ExecutionRetention`: a terminal execution whose `finished_at` is past the retention is deleted with every row beneath it, oldest first in bounded batches (index `ix_executions__finished_at__terminal`, migration 0016); live executions and ones in an unexpired rollback window are never deleted. Verified by the `retention_*` conformance cases |
 | `execution_journal` (append-only) | **Durable** | Replayable history; appended in the same commit as state. Written by the execution-control owner and the operation ledger; `TransitionBatch::journal` rows have no producer yet (#1013) |
 | `execution_control_queue` (outbox) | **Durable** | At-least-once cancel/dispatch; written in the same `TransitionBatch` (§12.2); rows cascade with their execution |
 | iteration checkpoints (`iteration_checkpoints`) | **Durable + fenced** (SQLite/PostgreSQL; in-memory reference shares the execution store) | Saved under the live execution lease, monotone per `(tenant, execution, node, action key, action version)`, cascades with its execution. An unavailable save only skips the optimisation (the next attempt replays from an earlier checkpoint or iteration 0); never authority over effects — the operation ledger is. Verified by `iteration_checkpoint_conformance_{inmem,sqlite,postgres}` and the engine `journal_checkpoint` suite |

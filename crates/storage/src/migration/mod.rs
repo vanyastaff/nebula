@@ -1260,10 +1260,18 @@ mod tests {
     /// A build that predates 0014 refuses the schema rather than writing to a
     /// missing table.
     ///
-    /// 0015 adds the partial index `ix_executions__finished_at__terminal` over
-    /// terminal executions. Every admitted prefix reaches 0014 first; an index
+    /// 0015 recreates `oauth_states` with `code_verifier_envelope` in place of
+    /// the plaintext `code_verifier`. Every admitted prefix reaches 0014
+    /// first. The dropped rows are single-use login states that expire within
+    /// ten minutes; no other table references them and no identity, session
+    /// or tenant row changes, so a login in flight across the upgrade only
+    /// fails its callback. A build that predates 0015 refuses the schema
+    /// rather than writing plaintext verifiers into the new table.
+    ///
+    /// 0016 adds the partial index `ix_executions__finished_at__terminal` over
+    /// terminal executions. Every admitted prefix reaches 0015 first; an index
     /// changes no row, constraint or admitted state, and a build that predates
-    /// 0015 refuses the schema as with every new head.
+    /// 0016 refuses the schema as with every new head.
     #[test]
     fn new_catalog_head_requires_explicit_admission_policy_review() {
         use crate::migration_catalog::REVIEWED_HEAD;
