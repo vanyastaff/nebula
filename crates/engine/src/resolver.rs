@@ -8,7 +8,7 @@ use std::{
 
 use dashmap::DashMap;
 use nebula_core::NodeKey;
-use nebula_expression::{EvaluationContext, ExpressionEngine};
+use nebula_expression::{EvaluationContext, ExpressionEngine, ExpressionError};
 use nebula_schema::{
     AuthoredValue, CompiledProgram, EvalFuture, Expression, ExpressionContext, ResolvedValues,
     ValidSchema, ValidValues, ValidationError, ValidationReport,
@@ -191,7 +191,7 @@ impl ParamResolver {
 
 pub(crate) fn share_output_for_expressions(
     value: &serde_json::Value,
-) -> Result<Arc<nebula_expression::RuntimeValue>, nebula_expression::ExpressionError> {
+) -> Result<Arc<nebula_expression::RuntimeValue>, ExpressionError> {
     EvaluationContext::try_share_value(value)
 }
 
@@ -225,7 +225,15 @@ impl PreparedNodeInput {
             None => self.values.resolve_data(),
         };
         resolved.map_err(|report| {
-            input_error(&self.node_key, report, "input expression resolution failed")
+            let message = if report
+                .errors()
+                .any(|error| error.code() == EXPRESSION_TIME_LIMIT)
+            {
+                "input expression exceeded its evaluation time budget"
+            } else {
+                "input expression resolution failed"
+            };
+            input_error(&self.node_key, report, message)
         })
     }
 }
@@ -242,6 +250,8 @@ impl ExpressionContext for NodeExpressionContext {
         let values = self.values.clone();
         let program = program.clone();
         Box::pin(async move {
+            // The blocking thread cannot be stopped from here; the evaluator
+            // enforces its own wall-clock budget (`max_eval_duration`).
             tokio::task::spawn_blocking(move || engine.evaluate_compiled(&program, &values))
                 .await
                 .map_err(|source| {
@@ -251,14 +261,24 @@ impl ExpressionContext for NodeExpressionContext {
                         .build()
                 })?
                 .map_err(|source| {
-                    ValidationError::builder("expression.runtime")
-                        .message("expression evaluation failed")
+                    let (code, message) = match source {
+                        ExpressionError::TimeLimitExceeded { .. } => (
+                            EXPRESSION_TIME_LIMIT,
+                            "expression exceeded its evaluation time budget",
+                        ),
+                        _ => ("expression.runtime", "expression evaluation failed"),
+                    };
+                    ValidationError::builder(code)
+                        .message(message)
                         .source(PrivateInputCause { _source: source })
                         .build()
                 })
         })
     }
 }
+
+/// Validation code of an expression stopped by its wall-clock budget.
+const EXPRESSION_TIME_LIMIT: &str = "expression.time_limit";
 
 // Preserve typed causes without exposing evaluator sources or input payloads.
 struct PrivateInputCause<E> {
@@ -279,10 +299,7 @@ impl<E> fmt::Display for PrivateInputCause<E> {
 
 impl<E> std::error::Error for PrivateInputCause<E> {}
 
-fn expression_snapshot_error(
-    node_key: &NodeKey,
-    error: nebula_expression::ExpressionError,
-) -> EngineError {
+fn expression_snapshot_error(node_key: &NodeKey, error: ExpressionError) -> EngineError {
     let message = "expression context exceeds fixed resource limits";
     let source = ValidationError::builder("expression.context_limit")
         .message(message)

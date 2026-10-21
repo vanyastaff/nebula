@@ -142,7 +142,10 @@ See the [crate-level rustdoc](https://docs.rs/nebula-expression) for the quick-s
 - **DoS guard:** source is capped at 1 MiB, with at most 65,536 tokens and 16,384 AST
   nodes per embedded expression, depth 256, and 1,000 template expressions. Evaluation
   has a default 100,000-unit work ceiling shared by all template parts, pipelines,
-  higher-order bodies, materialized values, string bytes, and builtin work. Context
+  higher-order bodies, materialized values, string bytes, and builtin work, and a
+  default one-second wall-clock budget the evaluator checks while it charges work and
+  before each regex match (work it cannot count, such as compiling a distinct regex
+  per iteration, still stops; the error is `TimeLimitExceeded`). Context
   restrictions intersect engine restrictions and cannot raise engine limits, including
   the default 1 MiB JSON input limit. String expansion is checked before allocation in
   `split`, `join`, `to_json`, `replace`, `repeat`, padding, and other expanding

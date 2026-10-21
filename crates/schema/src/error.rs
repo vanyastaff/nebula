@@ -544,6 +544,7 @@ pub const STANDARD_CODES: &[&str] = &[
     "expression.parse",
     "expression.type_mismatch",
     "expression.runtime",
+    "expression.time_limit",
     "validation.incomplete",
     // checked transformer construction
     "transformer.invalid_pattern",
