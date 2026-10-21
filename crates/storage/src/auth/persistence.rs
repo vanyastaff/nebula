@@ -52,7 +52,10 @@ impl AuthPersistence {
                 pool.clone(),
                 Arc::clone(&identity_secrets),
             )),
-            oauth_states: Box::new(SqliteOAuthStateRepo::new(deployment)),
+            oauth_states: Box::new(SqliteOAuthStateRepo::new(
+                deployment,
+                Arc::clone(&identity_secrets),
+            )),
             accounts: Box::new(SqliteAccountLifecycle::new(pool.clone())),
             oauth_login: Box::new(SqliteOAuthLoginFinalizer::new(pool.clone())),
             identity_secrets,
@@ -79,7 +82,10 @@ impl AuthPersistence {
                 pool.clone(),
                 Arc::clone(&identity_secrets),
             )),
-            oauth_states: Box::new(PgOAuthStateRepo::new(pool.clone())),
+            oauth_states: Box::new(PgOAuthStateRepo::new(
+                pool.clone(),
+                Arc::clone(&identity_secrets),
+            )),
             accounts: Box::new(PgAccountLifecycle::new(pool.clone())),
             oauth_login: Box::new(PgOAuthLoginFinalizer::new(pool)),
             identity_secrets,

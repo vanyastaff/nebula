@@ -115,6 +115,12 @@ provides the adapters:
   grant authority. The codec and credential encryption consume one atomic
   `KeyProvider::current()` snapshot (`key_id` + key) so a live KMS rotation
   cannot pair metadata from one generation with bytes from another.
+- The same codec seals each Plane-A OAuth PKCE `code_verifier` before it reaches
+  `oauth_states.code_verifier_envelope`, with AAD binding the provider and
+  state, so a database read alone does not yield a verifier and an envelope
+  moved to another row does not open. A row seals under the current key and
+  opens under the current or any configured legacy key; it is never re-sealed,
+  because it lives only for the state TTL.
 - `auth::postgres::PgIdentitySecretMigrator` is a startup data migrator, not a schema
   migrator: identity DDL stays in `0001_identity.sql`. It uses a cancellation-
   safe retired advisory-lock connection, bounded reads, equality-guarded CAS,
