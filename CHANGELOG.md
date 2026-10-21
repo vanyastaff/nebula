@@ -89,6 +89,16 @@ changes are expected between minor releases — call them out here.
 
 ### Changed
 
+- **A cluster rate-limit slot costs one PostgreSQL round trip.**
+  `PgLimitStore::reserve` used a four-step transaction (`BEGIN`, a locking
+  upsert, an `UPDATE`, `COMMIT`) for every rate-limited provider attempt. A
+  reservation on an existing key is now one statement that locks the row,
+  reads the server clock after the lock, runs the same GCRA steps in SQL and
+  writes the result. A key's first reservation and reservations with a
+  `ReservationId` keep the transaction. Decisions are unchanged: the store
+  still passes the `LimitStore` conformance kit, and a new differential test
+  checks the statement against the Rust `step` functions.
+
 - **SQLite execution reads no longer wait for writes.** A file-backed SQLite
   deployment in WAL mode now opens four read-only connections beside its one
   writer (`sqlite::DeploymentPool::read_pool`). The server serves execution
