@@ -161,3 +161,97 @@ fn explicit_legacy_key_open_returns_current_key_replacement() {
     );
     assert!(reopened.replacement_envelope.is_none());
 }
+
+const PKCE_VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+
+#[test]
+fn oauth_verifier_round_trips_and_binds_provider_and_state() {
+    let codec = codec([0x77; 32], "identity-key-1");
+    let envelope = codec
+        .seal_oauth_verifier("github", "state-a", PKCE_VERIFIER)
+        .expect("seal verifier");
+    assert!(
+        !envelope
+            .windows(PKCE_VERIFIER.len())
+            .any(|window| window == PKCE_VERIFIER.as_bytes()),
+        "the envelope must not carry the plaintext verifier"
+    );
+
+    let opened = codec
+        .open_oauth_verifier("github", "state-a", &envelope)
+        .expect("open verifier");
+    assert_eq!(opened.as_str(), PKCE_VERIFIER);
+
+    for (provider, state) in [
+        ("google", "state-a"),
+        ("github", "state-b"),
+        ("githubs", "tate-a"),
+    ] {
+        assert!(
+            codec
+                .open_oauth_verifier(provider, state, &envelope)
+                .is_err(),
+            "{provider}/{state} must not open another row's verifier"
+        );
+    }
+    // The verifier AAD domain is distinct from TOTP envelopes.
+    assert!(
+        codec
+            .open_totp_seed(TotpSecretPurpose::Active, &[0x21; 16], &envelope)
+            .is_err()
+    );
+}
+
+#[test]
+fn oauth_verifier_rejects_non_pkce_plaintext_and_opens_under_legacy_key() {
+    let original = codec([0x88; 32], "identity-key-1");
+    for verifier in [
+        "",
+        "short",
+        &"a".repeat(129),
+        &format!("{}!", "a".repeat(42)),
+    ] {
+        assert!(
+            original
+                .seal_oauth_verifier("github", "state", verifier)
+                .is_err()
+        );
+    }
+
+    let longest = "~".repeat(128);
+    let sealed = original
+        .seal_oauth_verifier("github", "state", &longest)
+        .expect("seal a 128-character verifier");
+    assert_eq!(
+        original
+            .open_oauth_verifier("github", "state", &sealed)
+            .expect("open a 128-character verifier")
+            .as_str(),
+        longest
+    );
+
+    let envelope = original
+        .seal_oauth_verifier("github", "state", PKCE_VERIFIER)
+        .expect("seal verifier");
+    let rotated = IdentitySecretCodec::with_legacy_keys(
+        Arc::new(TestKeyProvider::new([0x99; 32], "identity-key-2")),
+        vec![(
+            "identity-key-1".to_owned(),
+            Arc::new(EncryptionKey::from_bytes([0x88; 32])),
+        )],
+    )
+    .expect("rotation codec");
+    assert_eq!(
+        rotated
+            .open_oauth_verifier("github", "state", &envelope)
+            .expect("open under legacy key")
+            .as_str(),
+        PKCE_VERIFIER
+    );
+    let unrelated = codec([0x99; 32], "identity-key-2");
+    assert!(
+        unrelated
+            .open_oauth_verifier("github", "state", &envelope)
+            .is_err()
+    );
+}

@@ -757,7 +757,7 @@ fn state(value: &str) -> nebula_storage::auth::OAuthStateRow {
     nebula_storage::auth::OAuthStateRow {
         state: value.into(),
         provider: "github".into(),
-        code_verifier: "verifier".into(),
+        code_verifier: "verifier-0123456789-abcdefghijklmnopqrstuvwxyz".into(),
         redirect_uri: None,
         created_at: Utc::now(),
         expires_at: Utc::now() + Duration::minutes(5),
@@ -773,7 +773,7 @@ async fn contended_oauth_does_not_retain_the_only_deployment_connection() {
     let writer = open(&path).await;
     let deployment = oauth_deployment(&path).await;
     let shared = deployment.pool();
-    let repo = SqliteOAuthStateRepo::new(&deployment);
+    let repo = SqliteOAuthStateRepo::new(&deployment, identity_codec());
     let held = writer.begin_with("BEGIN IMMEDIATE").await.unwrap();
     assert_eq!(
         repo.admit(&state("contended")).await.unwrap(),
@@ -801,7 +801,7 @@ async fn oauth_admission_is_bounded_and_recovers_after_cancelled_begin() {
     let first = open(&path).await;
     let deployment = oauth_deployment(&path).await;
     let second = deployment.pool();
-    let repo = SqliteOAuthStateRepo::new(&deployment);
+    let repo = SqliteOAuthStateRepo::new(&deployment, identity_codec());
     let held = first.begin_with("BEGIN IMMEDIATE").await.unwrap();
     let outcome = tokio::time::timeout(
         std::time::Duration::from_millis(500),
@@ -843,7 +843,7 @@ async fn oauth_commit_contention_rolls_back_and_returns_contended() {
     let path = directory.path().join("reader-blocked.db");
     let reader = open(&path).await;
     let deployment = oauth_deployment(&path).await;
-    let repo = SqliteOAuthStateRepo::new(&deployment);
+    let repo = SqliteOAuthStateRepo::new(&deployment, identity_codec());
     let mut held = reader.begin().await.unwrap();
     sqlx::query("SELECT state FROM oauth_states")
         .fetch_all(&mut *held)
@@ -864,6 +864,55 @@ async fn oauth_commit_contention_rolls_back_and_returns_contended() {
 }
 
 #[tokio::test]
+async fn oauth_verifier_is_stored_only_as_an_envelope_bound_to_its_state() {
+    use nebula_storage::auth::{OAuthStateAdmission, OAuthStateRepo, sqlite::SqliteOAuthStateRepo};
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("accounts.db");
+    let deployment = oauth_deployment(&path).await;
+    let repo = SqliteOAuthStateRepo::new(&deployment, identity_codec());
+    let first = state("sealed");
+    assert_eq!(
+        repo.admit(&first).await.unwrap(),
+        OAuthStateAdmission::Created
+    );
+    let stored: Vec<u8> =
+        sqlx::query_scalar("SELECT code_verifier_envelope FROM oauth_states WHERE state = ?")
+            .bind("sealed")
+            .fetch_one(deployment.pool())
+            .await
+            .unwrap();
+    let verifier = first.code_verifier.as_bytes();
+    assert!(
+        !stored
+            .windows(verifier.len())
+            .any(|window| window == verifier),
+        "the stored row must not contain the plaintext verifier"
+    );
+
+    // The envelope opens only on the row it was sealed for.
+    assert_eq!(
+        repo.admit(&state("moved")).await.unwrap(),
+        OAuthStateAdmission::Created
+    );
+    sqlx::query("UPDATE oauth_states SET code_verifier_envelope = ? WHERE state = 'moved'")
+        .bind(&stored)
+        .execute(deployment.pool())
+        .await
+        .unwrap();
+    let error = repo.get_by_state("moved").await.unwrap_err();
+    assert!(matches!(error, StorageError::Corrupt(_)));
+    assert!(!error.to_string().contains(&first.code_verifier));
+
+    let consumed = repo
+        .consume_by_state_and_provider("sealed", "github")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(consumed.code_verifier, first.code_verifier);
+    deployment.pool().close().await;
+}
+
+#[tokio::test]
 async fn oauth_capacity_is_shared_by_independent_pools() {
     use nebula_storage::auth::{
         OAUTH_STATE_CAPACITY, OAuthStateAdmission, OAuthStateRepo, sqlite::SqliteOAuthStateRepo,
@@ -877,8 +926,8 @@ async fn oauth_capacity_is_shared_by_independent_pools() {
     let now = Utc::now();
     sqlx::query(
         "WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < ?)
-        INSERT INTO oauth_states(state, provider, code_verifier, created_at, expires_at)
-        SELECT 'seed-' || n, 'github', 'verifier', ?, ? FROM numbers",
+        INSERT INTO oauth_states(state, provider, code_verifier_envelope, created_at, expires_at)
+        SELECT 'seed-' || n, 'github', x'00', ?, ? FROM numbers",
     )
     .bind(i64::from(OAUTH_STATE_CAPACITY) - 1)
     .bind(now.timestamp_micros())
@@ -886,8 +935,8 @@ async fn oauth_capacity_is_shared_by_independent_pools() {
     .execute(first)
     .await
     .unwrap();
-    let a = SqliteOAuthStateRepo::new(&first_deployment);
-    let b = SqliteOAuthStateRepo::new(&second_deployment);
+    let a = SqliteOAuthStateRepo::new(&first_deployment, identity_codec());
+    let b = SqliteOAuthStateRepo::new(&second_deployment, identity_codec());
     let x = state("last-a");
     let y = state("last-b");
     let (x, y) = tokio::join!(a.admit(&x), b.admit(&y));
@@ -909,6 +958,16 @@ async fn oauth_capacity_is_shared_by_independent_pools() {
         a.admit(&state("full")).await.unwrap(),
         OAuthStateAdmission::AtCapacity
     );
+    // Bulk seeds carry a placeholder envelope; seal the one consumed here.
+    sqlx::query("UPDATE oauth_states SET code_verifier_envelope = ? WHERE state = 'seed-1'")
+        .bind(
+            identity_codec()
+                .seal_oauth_verifier("github", "seed-1", &state("seed-1").code_verifier)
+                .unwrap(),
+        )
+        .execute(first)
+        .await
+        .unwrap();
     a.consume_by_state("seed-1").await.unwrap().unwrap();
     assert_eq!(
         b.admit(&state("reclaimed")).await.unwrap(),

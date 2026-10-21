@@ -20,12 +20,20 @@
 //! - [`admit`](OAuthStateRepo::admit) uses a fixed, deployment-wide
 //!   transaction advisory try-lock. Cleanup, the bounded active-row count,
 //!   and insertion are serialized without waiting on another replica.
+//!
+//! The PKCE verifier is stored only as an identity-secret envelope bound to
+//! the row's provider and state (`code_verifier_envelope`).
+
+use std::sync::Arc;
 
 use sqlx::{Pool, Postgres};
 
 use crate::{
     StorageError,
-    auth::{OAUTH_STATE_CAPACITY, OAuthStateAdmission, OAuthStateRepo, OAuthStateRow},
+    auth::{
+        OAUTH_STATE_CAPACITY, OAuthStateAdmission, OAuthStateRepo, OAuthStateRow,
+        identity_secret::IdentitySecretCodec,
+    },
     sql_error::storage_error_for,
 };
 
@@ -45,25 +53,51 @@ const INVALID_ADMISSION_MESSAGE: &str = "invalid OAuth state admission";
 #[derive(Clone)]
 pub struct PgOAuthStateRepo {
     pool: Pool<Postgres>,
+    identity_secrets: Arc<IdentitySecretCodec>,
     capacity: u32,
 }
 
 impl PgOAuthStateRepo {
-    /// Construct from an existing pool.
+    /// Construct from an existing pool and the codec that seals each PKCE
+    /// verifier.
     #[must_use]
-    pub fn new(pool: Pool<Postgres>) -> Self {
+    pub fn new(pool: Pool<Postgres>, identity_secrets: Arc<IdentitySecretCodec>) -> Self {
         Self {
             pool,
+            identity_secrets,
             capacity: OAUTH_STATE_CAPACITY,
         }
     }
 
     #[cfg(test)]
-    fn with_capacity(pool: Pool<Postgres>, capacity: std::num::NonZeroU32) -> Self {
+    fn with_capacity(
+        pool: Pool<Postgres>,
+        identity_secrets: Arc<IdentitySecretCodec>,
+        capacity: std::num::NonZeroU32,
+    ) -> Self {
         Self {
             pool,
+            identity_secrets,
             capacity: capacity.get(),
         }
+    }
+
+    fn decode(&self, t: StateTuple) -> Result<OAuthStateRow, StorageError> {
+        let code_verifier = self
+            .identity_secrets
+            .open_oauth_verifier(&t.1, &t.0, &t.2)
+            .map_err(|_| {
+                StorageError::Corrupt("OAuth state verifier envelope does not open".to_owned())
+            })?;
+        Ok(OAuthStateRow {
+            state: t.0,
+            provider: t.1,
+            code_verifier: code_verifier.as_str().to_owned(),
+            redirect_uri: t.3,
+            created_at: t.4,
+            expires_at: t.5,
+            consumed_at: t.6,
+        })
     }
 
     fn validate_admission(state: &OAuthStateRow) -> Result<(), StorageError> {
@@ -95,27 +129,15 @@ async fn rollback_after_failure(
 type StateTuple = (
     String,                                // state
     String,                                // provider
-    String,                                // code_verifier
+    Vec<u8>,                               // code_verifier_envelope
     Option<String>,                        // redirect_uri
     chrono::DateTime<chrono::Utc>,         // created_at
     chrono::DateTime<chrono::Utc>,         // expires_at
     Option<chrono::DateTime<chrono::Utc>>, // consumed_at
 );
 
-fn tuple_to_row(t: StateTuple) -> OAuthStateRow {
-    OAuthStateRow {
-        state: t.0,
-        provider: t.1,
-        code_verifier: t.2,
-        redirect_uri: t.3,
-        created_at: t.4,
-        expires_at: t.5,
-        consumed_at: t.6,
-    }
-}
-
 const SELECT_COLS: &str =
-    "state, provider, code_verifier, redirect_uri, created_at, expires_at, consumed_at";
+    "state, provider, code_verifier_envelope, redirect_uri, created_at, expires_at, consumed_at";
 
 #[async_trait::async_trait]
 impl OAuthStateRepo for PgOAuthStateRepo {
@@ -126,6 +148,10 @@ impl OAuthStateRepo for PgOAuthStateRepo {
     )]
     async fn admit(&self, state: &OAuthStateRow) -> Result<OAuthStateAdmission, StorageError> {
         Self::validate_admission(state)?;
+        let envelope = self
+            .identity_secrets
+            .seal_oauth_verifier(&state.provider, &state.state, &state.code_verifier)
+            .map_err(|_| StorageError::Internal(INVALID_ADMISSION_MESSAGE.to_owned()))?;
 
         let mut transaction = self
             .pool
@@ -164,7 +190,8 @@ impl OAuthStateRepo for PgOAuthStateRepo {
             let capacity = i64::from(self.capacity);
             let inserted = sqlx::query(
                 "INSERT INTO oauth_states \
-                 (state, provider, code_verifier, redirect_uri, created_at, expires_at, consumed_at) \
+                 (state, provider, code_verifier_envelope, redirect_uri, created_at, expires_at, \
+                  consumed_at) \
                  SELECT $1, $2, $3, $4, $5, $6, NULL \
                  WHERE ( \
                      SELECT COUNT(*) FROM ( \
@@ -177,7 +204,7 @@ impl OAuthStateRepo for PgOAuthStateRepo {
             )
             .bind(&state.state)
             .bind(&state.provider)
-            .bind(&state.code_verifier)
+            .bind(&envelope)
             .bind(state.redirect_uri.as_deref())
             .bind(state.created_at)
             .bind(state.expires_at)
@@ -220,7 +247,7 @@ impl OAuthStateRepo for PgOAuthStateRepo {
             .fetch_optional(&self.pool)
             .await
             .map_err(|e| storage_error_for("plane_a_oauth_state", e))?;
-        Ok(row.map(tuple_to_row))
+        row.map(|row| self.decode(row)).transpose()
     }
 
     #[tracing::instrument(level = "debug", skip(self, state), fields(provider))]
@@ -247,7 +274,7 @@ impl OAuthStateRepo for PgOAuthStateRepo {
             .fetch_optional(&self.pool)
             .await
             .map_err(|e| storage_error_for("plane_a_oauth_state", e))?;
-        Ok(row.map(tuple_to_row))
+        row.map(|row| self.decode(row)).transpose()
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
@@ -268,7 +295,7 @@ impl OAuthStateRepo for PgOAuthStateRepo {
             .fetch_optional(&self.pool)
             .await
             .map_err(|e| storage_error_for("plane_a_oauth_state", e))?;
-        Ok(row.map(tuple_to_row))
+        row.map(|row| self.decode(row)).transpose()
     }
 }
 
@@ -369,7 +396,7 @@ mod tests {
                 "CREATE TABLE oauth_states (\
                     state TEXT PRIMARY KEY, \
                     provider TEXT NOT NULL, \
-                    code_verifier TEXT NOT NULL, \
+                    code_verifier_envelope BYTEA NOT NULL, \
                     redirect_uri TEXT, \
                     created_at TIMESTAMPTZ NOT NULL, \
                     expires_at TIMESTAMPTZ NOT NULL, \
@@ -399,6 +426,14 @@ mod tests {
         }
     }
 
+    fn codec() -> Arc<IdentitySecretCodec> {
+        let key = crate::credential::EnvKeyProvider::from_base64(
+            "ERERERERERERERERERERERERERERERERERERERERERE=",
+        )
+        .expect("valid test key");
+        Arc::new(IdentitySecretCodec::new(Arc::new(key)).expect("test codec"))
+    }
+
     fn lazy_pool() -> Pool<Postgres> {
         PgPoolOptions::new()
             .acquire_timeout(StdDuration::from_millis(50))
@@ -407,14 +442,18 @@ mod tests {
     }
 
     async fn insert_unchecked(pool: &Pool<Postgres>, state: &OAuthStateRow) {
+        let envelope = codec()
+            .seal_oauth_verifier(&state.provider, &state.state, &state.code_verifier)
+            .expect("seal test verifier");
         sqlx::query(
             "INSERT INTO oauth_states \
-             (state, provider, code_verifier, redirect_uri, created_at, expires_at, consumed_at) \
+             (state, provider, code_verifier_envelope, redirect_uri, created_at, expires_at, \
+              consumed_at) \
              VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(&state.state)
         .bind(&state.provider)
-        .bind(&state.code_verifier)
+        .bind(&envelope)
         .bind(state.redirect_uri.as_deref())
         .bind(state.created_at)
         .bind(state.expires_at)
@@ -457,7 +496,7 @@ mod tests {
     #[tokio::test]
     async fn consumed_candidate_is_rejected_before_database_access_without_echoing_secrets() {
         const STATE_CANARY: &str = "OAUTH_STATE_ADMISSION_CANARY";
-        let repo = PgOAuthStateRepo::new(lazy_pool());
+        let repo = PgOAuthStateRepo::new(lazy_pool(), codec());
         let mut state = fresh_state("google");
         state.state = STATE_CANARY.to_owned();
         state.consumed_at = Some(Utc::now());
@@ -478,7 +517,7 @@ mod tests {
             return;
         };
         let capacity = NonZeroU32::new(3).expect("non-zero test capacity");
-        let repo = PgOAuthStateRepo::with_capacity(database.first_pool.clone(), capacity);
+        let repo = PgOAuthStateRepo::with_capacity(database.first_pool.clone(), codec(), capacity);
 
         for _ in 0..capacity.get() {
             assert_eq!(
@@ -504,6 +543,7 @@ mod tests {
         };
         let repo = PgOAuthStateRepo::with_capacity(
             database.first_pool.clone(),
+            codec(),
             NonZeroU32::new(1).expect("non-zero test capacity"),
         );
         let mut expired = fresh_state("google");
@@ -529,6 +569,7 @@ mod tests {
         };
         let repo = PgOAuthStateRepo::with_capacity(
             database.first_pool.clone(),
+            codec(),
             NonZeroU32::new(1).expect("non-zero test capacity"),
         );
         let mut consumed = fresh_state("google");
@@ -561,6 +602,7 @@ mod tests {
             .expect("hold admission lock");
         let repo = PgOAuthStateRepo::with_capacity(
             database.second_pool.clone(),
+            codec(),
             NonZeroU32::new(1).expect("non-zero test capacity"),
         );
 
@@ -593,6 +635,7 @@ mod tests {
         };
         let repo = PgOAuthStateRepo::with_capacity(
             database.first_pool.clone(),
+            codec(),
             NonZeroU32::new(1).expect("non-zero test capacity"),
         );
         assert_eq!(
@@ -626,6 +669,7 @@ mod tests {
             .expect("remove table to force a post-lock SQL failure");
         let repo = PgOAuthStateRepo::with_capacity(
             database.first_pool.clone(),
+            codec(),
             NonZeroU32::new(1).expect("non-zero test capacity"),
         );
 
@@ -657,8 +701,10 @@ mod tests {
             return;
         };
         let capacity = NonZeroU32::new(11).expect("non-zero test capacity");
-        let first_repo = PgOAuthStateRepo::with_capacity(database.first_pool.clone(), capacity);
-        let second_repo = PgOAuthStateRepo::with_capacity(database.second_pool.clone(), capacity);
+        let first_repo =
+            PgOAuthStateRepo::with_capacity(database.first_pool.clone(), codec(), capacity);
+        let second_repo =
+            PgOAuthStateRepo::with_capacity(database.second_pool.clone(), codec(), capacity);
         let barrier = Arc::new(Barrier::new(64));
         let mut tasks = JoinSet::new();
         for index in 0..64 {
@@ -704,7 +750,7 @@ mod tests {
         let Some(database) = TestDatabase::create().await else {
             return;
         };
-        let repo = PgOAuthStateRepo::new(database.first_pool.clone());
+        let repo = PgOAuthStateRepo::new(database.first_pool.clone(), codec());
         let state = fresh_state("google");
         let state_value = state.state.clone();
 
@@ -727,12 +773,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn verifier_is_stored_only_as_an_envelope_bound_to_its_state() {
+        let _serial = ADMISSION_TEST_SERIAL.lock().await;
+        let Some(database) = TestDatabase::create().await else {
+            return;
+        };
+        let repo = PgOAuthStateRepo::new(database.first_pool.clone(), codec());
+        let state = fresh_state("google");
+        assert_eq!(
+            repo.admit(&state).await.expect("admit"),
+            OAuthStateAdmission::Created
+        );
+
+        let stored: Vec<u8> =
+            sqlx::query_scalar("SELECT code_verifier_envelope FROM oauth_states WHERE state = $1")
+                .bind(&state.state)
+                .fetch_one(&database.first_pool)
+                .await
+                .expect("stored envelope");
+        let verifier = state.code_verifier.as_bytes();
+        assert!(
+            !stored
+                .windows(verifier.len())
+                .any(|window| window == verifier),
+            "the stored row must not contain the plaintext verifier"
+        );
+        assert!(
+            codec()
+                .open_oauth_verifier("github", &state.state, &stored)
+                .is_err(),
+            "an envelope opens only for its own provider"
+        );
+
+        // The same envelope moved onto another state row does not open.
+        let mut moved = fresh_state("google");
+        moved.code_verifier = state.code_verifier.clone();
+        insert_unchecked(&database.first_pool, &moved).await;
+        sqlx::query("UPDATE oauth_states SET code_verifier_envelope = $1 WHERE state = $2")
+            .bind(&stored)
+            .bind(&moved.state)
+            .execute(&database.first_pool)
+            .await
+            .expect("move envelope");
+        let error = repo
+            .get_by_state(&moved.state)
+            .await
+            .expect_err("a moved envelope must not open");
+        assert!(matches!(error, StorageError::Corrupt(_)));
+        assert!(!error.to_string().contains(&state.code_verifier));
+
+        let loaded = repo
+            .consume_by_state_and_provider(&state.state, "google")
+            .await
+            .expect("consume")
+            .expect("live row");
+        assert_eq!(loaded.code_verifier, state.code_verifier);
+
+        drop(repo);
+        database.cleanup().await;
+    }
+
+    #[tokio::test]
     async fn duplicate_state_is_rejected() {
         let _serial = ADMISSION_TEST_SERIAL.lock().await;
         let Some(database) = TestDatabase::create().await else {
             return;
         };
-        let repo = PgOAuthStateRepo::new(database.first_pool.clone());
+        let repo = PgOAuthStateRepo::new(database.first_pool.clone(), codec());
         let state = fresh_state("github");
         assert_eq!(
             repo.admit(&state).await.expect("first admit"),
@@ -763,7 +870,7 @@ mod tests {
         let Some(database) = TestDatabase::create().await else {
             return;
         };
-        let repo = PgOAuthStateRepo::new(database.first_pool.clone());
+        let repo = PgOAuthStateRepo::new(database.first_pool.clone(), codec());
         let state = fresh_state("google");
         let state_value = state.state.clone();
         let verifier = state.code_verifier.clone();
@@ -792,7 +899,7 @@ mod tests {
         let Some(database) = TestDatabase::create().await else {
             return;
         };
-        let repo = PgOAuthStateRepo::new(database.first_pool.clone());
+        let repo = PgOAuthStateRepo::new(database.first_pool.clone(), codec());
         let state = fresh_state("google");
         let state_value = state.state.clone();
         insert_unchecked(&database.first_pool, &state).await;
@@ -820,7 +927,7 @@ mod tests {
         let Some(database) = TestDatabase::create().await else {
             return;
         };
-        let repo = PgOAuthStateRepo::new(database.first_pool.clone());
+        let repo = PgOAuthStateRepo::new(database.first_pool.clone(), codec());
         let mut expired = fresh_state("google");
         expired.expires_at = Utc::now() - Duration::minutes(1);
         let expired_value = expired.state.clone();
@@ -853,7 +960,11 @@ mod tests {
         OAuthStateRow {
             state: format!("st_{}", hex::encode(&random_id()[..12])),
             provider: provider.to_owned(),
-            code_verifier: format!("vrf_{}", hex::encode(&random_id()[..16])),
+            code_verifier: format!(
+                "vrf_{}{}",
+                hex::encode(random_id()),
+                hex::encode(random_id())
+            ),
             redirect_uri: Some("https://nebula.local/auth/callback".to_owned()),
             created_at: now,
             expires_at: now + Duration::minutes(10),

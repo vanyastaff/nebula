@@ -11,6 +11,15 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **The OAuth PKCE verifier is encrypted at rest.** `oauth_states` held each
+  pending sign-in's `code_verifier` in plaintext, so anyone who could read the
+  table held the PKCE half of every in-flight authorization-code exchange. Migration 0015 replaces the column
+  with `code_verifier_envelope`, sealed by the identity-secret codec (the
+  TOTP-seed key) with AAD binding the provider and state. The migration drops
+  the short-lived pending states, so sign-ins in flight during the upgrade must
+  restart. `SqliteOAuthStateRepo::new` and `PgOAuthStateRepo::new` now take the
+  `IdentitySecretCodec`; `AuthPersistence` passes it.
+
 - **Leftover job-dispatch routing and leased resume are removed.** They had
   no caller once the job-dispatch channel was gone. `nebula-engine` drops the
   `daemon::routing` module with `RoutingResolver`, `DefinitionRoutingResolver`,
