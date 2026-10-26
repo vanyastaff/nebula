@@ -136,6 +136,15 @@ changes are expected between minor releases — call them out here.
 
 ### Security
 
+- **Dependencies patched for new RustSec advisories.** `zstd` 0.14 with
+  `zstd-safe` 8.2 and `zstd-sys` 2.1.2 (through `async-compression` 0.4.51 and
+  `compression-codecs` 0.4.46, used by `tower-http` response compression) fix
+  RUSTSEC-2026-0403 and RUSTSEC-2026-0410; `tokio` 1.54.1 fixes
+  RUSTSEC-2026-0386, `ctutils` 0.4.6 fixes RUSTSEC-2026-0385, and the yanked
+  `clipboard-win` 5.4.1 moves to 5.4.3. RUSTSEC-2026-0387 (`crypto-bigint`
+  0.5, reached only through `jsonwebtoken`'s ECDSA code) is ignored in
+  `deny.toml`, like the existing RSA advisory: the API verifies HS256 only.
+
 - **Expressions have a wall-clock budget.** The step budget only counts work
   the evaluator can see, so an expression that compiled a distinct regex per
   loop iteration stayed inside it and held a blocking thread for minutes.
