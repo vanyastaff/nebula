@@ -346,6 +346,12 @@ impl RuntimeRepairHarness {
         let worker_runtime = worker_builder
             .with_control_queue(worker_projection.control_queue)
             .with_timer_scan_interval(PROFILE_TIMER_SCAN_INTERVAL)
+            // An idle consumer widens its poll delay to a second between
+            // claims, and the profile wires no queue wakeup, so a `Start`
+            // accepted over HTTP could wait that long before a scenario's
+            // bounded observation even begins. Poll cadence is not the
+            // behaviour under test, so keep the consumer at its busy interval.
+            .with_control_idle_poll_max(nebula_engine::DEFAULT_POLL_INTERVAL)
             .build()
             .map_err(|_| ProfileErrorKind::WorkerBuild)?;
 
