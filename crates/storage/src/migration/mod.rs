@@ -1267,6 +1267,11 @@ mod tests {
     /// or tenant row changes, so a login in flight across the upgrade only
     /// fails its callback. A build that predates 0015 refuses the schema
     /// rather than writing plaintext verifiers into the new table.
+    ///
+    /// 0016 adds the partial index `ix_executions__finished_at__terminal` over
+    /// terminal executions. Every admitted prefix reaches 0015 first; an index
+    /// changes no row, constraint or admitted state, and a build that predates
+    /// 0016 refuses the schema as with every new head.
     #[test]
     fn new_catalog_head_requires_explicit_admission_policy_review() {
         use crate::migration_catalog::REVIEWED_HEAD;

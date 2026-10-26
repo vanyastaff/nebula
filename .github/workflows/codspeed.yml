@@ -199,7 +199,9 @@ jobs:
     # baseline runs are forced by main push, workflow_dispatch, or the
     # `run-full-ci` label (see `plan` step).
     if: needs.changes.outputs.shards != '[]'
-    runs-on: ubuntu-latest
+    # CodSpeed's runner rejects the ubuntu-26.04 image that `ubuntu-latest`
+    # now resolves to ("Unsupported system"), so pin the last supported one.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false

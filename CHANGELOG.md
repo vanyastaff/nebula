@@ -79,6 +79,16 @@ changes are expected between minor releases — call them out here.
   `NEBULA_WORKER_CONTROL_BATCH_SIZE` set the poll interval, the idle ceiling
   and the claim batch size, and invalid values fail startup.
 
+- **Opt-in retention for finished executions.** Set `API_EXECUTION_RETENTION`
+  (for example `30d`, from `1h` to `36500d`) and the server deletes executions that
+  finished more than that long ago, with their journal, node results, queued
+  commands and other child rows, once at startup and then hourly in batches of
+  500. Unset or `0` keeps executions forever, as before. Live executions and
+  executions holding a revision in an unexpired rollback window are never
+  deleted. `nebula-storage-port` adds the deployment-wide `ExecutionRetention`
+  port, implemented by the SQLite, PostgreSQL and in-memory execution stores;
+  migration 0016 indexes terminal executions by `finished_at`.
+
 ### Fixed
 
 - **Metric label sets no longer grow without bound.** Every distinct label set
