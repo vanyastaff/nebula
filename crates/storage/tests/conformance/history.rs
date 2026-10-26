@@ -204,6 +204,99 @@ pub(crate) async fn assert_due_timers_page_in_wake_order(backend: &dyn Backend) 
     );
 }
 
+/// A recorded cancel makes a live execution due for the timer sweep at once,
+/// whatever its own timer: a far one, or none at all. Its holder's later
+/// commits keep it due, a terminal commit removes it, and a cancel recorded
+/// against a terminal execution never lists it.
+pub(crate) async fn assert_recorded_cancel_makes_a_live_execution_due(backend: &dyn Backend) {
+    let store = backend.execution_store().await;
+    let s = scope_a();
+    let name = backend.name();
+    seed_workflow(backend, &s, "wf_cancel_due").await;
+    let far = chrono::Utc::now() + chrono::Duration::days(1);
+    let due_now = || chrono::Utc::now() + chrono::Duration::minutes(1);
+    let is_due = |id: &'static str| {
+        let store = &store;
+        async move {
+            store
+                .list_due_timers(due_now(), None, 1_000)
+                .await
+                .expect("due scan")
+                .into_iter()
+                .any(|row| row.record.id == id)
+        }
+    };
+
+    // (id, status, own timer)
+    let rows = [
+        ("exe_cancel_far", Status::Running, Some(far)),
+        ("exe_cancel_signal", Status::Paused, None),
+        ("exe_cancel_done", Status::Completed, None),
+    ];
+    let mut tokens = Vec::new();
+    for (id, status, timer) in rows {
+        store
+            .create(&s, id, "wf_cancel_due", serde_json::json!({}))
+            .await
+            .expect("create");
+        let token = lease(store.as_ref(), &s, id).await;
+        let finished = status.is_terminal().then(|| micros(2));
+        let listing =
+            ExecutionListing::new(status, Some(micros(1)), finished).with_next_wake_at(timer);
+        let version = commit_listing(store.as_ref(), &s, id, 0, token, listing).await;
+        tokens.push((id, token, version));
+        assert!(
+            !is_due(id).await,
+            "[{name}] {id} is not due before a cancel"
+        );
+    }
+
+    for (id, _, _) in &tokens {
+        assert!(
+            store.request_cancel(&s, id).await.expect("request_cancel"),
+            "[{name}] the cancel for {id} is recorded under another holder's lease"
+        );
+    }
+    assert!(
+        is_due("exe_cancel_far").await,
+        "[{name}] a recorded cancel makes an execution parked on a far timer due"
+    );
+    assert!(
+        is_due("exe_cancel_signal").await,
+        "[{name}] a recorded cancel makes an execution with no timer due"
+    );
+    assert!(
+        !is_due("exe_cancel_done").await,
+        "[{name}] a cancel recorded against a terminal execution never lists it"
+    );
+
+    // The holder commits again after the request, projecting only its timer.
+    let (_, token, version) = tokens[0];
+    let parked =
+        ExecutionListing::new(Status::Running, Some(micros(1)), None).with_next_wake_at(Some(far));
+    let version =
+        commit_listing(store.as_ref(), &s, "exe_cancel_far", version, token, parked).await;
+    assert!(
+        is_due("exe_cancel_far").await,
+        "[{name}] the holder's later commit keeps the recorded cancel due"
+    );
+
+    let cancelled = ExecutionListing::new(Status::Cancelled, Some(micros(1)), Some(micros(2)));
+    commit_listing(
+        store.as_ref(),
+        &s,
+        "exe_cancel_far",
+        version,
+        token,
+        cancelled,
+    )
+    .await;
+    assert!(
+        !is_due("exe_cancel_far").await,
+        "[{name}] a terminal commit leaves the due scan"
+    );
+}
+
 /// History is newest first with an id tiebreak, pages concatenate to the
 /// whole history without gaps or repeats, an execution created while paging
 /// never shifts a later page, and every filter narrows exactly.

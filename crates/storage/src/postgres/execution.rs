@@ -341,17 +341,26 @@ impl ExecutionStore for PgExecutionStore {
     }
 
     async fn request_cancel(&self, scope: &Scope, id: &str) -> Result<bool, StorageError> {
-        let res = sqlx::query(
-            "UPDATE executions \
-             SET cancel_requested_at = COALESCE(cancel_requested_at, clock_timestamp()) \
+        // One clock reading for both columns: a live execution becomes due
+        // for the timer sweep at the instant its first request was recorded.
+        let sql = format!(
+            "WITH clock AS (SELECT clock_timestamp() AS now) \
+             UPDATE executions \
+             SET cancel_requested_at = COALESCE(cancel_requested_at, clock.now), \
+                 next_wake_at = CASE WHEN status IN ({live}) \
+                     THEN LEAST(next_wake_at, COALESCE(cancel_requested_at, clock.now)) \
+                     ELSE next_wake_at END \
+             FROM clock \
              WHERE org_id = $1 AND workspace_id = $2 AND id = $3",
-        )
-        .bind(&scope.org_id)
-        .bind(&scope.workspace_id)
-        .bind(id)
-        .execute(&self.pool)
-        .await
-        .map_err(storage_error)?;
+            live = listing::LIVE_STATUS_NAMES_SQL,
+        );
+        let res = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(&scope.org_id)
+            .bind(&scope.workspace_id)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(storage_error)?;
         Ok(res.rows_affected() == 1)
     }
 
@@ -657,9 +666,13 @@ pub(super) async fn commit_locked(
         .checked_add(1)
         .filter(|value| i64::try_from(*value).is_ok())
         .ok_or_else(|| StorageError::Internal("execution version exhausted".into()))?;
+    // A recorded cancel keeps a live execution due for the timer sweep
+    // (`request_cancel`): the projected timer alone would hide it again.
     let update = sqlx::query(
         "UPDATE executions SET state = $1, version = $2, updated_at = $3, \
-                status = $4, started_at = $5, finished_at = $6, next_wake_at = $11 \
+                status = $4, started_at = $5, finished_at = $6, \
+                next_wake_at = CASE WHEN $12 AND cancel_requested_at IS NOT NULL \
+                    THEN LEAST($11, cancel_requested_at) ELSE $11 END \
          WHERE org_id = $7 AND workspace_id = $8 AND id = $9 \
            AND octet_length($1::jsonb::text) <= $10",
     )
@@ -684,6 +697,7 @@ pub(super) async fn commit_locked(
             .next_wake_at()
             .map(MicrosInstant::to_datetime),
     )
+    .bind(!batch.listing().status().is_terminal())
     .execute(&mut **tx)
     .await
     .map_err(storage_error)?;

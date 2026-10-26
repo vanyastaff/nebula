@@ -49,6 +49,16 @@ changes are expected between minor releases — call them out here.
 
 ### Fixed
 
+- **A cancel no longer waits on a dead worker's parked execution.** A `Cancel`
+  drained while another worker held the execution's lease was recorded for
+  that holder and acknowledged. When the holder died first, nothing applied
+  it until the execution's own timer fired (up to 24 hours for `core.delay`),
+  or ever for a signal wait without a timeout. `ExecutionStore::request_cancel`
+  now also makes a live execution due for `list_due_timers` at the request's
+  instant, and commits keep it due until the execution is terminal, on
+  SQLite, PostgreSQL and the in-memory adapter. The durable-timer sweep
+  cancels such an execution once its lease is free. No migration is needed.
+
 - **Metric label sets no longer grow without bound.** Every distinct label set
   used to create a new series that lived until `retain_recent`, and nothing
   stopped an id or URL from becoming a label. `MetricsRegistry` now enforces
