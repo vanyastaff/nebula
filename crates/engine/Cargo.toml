@@ -90,7 +90,7 @@ pretty_assertions = { workspace = true }
 proptest = { workspace = true }
 rstest = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["trace"] }
-tracing-subscriber = { workspace = true, default-features = false, features = ["registry", "std"] }
+tracing-subscriber = { workspace = true, default-features = false, features = ["fmt", "registry", "std"] }
 
 [lib]
 doctest = false
