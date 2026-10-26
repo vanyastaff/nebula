@@ -18,6 +18,10 @@ unmaintained = "workspace"
 yanked = "deny"
 ignore = [
   { id = "RUSTSEC-2023-0071", reason = "rsa pulled by jsonwebtoken rust_crypto feature; project uses HS256 only, RSA code path never reached" },
+  # crypto-bigint 0.5 comes only through jsonwebtoken 10's rust_crypto ECDSA
+  # (p256/p384 via elliptic-curve 0.13); the fix ships in 0.7.6, which
+  # elliptic-curve 0.13 cannot take. Drop once jsonwebtoken moves to it.
+  { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 via jsonwebtoken rust_crypto ECDSA; project verifies HS256 only, EC code path never reached" },
   # zip 3 is a build-only dependency of utoipa-swagger-ui 9, which pins zip 3;
   # the fix ships in zip 9. Its build.rs writes entries itself through
   # `enclosed_name()` and never calls `ZipArchive::extract` /
