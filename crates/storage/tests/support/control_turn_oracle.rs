@@ -1012,6 +1012,8 @@ pub(super) async fn refusals_survive_observation_faults(
         // Each kind refuses its own delivery, so receipts never collide.
         let claim = command(ports, &seed, ControlCommand::Restart, None).await;
         let (refused, current_claim, finish) = if kind.stale_claim() {
+            // SQL reclaim compares millisecond timestamps strictly, so leave the claim tick.
+            tokio::time::sleep(Duration::from_millis(3)).await;
             assert_eq!(
                 ports
                     .queue
