@@ -69,9 +69,12 @@ pub struct IdempotencyApiConfig {
     /// Storage backend for cached idempotent responses.
     ///
     /// `Memory` is correct for dev / single-process tests but loses dedup
-    /// state across restart and across runners — operators must select
-    /// `Postgres` for any deployment that runs more than one API replica
-    /// or expects stable behaviour across restarts.
+    /// state across restart and across runners. When
+    /// `API_IDEMPOTENCY_BACKEND` is unset, [`ApiConfig::from_env`] picks
+    /// [`IdempotencyBackend::default_for`] the execution backend, so a
+    /// PostgreSQL deployment shares replay records across replicas.
+    ///
+    /// [`ApiConfig::from_env`]: super::ApiConfig::from_env
     pub backend: IdempotencyBackend,
 
     /// Cached-entry lifetime in seconds. Defaults to
@@ -115,6 +118,24 @@ pub enum IdempotencyBackend {
     /// PostgreSQL-backed durable store (see idempotency backend). Survives restart
     /// and is shared across runners that point at the same database.
     Postgres,
+}
+
+impl IdempotencyBackend {
+    /// Backend used when `API_IDEMPOTENCY_BACKEND` is unset.
+    ///
+    /// A PostgreSQL execution backend means replicas share one deployment
+    /// database, so replay records belong there too: with process-local
+    /// entries a retry routed to another replica would execute again. Every
+    /// other execution backend, and a build without the `postgres` feature,
+    /// keeps `Memory`.
+    #[must_use]
+    pub const fn default_for(execution: &ExecutionBackendKind) -> Self {
+        if cfg!(feature = "postgres") && matches!(execution, ExecutionBackendKind::Postgres) {
+            Self::Postgres
+        } else {
+            Self::Memory
+        }
+    }
 }
 
 impl IdempotencyApiConfig {
@@ -529,6 +550,68 @@ mod tests {
             cfg.idempotency.sweep_interval_secs,
             IdempotencyApiConfig::DEFAULT_SWEEP_INTERVAL_SECS
         );
+    }
+
+    #[test]
+    fn idempotency_default_follows_execution_backend() {
+        let expected_for_postgres = if cfg!(feature = "postgres") {
+            IdempotencyBackend::Postgres
+        } else {
+            IdempotencyBackend::Memory
+        };
+        assert_eq!(
+            IdempotencyBackend::default_for(&ExecutionBackendKind::Postgres),
+            expected_for_postgres
+        );
+        assert_eq!(
+            IdempotencyBackend::default_for(&ExecutionBackendKind::Sqlite),
+            IdempotencyBackend::Memory
+        );
+        assert_eq!(
+            IdempotencyBackend::default_for(&ExecutionBackendKind::Memory),
+            IdempotencyBackend::Memory
+        );
+    }
+
+    #[test]
+    fn from_env_idempotency_defaults_to_postgres_with_postgres_execution() {
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
+        env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+        env.set("API_EXECUTION_BACKEND", "postgres");
+
+        let cfg = ApiConfig::from_env().expect("config must load");
+        assert_eq!(cfg.execution.backend, ExecutionBackendKind::Postgres);
+        let expected = if cfg!(feature = "postgres") {
+            IdempotencyBackend::Postgres
+        } else {
+            IdempotencyBackend::Memory
+        };
+        assert_eq!(cfg.idempotency.backend, expected);
+    }
+
+    #[test]
+    fn from_env_idempotency_defaults_to_memory_with_sqlite_execution() {
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
+        env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+        env.set("API_EXECUTION_BACKEND", "sqlite");
+
+        let cfg = ApiConfig::from_env().expect("config must load");
+        assert_eq!(cfg.idempotency.backend, IdempotencyBackend::Memory);
+    }
+
+    #[test]
+    fn from_env_explicit_memory_idempotency_wins_over_postgres_execution() {
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
+        env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+        env.set("API_EXECUTION_BACKEND", "postgres");
+        env.set("API_IDEMPOTENCY_BACKEND", "memory");
+
+        let cfg = ApiConfig::from_env().expect("config must load");
+        assert_eq!(cfg.execution.backend, ExecutionBackendKind::Postgres);
+        assert_eq!(cfg.idempotency.backend, IdempotencyBackend::Memory);
     }
 
     #[test]

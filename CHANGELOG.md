@@ -91,6 +91,16 @@ changes are expected between minor releases — call them out here.
 
 ### Fixed
 
+- **HTTP replay defaults to PostgreSQL in a PostgreSQL deployment.** With
+  `API_IDEMPOTENCY_BACKEND` unset, `ApiConfig::from_env` chose `memory` even
+  under `API_EXECUTION_BACKEND=postgres`, so each replica kept its own
+  `Idempotency-Key` records and a retry routed to another replica executed
+  again. An unset backend now follows the execution backend
+  (`IdempotencyBackend::default_for`): `postgres` with a PostgreSQL execution
+  backend in a build with the `postgres` feature, `memory` otherwise. An
+  explicit `API_IDEMPOTENCY_BACKEND=memory` still wins, and an explicit
+  `postgres` without a PostgreSQL execution backend still fails at startup.
+
 - **A cancel no longer waits on a dead worker's parked execution.** A `Cancel`
   drained while another worker held the execution's lease was recorded for
   that holder and acknowledged. When the holder died first, nothing applied
