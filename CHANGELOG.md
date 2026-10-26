@@ -79,6 +79,16 @@ changes are expected between minor releases — call them out here.
   `NEBULA_WORKER_CONTROL_BATCH_SIZE` set the poll interval, the idle ceiling
   and the claim batch size, and invalid values fail startup.
 
+- **Opt-in retention for finished executions.** Set `API_EXECUTION_RETENTION`
+  (for example `30d`, from `1h` to `36500d`) and the server deletes executions that
+  finished more than that long ago, with their journal, node results, queued
+  commands and other child rows, once at startup and then hourly in batches of
+  500. Unset or `0` keeps executions forever, as before. Live executions and
+  executions holding a revision in an unexpired rollback window are never
+  deleted. `nebula-storage-port` adds the deployment-wide `ExecutionRetention`
+  port, implemented by the SQLite, PostgreSQL and in-memory execution stores;
+  migration 0016 indexes terminal executions by `finished_at`.
+
 ### Fixed
 
 - **Metric label sets no longer grow without bound.** Every distinct label set
@@ -135,6 +145,15 @@ changes are expected between minor releases — call them out here.
   answer in node-id byte order on every backend.
 
 ### Security
+
+- **Dependencies patched for new RustSec advisories.** `zstd` 0.14 with
+  `zstd-safe` 8.2 and `zstd-sys` 2.1.2 (through `async-compression` 0.4.51 and
+  `compression-codecs` 0.4.46, used by `tower-http` response compression) fix
+  RUSTSEC-2026-0403 and RUSTSEC-2026-0410; `tokio` 1.54.1 fixes
+  RUSTSEC-2026-0386, `ctutils` 0.4.6 fixes RUSTSEC-2026-0385, and the yanked
+  `clipboard-win` 5.4.1 moves to 5.4.3. RUSTSEC-2026-0387 (`crypto-bigint`
+  0.5, reached only through `jsonwebtoken`'s ECDSA code) is ignored in
+  `deny.toml`, like the existing RSA advisory: the API verifies HS256 only.
 
 - **Expressions have a wall-clock budget.** The step budget only counts work
   the evaluator can see, so an expression that compiled a distinct regex per

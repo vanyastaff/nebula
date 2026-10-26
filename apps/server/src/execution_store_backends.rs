@@ -40,13 +40,17 @@ fn build_memory_execution_stores(
         InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
     };
 
-    let execution_store = InMemoryExecutionStore::new();
+    let node_results = InMemoryNodeResultStore::new();
+    let idempotency = InMemoryIdempotencyGuard::new();
+    // The retention sweep deletes a finished execution's node rows and
+    // idempotency marks with it, as the SQL backends' cascades do.
+    let execution_store = InMemoryExecutionStore::new()
+        .with_retention_companions(node_results.clone(), idempotency.clone());
     let control_queue = InMemoryControlQueue::new(&execution_store);
     let journal = InMemoryJournalReader::new(&execution_store);
     let start_acceptance = Arc::new(InMemoryStartAcceptanceStore::new(&execution_store));
     let resume_token_store = execution_store.resume_token_store();
     let resume_producer = execution_store.resume_producer();
-    let node_results = InMemoryNodeResultStore::new();
     let workflow_versions = InMemoryWorkflowVersionStore::new();
     let workflow_store =
         InMemoryWorkflowStore::new_with_versions(&workflow_versions, &execution_store);
@@ -81,7 +85,7 @@ fn build_memory_execution_stores(
                 journal: projected_journal,
                 node_results: projected_node_results,
                 checkpoints: Arc::new(InMemoryCheckpointStore::new(&execution_store)),
-                idempotency: Arc::new(InMemoryIdempotencyGuard::new()),
+                idempotency: Arc::new(idempotency),
                 resume_tokens: projected_resume_tokens,
                 operation_ledger: Arc::new(InMemoryOperationLedger::new(&execution_store)),
             },
@@ -118,6 +122,7 @@ fn build_memory_execution_stores(
         workflow_version_store: Arc::new(workflow_versions),
         resource_store: Arc::new(resource_store),
         resource_status_store,
+        execution_retention: Arc::new(execution_store.clone()),
         execution_store: Arc::new(execution_store),
         node_result_store: Arc::new(node_results),
         trigger_store: Arc::new(nebula_storage::inmem::InMemoryTriggerStore::new()),
@@ -159,8 +164,12 @@ fn build_sqlite_execution_stores(
         Arc::new(SqliteWorkflowStore::new(pool.clone()));
     let workflow_version_store: Arc<dyn nebula_storage_port::store::WorkflowVersionStore> =
         Arc::new(SqliteWorkflowVersionStore::new(pool.clone()));
-    let execution_store: Arc<dyn nebula_storage_port::store::ExecutionStore> =
+    let sqlite_execution_store =
         Arc::new(SqliteExecutionStore::new(pool.clone()).with_read_pool(reads.clone()));
+    let execution_retention: Arc<dyn nebula_storage_port::store::ExecutionRetention> =
+        sqlite_execution_store.clone();
+    let execution_store: Arc<dyn nebula_storage_port::store::ExecutionStore> =
+        sqlite_execution_store;
     let journal_reader: Arc<dyn nebula_storage_port::store::ExecutionJournalReader> =
         Arc::new(SqliteJournalReader::new(reads));
     let resume_token_store: Arc<dyn nebula_storage_port::store::ResumeTokenStore> =
@@ -228,6 +237,7 @@ fn build_sqlite_execution_stores(
             pool.clone(),
         )),
         execution_store,
+        execution_retention,
         node_result_store: node_results,
         trigger_store: Arc::new(nebula_storage::sqlite::SqliteTriggerStore::new(
             pool.clone(),
@@ -263,8 +273,10 @@ fn build_postgres_execution_stores(
         Arc::new(PgWorkflowStore::new(pool.clone()));
     let workflow_version_store: Arc<dyn nebula_storage_port::store::WorkflowVersionStore> =
         Arc::new(PgWorkflowVersionStore::new(pool.clone()));
-    let execution_store: Arc<dyn nebula_storage_port::store::ExecutionStore> =
-        Arc::new(PgExecutionStore::new(pool.clone()));
+    let pg_execution_store = Arc::new(PgExecutionStore::new(pool.clone()));
+    let execution_retention: Arc<dyn nebula_storage_port::store::ExecutionRetention> =
+        pg_execution_store.clone();
+    let execution_store: Arc<dyn nebula_storage_port::store::ExecutionStore> = pg_execution_store;
     let node_result_store: Arc<dyn nebula_storage_port::store::NodeResultStore> =
         Arc::new(PgNodeResultStore::new(pool.clone()));
     let journal_reader: Arc<dyn nebula_storage_port::store::ExecutionJournalReader> =
@@ -338,6 +350,7 @@ fn build_postgres_execution_stores(
             pool.clone(),
         )),
         execution_store,
+        execution_retention,
         node_result_store,
         trigger_store: Arc::new(nebula_storage::postgres::PgTriggerStore::new(pool.clone())),
         webhook_activation_store: Arc::new(

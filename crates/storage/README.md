@@ -478,7 +478,7 @@ only control-command outbox.
 
 | Artifact | Status | Notes |
 |---|---|---|
-| `executions` row + state JSON | **Durable** (CAS via `ExecutionStore` + `TransitionBatch`) | Source of truth |
+| `executions` row + state JSON | **Durable** (CAS via `ExecutionStore` + `TransitionBatch`) | Source of truth. Kept forever unless the deployment opts into `ExecutionRetention`: a terminal execution whose `finished_at` is past the retention is deleted with every row beneath it, oldest first in bounded batches (index `ix_executions__finished_at__terminal`, migration 0016); live executions and ones in an unexpired rollback window are never deleted. Verified by the `retention_*` conformance cases |
 | `execution_journal` (append-only) | **Durable** | Replayable history; appended in the same commit as state. Written by the execution-control owner and the operation ledger; `TransitionBatch::journal` rows have no producer yet (#1013) |
 | `execution_control_queue` (outbox) | **Durable** | At-least-once cancel/dispatch; written in the same `TransitionBatch` (§12.2); rows cascade with their execution |
 | iteration checkpoints (`iteration_checkpoints`) | **Durable + fenced** (SQLite/PostgreSQL; in-memory reference shares the execution store) | Saved under the live execution lease, monotone per `(tenant, execution, node, action key, action version)`, cascades with its execution. An unavailable save only skips the optimisation (the next attempt replays from an earlier checkpoint or iteration 0); never authority over effects — the operation ledger is. Verified by `iteration_checkpoint_conformance_{inmem,sqlite,postgres}` and the engine `journal_checkpoint` suite |

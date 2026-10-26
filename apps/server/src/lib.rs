@@ -13,6 +13,7 @@ mod credential_runtime;
 mod deployment_database;
 mod email;
 mod execution_binding_resolver;
+mod execution_retention;
 mod execution_runtime;
 mod execution_store_backends;
 mod oauth_egress;

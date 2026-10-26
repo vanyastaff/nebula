@@ -125,6 +125,31 @@ pub(super) fn execution_live_flavor(
         .map(|row| row.reference.ids.worker_flavor())
 }
 
+/// Whether the execution still holds its revision in a rollback window that
+/// has not ended at `now`.
+pub(super) fn holds_unexpired_rollback(
+    catalog: &RevisionCatalogState,
+    execution_id: ExecutionId,
+    now: DateTime<Utc>,
+) -> bool {
+    catalog
+        .references
+        .get(&RevisionReferenceOwner::for_execution(execution_id))
+        .is_some_and(|row| {
+            matches!(row.state, RevisionReferenceState::Rollback { retain_until, .. } if retain_until > now)
+        })
+}
+
+/// Drop the execution's reference, as the SQL row cascades with the execution.
+pub(super) fn forget_execution_reference(
+    catalog: &mut RevisionCatalogState,
+    execution_id: ExecutionId,
+) {
+    catalog
+        .references
+        .remove(&RevisionReferenceOwner::for_execution(execution_id));
+}
+
 pub(super) fn execution_matches_live_flavor(
     catalog: &RevisionCatalogState,
     execution_id: ExecutionId,

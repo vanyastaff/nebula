@@ -57,7 +57,7 @@ fn input_key(scope: &Scope, execution_id: &str) -> InputKey {
 }
 
 #[derive(Debug, Default)]
-struct NodeResultState {
+pub(super) struct NodeResultState {
     /// Raw per-node outputs (latest write wins per key).
     outputs: HashMap<NodeKey, NodeResultRecord>,
     /// Full typed per-node result records (latest write wins per key).
@@ -78,6 +78,26 @@ impl InMemoryNodeResultStore {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Lock the slots so an execution retention sweep can delete an
+    /// execution's rows inside its own critical section.
+    pub(super) fn lock_for_purge(&self) -> parking_lot::MutexGuard<'_, NodeResultState> {
+        self.inner.lock()
+    }
+}
+
+/// Delete every output, result and workflow input of `execution_id` in
+/// `scope`, as the SQL backends' `ON DELETE CASCADE` from `executions` does.
+pub(super) fn forget_execution_locked(st: &mut NodeResultState, scope: &Scope, execution_id: &str) {
+    let owned = |workspace_id: &str, org_id: &str, owner: &str| {
+        owner == execution_id && workspace_id == scope.workspace_id && org_id == scope.org_id
+    };
+    st.outputs
+        .retain(|(workspace_id, org_id, owner, _), _| !owned(workspace_id, org_id, owner));
+    st.results
+        .retain(|(workspace_id, org_id, owner, _), _| !owned(workspace_id, org_id, owner));
+    st.inputs
+        .retain(|(workspace_id, org_id, owner), _| !owned(workspace_id, org_id, owner));
 }
 
 #[async_trait::async_trait]

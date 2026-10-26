@@ -198,6 +198,14 @@ matrix!(
 );
 matrix!(history_is_scope_isolated, assert_history_is_scope_isolated);
 matrix!(
+    retention_deletes_only_old_terminal_executions,
+    harness::assert_retention_deletes_only_old_terminal_executions
+);
+matrix!(
+    retention_keeps_unexpired_rollback_windows,
+    harness::assert_retention_keeps_unexpired_rollback_windows
+);
+matrix!(
     due_timers_page_in_wake_order,
     assert_due_timers_page_in_wake_order
 );

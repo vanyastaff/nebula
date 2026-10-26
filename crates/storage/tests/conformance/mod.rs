@@ -31,9 +31,10 @@ use nebula_storage_port::dto::{
     WorkflowVersionRecord,
 };
 use nebula_storage_port::store::{
-    ClaimGeneration, ControlClaimToken, ControlQueue, ExecutionJournalReader, ExecutionStore,
-    IdempotencyGuard, StartAcceptanceStore, StartContractIdentity, StartMaterialization,
-    TriggerStore, WebhookActivationStore, WorkflowStore, WorkflowVersionStore,
+    ClaimGeneration, ControlClaimToken, ControlQueue, ExecutionJournalReader, ExecutionRetention,
+    ExecutionStore, IdempotencyGuard, NodeResultStore, StartAcceptanceStore, StartContractIdentity,
+    StartMaterialization, TriggerStore, WebhookActivationStore, WorkflowStore,
+    WorkflowVersionStore,
 };
 use nebula_storage_port::{
     BeginDrainOutcome, ExecutionReferenceTransition, FencingToken, PlanFlavorCatalogAdmin,
@@ -64,6 +65,9 @@ pub(crate) trait Backend: Send + Sync {
     fn name(&self) -> &'static str;
     /// An execution store backed by this backend.
     async fn execution_store(&self) -> Arc<dyn ExecutionStore>;
+    /// The deployment-wide finished-execution retention over the same store
+    /// as [`Backend::execution_store`]. Never scope-bound.
+    async fn execution_retention(&self) -> Arc<dyn ExecutionRetention>;
     /// The execution store the worker's timer sweep lists from. A raw
     /// backend returns [`Backend::execution_store`]; a tenant-bound backend
     /// returns its unwrapped store, because `list_due_timers` is
@@ -73,6 +77,8 @@ pub(crate) trait Backend: Send + Sync {
     }
     /// An idempotency guard backed by this backend.
     async fn idempotency_guard(&self) -> Arc<dyn IdempotencyGuard>;
+    /// The node-output / node-result store over the same executions.
+    async fn node_result_store(&self) -> Arc<dyn NodeResultStore>;
     /// A control-queue (durable outbox) backed by this backend, sharing
     /// the same store as [`Backend::execution_store`] so a `commit`'s
     /// outbox rows are observable through `claim_pending`.
@@ -186,6 +192,7 @@ async fn seed_execution(backend: &dyn Backend, scope: &Scope, execution_id: &str
 pub(crate) struct InMemoryBackend {
     store: nebula_storage::inmem::InMemoryExecutionStore,
     guard: nebula_storage::inmem::InMemoryIdempotencyGuard,
+    node_results: nebula_storage::inmem::InMemoryNodeResultStore,
     webhook: nebula_storage::inmem::InMemoryWebhookActivationStore,
     workflow: nebula_storage::inmem::InMemoryWorkflowStore,
     workflow_version: nebula_storage::inmem::InMemoryWorkflowVersionStore,
@@ -198,14 +205,20 @@ impl Default for InMemoryBackend {
         // core) so `save_with_published_version` is genuinely atomic
         // across the pair under the conformance matrix.
         let workflow_version = nebula_storage::inmem::InMemoryWorkflowVersionStore::new();
-        let store = nebula_storage::inmem::InMemoryExecutionStore::new();
+        // A retention sweep deletes the execution-owned rows these separate
+        // stores hold, as the SQL backends' cascades do.
+        let guard = nebula_storage::inmem::InMemoryIdempotencyGuard::new();
+        let node_results = nebula_storage::inmem::InMemoryNodeResultStore::new();
+        let store = nebula_storage::inmem::InMemoryExecutionStore::new()
+            .with_retention_companions(node_results.clone(), guard.clone());
         let workflow = nebula_storage::inmem::InMemoryWorkflowStore::new_with_versions(
             &workflow_version,
             &store,
         );
         Self {
             store,
-            guard: nebula_storage::inmem::InMemoryIdempotencyGuard::new(),
+            guard,
+            node_results,
             webhook: nebula_storage::inmem::InMemoryWebhookActivationStore::new(),
             workflow,
             workflow_version,
@@ -221,8 +234,14 @@ impl Backend for InMemoryBackend {
     async fn execution_store(&self) -> Arc<dyn ExecutionStore> {
         Arc::new(self.store.clone())
     }
+    async fn execution_retention(&self) -> Arc<dyn ExecutionRetention> {
+        Arc::new(self.store.clone())
+    }
     async fn idempotency_guard(&self) -> Arc<dyn IdempotencyGuard> {
         Arc::new(self.guard.clone())
+    }
+    async fn node_result_store(&self) -> Arc<dyn NodeResultStore> {
+        Arc::new(self.node_results.clone())
     }
     async fn control_queue(&self) -> Arc<dyn ControlQueue> {
         Arc::new(nebula_storage::inmem::InMemoryControlQueue::new(
@@ -318,6 +337,16 @@ impl Backend for SqliteBackend {
         unimplemented!("build with --features sqlite to exercise the SQLite backend")
     }
     #[cfg(feature = "sqlite")]
+    async fn execution_retention(&self) -> Arc<dyn ExecutionRetention> {
+        Arc::new(nebula_storage::sqlite::SqliteExecutionStore::new(
+            self.pool().await,
+        ))
+    }
+    #[cfg(not(feature = "sqlite"))]
+    async fn execution_retention(&self) -> Arc<dyn ExecutionRetention> {
+        unimplemented!("build with --features sqlite to exercise the SQLite backend")
+    }
+    #[cfg(feature = "sqlite")]
     async fn idempotency_guard(&self) -> Arc<dyn IdempotencyGuard> {
         Arc::new(nebula_storage::sqlite::SqliteIdempotencyGuard::new(
             self.pool().await,
@@ -325,6 +354,16 @@ impl Backend for SqliteBackend {
     }
     #[cfg(not(feature = "sqlite"))]
     async fn idempotency_guard(&self) -> Arc<dyn IdempotencyGuard> {
+        unimplemented!("build with --features sqlite to exercise the SQLite backend")
+    }
+    #[cfg(feature = "sqlite")]
+    async fn node_result_store(&self) -> Arc<dyn NodeResultStore> {
+        Arc::new(nebula_storage::sqlite::SqliteNodeResultStore::new(
+            self.pool().await,
+        ))
+    }
+    #[cfg(not(feature = "sqlite"))]
+    async fn node_result_store(&self) -> Arc<dyn NodeResultStore> {
         unimplemented!("build with --features sqlite to exercise the SQLite backend")
     }
     #[cfg(feature = "sqlite")]
@@ -544,6 +583,16 @@ impl Backend for PostgresBackend {
         unimplemented!("build with --features postgres to exercise the Postgres backend")
     }
     #[cfg(feature = "postgres")]
+    async fn execution_retention(&self) -> Arc<dyn ExecutionRetention> {
+        Arc::new(nebula_storage::postgres::PgExecutionStore::new(
+            self.pool().await,
+        ))
+    }
+    #[cfg(not(feature = "postgres"))]
+    async fn execution_retention(&self) -> Arc<dyn ExecutionRetention> {
+        unimplemented!("build with --features postgres to exercise the Postgres backend")
+    }
+    #[cfg(feature = "postgres")]
     async fn idempotency_guard(&self) -> Arc<dyn IdempotencyGuard> {
         Arc::new(nebula_storage::postgres::PgIdempotencyGuard::new(
             self.pool().await,
@@ -551,6 +600,16 @@ impl Backend for PostgresBackend {
     }
     #[cfg(not(feature = "postgres"))]
     async fn idempotency_guard(&self) -> Arc<dyn IdempotencyGuard> {
+        unimplemented!("build with --features postgres to exercise the Postgres backend")
+    }
+    #[cfg(feature = "postgres")]
+    async fn node_result_store(&self) -> Arc<dyn NodeResultStore> {
+        Arc::new(nebula_storage::postgres::PgNodeResultStore::new(
+            self.pool().await,
+        ))
+    }
+    #[cfg(not(feature = "postgres"))]
+    async fn node_result_store(&self) -> Arc<dyn NodeResultStore> {
         unimplemented!("build with --features postgres to exercise the Postgres backend")
     }
     #[cfg(feature = "postgres")]
@@ -705,6 +764,7 @@ mod dispatch;
 mod history;
 mod requirements;
 pub(crate) mod resources;
+mod retention;
 
 pub(crate) use dispatch::{
     assert_dispatch_writes_require_live_parents, assert_queue_rows_cascade_with_their_execution,
@@ -713,6 +773,10 @@ pub(crate) use dispatch::{
 pub(crate) use history::{
     assert_due_timers_page_in_wake_order, assert_history_is_scope_isolated,
     assert_history_orders_filters_and_pages, assert_status_projection_follows_commit,
+};
+pub(crate) use retention::{
+    assert_retention_deletes_only_old_terminal_executions,
+    assert_retention_keeps_unexpired_rollback_windows,
 };
 
 /// Postgres skip decision, resolved by feature flag so there is exactly
@@ -2662,6 +2726,11 @@ impl<B: Backend> Backend for ScopedBackend<B> {
         ))
     }
 
+    async fn execution_retention(&self) -> Arc<dyn ExecutionRetention> {
+        // Deployment-wide by design: tenancy has no decorator for it.
+        self.inner.execution_retention().await
+    }
+
     async fn worker_execution_store(&self) -> Arc<dyn ExecutionStore> {
         self.inner.execution_store().await
     }
@@ -2669,6 +2738,13 @@ impl<B: Backend> Backend for ScopedBackend<B> {
     async fn idempotency_guard(&self) -> Arc<dyn IdempotencyGuard> {
         Arc::new(nebula_tenancy::ScopedIdempotencyGuard::new(
             self.inner.idempotency_guard().await,
+            scope_a(),
+        ))
+    }
+
+    async fn node_result_store(&self) -> Arc<dyn NodeResultStore> {
+        Arc::new(nebula_tenancy::ScopedNodeResultStore::new(
+            self.inner.node_result_store().await,
             scope_a(),
         ))
     }
