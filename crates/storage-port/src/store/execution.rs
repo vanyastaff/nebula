@@ -110,6 +110,14 @@ pub trait ExecutionStore: Send + Sync + std::fmt::Debug {
     /// changes the aggregate's version, so it cannot conflict with the
     /// holder's commits.
     ///
+    /// While the execution is not terminal, the request also makes it due for
+    /// [`Self::list_due_timers`] at the request's instant, in the same write,
+    /// and every later non-terminal [`Self::commit`] keeps it due. A parked
+    /// execution has no runner that would acquire it before its own timer,
+    /// so without this a holder that dies leaves the cancel unapplied until
+    /// that timer, or forever when it has none; the due listing hands the
+    /// cancel to the timer sweep once the lease is free.
+    ///
     /// Returns `false` when no execution `id` exists in `scope`.
     ///
     /// # Errors
@@ -125,6 +133,11 @@ pub trait ExecutionStore: Send + Sync + std::fmt::Debug {
 
     /// Up to `limit` executions across ALL tenant scopes whose earliest durable
     /// timer (the listing's `next_wake_at`) is at or before `due_at`.
+    ///
+    /// A non-terminal execution with a [recorded cancel](Self::request_cancel)
+    /// is due at the request's instant if that is earlier than its timer, so
+    /// the sweep also finds executions whose cancel is waiting for the lease
+    /// to come free.
     ///
     /// Used by the durable-timer wake scanner to find parked timers with no
     /// live owner regardless of tenant. Rows are ordered by

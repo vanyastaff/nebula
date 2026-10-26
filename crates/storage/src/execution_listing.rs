@@ -22,3 +22,23 @@ pub(crate) fn decode_sort_key(micros: i64) -> Result<MicrosInstant, StorageError
     MicrosInstant::from_micros(micros)
         .ok_or_else(|| StorageError::Corrupt("execution instant is out of range".into()))
 }
+
+/// SQL list of the stored names of every non-terminal status, for a
+/// `status IN (...)` test against the row's current status.
+pub(crate) const LIVE_STATUS_NAMES_SQL: &str = "'created', 'running', 'paused', 'cancelling'";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_status_names_are_exactly_the_non_terminal_statuses() {
+        let expected = ExecutionListingStatus::ALL
+            .into_iter()
+            .filter(|status| !status.is_terminal())
+            .map(|status| format!("'{}'", status.as_str()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        assert_eq!(LIVE_STATUS_NAMES_SQL, expected);
+    }
+}

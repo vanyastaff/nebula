@@ -24,6 +24,14 @@
 //! `resume_execution` acquires it and drives the wake. The scanner therefore
 //! adds no new persisted state and no new claim protocol — it only re-invokes,
 //! under the existing lease discipline, the wake path that already works.
+//!
+//! The sweep is also how a **recorded cancel** reaches a parked execution. A
+//! `Cancel` drained while another runner holds the lease is recorded on the row
+//! (`ExecutionStore::request_cancel`), which also makes the row due at once.
+//! A live holder reads the request from its heartbeat; a dead one never does,
+//! and nothing else acquires a parked execution before its own timer, so a row
+//! that is due with no overdue timer but a recorded cancel is cancelled here
+//! through `cancel_dangling_nodes` once its lease is free.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -43,7 +51,8 @@ const TIMER_SCAN_PAGE: u32 = 256;
 impl WorkflowEngine {
     /// Re-drive every `Running` execution across ALL tenant scopes that has an
     /// overdue parked timer but no live owner, firing the wake the crashed runner
-    /// would have fired.
+    /// would have fired, and cancel every listed execution with no overdue timer
+    /// whose cancel was recorded while another runner held its lease.
     ///
     /// The execution lease is the dead-vs-live oracle: a live owner holds it
     /// (`resume_execution` → [`EngineError::Leased`] → skipped, no double-drive);
@@ -56,8 +65,8 @@ impl WorkflowEngine {
     /// Each row is re-driven under its OWN persisted scope so multi-tenant
     /// workers need no per-scope wiring — a single sweep covers all tenants.
     ///
-    /// Returns the number of executions re-driven. Per-execution errors are
-    /// logged and never abort the sweep.
+    /// Returns the number of executions re-driven or cancelled. Per-execution
+    /// errors are logged and never abort the sweep.
     ///
     /// # Errors
     ///
@@ -116,7 +125,26 @@ impl WorkflowEngine {
                     ns.state == NodeState::Waiting
                         && ns.next_attempt_at.is_some_and(|when| when <= now)
                 });
-                if !has_overdue_timer {
+                // Without an overdue timer the row is listed for a recorded
+                // cancel (`request_cancel` makes a live row due at once).
+                let cancel_due = !has_overdue_timer
+                    && match stores
+                        .execution
+                        .cancel_requested(&record.scope, &record.id)
+                        .await
+                    {
+                        Ok(requested) => requested,
+                        Err(e) => {
+                            tracing::warn!(
+                                target = "engine::timer_scan",
+                                execution_id = %record.id,
+                                error = %e,
+                                "could not read the recorded cancel request; will retry next sweep"
+                            );
+                            false
+                        },
+                    };
+                if !has_overdue_timer && !cancel_due {
                     continue;
                 }
                 let Ok(execution_id) = record.id.parse::<ExecutionId>() else {
@@ -127,23 +155,35 @@ impl WorkflowEngine {
                     );
                     continue;
                 };
-                match self.resume_execution(&record.scope, execution_id).await {
-                    Ok(_) => {
+                let redrive = if cancel_due {
+                    self.cancel_dangling_nodes(&record.scope, execution_id)
+                        .await
+                        .map(drop)
+                } else {
+                    self.resume_execution(&record.scope, execution_id)
+                        .await
+                        .map(drop)
+                };
+                match redrive {
+                    Ok(()) => {
                         redriven += 1;
                         tracing::debug!(
                             target = "engine::timer_scan",
                             %execution_id,
-                            "re-drove overdue timer wake for a no-live-owner execution"
+                            cancel = cancel_due,
+                            "re-drove a no-live-owner execution: overdue timer wake or recorded cancel"
                         );
                     },
-                    // Live owner holds the lease — it will fire the wake in-process.
+                    // Live owner holds the lease — it fires the wake in-process,
+                    // and its heartbeat observes a recorded cancel.
                     Err(EngineError::Leased { .. }) => {},
                     Err(e) => {
                         tracing::warn!(
                             target = "engine::timer_scan",
                             %execution_id,
                             error = %e,
-                            "overdue-timer re-drive failed; will retry next sweep"
+                            cancel = cancel_due,
+                            "re-drive of a due execution failed; will retry next sweep"
                         );
                     },
                 }

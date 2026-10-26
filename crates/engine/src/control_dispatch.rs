@@ -1227,8 +1227,11 @@ impl ControlDispatch for EngineControlDispatch {
                         // A live owner on another runner holds the lease, and
                         // this process cannot reach its cancel registry. The
                         // recorded request reaches it instead: its heartbeat
-                        // trips the frontier's cancel token, and a successor
-                        // holder observes the request on acquire. Ack.
+                        // trips the frontier's cancel token. If that owner
+                        // dies first, the request made the execution due, so
+                        // the durable-timer sweep cancels it once the lease is
+                        // free, even when it is parked on a far timer or on a
+                        // signal with none. Ack.
                         tracing::info!(
                             %execution_id,
                             %holder,

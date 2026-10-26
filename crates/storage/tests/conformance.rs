@@ -35,6 +35,7 @@ use harness::{
     assert_history_is_scope_isolated, assert_history_orders_filters_and_pages,
     assert_idempotency_first_writer_wins, assert_journal_visibility_and_scope,
     assert_live_lease_blocks_acquire, assert_non_resume_row_still_exhausts,
+    assert_recorded_cancel_makes_a_live_execution_due,
     assert_resume_row_exempt_from_reclaim_budget, assert_resume_target_survives_queue_round_trip,
     assert_save_with_published_version_is_atomic, assert_stale_fencing_is_fenced_out,
     assert_status_projection_follows_commit,
@@ -208,6 +209,10 @@ matrix!(
 matrix!(
     due_timers_page_in_wake_order,
     assert_due_timers_page_in_wake_order
+);
+matrix!(
+    recorded_cancel_makes_a_live_execution_due,
+    assert_recorded_cancel_makes_a_live_execution_due
 );
 matrix!(workflow_store_contract, assert_workflow_store_contract);
 matrix!(

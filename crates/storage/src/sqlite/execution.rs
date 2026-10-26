@@ -338,9 +338,16 @@ impl ExecutionStore for SqliteExecutionStore {
     }
 
     async fn request_cancel(&self, scope: &Scope, id: &str) -> Result<bool, StorageError> {
+        // `'now'` reads one instant per statement, so a live execution becomes
+        // due for the timer sweep at exactly its first request's instant.
+        let requested_at = format!("COALESCE(cancel_requested_at, {NOW_MICROS})");
         let sql = format!(
-            "UPDATE executions SET cancel_requested_at = COALESCE(cancel_requested_at, {NOW_MICROS}) \
-             WHERE org_id = ? AND workspace_id = ? AND id = ?"
+            "UPDATE executions SET cancel_requested_at = {requested_at}, \
+                 next_wake_at = CASE WHEN status IN ({live}) \
+                     THEN MIN(COALESCE(next_wake_at, {requested_at}), {requested_at}) \
+                     ELSE next_wake_at END \
+             WHERE org_id = ? AND workspace_id = ? AND id = ?",
+            live = listing::LIVE_STATUS_NAMES_SQL,
         );
         let res = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(&scope.org_id)
@@ -684,10 +691,15 @@ pub(super) async fn commit_locked(
         .ok_or_else(|| StorageError::Internal("execution version exhausted".into()))?;
     let new_state = serde_json::to_string(batch.new_state())?;
     let projection = batch.listing();
+    // A recorded cancel keeps a live execution due for the timer sweep
+    // (`request_cancel`): the projected timer alone would hide it again.
     sqlx::query(
-        "UPDATE executions SET state = ?, version = ?, updated_at = ?, \
-                status = ?, started_at = ?, finished_at = ?, next_wake_at = ? \
-         WHERE org_id = ? AND workspace_id = ? AND id = ?",
+        "UPDATE executions SET state = ?1, version = ?2, updated_at = ?3, \
+                status = ?4, started_at = ?5, finished_at = ?6, \
+                next_wake_at = CASE WHEN ?8 AND cancel_requested_at IS NOT NULL \
+                    THEN MIN(COALESCE(?7, cancel_requested_at), cancel_requested_at) \
+                    ELSE ?7 END \
+         WHERE org_id = ?9 AND workspace_id = ?10 AND id = ?11",
     )
     .bind(&new_state)
     .bind(encode_u64(new_version, "version")?)
@@ -696,6 +708,7 @@ pub(super) async fn commit_locked(
     .bind(projection.started_at().map(MicrosInstant::as_micros))
     .bind(projection.finished_at().map(MicrosInstant::as_micros))
     .bind(projection.next_wake_at().map(MicrosInstant::as_micros))
+    .bind(!projection.status().is_terminal())
     .bind(&scope.org_id)
     .bind(&scope.workspace_id)
     .bind(&id)

@@ -772,7 +772,8 @@ pub(crate) use dispatch::{
 };
 pub(crate) use history::{
     assert_due_timers_page_in_wake_order, assert_history_is_scope_isolated,
-    assert_history_orders_filters_and_pages, assert_status_projection_follows_commit,
+    assert_history_orders_filters_and_pages, assert_recorded_cancel_makes_a_live_execution_due,
+    assert_status_projection_follows_commit,
 };
 pub(crate) use retention::{
     assert_retention_deletes_only_old_terminal_executions,

@@ -42,6 +42,19 @@ impl Row {
         }
     }
 
+    /// When the timer sweep should look at this row: its earliest durable
+    /// timer, or its recorded cancel's instant while it is live and that is
+    /// earlier. The SQL backends store the same value as `next_wake_at`.
+    fn due_at(&self) -> Option<MicrosInstant> {
+        let cancel = self
+            .cancel_requested_at
+            .filter(|_| !self.listing.status().is_terminal());
+        [self.listing.next_wake_at(), cancel]
+            .into_iter()
+            .flatten()
+            .min()
+    }
+
     fn summary(&self, id: &str) -> ExecutionSummary {
         ExecutionSummary {
             id: id.to_owned(),
@@ -78,8 +91,8 @@ pub(super) struct Row {
     /// (re)acquired by a different/expired holder, so a superseded
     /// holder's token no longer matches.
     pub(super) fencing_generation: u64,
-    /// Set once by [`ExecutionStore::request_cancel`]; never cleared.
-    pub(super) cancel_requested: bool,
+    /// Instant of the first [`ExecutionStore::request_cancel`]; never cleared.
+    pub(super) cancel_requested_at: Option<MicrosInstant>,
     /// Append-only journal: `(seq, payload)` oldest first.
     pub(super) journal: Vec<(u64, serde_json::Value)>,
 }
@@ -329,7 +342,7 @@ pub(super) fn insert_created_row(
             lease_holder: None,
             lease_expires_at: None,
             fencing_generation: 0,
-            cancel_requested: false,
+            cancel_requested_at: None,
             journal: Vec::new(),
         },
     );
@@ -480,7 +493,8 @@ impl ExecutionStore for InMemoryExecutionStore {
         let mut st = self.inner.lock();
         match st.rows.get_mut(id) {
             Some(row) if &row.scope == scope => {
-                row.cancel_requested = true;
+                row.cancel_requested_at
+                    .get_or_insert_with(|| MicrosInstant::floor(self.clock.now()));
                 Ok(true)
             },
             _ => Ok(false),
@@ -492,7 +506,7 @@ impl ExecutionStore for InMemoryExecutionStore {
         Ok(st
             .rows
             .get(id)
-            .is_some_and(|row| &row.scope == scope && row.cancel_requested))
+            .is_some_and(|row| &row.scope == scope && row.cancel_requested_at.is_some()))
     }
 
     async fn list_due_timers(
@@ -508,7 +522,7 @@ impl ExecutionStore for InMemoryExecutionStore {
             .rows
             .iter()
             .filter_map(|(id, row)| {
-                let wake = row.listing.next_wake_at()?;
+                let wake = row.due_at()?;
                 (wake <= due_at && after.is_none_or(|key| (wake, id.as_str()) > key))
                     .then_some((wake, id, row))
             })

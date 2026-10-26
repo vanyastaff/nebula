@@ -37,7 +37,9 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, ActionMetadataDraft, action::Action, result::ActionResult,
+    ActionError, ActionMetadataDraft,
+    action::Action,
+    result::{ActionResult, WaitCondition},
     stateless::StatelessAction,
 };
 use nebula_core::{ActionKey, Dependencies, action_key, id::WorkflowId, node_key};
@@ -49,6 +51,7 @@ use nebula_execution::{ExecutionStatus, context::ExecutionBudget};
 use nebula_metrics::MetricsRegistry;
 use nebula_storage::inmem::InMemoryTurnHandoff;
 use nebula_storage::{InMemoryControlQueue, InMemoryExecutionStore, InMemoryWorkflowVersionStore};
+use nebula_storage_port::ExecutionListingStatus;
 use nebula_storage_port::dto::{ControlCommand, ControlMsg, WorkflowVersionRecord};
 use nebula_storage_port::store::{ControlQueue, ExecutionStore};
 use nebula_workflow::{
@@ -253,6 +256,33 @@ impl StatelessAction for ParkHandler {
         self.started.notify_one();
         ctx.cancellation().cancelled().await;
         Err(ActionError::Cancelled)
+    }
+}
+
+/// Parks its node on a durable timer a day out, so only a cancel can end the
+/// execution within the test.
+struct FarTimerHandler;
+
+placeholder_action_impl!(
+    FarTimerHandler,
+    action_key!("placeholder.far_timer"),
+    "FarTimerPlaceholder",
+    "placeholder"
+);
+
+impl StatelessAction for FarTimerHandler {
+    async fn execute(
+        &self,
+        _input: <Self as Action>::Input,
+        _ctx: &(impl nebula_action::ActionContext + ?Sized),
+    ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
+        Ok(ActionResult::Wait {
+            condition: WaitCondition::Duration {
+                duration: Duration::from_hours(24),
+            },
+            timeout: None,
+            partial_output: None,
+        })
     }
 }
 
@@ -988,6 +1018,114 @@ async fn a_cancel_drained_on_another_worker_reaches_the_lease_holder() {
         .expect("resume_execution Ok");
     assert_eq!(result_a.status, ExecutionStatus::Cancelled);
     assert_eq!(park_invocations.load(Ordering::SeqCst), 1);
+}
+
+/// A `Cancel` recorded for a lease holder that has died is applied by the
+/// durable-timer sweep once the lease expires, although the execution is
+/// parked on a timer a day out.
+///
+/// Runner A parks Y on a far timer, holding the lease in-process, and dies.
+/// Runner B drains the Cancel while A's lease is still live: it records the
+/// request and acks, because a live holder would read it from its heartbeat.
+/// No runner acquires a parked execution before its own timer, so before the
+/// recorded request made the execution due, nothing applied the cancel until
+/// that timer fired a day later. Now B's sweep leaves the execution alone
+/// while the lease is live and cancels it once the lease has expired.
+#[tokio::test]
+async fn a_recorded_cancel_reaches_a_parked_execution_whose_holder_died() {
+    let stores = LeaseStores::new();
+    let registry = Arc::new(ActionRegistry::new());
+    registry
+        .register_stateless_instance(meta(action_key!("core.far_timer")), FarTimerHandler)
+        .expect("valid test catalog definition");
+    let frozen = exact_fixture::freeze_registry(&registry, &[("core", "core.far_timer")]);
+    let lease_ttl = Duration::from_secs(3);
+    let engine = |registry: Arc<ActionRegistry>| {
+        Arc::new(
+            stores
+                .attach(make_engine(registry, &stores.clock))
+                .with_plan_flavor_runtime(
+                    Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(Arc::new(
+                        stores.execution.plan_flavor_catalog(),
+                    ))),
+                    Arc::clone(&frozen),
+                    Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+                        &stores.execution,
+                    )),
+                )
+                .with_lease_ttl(lease_ttl),
+        )
+    };
+    let engine_a = engine(Arc::clone(&registry));
+    let engine_b = engine(registry);
+
+    let y = node_key!("y");
+    let wf = make_workflow(
+        vec![NodeDefinition::new(y.clone(), "Y", "core", "core.far_timer").unwrap()],
+        Vec::new(),
+    );
+    stores.save_workflow(&wf).await;
+    let execution_id = stores.admit(&wf, &frozen).await;
+    let scope = nebula_engine::store_seam::single_tenant_scope();
+    let id = execution_id.to_string();
+
+    let task_a = {
+        let engine_a = Arc::clone(&engine_a);
+        let scope = scope.clone();
+        tokio::spawn(async move { engine_a.resume_execution(&scope, execution_id).await })
+    };
+    let node_state = |state: &serde_json::Value| state["node_states"]["y"]["state"].clone();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let record = stores.execution.get(&scope, &id).await.unwrap().unwrap();
+            if node_state(&record.state) == "waiting" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("runner A must park Y on its timer");
+
+    // Runner A dies holding the lease; only expiry frees it.
+    task_a.abort();
+    let _ = task_a.await;
+    assert!(stores.lease_held(execution_id, lease_ttl).await);
+
+    let dispatch_b = EngineControlDispatch::new(
+        Arc::clone(&engine_b),
+        stores.execution.clone(),
+        Arc::new(InMemoryTurnHandoff::new(&stores.execution)),
+        "parked-cancel-control".to_owned(),
+        Duration::from_secs(30),
+    );
+    dispatch_b
+        .dispatch_cancel(&scope, execution_id)
+        .await
+        .expect("a cancel recorded for the lease holder is acked");
+
+    assert_eq!(
+        engine_b.sweep_overdue_timers().await.unwrap(),
+        0,
+        "the sweep leaves an execution alone while its lease is live"
+    );
+    let record = stores.execution.get(&scope, &id).await.unwrap().unwrap();
+    assert_eq!(record.status, ExecutionListingStatus::Running);
+
+    stores.clock.advance(lease_ttl + Duration::from_secs(1));
+    assert_eq!(
+        engine_b.sweep_overdue_timers().await.unwrap(),
+        1,
+        "once the lease has expired the sweep applies the recorded cancel"
+    );
+    let record = stores.execution.get(&scope, &id).await.unwrap().unwrap();
+    assert_eq!(record.status, ExecutionListingStatus::Cancelled);
+    assert_eq!(node_state(&record.state), "cancelled");
+    assert_eq!(
+        engine_b.sweep_overdue_timers().await.unwrap(),
+        0,
+        "a cancelled execution is no longer due"
+    );
 }
 
 // ---------------------------------------------------------------------------

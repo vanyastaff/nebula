@@ -70,7 +70,8 @@ pub struct ExecutionRecord {
 /// [`crate::store::ExecutionStore::list_due_timers`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct DueTimer {
-    /// The listed timer instant (the row's `next_wake_at`).
+    /// The listed instant (the row's `next_wake_at`): its earliest durable
+    /// timer, or its recorded cancel's instant when that is earlier.
     pub next_wake_at: MicrosInstant,
     /// The execution row.
     pub record: ExecutionRecord,
