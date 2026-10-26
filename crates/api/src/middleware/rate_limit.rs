@@ -10,6 +10,11 @@
 //! that peer is a configured trusted proxy (`API_TRUSTED_PROXIES`); see
 //! [`RateLimitState::with_trusted_proxies`].
 //!
+//! Buckets live in this process's memory and are not shared. Each replica
+//! limits on its own, so `N` replicas behind a load balancer admit up to `N`
+//! times the configured rate from one client, and a restart empties every
+//! bucket. This is a per-process flood guard, not a deployment-wide quota.
+//!
 //! # Examples
 //!
 //! ```

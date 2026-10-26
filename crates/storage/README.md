@@ -115,6 +115,12 @@ provides the adapters:
   grant authority. The codec and credential encryption consume one atomic
   `KeyProvider::current()` snapshot (`key_id` + key) so a live KMS rotation
   cannot pair metadata from one generation with bytes from another.
+- The same codec seals each Plane-A OAuth PKCE `code_verifier` before it reaches
+  `oauth_states.code_verifier_envelope`, with AAD binding the provider and
+  state, so a database read alone does not yield a verifier and an envelope
+  moved to another row does not open. A row seals under the current key and
+  opens under the current or any configured legacy key; it is never re-sealed,
+  because it lives only for the state TTL.
 - `auth::postgres::PgIdentitySecretMigrator` is a startup data migrator, not a schema
   migrator: identity DDL stays in `0001_identity.sql`. It uses a cancellation-
   safe retired advisory-lock connection, bounded reads, equality-guarded CAS,
@@ -492,6 +498,36 @@ only control-command outbox.
 |---|---|---|
 | SQLite (file or `sqlite::memory:`) | `sqlite` | `implemented` — local + test default; feature-gated since the wave-2 review (driver footprint not unconditional) |
 | PostgreSQL | `postgres` | `implemented` — production path |
+
+### SQLite deployment class
+
+SQLite is the single-host, single-process backend: local development,
+evaluation, and small edge or single-node deployments. Anything that needs more
+than one process on the database, more than one host, or failover uses
+PostgreSQL.
+
+- **One process.** The server opens the file and runs execution in-process
+  (`API_EXECUTION_BACKEND=sqlite`); `--execution separate-workers` requires
+  PostgreSQL. A second process on the same file is not supported: control-queue
+  claims are single-consumer status flips with no `FOR UPDATE SKIP LOCKED`
+  equivalent, and leases and sweeps assume one owner.
+- **One host, local disk.** WAL needs shared memory between connections, so the
+  file must not live on a network filesystem (NFS, SMB).
+- **Durability.** The server opens the file in WAL mode with
+  `synchronous=NORMAL`. A committed transaction survives a process crash; a
+  power loss or OS crash can lose the most recent commits but leaves the
+  database consistent.
+- **Connections.** `sqlite::DeploymentPool` keeps exactly one writer
+  connection: every write serializes on it, and multi-statement writes take
+  the lock up front with `BEGIN IMMEDIATE` and wait up to five seconds for it.
+  A WAL file also gets four read-only connections (`DeploymentPool::read_pool`)
+  that read the last committed snapshot without waiting for the writer. The
+  server routes execution reads (`get`, `cancel_requested`, the due-timer scan,
+  history and `count`) and the journal reader there. Every other store still
+  reads through the writer: workflows, node results, identity and sessions,
+  credentials, resources, the control queue and the revision catalog. An
+  in-memory database keeps its single connection, because a second one would
+  open a different, empty database.
 
 Control-queue claims for a worker flavor require exact worker-flavor revision
 equality with the execution's live revision reference. Queue admission never

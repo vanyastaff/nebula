@@ -11,6 +11,27 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **The OAuth PKCE verifier is encrypted at rest.** `oauth_states` held each
+  pending sign-in's `code_verifier` in plaintext, so anyone who could read the
+  table held the PKCE half of every in-flight authorization-code exchange.
+  Migration 0015 replaces the column
+  with `code_verifier_envelope`, sealed by the identity-secret codec (the
+  TOTP-seed key) with AAD binding the provider and state. The migration drops
+  the short-lived pending states, so sign-ins in flight during the upgrade must
+  restart. `SqliteOAuthStateRepo::new` and `PgOAuthStateRepo::new` now take the
+  `IdentitySecretCodec`; `AuthPersistence` passes it.
+
+- **Tenant-bound storage handles refuse worker-global sweeps.** The
+  `nebula-tenancy` decorators passed scope-free methods straight to storage,
+  so a tenant-bound handle could claim, reclaim or clean up every tenant's
+  control commands, list every tenant's due executions with their state, or
+  list every tenant's active webhooks. `ScopedControlQueue::claim_pending*`,
+  `reclaim_stuck` and `cleanup`, `ScopedExecutionStore::list_due_timers` and
+  `ScopedWebhookActivationStore::list_all_active` now return
+  `StorageError::ScopeViolation` without reaching storage. Run the control
+  consumer, timer sweep and webhook bootstrap on the raw ports, as the worker
+  and server composition roots already do.
+
 - **Leftover job-dispatch routing and leased resume are removed.** They had
   no caller once the job-dispatch channel was gone. `nebula-engine` drops the
   `daemon::routing` module with `RoutingResolver`, `DefinitionRoutingResolver`,
@@ -30,6 +51,17 @@ changes are expected between minor releases — call them out here.
   `nebula_orchestrator_*` metric names are removed. Migration 0014
   drops the `job_dispatch_queue` table; the persisted observation vocabulary
   keeps decoding historical job-dispatch sources.
+
+- **Execution snapshots hold each node output once.** A successful node
+  attempt no longer keeps an inline copy of the output that the node's
+  checkpoint evidence already records. Every node commit rewrites the whole
+  execution state, so this roughly halves what each commit writes and a run
+  now reaches the 16 MiB durable checkpoint ceiling at about twice the output
+  volume. `nebula-execution` adds `AttemptOutcome::CheckpointedSuccess` and
+  `NodeAttempt::complete_checkpointed_success`; `NodeAttempt::is_success` now
+  means "finished without a failure record". The execution detail API still
+  returns the attempt's output, read from the checkpoint evidence. Snapshots
+  written earlier keep their copies and still resume.
 
 ### Added
 
@@ -70,6 +102,12 @@ changes are expected between minor releases — call them out here.
   `nebula_metrics_series_overflow_total{metric}` and the first one logs a
   warning. `MetricsRegistry::with_cardinality_limits` changes the cap or the
   denied keys. No in-tree metric uses a denied key or comes near the cap.
+
+- **The `simple_action!` docs point to an example that exists.** They named
+  `examples/hello_action.rs`, which was never there. The new
+  `sdk_hello_action` example (`cargo run -p nebula-examples --example
+  sdk_hello_action`) is the first example that uses `nebula-sdk` alone, so
+  building the examples now also compile-checks the integration-author path.
 
 - **`#[credential]` synthesizes a refresh strategy the scheme family allows.**
   Without a hand-written `fn policy`, a credential with `fn refresh` always got
@@ -146,6 +184,16 @@ changes are expected between minor releases — call them out here.
   `ReservationId` keep the transaction. Decisions are unchanged: the store
   still passes the `LimitStore` conformance kit, and a new differential test
   checks the statement against the Rust `step` functions.
+
+- **SQLite execution reads no longer wait for writes.** A file-backed SQLite
+  deployment in WAL mode now opens four read-only connections beside its one
+  writer (`sqlite::DeploymentPool::read_pool`). The server serves execution
+  reads (`get`, cancel checks, the due-timer scan, history and counts) and the
+  execution journal from them, so they no longer queue behind writes on the
+  single connection. Every write, and every other store's reads, stay on the
+  writer; in-memory databases keep one connection. `SqliteExecutionStore`
+  gains `with_read_pool`, and `DeploymentPool` gains `close`, which closes both
+  pools. The storage README now describes the SQLite deployment class.
 
 ## [0.33.0] - 2026-10-07
 

@@ -1240,8 +1240,7 @@ pub(crate) mod engine_seam {
         InProcessRunner, WorkflowEngine,
     };
     use nebula_tenancy::{
-        ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
-        ScopedNodeResultStore,
+        ScopedExecutionJournalReader, ScopedExecutionStore, ScopedNodeResultStore,
     };
     use nebula_workflow::{
         CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, Version, WorkflowConfig,
@@ -1472,7 +1471,8 @@ pub(crate) mod engine_seam {
             Duration::from_secs(30),
         ));
         let consumer = ControlConsumer::for_flavor(
-            Arc::new(ScopedControlQueue::new(Arc::clone(&state.control_queue), s)),
+            // Claiming is worker-global: the consumer holds the raw queue.
+            Arc::clone(&state.control_queue),
             dispatch,
             super::proc16(b"knife-a3"),
             handles.runtime.registry.revision().id(),

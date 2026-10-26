@@ -57,6 +57,8 @@ fn whole_history() -> ExecutionHistoryQuery {
 /// active scan.
 pub(crate) async fn assert_status_projection_follows_commit(backend: &dyn Backend) {
     let store = backend.execution_store().await;
+    // The due-timer sweep is worker-global.
+    let worker = backend.worker_execution_store().await;
     let s = scope_a();
     seed_workflow(backend, &s, "wf_listing").await;
     store
@@ -90,7 +92,7 @@ pub(crate) async fn assert_status_projection_follows_commit(backend: &dyn Backen
         backend.name()
     );
     assert!(
-        store
+        worker
             .list_due_timers(micros(4), None, 100)
             .await
             .expect("due scan")
@@ -127,7 +129,7 @@ pub(crate) async fn assert_status_projection_follows_commit(backend: &dyn Backen
         backend.name()
     );
     assert!(
-        !store
+        !worker
             .list_due_timers(micros(4), None, 100)
             .await
             .expect("due scan")

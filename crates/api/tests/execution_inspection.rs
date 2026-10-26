@@ -169,6 +169,40 @@ async fn detail_reads_persisted_attempts_and_outputs_without_the_node_cache() {
 }
 
 #[tokio::test]
+async fn checkpointed_success_attempt_reports_the_recorded_output() {
+    for (result, expected) in [
+        (
+            nebula_action::ActionResult::success(json!({"answer":42})),
+            json!({"type":"inline","value":{"answer":42}}),
+        ),
+        (
+            nebula_action::ActionResult::<Value>::Drop { reason: None },
+            json!({"type":"inline","value":null}),
+        ),
+    ] {
+        let (state, _) = create_state_with_port_handles().await;
+        let mut snapshot = snapshot();
+        snapshot.status = ExecutionStatus::Completed;
+        snapshot.started_at = Some(snapshot.created_at);
+        snapshot.completed_at = Some(snapshot.updated_at);
+        let node = snapshot.node_states.get_mut(&node_key!("fetch")).unwrap();
+        node.state = NodeState::Completed;
+        snapshot
+            .record_node_attempt(
+                node_key!("fetch"),
+                AttemptOutcome::CheckpointedSuccess { output_bytes: 13 },
+            )
+            .unwrap();
+        record_result(&mut snapshot, result);
+        persist_execution_snapshot(state.execution_store.as_ref(), &snapshot).await;
+        let (status, body) = inspect(state, snapshot.execution_id).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["nodes"]["fetch"]["attempts"][0]["output"], expected);
+        assert_eq!(body["nodes"]["fetch"]["attempts"][0]["output_bytes"], 13);
+    }
+}
+
+#[tokio::test]
 async fn safe_failures_round_trip_but_bare_provider_errors_are_rejected() {
     let (state, handles) = create_state_with_port_handles().await;
     let failed = failed_snapshot();

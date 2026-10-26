@@ -32,7 +32,7 @@ impl DeploymentDatabase {
         let close = async {
             match self {
                 Self::Memory(pool) => pool.close().await,
-                Self::Sqlite(deployment) => deployment.pool().close().await,
+                Self::Sqlite(deployment) => deployment.close().await,
                 #[cfg(feature = "postgres")]
                 Self::Postgres(pool) => pool.close().await,
             }
@@ -70,7 +70,7 @@ impl DeploymentDatabase {
                     .await
                     .map_err(|error| database_failure("sqlite", "open", &error))?;
                 if let Err(error) = nebula_storage::sqlite::init_schema(deployment.pool()).await {
-                    deployment.pool().close().await;
+                    deployment.close().await;
                     return Err(database_failure("sqlite", "schema admission", &error));
                 }
                 tracing::info!(backend = "sqlite", "deployment database admitted");
