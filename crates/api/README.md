@@ -790,7 +790,7 @@ governs header semantics. Highlights:
 
 | Var | Default | Notes |
 |---|---|---|
-| `API_IDEMPOTENCY_BACKEND` | `memory` | `memory` \| `postgres`. See backend tradeoffs below. |
+| `API_IDEMPOTENCY_BACKEND` | `postgres` with `API_EXECUTION_BACKEND=postgres`, else `memory` | `memory` \| `postgres`; an explicit value wins. `postgres` requires `API_EXECUTION_BACKEND=postgres`. See backend tradeoffs below. |
 | `API_IDEMPOTENCY_TTL_SECS` | `86400` | Cached-entry lifetime (24h matches the IETF draft). |
 | `API_IDEMPOTENCY_MAX_ENTRIES` | `10000` | Cap for the in-memory backend; PG honours `expires_at` instead. |
 | `API_IDEMPOTENCY_MAX_REQUEST_BODY_BYTES` | `1048576` | Requests beyond this skip caching (forwarded as-is). |
@@ -809,10 +809,15 @@ governs header semantics. Highlights:
 > and across runners. `postgres` makes completed responses durable; neither
 > backend supplies an in-flight claim or at-most-once mutation execution.
 
+When `API_IDEMPOTENCY_BACKEND` is unset, the backend follows the execution
+backend: a PostgreSQL deployment stores replay records in its shared database,
+so a retry routed to another replica replays instead of executing twice. Every
+other execution backend defaults to `memory`.
+
 The `postgres` backend is gated behind the `nebula-api/postgres` cargo
-feature so default builds remain lightweight. Selecting
-`API_IDEMPOTENCY_BACKEND=postgres` without that feature compiled in fails
-closed at startup (per ADR-0048; no silent fallback).
+feature so default builds remain lightweight; without it the unset default
+stays `memory`. Selecting `API_IDEMPOTENCY_BACKEND=postgres` without that
+feature compiled in fails closed at startup (per ADR-0048; no silent fallback).
 
 ### Cross-layer schema strategy
 

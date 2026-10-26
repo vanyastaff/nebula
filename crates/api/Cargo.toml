@@ -189,7 +189,8 @@ test-util = ["dep:nebula-schema", "dep:jsonschema", "dep:http-body"]
 # available to composition roots (e.g. `nebula-server`). The `sqlx` pool is
 # constructed by the composition root, not by this library. When this feature
 # is OFF, setting `API_IDEMPOTENCY_BACKEND=postgres` fails closed at startup
-# (per ADR-0048 fail-closed contract).
+# (per ADR-0048 fail-closed contract), and an unset backend stays `memory`
+# even with `API_EXECUTION_BACKEND=postgres`.
 postgres = ["nebula-storage/postgres"]
 # Plane-A identity OAuth uses the shared HTTP/PKCE dependencies above.
 

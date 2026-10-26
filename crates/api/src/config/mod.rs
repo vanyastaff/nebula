@@ -374,7 +374,10 @@ impl ApiConfig {
         let request_id_header =
             std::env::var("API_REQUEST_ID_HEADER").unwrap_or_else(|_| "x-request-id".to_string());
 
-        let idempotency = Self::idempotency_from_env()?;
+        // Execution loads first: it decides the idempotency default.
+        let execution = ExecutionStoreConfig::from_env()?;
+        tracing::info!(backend = ?execution.backend, db_path = %execution.db_path, "execution-stores: config loaded");
+        let idempotency = Self::idempotency_from_env(&execution.backend)?;
         tracing::info!(
             backend = ?idempotency.backend,
             ttl_secs = idempotency.ttl_secs,
@@ -383,8 +386,6 @@ impl ApiConfig {
             "idempotency: config loaded"
         );
         let auth = Self::auth_from_env()?;
-        let execution = ExecutionStoreConfig::from_env()?;
-        tracing::info!(backend = ?execution.backend, db_path = %execution.db_path, "execution-stores: config loaded");
         let smtp = Self::smtp_from_env()?;
         if let Some(cfg) = smtp.as_ref() {
             tracing::info!(
@@ -438,7 +439,12 @@ impl ApiConfig {
         Ok(AuthApiConfig { oauth })
     }
 
-    fn idempotency_from_env() -> Result<IdempotencyApiConfig, ApiConfigError> {
+    /// Unset `API_IDEMPOTENCY_BACKEND` resolves through
+    /// [`IdempotencyBackend::default_for`] the execution backend; an explicit
+    /// value always wins.
+    fn idempotency_from_env(
+        execution_backend: &ExecutionBackendKind,
+    ) -> Result<IdempotencyApiConfig, ApiConfigError> {
         let backend = match std::env::var("API_IDEMPOTENCY_BACKEND") {
             Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
                 "memory" => IdempotencyBackend::Memory,
@@ -450,7 +456,7 @@ impl ApiConfig {
                     });
                 },
             },
-            Err(_) => IdempotencyBackend::Memory,
+            Err(_) => IdempotencyBackend::default_for(execution_backend),
         };
 
         let ttl_secs = parse_positive_u64_env("IDEMPOTENCY_TTL_SECS", DEFAULT_TTL_SECS)?;
