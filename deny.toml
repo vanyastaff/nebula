@@ -388,9 +388,6 @@ deny = [
     "nebula-worker",  # dev-only
     "nebula-worker-bin",  # dev-only
   ], reason = "Execution model is Core; exec, API and app roots consume it" },
-  { crate = "nebula-log", wrappers = [
-    "nebula-expression",
-  ], reason = "Cross-cutting logging; consumers are listed so a new dependent is a reviewed change" },
   { crate = "nebula-macro-support", wrappers = [
     "nebula-action-macros",
     "nebula-credential-macros",

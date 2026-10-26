@@ -3,7 +3,7 @@
 | Field | Value |
 |-------|-------|
 | **Status** | Stable — leaf/core evaluation primitive |
-| **Layer** | Core (depends only on `nebula-log` + `nebula-error`; no domain crate) |
+| **Layer** | Core (depends only on `nebula-error` among workspace crates; no domain crate) |
 | **Redesign role** | **Unaffected** by the post-ADR-0092 credential/resource redesign — no credential crate depends on it and the rewrite plans do not mention it. Indirect consumer: `nebula-resource` / `nebula-action` resolve `MaybeExpression` configs through it. |
 | **Related** | PRODUCT_CANON §3.5 (`ValidValues::resolve`), ROADMAP #590 (regex cache), issue #252 (step-budget bypass fix), n8n expression syntax |
 
@@ -66,7 +66,7 @@ doc-hidden but `pub`: `ast` (`Expr`/`BinaryOp`), `lexer`, `parser`, `token`, `sp
 
 ## 3. Dependencies and dependents
 
-- **Deps:** `nebula-log` (path), `nebula-error` (workspace, feature `derive`), `tracing`,
+- **Deps:** `nebula-error` (workspace, feature `derive`), `tracing`,
   `thiserror`, `serde`, `serde_json`, `chrono`, `unicode-width`. Optional:
   `moka` (`cache`), `regex` (`regex`, deliberately pulls in moka for true-LRU regex
   caching, ROADMAP #590), `chrono-tz` (`datetime`), `uuid` (`uuid`).
