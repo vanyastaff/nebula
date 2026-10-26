@@ -40,13 +40,17 @@ fn build_memory_execution_stores(
         InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
     };
 
-    let execution_store = InMemoryExecutionStore::new();
+    let node_results = InMemoryNodeResultStore::new();
+    let idempotency = InMemoryIdempotencyGuard::new();
+    // The retention sweep deletes a finished execution's node rows and
+    // idempotency marks with it, as the SQL backends' cascades do.
+    let execution_store = InMemoryExecutionStore::new()
+        .with_retention_companions(node_results.clone(), idempotency.clone());
     let control_queue = InMemoryControlQueue::new(&execution_store);
     let journal = InMemoryJournalReader::new(&execution_store);
     let start_acceptance = Arc::new(InMemoryStartAcceptanceStore::new(&execution_store));
     let resume_token_store = execution_store.resume_token_store();
     let resume_producer = execution_store.resume_producer();
-    let node_results = InMemoryNodeResultStore::new();
     let workflow_versions = InMemoryWorkflowVersionStore::new();
     let workflow_store =
         InMemoryWorkflowStore::new_with_versions(&workflow_versions, &execution_store);
@@ -81,7 +85,7 @@ fn build_memory_execution_stores(
                 journal: projected_journal,
                 node_results: projected_node_results,
                 checkpoints: Arc::new(InMemoryCheckpointStore::new(&execution_store)),
-                idempotency: Arc::new(InMemoryIdempotencyGuard::new()),
+                idempotency: Arc::new(idempotency),
                 resume_tokens: projected_resume_tokens,
                 operation_ledger: Arc::new(InMemoryOperationLedger::new(&execution_store)),
             },

@@ -9,7 +9,7 @@
 use std::time::Duration;
 
 use nebula_core::{ExecutionId, OrgId, WorkspaceId};
-use nebula_storage_port::dto::{ControlCommand, ControlMsg, JournalEntry};
+use nebula_storage_port::dto::{ControlCommand, ControlMsg, JournalEntry, NodeResultRecord};
 use nebula_storage_port::store::{ExecutionStore, StartMaterialization};
 use nebula_storage_port::{
     ExecutionListing, ExecutionListingStatus as Status, ExecutionReferenceTransition, Scope,
@@ -65,9 +65,67 @@ fn finished(status: Status, at: chrono::DateTime<chrono::Utc>) -> ExecutionListi
     ExecutionListing::new(status, Some(at), Some(at))
 }
 
+fn node_record(execution_id: &str) -> NodeResultRecord {
+    NodeResultRecord {
+        kind_tag: "Value".into(),
+        json: serde_json::json!({"execution": execution_id}),
+        schema_version: 1,
+    }
+}
+
+/// Record a workflow input, a node output, a node result and an idempotency
+/// mark beneath `id`: rows the execution owns in stores of their own.
+async fn record_node_rows(backend: &dyn Backend, scope: &Scope, id: &str) {
+    let node_results = backend.node_result_store().await;
+    node_results
+        .set_workflow_input(scope, id, node_record(id))
+        .await
+        .expect("set the workflow input");
+    node_results
+        .save_node_output(scope, id, "node_a", node_record(id))
+        .await
+        .expect("save the node output");
+    node_results
+        .save_node_result(scope, id, "node_a", node_record(id))
+        .await
+        .expect("save the node result");
+    assert!(
+        backend
+            .idempotency_guard()
+            .await
+            .check_and_mark(scope, id, "node_a", 0)
+            .await
+            .expect("mark the attempt"),
+        "[{}] the first mark of {id} wins",
+        backend.name()
+    );
+}
+
+/// Whether any of the rows [`record_node_rows`] wrote for `id` still load.
+async fn node_rows_remain(backend: &dyn Backend, scope: &Scope, id: &str) -> [bool; 3] {
+    let node_results = backend.node_result_store().await;
+    [
+        node_results
+            .get_workflow_input(scope, id)
+            .await
+            .expect("load the workflow input")
+            .is_some(),
+        node_results
+            .load_node_output(scope, id, "node_a")
+            .await
+            .expect("load the node output")
+            .is_some(),
+        node_results
+            .load_node_result(scope, id, "node_a")
+            .await
+            .expect("load the node result")
+            .is_some(),
+    ]
+}
+
 /// Old terminal executions go, oldest first and in bounded batches, in
-/// every tenant, with their journal and control-queue rows; live and recent
-/// ones stay.
+/// every tenant, with their journal, control-queue, node-result and
+/// idempotency rows; live and recent ones stay with theirs.
 pub(crate) async fn assert_retention_deletes_only_old_terminal_executions(backend: &dyn Backend) {
     let store = backend.execution_store().await;
     let retention = backend.execution_retention().await;
@@ -135,6 +193,9 @@ pub(crate) async fn assert_retention_deletes_only_old_terminal_executions(backen
         .create(&a, "exe_ret_created", "wf_retention", serde_json::json!({}))
         .await
         .expect("create");
+    record_node_rows(backend, &a, "exe_ret_oldest").await;
+    record_node_rows(backend, &b, "exe_ret_other_tenant").await;
+    record_node_rows(backend, &a, "exe_ret_recent").await;
 
     assert_eq!(
         retention
@@ -208,6 +269,44 @@ pub(crate) async fn assert_retention_deletes_only_old_terminal_executions(backen
         "[{}] queued commands go with their execution, got {} claims",
         backend.name(),
         claims.len()
+    );
+
+    for (scope, swept) in [(&a, "exe_ret_oldest"), (&b, "exe_ret_other_tenant")] {
+        assert_eq!(
+            node_rows_remain(backend, scope, swept).await,
+            [false; 3],
+            "[{}] {swept}'s workflow input, node output and node result go with it",
+            backend.name()
+        );
+    }
+    assert_eq!(
+        node_rows_remain(backend, &a, "exe_ret_recent").await,
+        [true; 3],
+        "[{}] a kept execution keeps its node rows",
+        backend.name()
+    );
+    // A mark can only be written for a live execution on the SQL backends,
+    // so the swept id is created again to probe whether its mark went.
+    store
+        .create(&a, "exe_ret_oldest", "wf_retention", serde_json::json!({}))
+        .await
+        .expect("create the swept id again");
+    let guard = backend.idempotency_guard().await;
+    assert!(
+        guard
+            .check_and_mark(&a, "exe_ret_oldest", "node_a", 0)
+            .await
+            .expect("mark the recreated execution"),
+        "[{}] the idempotency marks go with their execution",
+        backend.name()
+    );
+    assert!(
+        !guard
+            .check_and_mark(&a, "exe_ret_recent", "node_a", 0)
+            .await
+            .expect("mark the kept execution"),
+        "[{}] a kept execution keeps its idempotency marks",
+        backend.name()
     );
 }
 

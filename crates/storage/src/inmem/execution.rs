@@ -187,6 +187,18 @@ pub struct InMemoryExecutionStore {
     /// (`tokio::time::pause`, injected clocks) a lever, without letting a
     /// production worker's skewed clock fence out a healthy peer.
     pub(super) clock: Arc<dyn nebula_core::accessor::Clock>,
+    /// Execution-owned rows kept in stores of their own, which a retention
+    /// sweep deletes with their execution (see
+    /// [`Self::with_retention_companions`]).
+    retention_companions: Option<RetentionCompanions>,
+}
+
+/// The separate in-memory stores whose rows belong to an execution, as the
+/// SQL backends' `ON DELETE CASCADE` children of `executions` do.
+#[derive(Debug, Clone)]
+struct RetentionCompanions {
+    node_results: super::InMemoryNodeResultStore,
+    idempotency: InMemoryIdempotencyGuard,
 }
 
 impl std::fmt::Debug for InMemoryExecutionStore {
@@ -202,6 +214,7 @@ impl Default for InMemoryExecutionStore {
         Self {
             inner: SharedState::default(),
             clock: Arc::new(nebula_core::accessor::SystemClock),
+            retention_companions: None,
         }
     }
 }
@@ -221,7 +234,28 @@ impl InMemoryExecutionStore {
         Self {
             inner: SharedState::default(),
             clock,
+            retention_companions: None,
         }
+    }
+
+    /// Attach the node-result store and idempotency guard composed beside
+    /// this store, so [`ExecutionRetention::delete_finished_executions`]
+    /// also deletes a swept execution's node outputs, node results, workflow
+    /// input and idempotency marks, as the SQL backends' cascades do.
+    ///
+    /// Without it a sweep removes only what this store holds. Clones made
+    /// after this call share the attachment.
+    #[must_use]
+    pub fn with_retention_companions(
+        mut self,
+        node_results: super::InMemoryNodeResultStore,
+        idempotency: InMemoryIdempotencyGuard,
+    ) -> Self {
+        self.retention_companions = Some(RetentionCompanions {
+            node_results,
+            idempotency,
+        });
+        self
     }
 
     /// Borrow the shared core so sibling stores (control queue, journal
@@ -537,15 +571,15 @@ impl ExecutionRetention for InMemoryExecutionStore {
             return Ok(0);
         };
         let mut st = self.inner.lock();
-        let mut expired: Vec<(MicrosInstant, String)> = st
+        let mut expired: Vec<(MicrosInstant, String, Scope)> = st
             .rows
             .iter()
             .filter(|(_, row)| row.listing.status().is_terminal())
             .filter_map(|(id, row)| {
                 let finished = row.listing.finished_at()?;
-                (finished < cutoff).then(|| (finished, id.clone()))
+                (finished < cutoff).then(|| (finished, id.clone(), row.scope.clone()))
             })
-            .filter(|(_, id)| {
+            .filter(|(_, id, _)| {
                 id.parse::<nebula_core::id::ExecutionId>()
                     .map_or(true, |execution_id| {
                         !super::plan_flavor_catalog::holds_unexpired_rollback(
@@ -556,18 +590,37 @@ impl ExecutionRetention for InMemoryExecutionStore {
                     })
             })
             .collect();
-        expired.sort();
+        expired.sort_by(|left, right| (left.0, &left.1).cmp(&(right.0, &right.1)));
         expired.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
-        for (_, id) in &expired {
+        // Lock order: execution state, then node results, then marks. The
+        // companions never take the execution lock, so the whole delete is
+        // one critical section, like the SQL backends' cascading `DELETE`.
+        let mut companions = self.retention_companions.as_ref().map(|companions| {
+            (
+                companions.node_results.lock_for_purge(),
+                companions.idempotency.marked.lock(),
+            )
+        });
+        for (_, id, scope) in &expired {
             forget_execution_locked(&mut st, id);
+            if let Some((node_results, marks)) = companions.as_mut() {
+                super::node_result::forget_execution_locked(node_results, scope, id);
+                marks.retain(|(workspace_id, org_id, execution_id, _, _)| {
+                    !(execution_id == id
+                        && *workspace_id == scope.workspace_id
+                        && *org_id == scope.org_id)
+                });
+            }
         }
+        drop(companions);
         Ok(u64::try_from(expired.len()).unwrap_or(u64::MAX))
     }
 }
 
-/// Remove `id` and everything recorded beneath it, mirroring the SQL
-/// backends' `ON DELETE CASCADE` children. Node results live in their own
-/// store ([`super::InMemoryNodeResultStore`]) and are not reached from here.
+/// Remove `id` and everything recorded beneath it in this store, mirroring
+/// the SQL backends' `ON DELETE CASCADE` children. Node results and
+/// idempotency marks live in their own stores; a sweep reaches them through
+/// [`InMemoryExecutionStore::with_retention_companions`].
 fn forget_execution_locked(st: &mut State, id: &str) {
     st.rows.remove(id);
     st.next_seq.remove(id);
@@ -591,15 +644,30 @@ fn forget_execution_locked(st: &mut State, id: &str) {
     }
 }
 
-/// In-memory idempotency guard. Keys are `{scope}:{execution_id}:{node_id}:
-/// {attempt}` so a cross-tenant probe cannot collide with another tenant's
-/// dedup entry (the decorator namespaces by scope; we fold scope into the
-/// key directly here for the raw-adapter conformance case).
+/// In-memory idempotency guard. Keys are `(workspace_id, org_id,
+/// execution_id, node_id, attempt)` so a cross-tenant probe cannot collide
+/// with another tenant's dedup entry (the decorator namespaces by scope; we
+/// fold scope into the key directly here for the raw-adapter conformance
+/// case).
 #[derive(Debug, Default, Clone)]
 pub struct InMemoryIdempotencyGuard {
     // `Arc` so clones share the mark set — repeated guard handles for the
     // same store observe each other's marks (first-writer-wins is global).
-    marked: Arc<Mutex<HashSet<String>>>,
+    marked: Arc<Mutex<HashSet<MarkKey>>>,
+}
+
+/// `(workspace_id, org_id, execution_id, node_id, attempt)`, the SQL
+/// backends' `idempotency_marks` primary key.
+type MarkKey = (String, String, String, String, u32);
+
+fn mark_key(scope: &Scope, execution_id: &str, node_id: &str, attempt: u32) -> MarkKey {
+    (
+        scope.workspace_id.clone(),
+        scope.org_id.clone(),
+        execution_id.to_owned(),
+        node_id.to_owned(),
+        attempt,
+    )
 }
 
 impl InMemoryIdempotencyGuard {
@@ -610,7 +678,7 @@ impl InMemoryIdempotencyGuard {
     }
 
     /// Non-mutating introspection: report whether
-    /// `{scope}:{execution_id}:{node_id}:{attempt}` is already marked,
+    /// `(scope, execution_id, node_id, attempt)` is already marked,
     /// without marking it. Mirrors the key derivation of
     /// [`IdempotencyGuard::check_and_mark`] so callers can assert
     /// dedup state without perturbing it.
@@ -622,11 +690,9 @@ impl InMemoryIdempotencyGuard {
         node_id: &str,
         attempt: u32,
     ) -> bool {
-        let key = format!(
-            "{}:{}:{execution_id}:{node_id}:{attempt}",
-            scope.workspace_id, scope.org_id
-        );
-        self.marked.lock().contains(&key)
+        self.marked
+            .lock()
+            .contains(&mark_key(scope, execution_id, node_id, attempt))
     }
 }
 
@@ -763,11 +829,9 @@ impl IdempotencyGuard for InMemoryIdempotencyGuard {
         node_id: &str,
         attempt: u32,
     ) -> Result<bool, StorageError> {
-        let key = format!(
-            "{}:{}:{execution_id}:{node_id}:{attempt}",
-            scope.workspace_id, scope.org_id
-        );
-        let mut marked = self.marked.lock();
-        Ok(marked.insert(key))
+        Ok(self
+            .marked
+            .lock()
+            .insert(mark_key(scope, execution_id, node_id, attempt)))
     }
 }
