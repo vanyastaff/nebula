@@ -1106,4 +1106,57 @@ mod tests {
             Some("API:CREDENTIAL_REFRESH_NOT_APPLIED_AFTER")
         );
     }
+
+    /// The acquisition requests are SDK copies of the server's contract types
+    /// (a `pub use` of the contract would hide them from the SemVer check,
+    /// which cannot follow cross-crate re-exports). The exhaustive
+    /// destructuring stops compiling when either side gains or loses a field,
+    /// and the server's decoder must accept what the SDK sends.
+    #[test]
+    fn acquisition_requests_match_the_server_contract() {
+        use nebula_api_contract::v1::credential as contract;
+
+        let resolve = ResolveCredentialRequest {
+            credential_key: "oauth2".to_owned(),
+            data: json!({"client_secret": "resolve-secret"}),
+        };
+        let continuation = ContinueResolveCredentialRequest {
+            credential_key: "oauth2".to_owned(),
+            pending_token: "pending-secret".to_owned(),
+            user_input: json!("Poll"),
+        };
+        let reauthorize = ReauthorizeCredentialRequest {
+            data: json!({"client_secret": "reauthorize-secret"}),
+        };
+
+        let contract::ResolveCredentialRequest {
+            credential_key,
+            data,
+        } = serde_json::from_value(serde_json::to_value(&resolve).expect("serialize"))
+            .expect("server decodes resolve");
+        assert_eq!(
+            (credential_key, data),
+            (resolve.credential_key, resolve.data)
+        );
+
+        let contract::ContinueResolveRequest {
+            credential_key,
+            pending_token,
+            user_input,
+        } = serde_json::from_value(serde_json::to_value(&continuation).expect("serialize"))
+            .expect("server decodes continuation");
+        assert_eq!(
+            (credential_key, pending_token, user_input),
+            (
+                continuation.credential_key,
+                continuation.pending_token,
+                continuation.user_input
+            )
+        );
+
+        let contract::ReauthorizeCredentialRequest { data } =
+            serde_json::from_value(serde_json::to_value(&reauthorize).expect("serialize"))
+                .expect("server decodes reauthorization");
+        assert_eq!(data, reauthorize.data);
+    }
 }

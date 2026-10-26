@@ -68,6 +68,13 @@ pub(crate) trait Backend: Send + Sync {
     /// The deployment-wide finished-execution retention over the same store
     /// as [`Backend::execution_store`]. Never scope-bound.
     async fn execution_retention(&self) -> Arc<dyn ExecutionRetention>;
+    /// The execution store the worker's timer sweep lists from. A raw
+    /// backend returns [`Backend::execution_store`]; a tenant-bound backend
+    /// returns its unwrapped store, because `list_due_timers` is
+    /// worker-global and a tenant-bound handle refuses it.
+    async fn worker_execution_store(&self) -> Arc<dyn ExecutionStore> {
+        self.execution_store().await
+    }
     /// An idempotency guard backed by this backend.
     async fn idempotency_guard(&self) -> Arc<dyn IdempotencyGuard>;
     /// The node-output / node-result store over the same executions.
@@ -76,6 +83,13 @@ pub(crate) trait Backend: Send + Sync {
     /// the same store as [`Backend::execution_store`] so a `commit`'s
     /// outbox rows are observable through `claim_pending`.
     async fn control_queue(&self) -> Arc<dyn ControlQueue>;
+    /// The control queue the worker's consumer claims from. A raw backend
+    /// returns [`Backend::control_queue`]; a tenant-bound backend returns
+    /// its unwrapped queue, because claiming is worker-global and a
+    /// tenant-bound handle refuses it.
+    async fn worker_control_queue(&self) -> Arc<dyn ControlQueue> {
+        self.control_queue().await
+    }
     /// A journal reader backed by this backend, sharing the same store as
     /// [`Backend::execution_store`] so a `commit`'s journal entries are
     /// observable.
@@ -1127,7 +1141,9 @@ pub(crate) async fn assert_atomic_triple(backend: &dyn Backend) -> serde_json::V
         serde_json::json!({"event": "transition"})
     );
     let queue = backend.control_queue().await;
-    let claims = queue
+    let claims = backend
+        .worker_control_queue()
+        .await
         .claim_pending(&[0xA1; 16], 1)
         .await
         .expect("claim committed outbox");
@@ -1904,6 +1920,8 @@ pub(crate) async fn assert_get_published_is_highest_numbered(backend: &dyn Backe
 pub(crate) async fn assert_control_queue_outbox_and_fencing(backend: &dyn Backend) {
     let store = backend.execution_store().await;
     let queue = backend.control_queue().await;
+    // Claiming is worker-global; acknowledgements go through `queue`.
+    let worker = backend.worker_control_queue().await;
     let s = scope_a();
     seed_workflow(backend, &s, "wf_1").await;
     store
@@ -1941,7 +1959,7 @@ pub(crate) async fn assert_control_queue_outbox_and_fencing(backend: &dyn Backen
     );
 
     let runner_a = [1u8; 16];
-    let claimed = queue
+    let claimed = worker
         .claim_pending(&runner_a, 16)
         .await
         .expect("claim_pending");
@@ -1988,7 +2006,7 @@ pub(crate) async fn assert_control_queue_outbox_and_fencing(backend: &dyn Backen
         "[{}] an acknowledgement with a non-current generation must be FencedOut, got: {stale_ack:?}",
         backend.name()
     );
-    let reclaimed = queue
+    let reclaimed = worker
         .claim_pending(&runner_a, 16)
         .await
         .expect("claim_pending after stale ack");
@@ -2676,6 +2694,11 @@ pub(crate) async fn assert_webhook_system_surface(backend: &dyn Backend) {
 /// own `WHERE` filtering with an explicit foreign-scope argument, which
 /// the decorator *substitutes away* — a different mechanism, tested in
 /// its own suite.
+///
+/// Claiming from the control queue is worker-global and refused on a
+/// tenant-bound handle, and so is the due-timer sweep, so
+/// [`Backend::worker_control_queue`] and [`Backend::worker_execution_store`]
+/// hand out the unwrapped ports, as the worker composition root does.
 pub(crate) struct ScopedBackend<B: Backend> {
     inner: B,
 }
@@ -2708,6 +2731,10 @@ impl<B: Backend> Backend for ScopedBackend<B> {
         self.inner.execution_retention().await
     }
 
+    async fn worker_execution_store(&self) -> Arc<dyn ExecutionStore> {
+        self.inner.execution_store().await
+    }
+
     async fn idempotency_guard(&self) -> Arc<dyn IdempotencyGuard> {
         Arc::new(nebula_tenancy::ScopedIdempotencyGuard::new(
             self.inner.idempotency_guard().await,
@@ -2727,6 +2754,10 @@ impl<B: Backend> Backend for ScopedBackend<B> {
             self.inner.control_queue().await,
             scope_a(),
         ))
+    }
+
+    async fn worker_control_queue(&self) -> Arc<dyn ControlQueue> {
+        self.inner.control_queue().await
     }
 
     async fn journal_reader(&self) -> Arc<dyn ExecutionJournalReader> {

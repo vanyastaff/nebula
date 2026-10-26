@@ -1,7 +1,8 @@
 name: Nightly Chaos
 
 # Runs the full sub-spec §5.4 chaos plane (10 minutes × 100 credentials
-# × 3 replicas) plus loom probes. The harness is always ignored in ordinary
+# × 3 replicas), the multi-process worker test on PostgreSQL, plus loom
+# probes. The harness is always ignored in ordinary
 # gates; an explicit local ignored run uses the 5s × 5-credential plane,
 # while this workflow widens it via `nebula-storage/chaos-full`.
 
@@ -114,6 +115,63 @@ jobs:
           cargo nextest run \
             -p nebula-storage \
             --test execution_lease_chaos \
+            --run-ignored only \
+            --no-tests=fail
+
+  postgres-multiprocess:
+    name: Multi-process workers on PostgreSQL
+    runs-on: ubuntu-latest
+    # The scenario itself takes about a minute (it waits out a killed
+    # worker's 30-second lease); the rest is compiling the worker binary.
+    timeout-minutes: 25
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/nebula_test?sslmode=disable
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: nebula_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d nebula_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: 1.97.1
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
+        with:
+          shared-key: nightly-chaos-postgres
+          save-if: ${{ github.event_name == 'schedule' }}
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@481c34c1cf3a84c68b5e46f4eccfc82af798415a # v2.75.23
+        with:
+          tool: cargo-nextest
+
+      - name: Run multi-process worker test
+        # Three `nebula-worker` processes share one fresh database (created
+        # and dropped by the test) and race on its control queue; one is
+        # killed with SIGKILL while it holds leases. The test is `#[ignore]`d
+        # by default; --run-ignored only opts in.
+        run: |
+          set -euo pipefail
+          cargo nextest run \
+            -p nebula-worker-bin \
+            --features postgres \
+            --test postgres_multiprocess \
+            --profile chaos \
             --run-ignored only \
             --no-tests=fail
 

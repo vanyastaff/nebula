@@ -21,6 +21,17 @@ changes are expected between minor releases — call them out here.
   restart. `SqliteOAuthStateRepo::new` and `PgOAuthStateRepo::new` now take the
   `IdentitySecretCodec`; `AuthPersistence` passes it.
 
+- **Tenant-bound storage handles refuse worker-global sweeps.** The
+  `nebula-tenancy` decorators passed scope-free methods straight to storage,
+  so a tenant-bound handle could claim, reclaim or clean up every tenant's
+  control commands, list every tenant's due executions with their state, or
+  list every tenant's active webhooks. `ScopedControlQueue::claim_pending*`,
+  `reclaim_stuck` and `cleanup`, `ScopedExecutionStore::list_due_timers` and
+  `ScopedWebhookActivationStore::list_all_active` now return
+  `StorageError::ScopeViolation` without reaching storage. Run the control
+  consumer, timer sweep and webhook bootstrap on the raw ports, as the worker
+  and server composition roots already do.
+
 - **Leftover job-dispatch routing and leased resume are removed.** They had
   no caller once the job-dispatch channel was gone. `nebula-engine` drops the
   `daemon::routing` module with `RoutingResolver`, `DefinitionRoutingResolver`,
@@ -91,6 +102,12 @@ changes are expected between minor releases — call them out here.
   `nebula_metrics_series_overflow_total{metric}` and the first one logs a
   warning. `MetricsRegistry::with_cardinality_limits` changes the cap or the
   denied keys. No in-tree metric uses a denied key or comes near the cap.
+
+- **The `simple_action!` docs point to an example that exists.** They named
+  `examples/hello_action.rs`, which was never there. The new
+  `sdk_hello_action` example (`cargo run -p nebula-examples --example
+  sdk_hello_action`) is the first example that uses `nebula-sdk` alone, so
+  building the examples now also compile-checks the integration-author path.
 
 - **`#[credential]` synthesizes a refresh strategy the scheme family allows.**
   Without a hand-written `fn policy`, a credential with `fn refresh` always got

@@ -14,6 +14,12 @@ use nebula_storage_port::{
 /// [`Scope`]. The caller-supplied `scope` argument is *ignored* — the
 /// engine cannot read, transition, or lease another tenant's execution
 /// even if it passes a forged scope.
+///
+/// [`list_due_timers`](ExecutionStore::list_due_timers) takes no scope and
+/// returns every tenant's due executions, state included. It is the
+/// worker-global timer sweep, so a tenant-bound handle refuses it with
+/// [`StorageError::ScopeViolation`] without reaching storage; only the
+/// worker's composition root, which holds the raw store, runs the sweep.
 #[derive(Clone)]
 pub struct ScopedExecutionStore {
     inner: Arc<dyn ExecutionStore>,
@@ -124,15 +130,16 @@ impl ExecutionStore for ScopedExecutionStore {
         self.inner.cancel_requested(&self.bound, id).await
     }
 
+    /// Worker-global: refused on a tenant-bound handle.
     async fn list_due_timers(
         &self,
-        due_at: chrono::DateTime<chrono::Utc>,
-        after: Option<&nebula_storage_port::dto::DueTimerCursor>,
-        limit: u32,
+        _due_at: chrono::DateTime<chrono::Utc>,
+        _after: Option<&nebula_storage_port::dto::DueTimerCursor>,
+        _limit: u32,
     ) -> Result<Vec<nebula_storage_port::dto::DueTimer>, StorageError> {
-        // No scope filter: cross-tenant scan is the point of this method.
-        // The caller (timer scanner) re-drives each row under its own scope.
-        self.inner.list_due_timers(due_at, after, limit).await
+        Err(StorageError::ScopeViolation {
+            entity: "execution",
+        })
     }
 
     async fn list_history(

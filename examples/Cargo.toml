@@ -76,6 +76,10 @@ name = "credential_plugin_scheme_family"
 path = "examples/credential_plugin_scheme_family.rs"
 
 [[example]]
+name = "sdk_hello_action"
+path = "examples/sdk_hello_action.rs"
+
+[[example]]
 name = "workflow_data_pipeline"
 path = "examples/workflow_data_pipeline.rs"
 
