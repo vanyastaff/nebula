@@ -4838,6 +4838,7 @@ dependencies = [
  "httpdate",
  "insta",
  "nebula-action",
+ "nebula-api-contract",
  "nebula-core",
  "nebula-credential",
  "nebula-metadata",

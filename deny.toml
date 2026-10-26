@@ -150,6 +150,7 @@ deny = [
   # first-party HTTP client. The client cannot depend on runtime/storage crates.
   { crate = "nebula-api-contract", wrappers = [
     "nebula-api",
+    "nebula-sdk",
     "nebula-client",
   ], reason = "Transport contract is Core shared infrastructure; consumers are API, SDK and first-party HTTP client" },
 

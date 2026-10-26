@@ -60,6 +60,9 @@ quote = { workspace = true }
 syn = { workspace = true, features = ["full", "printing"] }
 rstest = { workspace = true }
 tempfile = { workspace = true }
+# `client::credential` tests: pins the acquisition requests to the server's
+# wire contract.
+nebula-api-contract = { path = "../api-contract" }
 
 [features]
 default = ["derive", "testing"]

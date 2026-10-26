@@ -141,16 +141,16 @@ type WorkerStores = (
 ///
 /// When `config.database_url` is `None`, the SQLite path is used (WAL +
 /// NORMAL synchronous; single connection; `init_schema` applied). This is the
-/// default and the only path exercised by CI integration tests.
+/// default.
 ///
 /// When `config.database_url` is `Some`, the Postgres path is used — but
 /// only when the binary is compiled with `--features postgres`. Without that
 /// feature the call returns [`WorkerRunError::PostgresFeatureNotEnabled`]
 /// immediately, never silently falling back to SQLite.
 ///
-/// The Postgres path is compile-verified (`cargo check --all-features`) but is
-/// NOT integration-tested in CI (no DATABASE_URL available in the CI
-/// environment). SQLite is the default and the tested path.
+/// Pull-request CI exercises the SQLite path. The Postgres path runs nightly in
+/// `tests/postgres_multiprocess.rs`, where several worker processes share one
+/// PostgreSQL database.
 async fn build_stores(
     config: &WorkerConfig,
     metrics: &nebula_metrics::MetricsRegistry,

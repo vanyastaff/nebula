@@ -34,6 +34,7 @@ coordinator records authorization denials before a scoped store is invoked.
 | Confused deputy / cross-tenant row access | Every scoped read/transition is `WHERE id = ? AND workspace_id = ? AND org_id = ?`; an id↔scope mismatch returns `NotFound` — never the row, never a distinct "denied" that leaks existence. |
 | Idempotency replay-oracle | `IdempotencyStore`/`IdempotencyGuard` keys are tenant-namespaced (`{scope}:{key}`) so tenant A cannot probe or poison tenant B's dedup entry. |
 | Control-queue confused deputy | `ControlQueue::enqueue` is scoped; the engine consumer re-verifies scope on `claim_pending` before dispatch. |
+| Worker-global sweep through a tenant handle | Port methods that take no `Scope` and span every tenant (`ControlQueue::claim_pending*`, `reclaim_stuck`, `cleanup`; `ExecutionStore::list_due_timers`; `WebhookActivationStore::list_all_active`; `ResourceStatusStore::heartbeat`/`withdraw_worker`) return `ScopeViolation` on a tenant-bound handle without reaching storage. Only the worker composition root, holding the raw port, runs them. Token-keyed lookups (`ResumeTokenStore::consume`, `WebhookActivationStore::resolve_by_token`) pass through: the secret token names one row. |
 | Credential authority regression | The supported authenticated HTTP management path uses its own one-decision authority/controller and mandatory `CredentialSelector`; tenancy exposes no credential metadata decorator and no `None == admin` bypass. K3 still owns sole-semantic-writer closure for technical service paths. |
 
 ## Dependencies
