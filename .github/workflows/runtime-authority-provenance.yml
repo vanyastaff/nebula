@@ -104,7 +104,7 @@ jobs:
           PY
 
       - name: Checkout immutable protected policy
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.anchor.outputs.policy-revision }}
           persist-credentials: false
@@ -216,7 +216,7 @@ jobs:
 
       - name: Attest independently verified candidate digest
         id: attest
-        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: ${{ runner.temp }}/runtime-authority-candidate.zip
 
@@ -238,7 +238,7 @@ jobs:
 
       - name: Retain independently verified signed evidence
         if: success()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: runtime-authority-protected-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -253,7 +253,7 @@ jobs:
 
       - name: Retain protected verification diagnostics
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: runtime-authority-protected-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
