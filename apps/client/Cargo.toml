@@ -18,17 +18,30 @@ required-features = ["ui"]
 
 [features]
 default = ["ui"]
-ui = ["dep:eframe"]
+# The library is empty without `ui`, so its UI-only deps are gated with it.
+ui = [
+  "dep:eframe",
+  "dep:nebula-api-contract",
+  "dep:reqwest",
+  "dep:serde",
+  "dep:serde_json",
+  "dep:thiserror",
+  "dep:tokio",
+  "dep:tracing",
+  "dep:url",
+  "dep:uuid",
+  "dep:zeroize",
+]
 
 [dependencies]
-nebula-api-contract = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-thiserror = { workspace = true }
-tracing = { workspace = true }
-url = { workspace = true }
-zeroize = { workspace = true }
-uuid = { version = "1", features = ["v4", "js"] }
+nebula-api-contract = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
+uuid = { version = "1", optional = true, features = ["v4", "js"] }
 eframe = { version = "=0.36.2", optional = true, default-features = false, features = [
   "default_fonts",
   "glow",
@@ -39,8 +52,8 @@ eframe = { version = "=0.36.2", optional = true, default-features = false, featu
 ] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-reqwest = { workspace = true, features = ["rustls", "stream"] }
-tokio = { workspace = true }
+reqwest = { workspace = true, optional = true, features = ["rustls", "stream"] }
+tokio = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
