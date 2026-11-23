@@ -15,7 +15,7 @@
 use std::{collections::HashMap, mem::size_of, time::Duration};
 
 use nebula_action::{
-    ActionError, ActionMetadata, ActionOutput, ActionResult, ActionRuntimeContext, BinaryData,
+    ActionDefinition, ActionError, ActionOutput, ActionResult, ActionRuntimeContext, BinaryData,
     Cost, DeferredOutput, OutputEnvelope, OutputMeta, Progress, Timing, TokenUsage,
     TriggerEventOutcome, WebhookRequest,
 };
@@ -44,10 +44,10 @@ fn top_level_type_sizes_are_stable() {
          that drives this size, check it first."
     );
     // Measured with Rust 1.97.1 on x86_64: typed categories, links, removal/
-    // replacement guidance, and checked authoring intent grow ActionMetadata
+    // replacement guidance, and checked authoring intent grow ActionDefinition
     // from 376 to 512 bytes. It is admitted once per action type; the cold
     // remote-effect descriptor remains boxed.
-    assert_eq!(size_of::<ActionMetadata>(), 512);
+    assert_eq!(size_of::<ActionDefinition>(), 512);
     assert_eq!(size_of::<ActionError>(), 72);
 
     // `WebhookRequest` contains a `SystemTime`, which is 8 bytes on
@@ -119,7 +119,7 @@ fn print_type_size_baseline() {
             size_of::<ActionOutput<serde_json::Value>>(),
         ),
         ("ActionRuntimeContext", size_of::<ActionRuntimeContext>()),
-        ("ActionMetadata", size_of::<ActionMetadata>()),
+        ("ActionDefinition", size_of::<ActionDefinition>()),
         ("ActionError", size_of::<ActionError>()),
         ("WebhookRequest", size_of::<WebhookRequest>()),
         ("TriggerEventOutcome", size_of::<TriggerEventOutcome>()),

@@ -63,15 +63,18 @@ struct RecoveryEffectAction {
 }
 
 impl Action for RecoveryEffectAction {
+    const KEY: &'static str = "recovery.send";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("recovery.send"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Send"),
             "durable recovery effect fixture",
         )
+        .with_effect_contract(ActionEffectContract::Remote(
+            Box::new(recovery_descriptor()),
+        ))
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -152,11 +155,11 @@ struct Echo {
     block_successor: bool,
 }
 impl Action for Echo {
+    const KEY: &'static str = "recovery.echo";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("recovery.echo"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Echo"),
             "pure recovery fixture",
         )
@@ -208,13 +211,10 @@ fn registry(
 ) -> (Arc<ActionRegistry>, Arc<FrozenPluginRegistry>) {
     let actions = Arc::new(ActionRegistry::new());
     actions
-        .register_stateless_instance(
-            Echo::metadata(),
-            Echo {
-                calls: calls.clone(),
-                block_successor,
-            },
-        )
+        .register_stateless_instance(Echo {
+            calls: calls.clone(),
+            block_successor,
+        })
         .expect("valid test catalog definition");
     let plugin = FixturePlugin {
         manifest: PluginManifest::builder("recovery", "Recovery")
@@ -238,9 +238,8 @@ fn registry(
     (actions, Arc::new(frozen))
 }
 
-fn effect_registry(
-    observations: &Arc<EffectObservations>,
-) -> (Arc<ActionRegistry>, Arc<FrozenPluginRegistry>) {
+/// The remote effect descriptor the recovery action declares and carries.
+fn recovery_descriptor() -> RemoteEffectDescriptor {
     let policy =
         RemoteEffectPolicy::builder(RemoteDestinationGuarantee::stable_key(60_000).unwrap())
             .maximum_invocations(2)
@@ -248,21 +247,17 @@ fn effect_registry(
             .recovery_window(Duration::from_mins(1))
             .build()
             .unwrap();
-    let descriptor = RemoteEffectDescriptor::new("worker.recovery/v1", 1, policy).unwrap();
-    let metadata = nebula_action::ActionMetadataDraft::new(
-        action_key!("recovery.send"),
-        nebula_action::metadata_name!("Send"),
-        "durable recovery effect fixture",
-    )
-    .with_effect_contract(ActionEffectContract::Remote(Box::new(descriptor.clone())));
+    RemoteEffectDescriptor::new("worker.recovery/v1", 1, policy).unwrap()
+}
+
+fn effect_registry(
+    observations: &Arc<EffectObservations>,
+) -> (Arc<ActionRegistry>, Arc<FrozenPluginRegistry>) {
     let factory = Arc::new(
-        RemoteEffectInstanceFactory::new(
-            metadata,
-            RecoveryEffectAction {
-                descriptor,
-                observations: observations.clone(),
-            },
-        )
+        RemoteEffectInstanceFactory::new(RecoveryEffectAction {
+            descriptor: recovery_descriptor(),
+            observations: observations.clone(),
+        })
         .expect("coherent recovery effect factory"),
     );
     let plugin = FixturePlugin {

@@ -62,7 +62,6 @@ use nebula_action::{
     port::{DynamicPort, OutputPort, default_input_ports},
     port_key,
 };
-use nebula_core::action_key;
 use nebula_schema::{HasSchema, Property, Schema, ValidSchema, ValidationReport, field_key};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -130,12 +129,12 @@ impl HasSchema for SwitchInput {
 pub struct CoreSwitch;
 
 impl nebula_action::action::Action for CoreSwitch {
+    const KEY: &'static str = "core.switch";
     type Input = SwitchInput;
     type Output = Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("core.switch"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Switch"),
             "Routes execution to the first matching case port, or 'default' if none match",
         )

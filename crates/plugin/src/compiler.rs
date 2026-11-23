@@ -435,7 +435,7 @@ fn project_action_snapshot(
     plugin_key: &PluginKey,
     snapshot: &ActionContractSnapshot,
 ) -> Result<RecordedActionV1, ContractProjectionError> {
-    let metadata = snapshot.metadata();
+    let metadata = snapshot.definition();
     let mut inputs = metadata
         .inputs()
         .iter()
@@ -473,7 +473,7 @@ fn project_resource_snapshot(
     plugin_key: &PluginKey,
     snapshot: &ResourceContractSnapshot,
 ) -> Result<RecordedResourceV1, ContractProjectionError> {
-    let metadata = snapshot.metadata();
+    let metadata = snapshot.definition();
     Ok(RecordedResourceV1 {
         key: metadata.base().key().to_string(),
         plugin_key: plugin_key.to_string(),
@@ -487,9 +487,9 @@ fn project_credential_snapshot(
     plugin_key: &PluginKey,
     snapshot: &CredentialContractSnapshot,
 ) -> Result<RecordedCredentialV1, ContractProjectionError> {
-    let metadata = snapshot.metadata();
+    let metadata = snapshot.definition();
     Ok(RecordedCredentialV1 {
-        key: snapshot.metadata().key().to_string(),
+        key: snapshot.definition().key().to_string(),
         plugin_key: plugin_key.to_string(),
         version: record_semver(metadata.version()),
         pattern: project_auth_pattern(metadata.pattern())?,
@@ -1151,7 +1151,7 @@ impl<'a> GraphCompiler<'a> {
             );
             return None;
         };
-        let kind = snapshot.metadata().kind();
+        let kind = snapshot.definition().kind();
         if trigger && !matches!(kind, ActionKind::Trigger) {
             self.diagnostics.push(
                 DiagnosticCode::TriggerKindMismatch,
@@ -1189,7 +1189,7 @@ impl<'a> GraphCompiler<'a> {
             return None;
         }
         if matches!(
-            snapshot.metadata().effect_contract(),
+            snapshot.definition().effect_contract(),
             nebula_action::effect::ActionEffectContract::Remote(_)
         ) && kind != ActionKind::Stateless
         {
@@ -1439,7 +1439,7 @@ impl<'a> GraphCompiler<'a> {
                     return;
                 }
                 let provider_key = provider.key().clone();
-                let version = snapshot.metadata().base().version().clone();
+                let version = snapshot.definition().base().version().clone();
                 if !self.validate_plugin_edge(&owner_plugin, &provider_key, path) {
                     return;
                 }
@@ -1464,7 +1464,7 @@ impl<'a> GraphCompiler<'a> {
                     return;
                 }
                 let provider_key = provider.key().clone();
-                let version = snapshot.metadata().version().clone();
+                let version = snapshot.definition().version().clone();
                 let capabilities = snapshot.capabilities().bits();
                 if !self.validate_plugin_edge(&owner_plugin, &provider_key, path) {
                     return;

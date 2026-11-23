@@ -49,12 +49,12 @@ struct SumOutput {
 }
 
 impl Action for SumStream {
+    const KEY: &'static str = "test.stream.sum";
     type Input = SumInput;
     type Output = SumOutput;
 
-    fn metadata() -> crate::ActionMetadataDraft {
-        crate::ActionMetadataDraft::new(
-            nebula_core::action_key!("test.stream.sum"),
+    fn metadata() -> crate::ActionMetadata {
+        crate::ActionMetadata::new(
             crate::metadata_name!("SumStream"),
             "Yields three chunks and sums them",
         )
@@ -110,12 +110,12 @@ impl FromWorkflowNode for SumStream {
 struct ErrorStream;
 
 impl Action for ErrorStream {
+    const KEY: &'static str = "test.stream.error";
     type Input = Value;
     type Output = Value;
 
-    fn metadata() -> crate::ActionMetadataDraft {
-        crate::ActionMetadataDraft::new(
-            nebula_core::action_key!("test.stream.error"),
+    fn metadata() -> crate::ActionMetadata {
+        crate::ActionMetadata::new(
             crate::metadata_name!("ErrorStream"),
             "Emits one chunk then fails",
         )
@@ -181,7 +181,7 @@ async fn sum_stream_folds_to_six() {
     };
 
     assert_eq!(
-        stream_handle.metadata().kind(),
+        stream_handle.definition().kind(),
         ActionKind::Stream,
         "factory must stamp ActionKind::Stream"
     );
@@ -215,7 +215,7 @@ async fn stream_metadata_kind_and_predicate() {
     let handle = factory.instantiate(&node, &ctx).await.unwrap();
 
     assert_eq!(
-        handle.metadata().kind(),
+        handle.definition().kind(),
         ActionKind::Stream,
         "GenericStreamFactory must stamp ActionKind::Stream on the stored metadata"
     );

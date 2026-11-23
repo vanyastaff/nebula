@@ -11,7 +11,7 @@ use nebula_action::{
     StatefulAction, StatefulActionAdapter, StatefulHandle, StatelessAction, StatelessActionAdapter,
     StatelessHandle, StreamAction, TestContextBuilder,
 };
-use nebula_core::{Dependencies, action_key, node_key};
+use nebula_core::{Dependencies, node_key};
 use nebula_schema::{
     AuthoredValue, HasSchema, Predicate, Property, Rule, Schema, Transformer, ValidSchema,
     ValidationReport, field_key,
@@ -92,12 +92,12 @@ fn observed(input: &PreparedInput) -> Value {
 struct Probe;
 
 impl Action for Probe {
+    const KEY: &'static str = "test.input_probe";
     type Input = PreparedInput;
     type Output = Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("test.input_probe"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Input probe"),
             "Observe prepared input at the action boundary",
         )
@@ -108,6 +108,14 @@ impl Action for Probe {
         DEPENDENCIES.get_or_init(Dependencies::new)
     }
 }
+
+nebula_action::stateless_entry!(
+    TestInputProbeOtherEntry(Probe) = "test.input_probe.other",
+    nebula_action::ActionMetadata::new(
+        nebula_action::metadata_name!("Other input probe"),
+        "A distinct action contract over the same Rust input type",
+    ),
+);
 
 impl FromWorkflowNode for Probe {
     type Error = ActionError;
@@ -213,7 +221,7 @@ enum IngressPath {
 fn factory(adapter: IngressPath) -> Box<dyn ActionFactory> {
     match adapter {
         IngressPath::Stateless => Box::new(GenericStatelessFactory::<Probe>::new().unwrap()),
-        IngressPath::Instance => Box::new(InstanceFactory::new(Probe::metadata(), Probe).unwrap()),
+        IngressPath::Instance => Box::new(InstanceFactory::new(Probe).unwrap()),
         IngressPath::Stateful => Box::new(GenericStatefulFactory::<Probe>::new().unwrap()),
         IngressPath::Stream => Box::new(GenericStreamFactory::<Probe>::new().unwrap()),
         IngressPath::Agent => Box::new(GenericAgentFactory::<Probe>::new().unwrap()),
@@ -439,7 +447,7 @@ async fn resolved_proof_decode_errors_never_publish_serde_sources(
     input["literal"] = json!(SERDE_CANARY);
     let factory = factory(adapter);
     let proof = factory
-        .metadata()
+        .definition()
         .base()
         .schema()
         .validate(AuthoredValue::from_data(input).unwrap())
@@ -466,7 +474,7 @@ async fn adapters_consume_matching_proofs_without_repeating_preparation(
     adapter: IngressPath,
 ) {
     let factory = factory(adapter);
-    let schema = factory.metadata().base().schema();
+    let schema = factory.definition().base().schema();
     let proof = schema
         .validate(AuthoredValue::from_data(wire(true)).unwrap())
         .unwrap()
@@ -521,8 +529,8 @@ async fn adapters_require_the_complete_schema_not_just_the_field_types(
 async fn resolved_proof_rejects_an_independently_admitted_equal_schema() {
     let factory = factory(IngressPath::Stateless);
     let foreign_schema = PreparedInput::schema().unwrap();
-    assert_eq!(&foreign_schema, factory.metadata().base().schema());
-    assert!(!foreign_schema.ptr_eq(factory.metadata().base().schema()));
+    assert_eq!(&foreign_schema, factory.definition().base().schema());
+    assert!(!foreign_schema.ptr_eq(factory.definition().base().schema()));
     let proof = foreign_schema
         .validate(AuthoredValue::from_data(wire(false)).unwrap())
         .unwrap()
@@ -585,30 +593,22 @@ async fn prepared_input_is_bound_to_exact_handle_across_shared_types_and_contrac
         panic!("probe factory must produce a stateless handle");
     };
     assert_eq!(
-        first.metadata().base().schema(),
-        second.metadata().base().schema()
+        first.definition().base().schema(),
+        second.definition().base().schema()
     );
-    let other_factory = InstanceFactory::new(
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("test.input_probe.other"),
-            nebula_action::metadata_name!("Other input probe"),
-            "A distinct action contract over the same Rust input type",
-        ),
-        Probe,
-    )
-    .unwrap();
+    let other_factory = InstanceFactory::new(TestInputProbeOtherEntry(Probe)).unwrap();
     let ActionHandle::Stateless(other_contract) =
         other_factory.instantiate(&node, &context).await.unwrap()
     else {
         panic!("instance factory must produce a stateless handle");
     };
     assert_ne!(
-        first.metadata().base().key(),
-        other_contract.metadata().base().key()
+        first.definition().base().key(),
+        other_contract.definition().base().key()
     );
     assert_eq!(
-        first.metadata().base().schema(),
-        other_contract.metadata().base().schema()
+        first.definition().base().schema(),
+        other_contract.definition().base().schema()
     );
 
     let prepared = first.prepare_input(ActionInput::Raw(wire(false))).unwrap();

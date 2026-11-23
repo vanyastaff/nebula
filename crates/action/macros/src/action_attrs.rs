@@ -122,9 +122,25 @@ impl ActionAttrs {
         })
     }
 
-    /// Generate `ActionMetadataDraft` initialization expression.
-    pub(crate) fn metadata_init_expr(&self) -> TokenStream2 {
+    /// Generate the `const KEY` item and its definition-site validity check.
+    ///
+    /// The check is a non-generic `const _` item, so `cargo check` and an
+    /// editor report an invalid literal where the action is declared.
+    pub(crate) fn key_items(&self) -> (TokenStream2, TokenStream2) {
         let key = &self.key;
+        (
+            quote! { const KEY: &'static str = #key; },
+            quote! {
+                const _: () = ::core::assert!(
+                    ::nebula_core::ActionKey::is_valid_key_const(#key),
+                    "invalid action key literal"
+                );
+            },
+        )
+    }
+
+    /// Generate the keyless `ActionMetadata` initialization expression.
+    pub(crate) fn metadata_init_expr(&self) -> TokenStream2 {
         let name = &self.name;
         let description = &self.description;
         let version = self.version.to_string();
@@ -137,8 +153,7 @@ impl ActionAttrs {
         });
 
         quote! {
-            ::nebula_action::ActionMetadataDraft::new(
-                ::nebula_core::action_key!(#key),
+            ::nebula_action::ActionMetadata::new(
                 ::nebula_action::metadata_name!(#name),
                 #description,
             )

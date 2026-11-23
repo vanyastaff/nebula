@@ -3,18 +3,19 @@
 use std::{num::NonZeroU32, sync::OnceLock};
 
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionFactory, ActionMetadataDraft, ActionResult,
-    InstanceFactory, RecordedActionMetadata, StatelessAction,
+    Action, ActionContext, ActionError, ActionFactory, ActionMetadata, ActionResult,
+    InstanceFactory, RecordedActionDefinition, StatelessAction,
 };
-use nebula_core::{ActionKey, Dependencies};
+use nebula_core::Dependencies;
 
 struct Probe;
 
 impl Action for Probe {
+    const KEY: &'static str = "test.maxc";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
+    fn metadata() -> ActionMetadata {
         draft()
     }
 
@@ -23,6 +24,13 @@ impl Action for Probe {
         DEPENDENCIES.get_or_init(Dependencies::new)
     }
 }
+
+const LIMIT: NonZeroU32 = NonZeroU32::new(4).expect("four is non-zero");
+
+nebula_action::stateless_entry!(
+    LimitedProbe(Probe) = "test.maxc",
+    draft().with_max_concurrent(LIMIT),
+);
 
 impl StatelessAction for Probe {
     async fn execute(
@@ -34,9 +42,8 @@ impl StatelessAction for Probe {
     }
 }
 
-fn draft() -> ActionMetadataDraft {
-    ActionMetadataDraft::new(
-        ActionKey::new("test.maxc").expect("valid key"),
+fn draft() -> ActionMetadata {
+    ActionMetadata::new(
         nebula_action::metadata_name!("test"),
         "max_concurrent smoke",
     )
@@ -44,37 +51,35 @@ fn draft() -> ActionMetadataDraft {
 
 #[test]
 fn default_is_none() {
-    let factory = InstanceFactory::new(draft(), Probe).expect("metadata admits");
-    assert_eq!(factory.metadata().max_concurrent(), None);
+    let factory = InstanceFactory::new(Probe).expect("metadata admits");
+    assert_eq!(factory.definition().max_concurrent(), None);
 }
 
 #[test]
 fn recorded_evidence_readmits_against_fresh_definition() {
-    let limit = NonZeroU32::new(4).expect("four is non-zero");
-    let factory =
-        InstanceFactory::new(draft().with_max_concurrent(limit), Probe).expect("metadata admits");
-    let wire = serde_json::to_string(factory.metadata()).expect("metadata serializes");
-    let recorded: RecordedActionMetadata =
+    let factory = InstanceFactory::new(LimitedProbe(Probe)).expect("metadata admits");
+    let wire = serde_json::to_string(factory.definition()).expect("metadata serializes");
+    let recorded: RecordedActionDefinition =
         serde_json::from_str(&wire).expect("recorded evidence decodes");
     let readmitted = recorded
-        .readmit_against(factory.metadata())
+        .readmit_against(factory.definition())
         .expect("exact evidence readmits");
-    assert_eq!(readmitted.max_concurrent(), Some(limit));
+    assert_eq!(readmitted.max_concurrent(), Some(LIMIT));
 }
 
 #[test]
 fn serialization_omits_absent_limit() {
-    let factory = InstanceFactory::new(draft(), Probe).expect("metadata admits");
-    let wire = serde_json::to_value(factory.metadata()).expect("metadata serializes");
+    let factory = InstanceFactory::new(Probe).expect("metadata admits");
+    let wire = serde_json::to_value(factory.definition()).expect("metadata serializes");
     assert!(wire.get("max_concurrent").is_none());
 }
 
 #[test]
 fn recorded_evidence_rejects_zero_limit() {
-    let factory = InstanceFactory::new(draft(), Probe).expect("metadata admits");
-    let mut wire = serde_json::to_value(factory.metadata()).expect("metadata serializes");
+    let factory = InstanceFactory::new(Probe).expect("metadata admits");
+    let mut wire = serde_json::to_value(factory.definition()).expect("metadata serializes");
     wire.as_object_mut()
         .expect("metadata wire is an object")
         .insert("max_concurrent".into(), serde_json::json!(0));
-    assert!(serde_json::from_value::<RecordedActionMetadata>(wire).is_err());
+    assert!(serde_json::from_value::<RecordedActionDefinition>(wire).is_err());
 }

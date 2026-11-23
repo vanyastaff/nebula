@@ -18,7 +18,7 @@ use crate::{
     context::ActionContext,
     error::{ActionError, ValidationReason},
     input::ActionInputContract,
-    metadata::ActionMetadata,
+    metadata::ActionDefinition,
     result::ActionResult,
 };
 
@@ -131,7 +131,7 @@ pub struct PaginationState<C> {
 ///
 /// ```rust
 /// use std::sync::OnceLock;
-/// use nebula_action::{Action, ActionContext, ActionError, ActionMetadata, StatefulAction};
+/// use nebula_action::{Action, ActionContext, ActionError, ActionDefinition, StatefulAction};
 /// use nebula_action::stateful::{PageResult, PaginatedAction};
 /// use nebula_core::{Dependencies, action_key};
 /// use serde_json::Value;
@@ -140,10 +140,11 @@ pub struct PaginationState<C> {
 ///
 /// // Every paginated action is first an `Action` (identity + typed Input/Output).
 /// impl Action for ListItems {
+///     const KEY: &'static str = "list.items";
 ///     type Input = Value;
 ///     type Output = Value;
-///     fn metadata() -> nebula_action::ActionMetadataDraft {
-///         nebula_action::ActionMetadataDraft::new(action_key!("list.items"), nebula_action::metadata_name!("List"), "Lists items page by page")
+///     fn metadata() -> nebula_action::ActionMetadata {
+///         nebula_action::ActionMetadata::new(nebula_action::metadata_name!("List"), "Lists items page by page")
 ///     }
 ///     fn dependencies() -> &'static Dependencies {
 ///         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -213,7 +214,7 @@ pub trait PaginatedAction: Action {
 ///
 /// ```rust
 /// use std::sync::OnceLock;
-/// use nebula_action::{Action, ActionContext, ActionError, ActionMetadata, StatefulAction};
+/// use nebula_action::{Action, ActionContext, ActionError, ActionDefinition, StatefulAction};
 /// use nebula_action::stateful::{PageResult, PaginatedAction};
 /// use nebula_core::{Dependencies, action_key};
 /// use serde_json::Value;
@@ -221,10 +222,11 @@ pub trait PaginatedAction: Action {
 /// struct MyAction;
 ///
 /// impl Action for MyAction {
+///     const KEY: &'static str = "my.action";
 ///     type Input = Value;
 ///     type Output = Value;
-///     fn metadata() -> nebula_action::ActionMetadataDraft {
-///         nebula_action::ActionMetadataDraft::new(action_key!("my.action"), nebula_action::metadata_name!("My"), "Paginates a source")
+///     fn metadata() -> nebula_action::ActionMetadata {
+///         nebula_action::ActionMetadata::new(nebula_action::metadata_name!("My"), "Paginates a source")
 ///     }
 ///     fn dependencies() -> &'static Dependencies {
 ///         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -478,7 +480,7 @@ macro_rules! impl_batch_action {
 /// engine checkpointing.
 pub struct StatefulActionAdapter<A> {
     action: A,
-    meta: Arc<ActionMetadata>,
+    meta: Arc<ActionDefinition>,
     input_contract: ActionInputContract,
 }
 
@@ -504,7 +506,7 @@ impl<A> StatefulActionAdapter<A> {
         })
     }
 
-    pub(crate) fn with_metadata(action: A, meta: Arc<ActionMetadata>) -> Self {
+    pub(crate) fn with_metadata(action: A, meta: Arc<ActionDefinition>) -> Self {
         let input_contract = ActionInputContract::new(meta.base().schema());
         Self {
             action,
@@ -528,7 +530,7 @@ where
     A::Output: Serialize + Send + Sync,
     A::State: Serialize + DeserializeOwned + Clone + Send + Sync,
 {
-    fn metadata(&self) -> &Arc<ActionMetadata> {
+    fn definition(&self) -> &Arc<ActionDefinition> {
         &self.meta
     }
 

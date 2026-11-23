@@ -27,7 +27,7 @@ use std::{
 };
 
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionFactory, ActionMetadataDraft, ActionResult,
+    Action, ActionContext, ActionError, ActionFactory, ActionMetadata, ActionResult,
     InstanceFactory, StatelessAction,
 };
 use nebula_core::{Dependencies, port_key};
@@ -239,12 +239,12 @@ async fn with_plugin_duplicate_plugin_key_returns_typed_error() {
 struct StubAction;
 
 impl Action for StubAction {
+    const KEY: &'static str = "failplugin.noop";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            nebula_core::action_key!("failplugin.noop"),
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
             nebula_action::metadata_name!("Noop"),
             "A stub action that is never dispatched",
         )
@@ -292,8 +292,7 @@ impl Plugin for FailOnLoadPlugin {
 
     fn actions(&self) -> Vec<Arc<dyn ActionFactory>> {
         vec![Arc::new(
-            InstanceFactory::new(StubAction::metadata(), StubAction)
-                .expect("stub action metadata admits"),
+            InstanceFactory::new(StubAction).expect("stub action metadata admits"),
         )]
     }
 
@@ -1195,13 +1194,12 @@ async fn with_plugin_datetime_format_executes_and_returns_formatted_string() {
 /// `PluginWiringError::DuplicateActionKey`.
 #[tokio::test]
 async fn with_plugin_duplicate_action_key_returns_typed_error() {
-    use nebula_action::action::Action;
     use nebula_plugin_core::actions::set_fields::SetFields;
 
     // Build an engine whose ActionRegistry already contains core.set_fields.
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(SetFields::metadata(), SetFields)
+        .register_stateless_instance(SetFields)
         .expect("valid test catalog definition");
     let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();

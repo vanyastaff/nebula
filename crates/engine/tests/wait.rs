@@ -27,7 +27,7 @@ use nebula_action::{
     result::{ActionResult, WaitCondition},
     stateless::StatelessAction,
 };
-use nebula_core::{Dependencies, action_key, id::WorkflowId, node_key};
+use nebula_core::{Dependencies, id::WorkflowId, node_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, ExecutionEvent, InProcessRunner,
     WorkflowEngine,
@@ -39,24 +39,19 @@ use nebula_workflow::{
 };
 
 // ---------------------------------------------------------------------------
-// Macro — Variant A trait shape with placeholder static metadata
-// (same convention as retry.rs; real metadata flows through
-// `register_stateless_instance`).
+// Macro — a fixture's `impl Action` with its key and metadata (same
+// convention as retry.rs; one fixture type is one catalog entry).
 // ---------------------------------------------------------------------------
 
-macro_rules! placeholder_action_impl {
-    ($ty:ty, $key:expr, $name:expr, $desc:expr) => {
+macro_rules! fixture_action_impl {
+    ($ty:ty, $key:expr, $metadata:expr $(,)?) => {
         impl Action for $ty {
+            const KEY: &'static str = $key;
             type Input = serde_json::Value;
             type Output = serde_json::Value;
 
-            fn metadata() -> nebula_action::ActionMetadataDraft {
-                nebula_action::ActionMetadataDraft::new(
-                    $key,
-                    nebula_action::metadata_name!($name),
-                    $desc,
-                )
-                .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
+            fn metadata() -> nebula_action::ActionMetadata {
+                $metadata
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -78,11 +73,29 @@ struct WaitingHandler {
     partial_output: serde_json::Value,
 }
 
-placeholder_action_impl!(
+fixture_action_impl!(
     WaitingHandler,
-    action_key!("placeholder.waiting"),
-    "WaitingPlaceholder",
-    "placeholder"
+    "waiter",
+    nebula_action::ActionMetadata::new(nebula_action::metadata_name!("Waiter"), "parks for 60ms",)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+);
+
+nebula_action::stateless_entry!(
+    SlowWaiterEntry(WaitingHandler) = "slow_waiter",
+    nebula_action::ActionMetadata::new(
+        nebula_action::metadata_name!("SlowWaiter"),
+        "parks for 150ms",
+    )
+    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+);
+
+nebula_action::stateless_entry!(
+    LongWaiterEntry(WaitingHandler) = "long_waiter",
+    nebula_action::ActionMetadata::new(
+        nebula_action::metadata_name!("LongWaiter"),
+        "parks for 1 min",
+    )
+    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
 );
 
 impl StatelessAction for WaitingHandler {
@@ -107,11 +120,13 @@ struct WaitUntilHandler {
     partial_output: serde_json::Value,
 }
 
-placeholder_action_impl!(
+fixture_action_impl!(
     WaitUntilHandler,
-    action_key!("placeholder.wait_until"),
-    "WaitUntilPlaceholder",
-    "placeholder"
+    "waiter_until",
+    nebula_action::ActionMetadata::new(nebula_action::metadata_name!("WaiterUntil"),
+        "parks Until",
+    )
+    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
 );
 
 impl StatelessAction for WaitUntilHandler {
@@ -144,11 +159,14 @@ struct WaitWithTimeoutHandler {
     timeout: Duration,
 }
 
-placeholder_action_impl!(
+fixture_action_impl!(
     WaitWithTimeoutHandler,
-    action_key!("placeholder.wait_with_timeout"),
-    "WaitWithTimeoutPlaceholder",
-    "placeholder"
+    "timeout_waiter",
+    nebula_action::ActionMetadata::new(
+        nebula_action::metadata_name!("TimeoutWaiter"),
+        "parks with an explicit timeout",
+    )
+    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
 );
 
 impl StatelessAction for WaitWithTimeoutHandler {
@@ -177,11 +195,14 @@ struct WaitWithOversizedOutputHandler {
     output: serde_json::Value,
 }
 
-placeholder_action_impl!(
+fixture_action_impl!(
     WaitWithOversizedOutputHandler,
-    action_key!("placeholder.wait_oversized_output"),
-    "WaitOversizedOutputPlaceholder",
-    "placeholder"
+    "oversized_waiter",
+    nebula_action::ActionMetadata::new(
+        nebula_action::metadata_name!("OversizedWaiter"),
+        "parks with an oversized partial output",
+    )
+    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
 );
 
 impl StatelessAction for WaitWithOversizedOutputHandler {
@@ -200,11 +221,14 @@ impl StatelessAction for WaitWithOversizedOutputHandler {
     }
 }
 
-placeholder_action_impl!(
+fixture_action_impl!(
     WebhookWaitHandler,
-    action_key!("placeholder.webhook_wait"),
-    "WebhookWaitPlaceholder",
-    "placeholder"
+    "webhook_waiter",
+    nebula_action::ActionMetadata::new(
+        nebula_action::metadata_name!("WebhookWaiter"),
+        "parks on webhook callback",
+    )
+    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
 );
 
 impl StatelessAction for WebhookWaitHandler {
@@ -228,11 +252,46 @@ struct EchoHandler {
     invocations: Arc<AtomicU32>,
 }
 
-placeholder_action_impl!(
+fixture_action_impl!(
     EchoHandler,
-    action_key!("placeholder.echo"),
-    "EchoPlaceholder",
-    "placeholder"
+    "downstream",
+    nebula_action::ActionMetadata::new(nebula_action::metadata_name!("Downstream"), "echo",)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+);
+
+nebula_action::stateless_entry!(
+    DsUntilEntry(EchoHandler) = "ds_until",
+    nebula_action::ActionMetadata::new(nebula_action::metadata_name!("DsUntil"),
+        "downstream echo",
+    )
+    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+);
+
+nebula_action::stateless_entry!(
+    SiblingEntry(EchoHandler) = "sibling",
+    nebula_action::ActionMetadata::new(
+        nebula_action::metadata_name!("Sibling"),
+        "completes immediately",
+    )
+    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+);
+
+nebula_action::stateless_entry!(
+    DsWebhookEntry(EchoHandler) = "ds_webhook",
+    nebula_action::ActionMetadata::new(
+        nebula_action::metadata_name!("DsWebhook"),
+        "downstream echo",
+    )
+    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+);
+
+nebula_action::stateless_entry!(
+    DsOversizedEntry(EchoHandler) = "ds_oversized",
+    nebula_action::ActionMetadata::new(
+        nebula_action::metadata_name!("DsOversized"),
+        "downstream echo",
+    )
+    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
 );
 
 impl StatelessAction for EchoHandler {
@@ -317,31 +376,15 @@ async fn wait_node_gates_downstream_until_timer_then_resumes() {
 
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("waiter"),
-                nebula_action::metadata_name!("Waiter"),
-                "parks for 60ms",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            WaitingHandler {
-                wait_for: Duration::from_millis(60),
-                partial_output: serde_json::json!({ "stage": "parked" }),
-            },
-        )
+        .register_stateless_instance(WaitingHandler {
+            wait_for: Duration::from_millis(60),
+            partial_output: serde_json::json!({ "stage": "parked" }),
+        })
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("downstream"),
-                nebula_action::metadata_name!("Downstream"),
-                "echo",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            EchoHandler {
-                invocations: Arc::clone(&downstream_calls),
-            },
-        )
+        .register_stateless_instance(EchoHandler {
+            invocations: Arc::clone(&downstream_calls),
+        })
         .expect("valid test catalog definition");
 
     let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(128);
@@ -447,31 +490,15 @@ async fn wait_until_condition_gates_and_resumes() {
     // Wake 80ms from now.
     let wake_at = Utc::now() + chrono::Duration::milliseconds(80);
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("waiter_until"),
-                nebula_action::metadata_name!("WaiterUntil"),
-                "parks Until",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            WaitUntilHandler {
-                wake_at,
-                partial_output: serde_json::json!("from_wait"),
-            },
-        )
+        .register_stateless_instance(WaitUntilHandler {
+            wake_at,
+            partial_output: serde_json::json!("from_wait"),
+        })
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("ds_until"),
-                nebula_action::metadata_name!("DsUntil"),
-                "downstream echo",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            EchoHandler {
-                invocations: Arc::clone(&downstream_calls),
-            },
-        )
+        .register_stateless_instance(DsUntilEntry(EchoHandler {
+            invocations: Arc::clone(&downstream_calls),
+        }))
         .expect("valid test catalog definition");
 
     let engine = make_engine(registry);
@@ -523,31 +550,15 @@ async fn parked_wait_node_holds_no_worker_sibling_completes() {
     let registry = Arc::new(ActionRegistry::new());
     // 150ms park — long enough that the sibling can complete first.
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("slow_waiter"),
-                nebula_action::metadata_name!("SlowWaiter"),
-                "parks for 150ms",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            WaitingHandler {
-                wait_for: Duration::from_millis(150),
-                partial_output: serde_json::json!(null),
-            },
-        )
+        .register_stateless_instance(SlowWaiterEntry(WaitingHandler {
+            wait_for: Duration::from_millis(150),
+            partial_output: serde_json::json!(null),
+        }))
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("sibling"),
-                nebula_action::metadata_name!("Sibling"),
-                "completes immediately",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            EchoHandler {
-                invocations: Arc::clone(&sibling_calls),
-            },
-        )
+        .register_stateless_instance(SiblingEntry(EchoHandler {
+            invocations: Arc::clone(&sibling_calls),
+        }))
         .expect("valid test catalog definition");
 
     let engine = make_engine(registry);
@@ -598,18 +609,10 @@ async fn cancel_during_wait_drains_heap() {
     let registry = Arc::new(ActionRegistry::new());
     // 1-minute park — will not fire naturally during the test.
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("long_waiter"),
-                nebula_action::metadata_name!("LongWaiter"),
-                "parks for 1 min",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            WaitingHandler {
-                wait_for: Duration::from_mins(1),
-                partial_output: serde_json::json!(null),
-            },
-        )
+        .register_stateless_instance(LongWaiterEntry(WaitingHandler {
+            wait_for: Duration::from_mins(1),
+            partial_output: serde_json::json!(null),
+        }))
         .expect("valid test catalog definition");
 
     let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
@@ -690,28 +693,12 @@ async fn webhook_wait_condition_parks_execution_as_paused() {
 
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("webhook_waiter"),
-                nebula_action::metadata_name!("WebhookWaiter"),
-                "parks on webhook callback",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            WebhookWaitHandler,
-        )
+        .register_stateless_instance(WebhookWaitHandler)
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("ds_webhook"),
-                nebula_action::metadata_name!("DsWebhook"),
-                "downstream echo",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            EchoHandler {
-                invocations: Arc::clone(&downstream_calls),
-            },
-        )
+        .register_stateless_instance(DsWebhookEntry(EchoHandler {
+            invocations: Arc::clone(&downstream_calls),
+        }))
         .expect("valid test catalog definition");
 
     let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
@@ -799,18 +786,10 @@ async fn explicit_timeout_on_timer_wait_returns_unsupported_error() {
     // timeout. Without the rejection fix, the engine would ignore the 5s
     // timeout and park for the full minute, breaking the test budget.
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("timeout_waiter"),
-                nebula_action::metadata_name!("TimeoutWaiter"),
-                "parks with an explicit timeout",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            WaitWithTimeoutHandler {
-                wait_for: Duration::from_mins(1),
-                timeout: Duration::from_secs(5),
-            },
-        )
+        .register_stateless_instance(WaitWithTimeoutHandler {
+            wait_for: Duration::from_mins(1),
+            timeout: Duration::from_secs(5),
+        })
         .expect("valid test catalog definition");
 
     let engine = make_engine(registry);
@@ -874,31 +853,15 @@ async fn oversized_partial_output_fails_node_not_parks_downstream_blocked() {
     // The partial output is 50 bytes of JSON; the budget allows only 10.
     let big_output = serde_json::json!("this-string-is-longer-than-ten-bytes");
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("oversized_waiter"),
-                nebula_action::metadata_name!("OversizedWaiter"),
-                "parks with an oversized partial output",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            WaitWithOversizedOutputHandler {
-                wait_for: Duration::from_millis(60),
-                output: big_output,
-            },
-        )
+        .register_stateless_instance(WaitWithOversizedOutputHandler {
+            wait_for: Duration::from_millis(60),
+            output: big_output,
+        })
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("ds_oversized"),
-                nebula_action::metadata_name!("DsOversized"),
-                "downstream echo",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            EchoHandler {
-                invocations: Arc::clone(&downstream_calls),
-            },
-        )
+        .register_stateless_instance(DsOversizedEntry(EchoHandler {
+            invocations: Arc::clone(&downstream_calls),
+        }))
         .expect("valid test catalog definition");
 
     let engine = make_engine(registry);

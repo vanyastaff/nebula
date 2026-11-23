@@ -54,7 +54,6 @@
 use std::sync::OnceLock;
 
 use nebula_action::{ActionContext, ActionError, ActionResult, StatelessAction};
-use nebula_core::action_key;
 use nebula_schema::{HasSchema, Schema, ValidSchema, ValidationReport, field_key};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -149,12 +148,12 @@ impl HasSchema for MapInput {
 pub struct MapAction;
 
 impl nebula_action::action::Action for MapAction {
+    const KEY: &'static str = "core.map";
     type Input = MapInput;
     type Output = Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("core.map"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Map"),
             "Reshape each element of a JSON array of objects (per-element \
              pick/omit/rename/flatten)",

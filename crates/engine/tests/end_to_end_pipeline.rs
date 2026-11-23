@@ -32,10 +32,9 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, ActionMetadataDraft, action::Action, result::ActionResult,
-    stateless::StatelessAction,
+    ActionError, ActionMetadata, action::Action, result::ActionResult, stateless::StatelessAction,
 };
-use nebula_core::{ActionKey, Dependencies, ScopeLevel, action_key, id::WorkflowId, node_key};
+use nebula_core::{Dependencies, ScopeLevel, id::WorkflowId, node_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, WorkflowEngine,
 };
@@ -81,16 +80,12 @@ struct PipelineWitness {
 }
 
 impl Action for PipelineWitness {
+    const KEY: &'static str = "phase9.witness";
     type Input = PipelineInput;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            action_key!("test.phase9.pipeline_witness"),
-            nebula_action::metadata_name!("PipelineWitness"),
-            "Phase 9 e2e pipeline witness",
-        )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
+    fn metadata() -> ActionMetadata {
+        meta("phase9.witness")
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -242,9 +237,9 @@ fn make_workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
     }
 }
 
-fn meta(key: ActionKey) -> ActionMetadataDraft {
-    let name = key.clone().into();
-    ActionMetadataDraft::new(key, name, "phase9 e2e pipeline test handler")
+fn meta(name: &str) -> ActionMetadata {
+    ActionMetadata::try_new(name, "phase9 e2e pipeline test handler")
+        .expect("fixture display name")
         .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
 }
 
@@ -258,12 +253,9 @@ async fn pipeline_resolves_expressions_before_handler_runs() {
     let seen_input = Arc::new(parking_lot::Mutex::new(None::<serde_json::Value>));
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            meta(action_key!("phase9.witness")),
-            PipelineWitness {
-                seen_input: Arc::clone(&seen_input),
-            },
-        )
+        .register_stateless_instance(PipelineWitness {
+            seen_input: Arc::clone(&seen_input),
+        })
         .expect("valid test catalog definition");
     let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
@@ -385,12 +377,9 @@ async fn pipeline_with_resource_manager_resolves_and_executes() {
     let seen_input = Arc::new(parking_lot::Mutex::new(None::<serde_json::Value>));
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            meta(action_key!("phase9.witness")),
-            PipelineWitness {
-                seen_input: Arc::clone(&seen_input),
-            },
-        )
+        .register_stateless_instance(PipelineWitness {
+            seen_input: Arc::clone(&seen_input),
+        })
         .expect("valid test catalog definition");
     let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
@@ -457,12 +446,9 @@ async fn pipeline_unresolvable_expression_fails_node_before_handler() {
     let seen_input = Arc::new(parking_lot::Mutex::new(None::<serde_json::Value>));
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            meta(action_key!("phase9.witness")),
-            PipelineWitness {
-                seen_input: Arc::clone(&seen_input),
-            },
-        )
+        .register_stateless_instance(PipelineWitness {
+            seen_input: Arc::clone(&seen_input),
+        })
         .expect("valid test catalog definition");
     let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();

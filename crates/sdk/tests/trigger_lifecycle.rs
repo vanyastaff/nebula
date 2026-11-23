@@ -40,12 +40,12 @@ impl Drop for ActivationFuture {
 struct PendingActivation(Arc<PollObservation>);
 
 impl Action for PendingActivation {
+    const KEY: &'static str = "test.pending_activation";
     type Input = Value;
     type Output = Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            action_key!("test.pending_activation"),
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
             metadata_name!("Pending activation"),
             "A cooperative activation that ignores cancellation",
         )
@@ -163,12 +163,12 @@ struct FailingWebhook {
 }
 
 impl Action for FailingWebhook {
+    const KEY: &'static str = "test.failing_webhook";
     type Input = Value;
     type Output = Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            action_key!("test.failing_webhook"),
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
             metadata_name!("Failing webhook"),
             "Lifecycle failure fixture",
         )

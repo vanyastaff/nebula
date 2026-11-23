@@ -13,7 +13,7 @@ use nebula_action::{
     stateful::{BatchAction, BatchItemResult},
     testing::{StatefulTestHarness, TestContextBuilder},
 };
-use nebula_core::{Dependencies, action_key};
+use nebula_core::Dependencies;
 use nebula_schema::{HasSchema, ValidSchema};
 use serde::{Deserialize, Serialize};
 
@@ -44,12 +44,12 @@ struct BatchOutput {
 }
 
 impl Action for DoublerBatch {
+    const KEY: &'static str = "test.doubler_batch";
     type Input = NumberList;
     type Output = BatchOutput;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("test.doubler_batch"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("DoublerBatch"),
             "Batch doubler",
         )

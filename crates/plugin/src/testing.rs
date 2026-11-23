@@ -1,129 +1,180 @@
 //! Factories for admission-boundary integration tests.
 
-use std::{
-    marker::PhantomData,
-    sync::{Arc, OnceLock},
-};
+use std::sync::{Arc, OnceLock};
 
 use nebula_action::effect::{
     ActionEffectContract, EffectPreparationContext, EffectPreparationError, PreparedRemoteEffect,
     RemoteDestinationGuarantee, RemoteEffectAction, RemoteEffectDescriptor, RemoteEffectPolicy,
 };
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionFactory, ActionMetadataDraft, ActionResult,
+    Action, ActionContext, ActionError, ActionFactory, ActionMetadata, ActionResult,
     FromWorkflowNode, GenericTriggerFactory, InstanceFactory, RemoteEffectInstanceFactory,
     StatelessAction, TriggerAction, TriggerContext, TriggerEventOutcome, TriggerSource,
 };
 use nebula_core::{ArtifactSetDigest, Dependencies};
 use nebula_schema::{HasSchema, Schema, SecretField, ValidSchema, field_key};
 use nebula_workflow::NodeDefinition;
-use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::{FrozenPluginRegistry, Plugin, PluginManifest, PluginRegistry, ResolvedPlugin};
 
-struct DiagnosticAction<Input>(PhantomData<fn() -> Input>);
+/// Declare a stateless fixture action that fails closed if it ever executes.
+///
+/// Each fixture is its own type, so its key and metadata are the type's own.
+macro_rules! diagnostic_stateless {
+    ($name:ident, $input:ty, $dependencies:expr, $key:literal, $metadata:expr $(,)?) => {
+        struct $name;
 
-impl<Input> DiagnosticAction<Input> {
-    const fn new() -> Self {
-        Self(PhantomData)
-    }
+        impl Action for $name {
+            const KEY: &'static str = $key;
+            type Input = $input;
+            type Output = Value;
+
+            fn metadata() -> ActionMetadata {
+                $metadata
+            }
+
+            fn dependencies() -> &'static Dependencies {
+                $dependencies
+            }
+        }
+
+        impl StatelessAction for $name {
+            async fn execute(
+                &self,
+                _input: $input,
+                _context: &(impl ActionContext + ?Sized),
+            ) -> Result<ActionResult<Value>, ActionError> {
+                Err(ActionError::fatal(
+                    "diagnostic admission fixture cannot execute",
+                ))
+            }
+        }
+    };
 }
 
-impl<Input> Action for DiagnosticAction<Input>
+fn instance<A>(action: A) -> Arc<dyn ActionFactory>
 where
-    Input: HasSchema + DeserializeOwned + Send + Sync + 'static,
+    A: StatelessAction,
 {
-    type Input = Input;
-    type Output = Value;
-
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            nebula_core::action_key!("fixture.instance_backing_type"),
-            nebula_action::metadata_name!("Instance backing type"),
-            "Typed backing action for per-registration diagnostic metadata",
-        )
-    }
-
-    fn dependencies() -> &'static Dependencies {
-        empty_dependencies()
-    }
+    Arc::new(InstanceFactory::new(action).expect("static diagnostic action contract must admit"))
 }
 
-impl<Input> StatelessAction for DiagnosticAction<Input>
-where
-    Input: HasSchema + DeserializeOwned + Send + Sync + 'static,
-{
-    async fn execute(
-        &self,
-        _input: Input,
-        _context: &(impl ActionContext + ?Sized),
-    ) -> Result<ActionResult<Value>, ActionError> {
-        Err(ActionError::fatal(
-            "diagnostic admission fixture cannot execute",
-        ))
-    }
+fn read_only(name: nebula_action::MetadataName, description: &str) -> ActionMetadata {
+    ActionMetadata::new(name, description).with_effect_contract(ActionEffectContract::ReadOnly)
 }
 
-fn stateless_fixture<Input>(draft: ActionMetadataDraft) -> Arc<dyn ActionFactory>
-where
-    Input: HasSchema + DeserializeOwned + Send + Sync + 'static,
-{
-    Arc::new(
-        InstanceFactory::new(draft, DiagnosticAction::<Input>::new())
-            .expect("static diagnostic action contract must admit"),
-    )
+fn port_fixture(name: nebula_action::MetadataName) -> ActionMetadata {
+    let mut port = nebula_action::InputPort::support(
+        nebula_action::port_key!("support"),
+        "Support",
+        "Fixture support",
+    );
+    if let nebula_action::InputPort::Support(support) = &mut port {
+        support.required = name.as_str() == "support_required";
+        match name.as_str() {
+            "tag_filter" => support.filter.allowed_tags = Some(vec!["fixture".to_owned()]),
+            "node_filter" => {
+                support.filter.allowed_node_types = Some(vec!["core.absent".to_owned()]);
+            },
+            "invalid_projection" => support.filter.allowed_tags = Some(vec![]),
+            _ => {},
+        }
+    }
+    read_only(name, "Port fixture").with_inputs(vec![
+        nebula_action::InputPort::flow(nebula_action::port_key!("in")),
+        port,
+    ])
 }
+
+diagnostic_stateless!(
+    EchoFixture,
+    Value,
+    empty_dependencies(),
+    "core.echo",
+    read_only(nebula_action::metadata_name!("echo"), "Admission fixture"),
+);
+diagnostic_stateless!(
+    StringInputFixture,
+    StringInput,
+    empty_dependencies(),
+    "core.string_input",
+    read_only(
+        nebula_action::metadata_name!("string_input"),
+        "Schema admission fixture"
+    ),
+);
+diagnostic_stateless!(
+    ResourceSlotFixture,
+    Value,
+    ResourceSlotDependencies::get(),
+    "core.resource_slot",
+    read_only(
+        nebula_action::metadata_name!("resource_slot"),
+        "Unresolved resource slot fixture"
+    ),
+);
+diagnostic_stateless!(
+    CredentialSlotFixture,
+    Value,
+    CredentialSlotDependencies::get(),
+    "core.credential_slot",
+    read_only(
+        nebula_action::metadata_name!("credential_slot"),
+        "Unresolved credential slot fixture"
+    ),
+);
+diagnostic_stateless!(
+    TagFilterFixture,
+    Value,
+    empty_dependencies(),
+    "core.tag_filter",
+    port_fixture(nebula_action::metadata_name!("tag_filter")),
+);
+diagnostic_stateless!(
+    NodeFilterFixture,
+    Value,
+    empty_dependencies(),
+    "core.node_filter",
+    port_fixture(nebula_action::metadata_name!("node_filter")),
+);
+diagnostic_stateless!(
+    SupportRequiredFixture,
+    Value,
+    empty_dependencies(),
+    "core.support_required",
+    port_fixture(nebula_action::metadata_name!("support_required")),
+);
+diagnostic_stateless!(
+    InvalidProjectionFixture,
+    Value,
+    empty_dependencies(),
+    "core.invalid_projection",
+    port_fixture(nebula_action::metadata_name!("invalid_projection")),
+);
+diagnostic_stateless!(
+    WrongDependencyTypeFixture,
+    Value,
+    WrongResourceTypeDependencies::get(),
+    "core.wrong_dependency_type",
+    read_only(
+        nebula_action::metadata_name!("wrong_dependency_type"),
+        "Wrong dependency type fixture"
+    ),
+);
+diagnostic_stateless!(
+    UndeclaredDependencyFixture,
+    Value,
+    UndeclaredResourceDependencies::get(),
+    "core.undeclared_dependency",
+    read_only(
+        nebula_action::metadata_name!("undeclared_dependency"),
+        "Undeclared dependency fixture"
+    ),
+);
 
 trait FixtureDependencies: Send + Sync + 'static {
     fn get() -> &'static Dependencies;
-}
-
-struct DependencyAction<Provider>(PhantomData<fn() -> Provider>);
-
-impl<Provider> Action for DependencyAction<Provider>
-where
-    Provider: FixtureDependencies,
-{
-    type Input = Value;
-    type Output = Value;
-
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            nebula_core::action_key!("fixture.dependency_backing_type"),
-            nebula_action::metadata_name!("Dependency backing type"),
-            "Typed backing action for dependency diagnostics",
-        )
-    }
-
-    fn dependencies() -> &'static Dependencies {
-        Provider::get()
-    }
-}
-
-impl<Provider> StatelessAction for DependencyAction<Provider>
-where
-    Provider: FixtureDependencies,
-{
-    async fn execute(
-        &self,
-        _input: Value,
-        _context: &(impl ActionContext + ?Sized),
-    ) -> Result<ActionResult<Value>, ActionError> {
-        Err(ActionError::fatal(
-            "dependency diagnostic fixture cannot execute",
-        ))
-    }
-}
-
-fn dependency_fixture<Provider>(draft: ActionMetadataDraft) -> Arc<dyn ActionFactory>
-where
-    Provider: FixtureDependencies,
-{
-    Arc::new(
-        InstanceFactory::new(draft, DependencyAction::<Provider>(PhantomData))
-            .expect("static dependency diagnostic contract must admit"),
-    )
 }
 
 struct ResourceSlotDependencies;
@@ -239,12 +290,12 @@ macro_rules! diagnostic_trigger {
         struct $trigger;
 
         impl Action for $trigger {
+            const KEY: &'static str = $key;
             type Input = $input;
             type Output = Value;
 
-            fn metadata() -> ActionMetadataDraft {
-                ActionMetadataDraft::new(
-                    nebula_core::action_key!($key),
+            fn metadata() -> ActionMetadata {
+                ActionMetadata::new(
                     nebula_action::metadata_name!($name),
                     "Activation diagnostic trigger fixture",
                 )
@@ -311,15 +362,16 @@ struct DiagnosticRemoteAction {
 }
 
 impl Action for DiagnosticRemoteAction {
+    const KEY: &'static str = "core.remote_control";
     type Input = Value;
     type Output = Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            nebula_core::action_key!("fixture.remote_backing_type"),
-            nebula_action::metadata_name!("Remote backing type"),
-            "Typed remote action for diagnostic registration",
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            nebula_action::metadata_name!("remote_control"),
+            "Remote effect diagnostic fixture",
         )
+        .with_effect_contract(ActionEffectContract::Remote(Box::new(remote_descriptor())))
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -428,13 +480,8 @@ impl nebula_resource::Provider for FixtureResource {
 #[async_trait::async_trait]
 impl nebula_resource::ResidentProvider for FixtureResource {}
 
-/// Builds a frozen registry covering activation-diagnostic rejection paths.
-///
-/// The factories fail closed if compilation crosses into runtime construction,
-/// keeping this fixture limited to admission behavior.
-#[must_use]
-pub fn activation_diagnostic_registry() -> Arc<FrozenPluginRegistry> {
-    let descriptor = RemoteEffectDescriptor::new(
+fn remote_descriptor() -> RemoteEffectDescriptor {
+    RemoteEffectDescriptor::new(
         "activation.remote",
         1,
         RemoteEffectPolicy::builder(RemoteDestinationGuarantee::Opaque)
@@ -444,111 +491,41 @@ pub fn activation_diagnostic_registry() -> Arc<FrozenPluginRegistry> {
             .build()
             .unwrap(),
     )
-    .unwrap();
-    let remote = RemoteEffectInstanceFactory::new(
-        ActionMetadataDraft::new(
-            nebula_core::action_key!("core.remote_control"),
-            nebula_action::metadata_name!("remote_control"),
-            "Remote effect diagnostic fixture",
-        )
-        .with_effect_contract(ActionEffectContract::Remote(Box::new(descriptor.clone()))),
-        DiagnosticRemoteAction { descriptor },
-    )
+    .unwrap()
+}
+
+/// Builds a frozen registry covering activation-diagnostic rejection paths.
+///
+/// The factories fail closed if compilation crosses into runtime construction,
+/// keeping this fixture limited to admission behavior.
+#[must_use]
+pub fn activation_diagnostic_registry() -> Arc<FrozenPluginRegistry> {
+    let remote = RemoteEffectInstanceFactory::new(DiagnosticRemoteAction {
+        descriptor: remote_descriptor(),
+    })
     .expect("static remote diagnostic contract must admit");
 
-    let mut actions: Vec<Arc<dyn ActionFactory>> = vec![
-        stateless_fixture::<Value>(
-            ActionMetadataDraft::new(
-                nebula_core::action_key!("core.echo"),
-                nebula_action::metadata_name!("echo"),
-                "Admission fixture",
-            )
-            .with_effect_contract(ActionEffectContract::ReadOnly),
-        ),
+    let actions: Vec<Arc<dyn ActionFactory>> = vec![
+        instance(EchoFixture),
         Arc::new(remote),
         Arc::new(
             GenericTriggerFactory::<DiagnosticTrigger>::new()
                 .expect("static trigger diagnostic contract must admit"),
         ),
-        stateless_fixture::<StringInput>(
-            ActionMetadataDraft::new(
-                nebula_core::action_key!("core.string_input"),
-                nebula_action::metadata_name!("string_input"),
-                "Schema admission fixture",
-            )
-            .with_effect_contract(ActionEffectContract::ReadOnly),
-        ),
+        instance(StringInputFixture),
         Arc::new(
             GenericTriggerFactory::<SecretDiagnosticTrigger>::new()
                 .expect("static secret trigger diagnostic contract must admit"),
         ),
+        instance(ResourceSlotFixture),
+        instance(CredentialSlotFixture),
+        instance(TagFilterFixture),
+        instance(NodeFilterFixture),
+        instance(SupportRequiredFixture),
+        instance(InvalidProjectionFixture),
+        instance(WrongDependencyTypeFixture),
+        instance(UndeclaredDependencyFixture),
     ];
-
-    actions.push(dependency_fixture::<ResourceSlotDependencies>(
-        ActionMetadataDraft::new(
-            nebula_core::action_key!("core.resource_slot"),
-            nebula_action::metadata_name!("resource_slot"),
-            "Unresolved resource slot fixture",
-        )
-        .with_effect_contract(ActionEffectContract::ReadOnly),
-    ));
-    actions.push(dependency_fixture::<CredentialSlotDependencies>(
-        ActionMetadataDraft::new(
-            nebula_core::action_key!("core.credential_slot"),
-            nebula_action::metadata_name!("credential_slot"),
-            "Unresolved credential slot fixture",
-        )
-        .with_effect_contract(ActionEffectContract::ReadOnly),
-    ));
-
-    for key in [
-        nebula_action::metadata_name!("tag_filter"),
-        nebula_action::metadata_name!("node_filter"),
-        nebula_action::metadata_name!("support_required"),
-        nebula_action::metadata_name!("invalid_projection"),
-    ] {
-        let mut port = nebula_action::InputPort::support(
-            nebula_action::port_key!("support"),
-            "Support",
-            "Fixture support",
-        );
-        if let nebula_action::InputPort::Support(support) = &mut port {
-            support.required = key.as_str() == "support_required";
-            match key.as_str() {
-                "tag_filter" => support.filter.allowed_tags = Some(vec!["fixture".to_owned()]),
-                "node_filter" => {
-                    support.filter.allowed_node_types = Some(vec!["core.absent".to_owned()]);
-                },
-                "invalid_projection" => support.filter.allowed_tags = Some(vec![]),
-                _ => {},
-            }
-        }
-        actions.push(stateless_fixture::<Value>(
-            ActionMetadataDraft::new(format!("core.{key}").parse().unwrap(), key, "Port fixture")
-                .with_effect_contract(ActionEffectContract::ReadOnly)
-                .with_inputs(vec![
-                    nebula_action::InputPort::flow(nebula_action::port_key!("in")),
-                    port,
-                ]),
-        ));
-    }
-
-    actions.push(dependency_fixture::<WrongResourceTypeDependencies>(
-        ActionMetadataDraft::new(
-            nebula_core::action_key!("core.wrong_dependency_type"),
-            nebula_action::metadata_name!("wrong_dependency_type"),
-            "Wrong dependency type fixture",
-        )
-        .with_effect_contract(ActionEffectContract::ReadOnly),
-    ));
-    actions.push(dependency_fixture::<UndeclaredResourceDependencies>(
-        ActionMetadataDraft::new(
-            nebula_core::action_key!("core.undeclared_dependency"),
-            nebula_action::metadata_name!("undeclared_dependency"),
-            "Undeclared dependency fixture",
-        )
-        .with_effect_contract(ActionEffectContract::ReadOnly),
-    ));
 
     let mut registry = PluginRegistry::new();
     registry

@@ -64,14 +64,14 @@ impl nebula_schema::HasSchema for TypedEchoInput {
 struct TypedEcho;
 
 impl Action for TypedEcho {
+    const KEY: &'static str = "tenant.typed_echo";
     type Input = TypedEchoInput;
     type Output = TypedEchoOutput;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("builtin.typed_echo"),
-            nebula_action::metadata_name!("TypedEcho"),
-            "fixture with typed output",
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
+            nebula_action::metadata_name!("Typed Echo"),
+            "per-registration metadata",
         )
     }
 
@@ -102,16 +102,14 @@ struct CountingEcho {
 }
 
 impl Action for CountingEcho {
+    const KEY: &'static str = "tenant.custom_echo";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        // A distinct type-level key, so a test can prove the factory does NOT
-        // fall back to this when caller metadata is supplied.
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("builtin.counting_echo"),
-            nebula_action::metadata_name!("CountingEcho"),
-            "type-level metadata",
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
+            nebula_action::metadata_name!("Custom Echo"),
+            "per-registration metadata",
         )
     }
 
@@ -120,6 +118,14 @@ impl Action for CountingEcho {
         D.get_or_init(Dependencies::new)
     }
 }
+
+nebula_action::stateless_entry!(
+    TenantCustomEchoEntry(CountingEcho) = "tenant.custom_echo",
+    nebula_action::ActionMetadata::new(
+        nebula_action::metadata_name!("Custom Echo"),
+        "Shared instance fixture",
+    ),
+);
 
 impl StatelessAction for CountingEcho {
     async fn execute(
@@ -134,46 +140,32 @@ impl StatelessAction for CountingEcho {
 
 #[tokio::test]
 async fn instance_factory_uses_caller_metadata_not_type_metadata() {
-    let factory = InstanceFactory::new(
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("tenant.custom_echo"),
-            nebula_action::metadata_name!("Custom Echo"),
-            "per-registration metadata",
-        ),
-        CountingEcho {
-            hits: Arc::new(AtomicUsize::new(0)),
-        },
-    )
+    let factory = InstanceFactory::new(CountingEcho {
+        hits: Arc::new(AtomicUsize::new(0)),
+    })
     .expect("valid test catalog definition");
 
     // Caller metadata wins over the type's own `Action::metadata()` key — this
     // is why one action type can back many distinct catalog keys.
     assert_eq!(
-        factory.metadata().base().key().clone(),
+        factory.definition().base().key().clone(),
         action_key!("tenant.custom_echo")
     );
     assert_ne!(
-        factory.metadata().base().key().clone(),
+        factory.definition().base().key().clone(),
         action_key!("builtin.counting_echo"),
         "InstanceFactory must not fall back to the type's static metadata key"
     );
     // The factory is the single writer of the kind for the handle it produces.
-    assert_eq!(factory.metadata().kind(), ActionKind::Stateless);
+    assert_eq!(factory.definition().kind(), ActionKind::Stateless);
 }
 
 #[tokio::test]
 async fn instance_factory_shares_one_instance_across_dispatches() {
     let hits = Arc::new(AtomicUsize::new(0));
-    let factory = InstanceFactory::new(
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("tenant.custom_echo"),
-            nebula_action::metadata_name!("Custom Echo"),
-            "Shared instance fixture",
-        ),
-        CountingEcho {
-            hits: Arc::clone(&hits),
-        },
-    )
+    let factory = InstanceFactory::new(TenantCustomEchoEntry(CountingEcho {
+        hits: Arc::clone(&hits),
+    }))
     .expect("valid test catalog definition");
 
     let node = NodeDefinition::new(
@@ -231,17 +223,9 @@ async fn instance_factory_stamps_output_schema_from_action_output_type() {
     // TypedEcho.Output has a `message` field — the schema is non-empty.
     // If the `output_schema` stamp is removed from `InstanceFactory::new`,
     // this test goes RED (the field will not be present).
-    let factory = InstanceFactory::new(
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("tenant.typed_echo"),
-            nebula_action::metadata_name!("Typed Echo"),
-            "per-registration metadata",
-        ),
-        TypedEcho,
-    )
-    .expect("valid test catalog definition");
+    let factory = InstanceFactory::new(TypedEcho).expect("valid test catalog definition");
 
-    let output_schema = factory.metadata().output_schema();
+    let output_schema = factory.definition().output_schema();
     assert!(
         output_schema
             .properties()

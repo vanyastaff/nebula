@@ -13,7 +13,7 @@ related: [nebula-action, nebula-credential, nebula-resource, nebula-schema, nebu
 
 The product contract is that an integration author should depend on one Nebula crate rather than
 learn the workspace topology. External one-dependency proofs cover typed action authoring,
-`ActionMetadataDraft`, `WorkflowBuilder`, credential `TestResult`, and representative derives for
+`ActionMetadata`, `WorkflowBuilder`, credential `TestResult`, and representative derives for
 every current procedural-macro family. Manual `Provider` authoring with a consuming terminal hook is
 also compile-checked using the SDK plus the general-purpose `async-trait` crate;
 other manual/prelude workflows need their own compile-pass proof before
@@ -26,7 +26,7 @@ as SDK gaps rather than hidden direct-dependency recipes.
 ## Role
 
 *Integration Author SDK (Persona Façade).* Provides curated authoring contracts through
-`prelude`, persona modules such as `integration`, `ActionMetadataDraft`, `WorkflowBuilder`, and a
+`prelude`, persona modules such as `integration`, `ActionMetadata`, `WorkflowBuilder`, and a
 `TestRuntime` / `RunReport` for integration testing. Workspace implementation crates are not
 re-exported: crate-boundary refactors must not become integration migrations.
 
@@ -121,7 +121,7 @@ behind that token.
 ### Typed action and schema authoring
 
 **Checkpoint API migration:** remove `CheckpointPolicy` imports from `action` or
-`prelude` and calls to `ActionMetadataDraft::with_checkpoint_policy`. The SDK no
+`prelude` and calls to `ActionMetadata::with_checkpoint_policy`. The SDK no
 longer offers a checkpoint cadence selector. Runtime control owns the supported
 durable boundaries; the removed choices did not implement additional durability.
 Operator retry continues through workflow/node `retry_policy` and typed retryable
@@ -187,17 +187,17 @@ empty braced records; they never publish an empty contract for a populated struc
 `HasSchema::schema()` and `schema_of::<T>()` remain fallible authoring contracts.
 `Action::metadata`, `Credential::metadata`, and `Provider::metadata` return schema-free
 authored metadata. Runtime factories derive schemas from the associated companion types
-and own the only admission into terminal definitions. `ActionMetadata`, `CredentialDefinition`,
+and own the only admission into terminal definitions. `ActionDefinition`, `CredentialDefinition`,
 `ResourceDefinition`, `BaseDefinition`, and admission errors are therefore not supported
 SDK persona types.
 
 ### Catalog construction migration
 
 Use the author types from `integration::{action, credential, resource}` or `prelude`.
-`ResourceMetadata` and `CredentialMetadata` take no key
+`ActionMetadata`, `ResourceMetadata` and `CredentialMetadata` take no key
 (`new(MetadataName, description)` / `try_new(name, description)`): the identity is
-`Provider::KEY` or `Credential::KEY`, declared once on the type. `ActionMetadataDraft` still has
-`new(key, MetadataName, description)` and fallible `try_new(key, name, description)`.
+`Action::KEY`, `Provider::KEY` or `Credential::KEY`, declared once on the type, and
+`key_of::<A>()` returns an action's typed key.
 Credential constructors take no auth
 pattern; the registry derives it from the associated scheme. Resource authors
 implement `Provider::metadata` explicitly; `from_key` is removed. Action macros
@@ -370,7 +370,7 @@ Modules provided by this crate:
 
 - `prelude` — one-stop `use nebula_sdk::prelude::*` import for common types and traits.
 - `integration` — curated, persona-scoped contracts for integration authors.
-- `action` — typed action and `ActionMetadataDraft` authoring contracts.
+- `action` — typed action and `ActionMetadata` authoring contracts.
 - `workflow` — `WorkflowBuilder` for programmatic workflow construction.
 - `runtime` — `TestRuntime`, `RunReport` — in-process test execution harness.
 - `testing` (feature `testing`) — test helpers and fixtures.

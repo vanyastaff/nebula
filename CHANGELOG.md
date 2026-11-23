@@ -11,6 +11,40 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **An action declares its key once, as `Action::KEY`; its metadata carries no
+  key, and its admitted form is `ActionDefinition`.** An action wrote its key
+  inside `ActionMetadataDraft::new(action_key!("x"), name, description)`, the
+  only place it was declared, so the key of a type was known only after its
+  metadata was built. `Action` now has `const KEY: &'static str`, and
+  `Action::metadata` returns the keyless `ActionMetadata` (formerly
+  `ActionMetadataDraft`): `ActionMetadata::new(name, description)` and
+  `try_new(name, description)`. Every typed factory stamps `Action::KEY` at
+  admission. `nebula_action::key_of::<A>()` is the typed `ActionKey` of an
+  action type; it checks the literal at compile time. `#[derive(Action)]` and
+  `simple_action!` emit `KEY` from their `key` argument and check it where the
+  action is declared, so code written with them needs no change.
+
+  | Before | After |
+  |---|---|
+  | `ActionMetadataDraft` | `ActionMetadata` (keyless) |
+  | admitted `ActionMetadata` | `ActionDefinition` |
+  | `RecordedActionMetadata` | `RecordedActionDefinition` |
+  | `ActionFactory::metadata()`, handle and adapter `metadata()` | `definition()` |
+  | `InstanceFactory::new(metadata, action)` | `InstanceFactory::new(action)` |
+  | `ActionRegistry::register_stateless_instance(metadata, action)` | `register_stateless_instance(action)` |
+  | `RemoteEffectInstanceFactory::new(metadata, action)` | `RemoteEffectInstanceFactory::new(action)` |
+  | `EventSource::action_metadata()` with a key | `EventSource::ACTION_KEY` plus keyless `action_metadata()` |
+
+  One type is one catalog entry, on every path. The shared-instance factories
+  no longer take metadata from the caller: `InstanceFactory` and
+  `RemoteEffectInstanceFactory` read `Action::KEY` and `Action::metadata()`
+  like every typed factory, so a registration cannot give a type a second key
+  or a different interface. To expose one implementation under another key or
+  version, declare a new type for that entry; `nebula_action::stateless_entry!`
+  declares one that delegates execution to an existing stateless action.
+  Migrate a hand-written action by moving the key literal from its metadata
+  constructor to `const KEY`.
+
 - **A credential's metadata carries no key, and its admitted form is
   `CredentialDefinition`.** `Credential::KEY` was already the credential's
   identity, yet `Credential::metadata` repeated it in

@@ -49,7 +49,7 @@ use nebula_action::{
     result::{ActionResult, WaitCondition},
     stateless::StatelessAction,
 };
-use nebula_core::{Dependencies, action_key, id::ExecutionId, node_key};
+use nebula_core::{Dependencies, id::ExecutionId, node_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, ExecutionEvent, InProcessRunner,
     WorkflowEngine,
@@ -71,24 +71,21 @@ mod exact_fixture;
 // ── Action stubs ─────────────────────────────────────────────────────────────
 
 macro_rules! pure_action_metadata {
-    ($key:expr, $name:expr, $description:expr $(,)?) => {
-        nebula_action::metadata::ActionMetadataDraft::new($key, $name, $description)
+    ($name:expr, $description:expr $(,)?) => {
+        nebula_action::metadata::ActionMetadata::new($name, $description)
             .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     };
 }
 
 macro_rules! static_action_impl {
-    ($ty:ty, $key:expr, $name:expr) => {
+    ($ty:ty, $key:expr, $metadata:expr $(,)?) => {
         impl Action for $ty {
+            const KEY: &'static str = $key;
             type Input = serde_json::Value;
             type Output = serde_json::Value;
 
-            fn metadata() -> nebula_action::ActionMetadataDraft {
-                pure_action_metadata!(
-                    $key,
-                    nebula_action::metadata_name!($name),
-                    "timer_wait_crash_recovery test stub",
-                )
+            fn metadata() -> nebula_action::ActionMetadata {
+                $metadata
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -108,8 +105,11 @@ struct TimerWaitAction {
 
 static_action_impl!(
     TimerWaitAction,
-    action_key!("test.twcr.timer_wait"),
-    "TimerWaitAction"
+    "test.twcr.timer_wait",
+    pure_action_metadata!(
+        nebula_action::metadata_name!("TimerWaitAction"),
+        "timer_wait_crash_recovery stub",
+    ),
 );
 
 impl StatelessAction for TimerWaitAction {
@@ -136,8 +136,11 @@ struct CountingDownstream {
 
 static_action_impl!(
     CountingDownstream,
-    action_key!("test.twcr.downstream"),
-    "CountingDownstream"
+    "test.twcr.downstream",
+    pure_action_metadata!(
+        nebula_action::metadata_name!("CountingDownstream"),
+        "timer_wait_crash_recovery stub",
+    ),
 );
 
 impl StatelessAction for CountingDownstream {
@@ -283,28 +286,14 @@ fn build_registry(
 ) -> Arc<ActionRegistry> {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_action_metadata!(
-                action_key!("test.twcr.timer_wait"),
-                nebula_action::metadata_name!("TimerWaitAction"),
-                "timer_wait_crash_recovery stub",
-            ),
-            TimerWaitAction {
-                duration: timer_duration,
-            },
-        )
+        .register_stateless_instance(TimerWaitAction {
+            duration: timer_duration,
+        })
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            pure_action_metadata!(
-                action_key!("test.twcr.downstream"),
-                nebula_action::metadata_name!("CountingDownstream"),
-                "timer_wait_crash_recovery stub",
-            ),
-            CountingDownstream {
-                invocations: Arc::clone(downstream_invocations),
-            },
-        )
+        .register_stateless_instance(CountingDownstream {
+            invocations: Arc::clone(downstream_invocations),
+        })
         .expect("valid test catalog definition");
     registry
 }

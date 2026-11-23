@@ -12,7 +12,7 @@ use std::{
 
 use bytes::Bytes;
 use http::{HeaderName, StatusCode};
-use nebula_core::{Dependencies, action_key};
+use nebula_core::Dependencies;
 use nebula_error::decode::value_free_decode_summary;
 use tracing::debug;
 
@@ -58,12 +58,12 @@ impl StripeWebhookAction {
 }
 
 impl Action for StripeWebhookAction {
+    const KEY: &'static str = "nebula.webhook.stripe";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> crate::ActionMetadataDraft {
-        crate::ActionMetadataDraft::new(
-            action_key!("nebula.webhook.stripe"),
+    fn metadata() -> crate::ActionMetadata {
+        crate::ActionMetadata::new(
             crate::metadata_name!("Stripe Webhook"),
             "Stripe-flavoured signed webhook trigger.",
         )

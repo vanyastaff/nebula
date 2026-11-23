@@ -4,9 +4,9 @@ use std::{
 };
 
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionFactory, ActionKind, ActionMetadataDraft,
-    ActionResult, FromWorkflowNode, GenericTriggerFactory, InstanceFactory, StatelessAction,
-    TriggerAction, TriggerContext, TriggerEventOutcome, TriggerSource,
+    Action, ActionContext, ActionError, ActionFactory, ActionKind, ActionMetadata, ActionResult,
+    FromWorkflowNode, GenericTriggerFactory, InstanceFactory, StatelessAction, TriggerAction,
+    TriggerContext, TriggerEventOutcome, TriggerSource,
 };
 use nebula_core::{
     ArtifactSetDigest, Dependencies, PluginKey, WorkflowId, WorkflowVersionId, node_key,
@@ -90,7 +90,7 @@ fn empty_connection_filter_is_refused_not_collapsed_to_unfiltered() {
 thread_local! {
     static INPUT_SCHEMA: RefCell<Option<ValidSchema>> = const { RefCell::new(None) };
     static OUTPUT_SCHEMA: RefCell<Option<ValidSchema>> = const { RefCell::new(None) };
-    static TRIGGER_DRAFT: RefCell<Option<ActionMetadataDraft>> = const { RefCell::new(None) };
+    static TRIGGER_DRAFT: RefCell<Option<ActionMetadata>> = const { RefCell::new(None) };
 }
 
 #[derive(Deserialize)]
@@ -121,18 +121,28 @@ impl nebula_schema::HasSchema for ContractOutput {
     }
 }
 
-struct ContractAction;
+/// Backing stateless action for one compiler fixture key: every catalog entry
+/// is its own type, so each fixture key has its own `INDEX`.
+struct ContractAction<const INDEX: usize>;
 
-impl Action for ContractAction {
+/// Fixture keys the stateless compiler fixtures register, by `INDEX`.
+const CONTRACT_KEYS: [&str; 7] = [
+    "demo.conditional",
+    "demo.dynamic",
+    "demo.literal",
+    "demo.run",
+    "demo.secret",
+    "demo.source",
+    "demo.target",
+];
+
+impl<const INDEX: usize> Action for ContractAction<INDEX> {
+    const KEY: &'static str = CONTRACT_KEYS[INDEX];
     type Input = ContractInput;
     type Output = ContractOutput;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            nebula_core::action_key!("fixture.compiler_contract"),
-            nebula_action::metadata_name!("Compiler contract"),
-            "Typed backing action for compiler contract fixtures",
-        )
+    fn metadata() -> ActionMetadata {
+        contract_metadata(Self::KEY)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -140,7 +150,7 @@ impl Action for ContractAction {
     }
 }
 
-impl StatelessAction for ContractAction {
+impl<const INDEX: usize> StatelessAction for ContractAction<INDEX> {
     async fn execute(
         &self,
         input: ContractInput,
@@ -150,13 +160,31 @@ impl StatelessAction for ContractAction {
     }
 }
 
+/// The metadata every compiler fixture declares, named after its local key.
+fn contract_metadata(key: &str) -> ActionMetadata {
+    let local_key = key.strip_prefix("demo.").unwrap_or(key);
+    ActionMetadata::new(
+        nebula_action::MetadataName::try_from(local_key).expect("fixture display name"),
+        "compiler contract fixture",
+    )
+    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
+}
+
+fn contract_action_factory<const INDEX: usize>() -> Arc<dyn ActionFactory> {
+    Arc::new(
+        InstanceFactory::new(ContractAction::<INDEX>)
+            .expect("stateless compiler fixture contract must admit"),
+    )
+}
+
 struct ContractTrigger;
 
 impl Action for ContractTrigger {
+    const KEY: &'static str = "demo.start";
     type Input = ContractInput;
     type Output = ContractOutput;
 
-    fn metadata() -> ActionMetadataDraft {
+    fn metadata() -> ActionMetadata {
         TRIGGER_DRAFT.with(|draft| {
             draft
                 .borrow()
@@ -245,21 +273,27 @@ fn action_factory(
     input_schema: ValidSchema,
     output_schema: ValidSchema,
 ) -> Arc<dyn ActionFactory> {
-    let draft = ActionMetadataDraft::new(
-        ActionKey::new(format!("demo.{local_key}")).expect("fixture action key is valid"),
-        nebula_action::MetadataName::try_from(local_key).expect("fixture display name"),
-        "compiler contract fixture",
-    )
-    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly);
+    let key = format!("demo.{local_key}");
     INPUT_SCHEMA.with(|schema| *schema.borrow_mut() = Some(input_schema));
     OUTPUT_SCHEMA.with(|schema| *schema.borrow_mut() = Some(output_schema));
     let factory: Arc<dyn ActionFactory> = match kind {
-        ActionKind::Stateless => Arc::new(
-            InstanceFactory::new(draft, ContractAction)
-                .expect("stateless compiler fixture contract must admit"),
-        ),
+        ActionKind::Stateless => match CONTRACT_KEYS.iter().position(|known| *known == key) {
+            Some(0) => contract_action_factory::<0>(),
+            Some(1) => contract_action_factory::<1>(),
+            Some(2) => contract_action_factory::<2>(),
+            Some(3) => contract_action_factory::<3>(),
+            Some(4) => contract_action_factory::<4>(),
+            Some(5) => contract_action_factory::<5>(),
+            Some(6) => contract_action_factory::<6>(),
+            _ => panic!("compiler fixture key {key} has no fixture type"),
+        },
         ActionKind::Trigger => {
-            TRIGGER_DRAFT.with(|installed| *installed.borrow_mut() = Some(draft));
+            assert_eq!(
+                key,
+                ContractTrigger::KEY,
+                "a typed trigger fixture has the one key its type declares"
+            );
+            TRIGGER_DRAFT.with(|installed| *installed.borrow_mut() = Some(contract_metadata(&key)));
             let factory = Arc::new(
                 GenericTriggerFactory::<ContractTrigger>::new()
                     .expect("trigger compiler fixture contract must admit"),

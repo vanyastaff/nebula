@@ -106,6 +106,13 @@ struct Provider {
     dropped: tokio::sync::Notify,
 }
 
+thread_local! {
+    /// Remote descriptor the [`ProviderAction`] under admission declares; each
+    /// test case builds its own recovery policy.
+    static DECLARED_DESCRIPTOR: std::cell::RefCell<Option<RemoteEffectDescriptor>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 struct ProviderAction<I> {
     descriptor: RemoteEffectDescriptor,
     provider: Arc<Provider>,
@@ -116,15 +123,21 @@ impl<I> Action for ProviderAction<I>
 where
     I: nebula_schema::HasSchema + DeserializeOwned + Send + Sync + 'static,
 {
+    const KEY: &'static str = "provider.send";
     type Input = I;
     type Output = Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("provider.send"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        let metadata = nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Send"),
             "Trusted test provider",
-        )
+        );
+        match DECLARED_DESCRIPTOR.with(|descriptor| descriptor.borrow().clone()) {
+            Some(descriptor) => {
+                metadata.with_effect_contract(ActionEffectContract::Remote(Box::new(descriptor)))
+            },
+            None => metadata,
+        }
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -369,23 +382,16 @@ impl Fixture {
         }
         .unwrap();
         let descriptor = RemoteEffectDescriptor::new("test.provider/v1", 1, policy).unwrap();
-        let metadata = nebula_action::ActionMetadataDraft::new(
-            action_key!("provider.send"),
-            nebula_action::metadata_name!("Send"),
-            "Trusted test provider",
-        )
-        .with_effect_contract(ActionEffectContract::Remote(Box::new(descriptor.clone())));
+        DECLARED_DESCRIPTOR.with(|declared| *declared.borrow_mut() = Some(descriptor.clone()));
         let factory: Arc<dyn ActionFactory> = Arc::new(
-            RemoteEffectInstanceFactory::new(
-                metadata,
-                ProviderAction::<I> {
-                    descriptor,
-                    provider: provider.clone(),
-                    _input: PhantomData,
-                },
-            )
+            RemoteEffectInstanceFactory::new(ProviderAction::<I> {
+                descriptor,
+                provider: provider.clone(),
+                _input: PhantomData,
+            })
             .expect("remote provider metadata must be admitted"),
         );
+        DECLARED_DESCRIPTOR.with(|declared| *declared.borrow_mut() = None);
         let mut plugins = PluginRegistry::new();
         plugins
             .register(Arc::new(

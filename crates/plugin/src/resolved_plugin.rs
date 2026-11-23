@@ -11,7 +11,7 @@
 
 use std::{any::TypeId, collections::HashMap, sync::Arc};
 
-use nebula_action::{ActionFactory, ActionMetadata};
+use nebula_action::{ActionDefinition, ActionFactory};
 use nebula_core::{ActionKey, CredentialKey, Dependencies, PluginKey, ResourceKey};
 use nebula_credential::{AnyCredential, Capabilities, CredentialDefinition};
 use nebula_metadata::PluginManifest;
@@ -21,12 +21,12 @@ use semver::Version;
 use crate::{ComponentKind, PluginError, plugin::Plugin};
 
 pub(crate) struct ActionContractSnapshot {
-    metadata: Arc<ActionMetadata>,
+    metadata: Arc<ActionDefinition>,
     dependencies: Dependencies,
 }
 
 impl ActionContractSnapshot {
-    pub(crate) fn metadata(&self) -> &ActionMetadata {
+    pub(crate) fn definition(&self) -> &ActionDefinition {
         &self.metadata
     }
 
@@ -47,7 +47,7 @@ pub(crate) struct CredentialContractSnapshot {
 }
 
 impl CredentialContractSnapshot {
-    pub(crate) const fn metadata(&self) -> &CredentialDefinition {
+    pub(crate) const fn definition(&self) -> &CredentialDefinition {
         &self.metadata
     }
 
@@ -80,7 +80,7 @@ pub(crate) struct ResourceContractSnapshot {
 }
 
 impl ResourceContractSnapshot {
-    pub(crate) const fn metadata(&self) -> &ResourceDefinition {
+    pub(crate) const fn definition(&self) -> &ResourceDefinition {
         &self.metadata
     }
 
@@ -184,7 +184,7 @@ impl ResolvedPlugin {
     /// Iterate factories with the checked metadata captured during plugin admission.
     pub fn action_definitions(
         &self,
-    ) -> impl Iterator<Item = (&Arc<ActionMetadata>, &Arc<dyn ActionFactory>)> {
+    ) -> impl Iterator<Item = (&Arc<ActionDefinition>, &Arc<dyn ActionFactory>)> {
         self.actions
             .values()
             .map(|entry| (&entry.contract.metadata, &entry.factory))
@@ -256,7 +256,7 @@ impl ResolvedPlugin {
         let mut projected = contributions
             .into_iter()
             .map(|factory| {
-                let metadata = Arc::clone(factory.metadata());
+                let metadata = Arc::clone(factory.definition());
                 let dependencies = factory.dependencies().clone();
                 let key = metadata.base().key().clone();
                 Ok::<_, PluginError>((

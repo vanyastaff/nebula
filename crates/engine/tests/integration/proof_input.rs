@@ -8,7 +8,7 @@ use std::sync::{
 use nebula_action::{
     Action, ActionContext, ActionError, ActionResult, FromWorkflowNode, StatefulAction,
 };
-use nebula_core::{Dependencies, action_key, node_key};
+use nebula_core::{Dependencies, node_key};
 use nebula_engine::{ActionRegistry, ExecutionResult};
 use nebula_execution::context::ExecutionBudget;
 use nebula_schema::{
@@ -18,10 +18,7 @@ use nebula_workflow::{NodeDefinition, ParamValue};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
-use super::{
-    make_engine, make_workflow,
-    root_input::{RootEcho, registry},
-};
+use super::{make_engine, make_workflow, root_input::registry};
 
 #[derive(Serialize, Deserialize, nebula_schema::Schema)]
 struct RequiredInput {
@@ -121,7 +118,7 @@ async fn execute_parameters<T>(
 where
     T: HasSchema + DeserializeOwned + Serialize + Send + Sync + 'static,
 {
-    let (registry, calls) = registry::<T>(RootEcho::<T>::metadata());
+    let (registry, calls) = registry::<T>();
     let (engine, _) = make_engine(registry);
     let mut node =
         NodeDefinition::new(node_key!("proof"), "Proof", "test", "test.root_echo").unwrap();
@@ -228,12 +225,12 @@ async fn expression_and_literal_transforms_are_consumed_once() {
 struct IterationProbe;
 
 impl Action for IterationProbe {
+    const KEY: &'static str = "test.iteration_probe";
     type Input = IterationInput;
     type Output = Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("test.iteration_probe"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Iteration probe"),
             "Observe the same prepared input each iteration",
         )

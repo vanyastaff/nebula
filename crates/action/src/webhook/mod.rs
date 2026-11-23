@@ -83,7 +83,7 @@ use crate::{
     action::Action,
     context::TriggerContext,
     error::{ActionError, ValidationReason},
-    metadata::ActionMetadata,
+    metadata::ActionDefinition,
     trigger::{TriggerEvent, TriggerEventOutcome, TriggerHandler},
 };
 
@@ -607,7 +607,7 @@ impl WebhookResponse {
 /// use nebula_action::webhook::{
 ///     verify_hmac_sha256, WebhookAction, WebhookRequest, WebhookResponse,
 /// };
-/// use nebula_action::{Action, ActionError, ActionMetadata, TriggerContext};
+/// use nebula_action::{Action, ActionError, ActionDefinition, TriggerContext};
 /// # use nebula_core::{Dependencies, action_key};
 ///
 /// /// State returned by `on_activate` and handed back to every request.
@@ -616,10 +616,11 @@ impl WebhookResponse {
 ///
 /// struct GitHubWebhook { secret: Vec<u8> }
 /// # impl Action for GitHubWebhook {
+/// const KEY: &'static str = "github.webhook";
 /// #     type Input = serde_json::Value;
 /// #     type Output = serde_json::Value;
-/// #     fn metadata() -> nebula_action::ActionMetadataDraft {
-/// #         nebula_action::ActionMetadataDraft::new(action_key!("github.webhook"), nebula_action::metadata_name!("GitHub"), "Push events")
+/// #     fn metadata() -> nebula_action::ActionMetadata {
+/// #         nebula_action::ActionMetadata::new(nebula_action::metadata_name!("GitHub"), "Push events")
 /// #     }
 /// #     fn dependencies() -> &'static Dependencies {
 /// #         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -1723,7 +1724,7 @@ pub struct WebhookTriggerAdapter<A: WebhookAction> {
     /// because webhook configuration does not belong on the base
     /// trigger trait.
     config: WebhookConfig,
-    meta: ActionMetadata,
+    meta: ActionDefinition,
     state: RwLock<Option<Arc<A::State>>>,
     /// Shared with every [`InFlightGuard`] so the guard can decrement
     /// and notify on drop without needing a lifetime back to `self`.
@@ -1793,7 +1794,7 @@ where
     A: WebhookAction + Send + Sync + 'static,
     A::State: Send + Sync,
 {
-    fn metadata(&self) -> &ActionMetadata {
+    fn definition(&self) -> &ActionDefinition {
         &self.meta
     }
 

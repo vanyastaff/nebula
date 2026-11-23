@@ -82,7 +82,7 @@
 // Testing harness — context builder, spy emitter/logger/scheduler.
 // Action traits and types
 pub use nebula_action::{
-    Action, ActionContext, ActionEffectContract, ActionError, ActionMetadataDraft, ActionResult,
+    Action, ActionContext, ActionEffectContract, ActionError, ActionMetadata, ActionResult,
     IsolationLevel, JournalProtocol, RemoteDestinationGuarantee, RemoteEffectDescriptor,
     RemoteEffectPolicy, RemoteEffectPolicyBuilder, RemoteEffectPolicyError, Schema,
     StatelessAction, StreamAction, TriggerContext, TriggerEvent, TriggerEventOutcome,

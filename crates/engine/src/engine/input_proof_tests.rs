@@ -20,12 +20,12 @@ struct CancelInput {
 struct CancelProbe(Arc<AtomicU32>);
 
 impl Action for CancelProbe {
+    const KEY: &'static str = "test.cancel_input";
     type Input = CancelInput;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            action_key!("test.cancel_input"),
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
             nebula_action::metadata_name!("Cancel input"),
             "Observe input cancellation before execution",
         )
@@ -96,7 +96,7 @@ async fn cancellation_during_program_resolution_never_refreshes_or_executes() {
     let refreshes = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(CancelProbe::metadata(), CancelProbe(calls.clone()))
+        .register_stateless_instance(CancelProbe(calls.clone()))
         .unwrap();
     let (_, factory) = registry
         .get_factory(&action_key!("test.cancel_input"))

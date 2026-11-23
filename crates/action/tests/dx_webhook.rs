@@ -27,12 +27,12 @@ struct TestWebhook {
 }
 
 impl Action for TestWebhook {
+    const KEY: &'static str = "test.webhook";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            nebula_core::action_key!("test.webhook"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Test Webhook"),
             "Test webhook action",
         )
@@ -181,12 +181,12 @@ struct CountingWebhook {
 }
 
 impl Action for CountingWebhook {
+    const KEY: &'static str = "test.webhook.count";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            nebula_core::action_key!("test.webhook.count"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Counting Webhook"),
             "Counts activate/deactivate",
         )
@@ -287,12 +287,12 @@ async fn webhook_adapter_start_stop_start_succeeds() {
 struct ErroringWebhook;
 
 impl Action for ErroringWebhook {
+    const KEY: &'static str = "test.webhook.error";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            nebula_core::action_key!("test.webhook.error"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Erroring Webhook"),
             "handle_request always returns Err",
         )
@@ -359,12 +359,12 @@ struct HangingWebhook {
 }
 
 impl Action for HangingWebhook {
+    const KEY: &'static str = "test.webhook.hang";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            nebula_core::action_key!("test.webhook.hang"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Hanging Webhook"),
             "handle_request hangs forever",
         )
@@ -495,12 +495,12 @@ struct SlowWebhook {
 }
 
 impl Action for SlowWebhook {
+    const KEY: &'static str = "test.webhook.slow";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            nebula_core::action_key!("test.webhook.slow"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Slow Webhook"),
             "handle_request awaits a flag",
         )

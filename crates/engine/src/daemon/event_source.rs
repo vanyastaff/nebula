@@ -7,7 +7,7 @@
 //!
 //! `EventSource: Provider` and `TriggerAction: Action` sit on different bases.
 //! `EventSourceAdapter<E>` bridges them as a typed action: the source owns its
-//! [`ActionMetadataDraft`], while callers supply `Arc<E::Instance>` and an
+//! [`ActionMetadata`], while callers supply `Arc<E::Instance>` and an
 //! `event_to_payload` closure. Erasure happens only through action's sealed
 //! [`TriggerActionAdapter`].
 //!
@@ -20,7 +20,7 @@ use std::{
 };
 
 use nebula_action::{
-    Action, ActionError, ActionMetadataAdmissionError, ActionMetadataDraft, TriggerAction,
+    Action, ActionError, ActionMetadata, ActionMetadataAdmissionError, TriggerAction,
     TriggerActionAdapter, TriggerContext, TriggerEventOutcome, TriggerSource,
 };
 use nebula_core::Dependencies;
@@ -36,8 +36,15 @@ pub trait EventSource: Provider {
     /// An opaque subscription handle for receiving events.
     type Subscription: Send + 'static;
 
-    /// Author-owned action catalog intent for this event source.
-    fn action_metadata() -> ActionMetadataDraft;
+    /// Key of the trigger action this event source is exposed as.
+    ///
+    /// The adapter declares it as its [`Action::KEY`]. It is separate from
+    /// the provider's resource key: the source is a resource and the
+    /// trigger that drives it is an action.
+    const ACTION_KEY: &'static str;
+
+    /// Author-owned action catalog metadata for this event source, without a key.
+    fn action_metadata() -> ActionMetadata;
 
     /// Action dependencies required while driving this event source.
     fn action_dependencies() -> &'static Dependencies {
@@ -194,10 +201,11 @@ where
     E: EventSource + Send + Sync + 'static,
     E::Instance: Send + Sync + 'static,
 {
+    const KEY: &'static str = E::ACTION_KEY;
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
+    fn metadata() -> ActionMetadata {
         E::action_metadata()
     }
 
@@ -459,7 +467,7 @@ mod tests {
         TriggerHandler,
         testing::{TestContextBuilder, TestTriggerContext},
     };
-    use nebula_core::{Context, action_key};
+    use nebula_core::Context;
     use nebula_resource::{
         ResourceContext,
         error::Error as ResourceError,
@@ -517,10 +525,11 @@ mod tests {
     nebula_resource::no_credential_slots!(ThreeEventSource);
 
     impl EventSource for ThreeEventSource {
+        const ACTION_KEY: &'static str = "test.event_source_adapter";
         type Event = u32;
         type Subscription = ();
 
-        fn action_metadata() -> ActionMetadataDraft {
+        fn action_metadata() -> ActionMetadata {
             make_metadata()
         }
 
@@ -546,9 +555,8 @@ mod tests {
         }
     }
 
-    fn make_metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            action_key!("test.event_source_adapter"),
+    fn make_metadata() -> ActionMetadata {
+        ActionMetadata::new(
             nebula_action::metadata_name!("EventSourceAdapterTest"),
             "Adapter integration test",
         )
@@ -646,10 +654,11 @@ mod tests {
     nebula_resource::no_credential_slots!(PermanentlyBrokenSource);
 
     impl EventSource for PermanentlyBrokenSource {
+        const ACTION_KEY: &'static str = "test.event_source_adapter";
         type Event = u32;
         type Subscription = ();
 
-        fn action_metadata() -> ActionMetadataDraft {
+        fn action_metadata() -> ActionMetadata {
             make_metadata()
         }
 

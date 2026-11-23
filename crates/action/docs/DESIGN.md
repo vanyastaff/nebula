@@ -12,7 +12,7 @@
 ## 1. Назначение и границы
 
 `nebula-action` определяет **типизированное семейство трейтов действий** (Action Trait Family) плюс
-статический дескриптор исполнения (`ActionMetadata`) — контракт между «что делает узел workflow»
+статический дескриптор исполнения (`ActionDefinition`) — контракт между «что делает узел workflow»
 и «как движок его оркестрирует». Авторы пишут typed-трейты; движок диспатчит **in-process** через
 `ActionFactory` → `ActionHandle`.
 
@@ -53,7 +53,7 @@
 | `ActionFactory` + `Generic{Stateless,Stateful,Trigger,Resource,Control}Factory` | `src/factory.rs:53,69-497` |
 | `FromWorkflowNode` (async slot-binding фабрика; тело генерит derive) | `src/from_workflow_node.rs:61` |
 | `ActionError` + `RetryHintCode` (retryable vs fatal), `ValidationReason` | `src/error.rs:154,31,58` |
-| `ActionMetadata`, `ActionKind`, `IsolationLevel` | `src/metadata.rs` |
+| `ActionDefinition`, `ActionKind`, `IsolationLevel` | `src/metadata.rs` |
 | `ActionResult<T>`, `TerminationReason`, `WaitCondition`, `BranchKey` | `src/result.rs:40,195,297` |
 | `ActionOutput<T>`, `OutputEnvelope`, `DeferredOutput` | `src/output.rs` |
 | `ActionContext`/`TriggerContext` + `ActionRuntimeContext`/`TriggerRuntimeContext` | `src/context.rs:81,108,144,397` |
@@ -237,5 +237,9 @@ Dev: `nebula-credential-macros`, `nebula-expression`, `trybuild`, `insta`, `rste
   context emission, must use the checked adapter or an explicit trusted adapter
   enforcing the same gate. The proposal includes trigger compile/admission/runtime
   acceptance and coordinated migration tasks; these are unshipped targets.
-  `ActionMetadataDraft` сохраняет schema-free lifecycle и `with_*`; factory выводит обе схемы и kind.
+  `ActionMetadata` сохраняет schema-free lifecycle и `with_*` и не содержит ключа: ключ — `Action::KEY`,
+  объявленный один раз на типе; factory ставит его при допуске и выводит обе схемы и kind
+  (`ActionDefinition`). Так на каждом пути, включая `InstanceFactory::new(action)`: один тип —
+  одна запись каталога. Другой ключ или версия той же реализации — новый тип;
+  `stateless_entry!` объявляет такой тип, делегирующий выполнение существующему stateless action.
   Constructor/SDK parity issue 1018 описана в [integration model](../../../docs/INTEGRATION_MODEL.md#shared-metadata-authoring-current-foundation-target-parity).

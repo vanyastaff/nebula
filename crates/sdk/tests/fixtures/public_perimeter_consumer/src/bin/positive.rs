@@ -13,7 +13,7 @@ use nebula_sdk::{
     },
     integration::credential::{TestFailureCode, TestResult},
     prelude::{
-        Action, ActionMetadataDraft, ActionResult, AuthoredValue, Deserialize, Error, Expression,
+        Action, ActionMetadata, ActionResult, AuthoredValue, Deserialize, Error, Expression,
         PoolProvider, Pooled, ProgramSyntax, Provider, ProviderKey, RemoteDestinationGuarantee,
         RemoteEffectPolicy, Resource, ResourceContext, Schema, Serialize, TeardownCx,
         TeardownReason, TriggerHealthSnapshot, Value, WorkflowBuilder, metadata_name,
@@ -265,7 +265,7 @@ fn main() {
     assert_credential_wire_v1_contract();
     catalog_constructor_parity();
     assert_typed_action_contract::<EchoAction>();
-    let metadata: ActionMetadataDraft = EchoAction::metadata();
+    let metadata: ActionMetadata = EchoAction::metadata();
     let authored = nebula_sdk::params! { data; "message" => "hello" }
         .expect("literal authored input is valid");
     assert_eq!(authored.to_json(), nebula_sdk::json!({"message": "hello"}));
@@ -293,9 +293,7 @@ fn main() {
         OrgId,
         WorkspaceId,
     ) -> EffectPreparationContext = EffectPreparationContext::new;
-    let manual_metadata = ActionMetadataDraft::new(
-        nebula_sdk::prelude::action_key!("example.perimeter"),
-        metadata_name!("Perimeter action"),
+    let manual_metadata = ActionMetadata::new(metadata_name!("Perimeter action"),
         "Uses only the supported SDK authoring surface",
     );
     let workflow = WorkflowBuilder::new("public_perimeter")
@@ -355,8 +353,8 @@ fn main() {
         .build()
         .expect("a bounded opaque effect policy is valid");
 
-    let _: ActionMetadataDraft = metadata;
-    let _: ActionMetadataDraft = manual_metadata;
+    let _: ActionMetadata = metadata;
+    let _: ActionMetadata = manual_metadata;
     assert_eq!(workflow.nodes.len(), 1);
     assert_eq!(effect_policy.max_invocations(), 1);
     assert_eq!(
@@ -374,7 +372,7 @@ fn catalog_constructor_parity() {
         MetadataVersion, RemovalDate, RemovalMilestone, RemovalSchedule, VersionReq,
     };
     use nebula_sdk::integration::{
-        action::ActionMetadataDraft, credential::CredentialMetadata, resource::ResourceMetadata,
+        action::ActionMetadata, credential::CredentialMetadata, resource::ResourceMetadata,
     };
     use nebula_sdk::prelude::action_key;
 
@@ -418,9 +416,7 @@ fn catalog_constructor_parity() {
     let _: MetadataError = MetadataError::FieldTooLarge(MetadataField::Description);
     let _: Result<CatalogCategoryKey, CatalogValueError> = "INVALID".parse();
 
-    let action = ActionMetadataDraft::new(
-        action_key!("example.echo"),
-        metadata_name!("Echo"),
+    let action = ActionMetadata::new(metadata_name!("Echo"),
         "HTTP echo",
     )
     .with_version(version.clone())
@@ -428,7 +424,7 @@ fn catalog_constructor_parity() {
     .add_link(link.clone())
     .with_deprecation(notice.clone());
     let action_dynamic =
-        ActionMetadataDraft::try_new(action_key!("example.echo"), "Echo", "HTTP echo")
+        ActionMetadata::try_new("Echo", "HTTP echo")
             .expect("valid name")
             .with_version(version.clone())
             .with_categories([category.clone()])
@@ -461,7 +457,7 @@ fn catalog_constructor_parity() {
     assert_eq!(resource, resource_dynamic);
     let _: nebula_sdk::prelude::VersionReq = requirement;
     let _: nebula_sdk::prelude::MetadataField = MetadataField::Links;
-    assert!(ActionMetadataDraft::try_new(action_key!("example.echo"), " ", "").is_err());
+    assert!(ActionMetadata::try_new(" ", "").is_err());
     assert!(CredentialMetadata::try_new(" ", "").is_err());
     assert!(ResourceMetadata::try_new(" ", "").is_err());
 }

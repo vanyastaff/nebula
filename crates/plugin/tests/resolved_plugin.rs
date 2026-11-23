@@ -3,7 +3,7 @@
 use std::sync::{Arc, OnceLock};
 
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionFactory, ActionMetadataDraft, ActionResult,
+    Action, ActionContext, ActionError, ActionFactory, ActionMetadata, ActionResult,
     InstanceFactory, StatelessAction,
 };
 use nebula_core::{ActionKey, CredentialKey, Dependencies, ResourceKey};
@@ -87,31 +87,47 @@ fn resource_factory(key: &str) -> Arc<dyn ResourceFactory> {
     }
 }
 
-fn action_factory(key: &str) -> Arc<dyn ActionFactory> {
+/// One fixture action type per key: a key is its type's `KEY`.
+fn action_factory_at<const INDEX: usize>() -> Arc<dyn ActionFactory> {
     Arc::new(
-        InstanceFactory::new(
-            ActionMetadataDraft::new(
-                ActionKey::new(key).expect("valid action key"),
-                nebula_action::MetadataName::try_from(key).expect("fixture display name"),
-                "stub",
-            ),
-            MetadataAction,
-        )
-        .expect("stub metadata admits through its structural factory"),
+        InstanceFactory::new(MetadataAction::<INDEX>)
+            .expect("stub metadata admits through its structural factory"),
     )
 }
 
-struct MetadataAction;
+fn action_factory(key: &str) -> Arc<dyn ActionFactory> {
+    match key {
+        "api.foo" => action_factory_at::<0>(),
+        "github.send" => action_factory_at::<1>(),
+        "http.get" => action_factory_at::<2>(),
+        "http.post" => action_factory_at::<3>(),
+        "http.send" => action_factory_at::<4>(),
+        "slack.send" => action_factory_at::<5>(),
+        "slack.send_message" => action_factory_at::<6>(),
+        _ => panic!("action factory fixture key `{key}` is not declared"),
+    }
+}
 
-impl Action for MetadataAction {
+struct MetadataAction<const INDEX: usize>;
+
+impl<const INDEX: usize> Action for MetadataAction<INDEX> {
+    const KEY: &'static str = match INDEX {
+        0 => "api.foo",
+        1 => "github.send",
+        2 => "http.get",
+        3 => "http.post",
+        4 => "http.send",
+        5 => "slack.send",
+        6 => "slack.send_message",
+        _ => panic!("action metadata fixture index is not declared"),
+    };
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            nebula_core::action_key!("fixture.metadata"),
-            nebula_action::metadata_name!("Fixture metadata"),
-            "Plugin metadata fixture",
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            nebula_action::MetadataName::try_from(Self::KEY).expect("fixture display name"),
+            "stub",
         )
     }
 
@@ -121,7 +137,7 @@ impl Action for MetadataAction {
     }
 }
 
-impl StatelessAction for MetadataAction {
+impl<const INDEX: usize> StatelessAction for MetadataAction<INDEX> {
     async fn execute(
         &self,
         input: serde_json::Value,
@@ -469,7 +485,7 @@ fn registry_resolve_action_finds_across_plugins() {
         .resolve_action(&ActionKey::new("slack.send_message").unwrap())
         .expect("slack action");
     assert_eq!(
-        action.metadata().base().key().as_str(),
+        action.definition().base().key().as_str(),
         "slack.send_message"
     );
 
@@ -477,7 +493,7 @@ fn registry_resolve_action_finds_across_plugins() {
     let http_post = reg
         .resolve_action(&ActionKey::new("http.post").unwrap())
         .expect("http post");
-    assert_eq!(http_post.metadata().base().key().as_str(), "http.post");
+    assert_eq!(http_post.definition().base().key().as_str(), "http.post");
 
     // Unknown key: no match.
     assert!(
@@ -502,7 +518,7 @@ fn registry_all_actions_yields_every_action() {
 
     let keys: Vec<&str> = reg
         .all_actions()
-        .map(|(_pk, a)| a.metadata().base().key().as_str())
+        .map(|(_pk, a)| a.definition().base().key().as_str())
         .collect();
     assert!(keys.contains(&"slack.send_message"));
     assert!(keys.contains(&"http.get"));
@@ -644,7 +660,7 @@ fn mutable_and_frozen_accessors_preserve_component_ownership_across_plugins() {
         .map(|(plugin, action)| {
             (
                 plugin.to_string(),
-                action.metadata().base().key().to_string(),
+                action.definition().base().key().to_string(),
             )
         })
         .collect();

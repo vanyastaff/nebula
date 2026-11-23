@@ -1,3 +1,3 @@
 fn main() {
-    let _: Option<nebula_sdk::prelude::ActionMetadata> = None;
+    let _: Option<nebula_sdk::prelude::ActionDefinition> = None;
 }

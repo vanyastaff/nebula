@@ -60,6 +60,7 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let slot_registrations = field_slots::emit_slot_field_registrations(&slots);
 
     let metadata_init = attrs.metadata_init_expr();
+    let (key_const, key_check) = attrs.key_items();
 
     let input_ty = &attrs.input;
     let output_ty = &attrs.output;
@@ -73,11 +74,14 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let needs_factory = matches!(fields, Fields::Named(_)) || matches!(fields, Fields::Unit);
 
     let action_impl = quote! {
+        #key_check
+
         impl #impl_generics ::nebula_action::Action for #struct_name #ty_generics #where_clause {
+            #key_const
             type Input = #input_ty;
             type Output = #output_ty;
 
-            fn metadata() -> ::nebula_action::ActionMetadataDraft {
+            fn metadata() -> ::nebula_action::ActionMetadata {
                 #metadata_init
             }
 

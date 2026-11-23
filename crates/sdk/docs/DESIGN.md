@@ -21,14 +21,14 @@ for direct use.
 ## Supported surface
 
 - `prelude` — curated authoring types and traits.
-- Authors write metadata; they never build an admitted definition. `ActionMetadataDraft` and
-  the key-free `CredentialMetadata` and `ResourceMetadata` share
+- Authors write metadata; they never build an admitted definition. The key-free
+  `ActionMetadata`, `CredentialMetadata` and `ResourceMetadata` share
   curated author vocabulary (`MetadataName`, `MetadataVersion`, `Icon`, `DeprecationNotice`)
-  without exposing any admitted/recorded form. A resource's identity is `Provider::KEY` and a
-  credential's is `Credential::KEY`, not a metadata field. Runtime factories alone bind schemas and create terminal definitions.
+  without exposing any admitted/recorded form. An action's identity is `Action::KEY`, a
+  resource's `Provider::KEY` and a credential's `Credential::KEY`, not a metadata field. Runtime factories alone bind schemas and create terminal definitions.
 - `integration` — narrow integration contracts; credential integrations expose
   `ResolveResult`, `StaticResolveResult`, `TestFailureCode`, and `TestResult` here.
-- `action::ActionMetadataDraft` and `workflow::WorkflowBuilder` — programmatic authoring.
+- `action::ActionMetadata` and `workflow::WorkflowBuilder` — programmatic authoring.
 - `runtime::{TestRuntime, RunReport}` and feature-gated `testing` — integration test support.
 - `params!`, `workflow!`, `simple_action!`, and `json!` — SDK-owned macro entry points.
 - `Error` / `Result` plus selected general-purpose ecosystem re-exports.
@@ -88,7 +88,7 @@ Missing or invalid mutation acknowledgements have an explicit unknown outcome. T
 
 `tests/public_perimeter_external_contract.rs` builds a real external fixture whose manifest has
 exactly one Nebula dependency: `nebula-sdk`. The positive binary exercises the currently supported
-manual authoring subset: typed `Action::Input`/`Output`, `ActionMetadataDraft`, `simple_action!`,
+manual authoring subset: typed `Action::Input`/`Output`, `ActionMetadata`, `simple_action!`,
 `WorkflowBuilder`, and credential `TestResult`. Independent negative binaries prove that internal
 authority constructors, owner selectors, raw writers, proof values, terminal metadata, action
 adapters, runtime constructors, and unscoped resolvers are not reachable, and assert the intended

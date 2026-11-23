@@ -28,10 +28,10 @@ Every concept in Nebula's integration layer is described by two things:
 
 | Piece | Role |
 |---|---|
-| authored metadata | Author-owned UI/catalog intent: checked display name, version, lifecycle, and concept-specific declarations. `ResourceMetadata` and `CredentialMetadata` carry no key (identity is `Provider::KEY` / `Credential::KEY`); `ActionMetadataDraft` still takes one until it moves to the same shape. None can supply a schema or claim admission. |
+| authored metadata | Author-owned UI/catalog intent: checked display name, version, lifecycle, and concept-specific declarations. `ActionMetadata`, `ResourceMetadata` and `CredentialMetadata` carry no key (identity is `Action::KEY` / `Provider::KEY` / `Credential::KEY`). None can supply a schema or claim admission. |
 | Associated Rust type | The schema source of truth: `Action::{Input, Output}`, `Credential::Properties`, or `Provider::Config`. |
-| admitted definition | `ResourceDefinition`, `CredentialDefinition`, and for now `ActionMetadata`. Immutable catalog definition produced only by the owning factory/registry after deriving schemas and checking identity/package invariants. |
-| `Recorded*` | Deserialized evidence (`RecordedResourceDefinition`, `RecordedActionMetadata`, `RecordedCredentialDefinition`). It regains admitted status only by exact comparison with a fresh definition from the currently selected factory/registry. |
+| admitted definition | `ResourceDefinition`, `CredentialDefinition`, and for now `ActionDefinition`. Immutable catalog definition produced only by the owning factory/registry after deriving schemas and checking identity/package invariants. |
+| `Recorded*` | Deserialized evidence (`RecordedResourceDefinition`, `RecordedActionDefinition`, `RecordedCredentialDefinition`). It regains admitted status only by exact comparison with a fresh definition from the currently selected factory/registry. |
 
 This is the canon's `*Metadata + Schema` contract expressed as a one-way
 lifecycle, not permission for authors to construct terminal metadata. Action
@@ -45,14 +45,19 @@ and uses its own checked builder; it is not a catalog-leaf admission bypass.
 
 #### Catalog construction and wire migration
 
-`ActionMetadataDraft` provides `new(key, MetadataName, description)` and
-`try_new(key, name, description)`. A resource and a credential declare their
-identity once, as `Provider::KEY` and `Credential::KEY`, and their `metadata()`
-returns the key-free `ResourceMetadata::new(MetadataName, description)` or
-`CredentialMetadata::new(MetadataName, description)` (both are the shared
-`nebula_metadata::Metadata`); the factory or registry stamps the key at
-admission, so a catalog entry cannot name another component. Action moves to
-the same shape next. Inferred display names are removed. Credential metadata no longer takes or exposes an auth pattern:
+An action, a resource and a credential declare their identity once, as
+`Action::KEY`, `Provider::KEY` and `Credential::KEY`, and their `metadata()`
+returns key-free metadata: `ActionMetadata::new(MetadataName, description)`,
+`ResourceMetadata::new(MetadataName, description)` or
+`CredentialMetadata::new(MetadataName, description)` (the last two are the
+shared `nebula_metadata::Metadata`; `ActionMetadata` embeds it and adds ports
+and policies). The factory or registry stamps the key at admission, so a
+catalog entry cannot name another component. This holds on every path,
+including the shared-instance `InstanceFactory::new(action)`: one type is one
+catalog entry. To expose an implementation under another key or version,
+declare a new type for that entry; `nebula_action::stateless_entry!` declares
+one that delegates execution to an existing stateless action.
+Inferred display names are removed. Credential metadata no longer takes or exposes an auth pattern:
 admission derives it from `<C::Scheme as AuthScheme>::pattern()`. Action macros
 preserve the full SemVer, including prerelease and build metadata.
 
@@ -200,9 +205,9 @@ presentation identity or rewrite existing schema or plan bytes.
 entity-specific admission. Property display hints belong to schema authoring,
 not to a new catalog-leaf metadata type. SDK personas curate these contracts.
 
-| Shared concern | `ActionMetadataDraft` | `CredentialMetadata` | `ResourceMetadata` |
+| Shared concern | `ActionMetadata` | `CredentialMetadata` | `ResourceMetadata` |
 |---|---|---|---|
-| Identity and text | `new(ActionKey, MetadataName, description)` / `try_new` | `new(MetadataName, description)` / `try_new`; identity is `Credential::KEY` | `new(MetadataName, description)` / `try_new`; identity is `Provider::KEY` |
+| Identity and text | `new(MetadataName, description)` / `try_new`; identity is `Action::KEY` | `new(MetadataName, description)` / `try_new`; identity is `Credential::KEY` | `new(MetadataName, description)` / `try_new`; identity is `Provider::KEY` |
 | Revision | `with_version(MetadataVersion)` | `with_version(MetadataVersion)` | `with_version(MetadataVersion)` |
 | Icon | `with_icon`, `with_inline_icon`, `with_url_icon` | `with_icon`, `with_inline_icon`, `with_url_icon` | `with_icon`, `with_inline_icon`, `with_url_icon` |
 | Documentation and discovery | `with_documentation_url`, `with_categories`, `add_link`, `with_tags`, `add_tag` | `with_documentation_url`, `with_categories`, `add_link`, `with_tags`, `add_tag` | `with_documentation_url`, `with_categories`, `add_link`, `with_tags`, `add_tag` |
@@ -216,8 +221,7 @@ credentials add the admitted auth pattern derived from
 trait implementations; resources add no catalog fields beyond the shared base,
 while topology and live instances remain resource runtime contracts.
 
-The exact constructor contract of `ResourceMetadata` and `CredentialMetadata`
-is the following; `ActionMetadataDraft` still takes a leading `key: ActionKey`:
+The exact constructor contract of all three is the following:
 
 ```rust,ignore
 pub fn new(name: MetadataName, description: impl Into<String>) -> Self;
@@ -393,9 +397,9 @@ These are **schema-level** links: metadata and parameter types declare a closed 
 
 Long-lived managed object: connection pool, SDK client, file handle. Resource lifecycle owns init, health-check, hot-reload via **ReloadOutcome**, bindings, per-slot credential-rotation fan-out, and scope-aware teardown. Authors declare `Provider::KEY` and return key-free `ResourceMetadata`; the selected `ResourceFactory` derives and caches the exact `R::Config` schema, and validation/registration consume that one definition before typed manager admission. A Resource may declare typed Credential slots and may build on other Resource types, but the resource dependency subgraph must remain acyclic and activation-validated. The author declares what the Resource **is**; the runtime provides it **healthy** or fails loudly. **Concrete shape:** see §3.6 (`nebula-resource`).
 
-**Action** — `[ ActionMetadata + Schema ]` — **declares zero or more Resource and/or Credential kinds it needs** (by stable id / type reference in the **integration schema**, not ad hoc runtime lookup).
+**Action** — `[ ActionDefinition + Schema ]` — **declares zero or more Resource and/or Credential kinds it needs** (by stable id / type reference in the **integration schema**, not ad hoc runtime lookup).
 
-**What** the step does — with explicit semantics. Authors return `ActionMetadataDraft`; the selected factory derives `Action::{Input, Output}` schemas, stamps the structural kind, checks the package, and retains immutable `ActionMetadata`. The engine dispatches by **which action trait** the type implements (`StatelessAction`, `StatefulAction`, `TriggerAction`, `ResourceAction`, …), not by an author-selected metadata kind. Internal erased input is prepared once and becomes an exact-handle-bound typed proof before dispatch; neither `ActionInput` nor admitted metadata is an SDK author surface. Graph is the flagship execution direction, not a production-readiness claim. Existing Stream / Interactive names or variants are shape-only reservations for future capability-gated profiles; they do not establish current runtime semantics or a supported SDK capability. Agent is experimental (canon §6.2, "journaled turns"): an agent node compiles into a Graph plan and its turns are journaled and checkpointed, but it is no supported SDK capability. Each future profile requires its own persisted state, admission, recovery, and compatibility contract. The runtime applies checkpoint, retry, and cancel rules only for behavior implemented end-to-end — the author does not re-implement those invariants per action (aligned with `nebula-resilience`). **Concrete shape:** see §3.8 (`nebula-action`).
+**What** the step does — with explicit semantics. Authors return `ActionMetadata`; the selected factory derives `Action::{Input, Output}` schemas, stamps the structural kind, checks the package, and retains immutable `ActionDefinition`. The engine dispatches by **which action trait** the type implements (`StatelessAction`, `StatefulAction`, `TriggerAction`, `ResourceAction`, …), not by an author-selected metadata kind. Internal erased input is prepared once and becomes an exact-handle-bound typed proof before dispatch; neither `ActionInput` nor admitted metadata is an SDK author surface. Graph is the flagship execution direction, not a production-readiness claim. Existing Stream / Interactive names or variants are shape-only reservations for future capability-gated profiles; they do not establish current runtime semantics or a supported SDK capability. Agent is experimental (canon §6.2, "journaled turns"): an agent node compiles into a Graph plan and its turns are journaled and checkpointed, but it is no supported SDK capability. Each future profile requires its own persisted state, admission, recovery, and compatibility contract. The runtime applies checkpoint, retry, and cancel rules only for behavior implemented end-to-end — the author does not re-implement those invariants per action (aligned with `nebula-resilience`). **Concrete shape:** see §3.8 (`nebula-action`).
 
 **Wiring rule:** the canonical dependency direction is Credential leaf; Resource → Credential and/or Resource; Action → Credential and/or Resource. Every referenced type must be **provided by this plugin's own `impl Plugin` registry** **or** by a type from **another plugin crate** that is a **declared dependency** in **`Cargo.toml`**. The complete plugin/type closure must be acyclic and activation-validated before execution (engine loads providers before dependents; see §7.1). Referencing a type that is "in the process" but not reachable through that closure is a misconfiguration, even if some unrelated plugin registered it.
 

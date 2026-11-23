@@ -23,15 +23,12 @@ struct CounterState {
 struct CounterAction;
 
 impl Action for CounterAction {
+    const KEY: &'static str = "test.counter";
     type Input = Value;
     type Output = Value;
 
-    fn metadata() -> crate::ActionMetadataDraft {
-        crate::ActionMetadataDraft::new(
-            nebula_core::action_key!("test.counter"),
-            crate::metadata_name!("Counter"),
-            "Counts up to 3",
-        )
+    fn metadata() -> crate::ActionMetadata {
+        crate::ActionMetadata::new(crate::metadata_name!("Counter"), "Counts up to 3")
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -179,12 +176,12 @@ struct MutateThenFailAction {
 }
 
 impl Action for MutateThenFailAction {
+    const KEY: &'static str = "test.mutate_fail";
     type Input = Value;
     type Output = Value;
 
-    fn metadata() -> crate::ActionMetadataDraft {
-        crate::ActionMetadataDraft::new(
-            nebula_core::action_key!("test.mutate_fail"),
+    fn metadata() -> crate::ActionMetadata {
+        crate::ActionMetadata::new(
             crate::metadata_name!("MutateFail"),
             "Mutates state then fails",
         )
@@ -295,7 +292,7 @@ async fn stateful_adapter_preserves_state_on_validation_error() {
 #[test]
 fn stateful_adapter_into_inner_returns_action() {
     let adapter = StatefulActionAdapter::new(CounterAction).expect("valid test catalog definition");
-    let key = adapter.metadata().base().key().clone();
+    let key = adapter.definition().base().key().clone();
     let _action = adapter.into_inner();
     assert_eq!(key, nebula_core::action_key!("test.counter"));
 }

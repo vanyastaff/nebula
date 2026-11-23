@@ -11,7 +11,7 @@ related: [nebula-core, nebula-schema, nebula-credential, nebula-resource, nebula
 
 ## Purpose
 
-Workflow nodes need a typed contract between "what this step does" and "how the engine orchestrates it." Without one, every action re-invents credential plumbing, retry folklore, and checkpoint placement — and the engine cannot enforce guarantees across them. `nebula-action` defines that contract: a trait family (`StatelessAction`, `StatefulAction`, `TriggerAction`, `ResourceAction` and DX specializations) that determines iteration semantics, trigger lifecycle, and graph-scoped resource supply; plus `ActionMetadata` that carries the static descriptor (key, ports, parameters, isolation, category) the engine uses for discovery, validation, and dispatch. Action authors describe what their node does via slot-binding fields and a typed `Self::Input`; the engine wires, validates, and executes.
+Workflow nodes need a typed contract between "what this step does" and "how the engine orchestrates it." Without one, every action re-invents credential plumbing, retry folklore, and checkpoint placement — and the engine cannot enforce guarantees across them. `nebula-action` defines that contract: a trait family (`StatelessAction`, `StatefulAction`, `TriggerAction`, `ResourceAction` and DX specializations) that determines iteration semantics, trigger lifecycle, and graph-scoped resource supply; plus `ActionDefinition` that carries the static descriptor (key, ports, parameters, isolation, category) the engine uses for discovery, validation, and dispatch. Action authors describe what their node does via slot-binding fields and a typed `Self::Input`; the engine wires, validates, and executes.
 
 ## Role
 
@@ -27,10 +27,11 @@ The v4 surface lands per ADR-0042 (binding mechanism), ADR-0043 (dependency decl
 
 ```rust
 pub trait Action: Sized + Send + Sync + 'static {
+    const KEY: &'static str;                      // identity, declared once
     type Input:  HasSchema + DeserializeOwned + Send + Sync;
     type Output: HasSchema + Serialize         + Send + Sync;
 
-    fn metadata()       -> ActionMetadataDraft;
+    fn metadata()       -> ActionMetadata;      // keyless catalog metadata
     fn dependencies()   -> &'static Dependencies;  // slot-binding metadata
 }
 // No schema method — the `Input`/`Output: HasSchema` bound is the single
@@ -42,9 +43,10 @@ pub trait Action: Sized + Send + Sync + 'static {
 
 Catalog admission is fallible: `HasSchema::schema()` and `schema_of::<T>()`
 return `Result<ValidSchema, ValidationReport>`. Structural factory constructors
-derive both schemas, stamp the action kind, validate the package once, and retain
-the resulting immutable metadata. `ActionFactory::metadata()` returns the shared
-`Arc<ActionMetadata>` by reference. Propagate factory construction errors before
+stamp `Action::KEY`, derive both schemas, stamp the action kind, validate the
+package once, and retain the resulting immutable definition.
+`ActionFactory::definition()` returns the shared `Arc<ActionDefinition>` by
+reference. Propagate factory construction errors before
 publishing a catalog entry.
 
 Typed input and output roots retain their serde shape. Unit values serialize as
@@ -64,8 +66,11 @@ Control adapters pass the declared Rust input type to `ControlAction::evaluate` 
 serialize only `ControlOutcome<A::Output>`. Raw JSON handler entrypoints remain literal-only. Public input errors
 contain fixed diagnostics, never schema payloads or serde causes.
 
-`ActionMetadataDraft::new(key, metadata_name!("Echo"), description)` constructs a
-static draft; `try_new(key, name, description)` checks dynamic display names.
+An action's key is `Action::KEY`, declared once on the type; `key_of::<A>()`
+returns it as a typed `ActionKey` and fails the build on an invalid literal.
+`ActionMetadata::new(metadata_name!("Echo"), description)` constructs the
+author's keyless metadata; `try_new(name, description)` checks dynamic display
+names. A factory stamps the key at admission and yields an `ActionDefinition`.
 Action macros retain the complete SemVer, including prerelease and build fields.
 Read identity and lifecycle through `base.key()`, `base.name()`,
 `base.version()`, `base.schema()`, `base.maturity()`, and `base.deprecation()`.
@@ -80,7 +85,7 @@ values. `with_icon`, `with_inline_icon`, and `with_url_icon` use the shared
 authors the Overview link. Tags are trimmed, sorted, and deduplicated; categories
 and links are also canonicalized. Serialized
 metadata now has a nested `base` with required `metadata_wire_version: 2`.
-`RecordedActionMetadata` rejects old flat/unversioned records and compares every
+`RecordedActionDefinition` rejects old flat/unversioned records and compares every
 shared field and action-specific field against fresh factory admission, including
 same-SemVer catalog changes. Use its bounded `from_slice`/`from_reader` APIs for
 raw ingress; direct serde is structural validation, not a parser-allocation bound.
@@ -218,7 +223,7 @@ Generic factories (`GenericStatelessFactory<A>`, `GenericStatefulFactory<A>`, �
 
 ### Other public API
 
-- `ActionMetadata`, `ActionMetadataBuilder` — static type descriptor (key, version, ports, isolation, category).
+- `ActionDefinition`, `ActionMetadataBuilder` — static type descriptor (key, version, ports, isolation, category).
 - `ActionResult` — execution result with flow-control intent (Success, Skip, Branch, Wait, Stop, Fail).
 - `ActionOutput` — first-class output type: inline value, blob ref, stream.
 - `ActionError`, `RetryHintCode` — typed error distinguishing retryable from fatal.
@@ -325,8 +330,8 @@ The examples deliberately wire slot resolution manually (no `#[derive(Action)]`)
 
 ### Checkpoint and retry migration
 
-`CheckpointPolicy`, `ActionMetadataDraft::with_checkpoint_policy`, and
-`ActionMetadata::checkpoint_policy` are removed, including SDK re-exports.
+`CheckpointPolicy`, `ActionMetadata::with_checkpoint_policy`, and
+`ActionDefinition::checkpoint_policy` are removed, including SDK re-exports.
 Remove these imports and setter calls. The former `OnePass`, `Stepwise`, and
 `ForcedHandoff` choices had no runtime enforcement; there is no replacement
 authoring selector until their scheduling and recovery contracts exist.
@@ -355,7 +360,7 @@ remote-effect authority. These layers own different retry boundaries.
   layers compose because they trigger at different boundaries (in-call
   vs. post-finalisation).
 - Not the execution driver — the engine runs actions in-process (`InProcessRunner`); process/WASM isolation is a non-goal (ADR-0091).
-- Not a schema system — `ActionMetadata.parameters` holds a `ValidSchema` from `nebula-schema`; field definitions and validation rules live there.
+- Not a schema system — `ActionDefinition.parameters` holds a `ValidSchema` from `nebula-schema`; field definitions and validation rules live there.
 - Not WASM — see canon §12.6.
 
 ## Maturity

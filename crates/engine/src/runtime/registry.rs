@@ -21,11 +21,11 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use nebula_action::{
-    Action, ActionError, ActionFactory, ActionMetadata, ActionMetadataAdmissionError,
-    ActionMetadataDraft, AgentAction, ControlAction, FromWorkflowNode, GenericAgentFactory,
-    GenericControlFactory, GenericResourceFactory, GenericStatefulFactory, GenericStatelessFactory,
-    GenericStreamFactory, GenericTriggerFactory, InstanceFactory, OutputPort, ResourceAction,
-    StatefulAction, StatelessAction, StreamAction, TriggerAction, WebhookActionFactory,
+    Action, ActionDefinition, ActionError, ActionFactory, ActionMetadataAdmissionError,
+    AgentAction, ControlAction, FromWorkflowNode, GenericAgentFactory, GenericControlFactory,
+    GenericResourceFactory, GenericStatefulFactory, GenericStatelessFactory, GenericStreamFactory,
+    GenericTriggerFactory, InstanceFactory, OutputPort, ResourceAction, StatefulAction,
+    StatelessAction, StreamAction, TriggerAction, WebhookActionFactory,
 };
 use nebula_core::ActionKey;
 use semver::Version;
@@ -33,7 +33,7 @@ use semver::Version;
 /// A single factory entry in the registry.
 #[derive(Clone)]
 struct FactoryEntry {
-    metadata: Arc<ActionMetadata>,
+    metadata: Arc<ActionDefinition>,
     factory: Arc<dyn ActionFactory>,
 }
 
@@ -72,7 +72,7 @@ impl ActionRegistry {
     ///
     #[tracing::instrument(name = "engine.action.register", skip_all)]
     pub fn register_factory(&self, factory: Arc<dyn ActionFactory>) {
-        let metadata = Arc::clone(factory.metadata());
+        let metadata = Arc::clone(factory.definition());
         let version = metadata.base().version().clone();
         let mut entries = self
             .factories
@@ -125,18 +125,15 @@ impl ActionRegistry {
         Ok(())
     }
 
-    /// Register a pre-built stateless action **instance** with caller-supplied
-    /// metadata, via the factory pipeline.
+    /// Register a pre-built stateless action **instance** via the factory pipeline.
     ///
     /// The `useValue` complement to [`register_stateless_factory`](Self::register_stateless_factory)'s
     /// `useFactory`: instead of constructing a fresh `A` from the node per
-    /// dispatch, this shares the one instance across dispatches and lets the
-    /// caller vary the catalog metadata (key / version / ports) per
-    /// registration — so one action type can back many distinct nodes. Backed
-    /// by [`InstanceFactory`].
+    /// dispatch, this shares the one instance across dispatches. The key and
+    /// metadata are the type's own (`A::KEY`, `A::metadata()`), as on every
+    /// other path: one type is one catalog entry. Backed by [`InstanceFactory`].
     pub fn register_stateless_instance<A>(
         &self,
-        metadata: ActionMetadataDraft,
         action: A,
     ) -> Result<(), ActionMetadataAdmissionError>
     where
@@ -144,7 +141,7 @@ impl ActionRegistry {
         <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
         <A as Action>::Output: serde::Serialize + Send + Sync,
     {
-        let factory: Arc<dyn ActionFactory> = Arc::new(InstanceFactory::new(metadata, action)?);
+        let factory: Arc<dyn ActionFactory> = Arc::new(InstanceFactory::new(action)?);
         self.register_factory(factory);
         Ok(())
     }
@@ -235,7 +232,7 @@ impl ActionRegistry {
     pub fn get_factory(
         &self,
         key: &ActionKey,
-    ) -> Option<(Arc<ActionMetadata>, Arc<dyn ActionFactory>)> {
+    ) -> Option<(Arc<ActionDefinition>, Arc<dyn ActionFactory>)> {
         let entries = self.factories.get(key)?;
         let last = entries.last()?;
         Some((Arc::clone(&last.metadata), Arc::clone(&last.factory)))
@@ -289,7 +286,7 @@ impl ActionRegistry {
         &self,
         key: &ActionKey,
         version: &Version,
-    ) -> Option<(Arc<ActionMetadata>, Arc<dyn ActionFactory>)> {
+    ) -> Option<(Arc<ActionDefinition>, Arc<dyn ActionFactory>)> {
         let entries = self.factories.get(key)?;
         let entry = entries
             .iter()
@@ -334,7 +331,10 @@ mod tests {
     use std::sync::OnceLock;
 
     use nebula_action::{
-        action::Action, error::ActionError, metadata::ActionKind, result::ActionResult,
+        action::Action,
+        error::ActionError,
+        metadata::{ActionKind, ActionMetadata},
+        result::ActionResult,
         stateless::StatelessAction,
     };
     use nebula_core::{Dependencies, action_key};
@@ -345,21 +345,43 @@ mod tests {
     struct NoopAction;
 
     impl Action for NoopAction {
+        const KEY: &'static str = "test.noop";
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadataDraft {
-            ActionMetadataDraft::new(
-                action_key!("test.noop"),
-                nebula_action::metadata_name!("Noop"),
-                "Does nothing",
-            )
+        fn metadata() -> ActionMetadata {
+            meta_with(1, 0)
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
             D.get_or_init(Dependencies::new)
         }
     }
+
+    nebula_action::stateless_entry!(TestNoopEntry(NoopAction) = "test.noop", meta_with(2, 0),);
+
+    nebula_action::stateless_entry!(
+        TestNoopEntry2(NoopAction) = "test.noop",
+        meta_with(1, 0).with_outputs(vec![OutputPort::flow(nebula_core::port_key!("out"))]),
+    );
+
+    nebula_action::stateless_entry!(
+        TestNoopEntry3(NoopAction) = "test.noop",
+        meta_with(2, 0).with_outputs(vec![
+            OutputPort::flow(nebula_core::port_key!("out")),
+            OutputPort::error(nebula_core::port_key!("error")),
+        ]),
+    );
+
+    nebula_action::stateless_entry!(
+        TestNoopEntry4(NoopAction) = "test.noop",
+        meta_with(1, 0).with_outputs(vec![OutputPort::flow(nebula_core::port_key!("legacy"))]),
+    );
+
+    nebula_action::stateless_entry!(
+        TestNoopEntry5(NoopAction) = "test.noop",
+        meta_with(2, 0).with_outputs(vec![OutputPort::flow(nebula_core::port_key!("out"))]),
+    );
     impl StatelessAction for NoopAction {
         async fn execute(
             &self,
@@ -379,10 +401,11 @@ mod tests {
     struct InvalidSchemaAction;
 
     impl Action for InvalidSchemaAction {
+        const KEY: &'static str = NoopAction::KEY;
         type Input = InvalidPatternInput;
         type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadataDraft {
+        fn metadata() -> ActionMetadata {
             NoopAction::metadata()
         }
 
@@ -416,7 +439,7 @@ mod tests {
     fn schema_failure_does_not_replace_registered_factory() {
         let registry = ActionRegistry::new();
         registry
-            .register_stateless_instance(meta_with("test.noop", 1, 0), NoopAction)
+            .register_stateless_instance(NoopAction)
             .expect("valid existing factory");
         let key = action_key!("test.noop");
         let (metadata, factory) = registry.get_factory(&key).unwrap();
@@ -439,13 +462,9 @@ mod tests {
         assert_eq!(registry.len(), 1);
     }
 
-    fn meta_with(key: &'static str, major: u64, minor: u64) -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            ActionKey::new(key).unwrap(),
-            nebula_action::metadata_name!("Noop"),
-            "Does nothing",
-        )
-        .with_version(Version::new(major, minor, 0))
+    fn meta_with(major: u64, minor: u64) -> ActionMetadata {
+        ActionMetadata::new(nebula_action::metadata_name!("Noop"), "Does nothing")
+            .with_version(Version::new(major, minor, 0))
     }
 
     // Stateful fixture used to prove the factory registration path stores the
@@ -454,12 +473,12 @@ mod tests {
     struct NoopStateful;
 
     impl Action for NoopStateful {
+        const KEY: &'static str = "test.noop_stateful";
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadataDraft {
-            ActionMetadataDraft::new(
-                action_key!("test.noop_stateful"),
+        fn metadata() -> ActionMetadata {
+            ActionMetadata::new(
                 nebula_action::metadata_name!("NoopStateful"),
                 "Does nothing, iteratively",
             )
@@ -519,7 +538,7 @@ mod tests {
         // via the factory lookup (the surviving registration path).
         let registry = ActionRegistry::new();
         registry
-            .register_stateless_instance(meta_with("test.noop", 1, 0), NoopAction)
+            .register_stateless_instance(NoopAction)
             .expect("valid test catalog definition");
         let key = ActionKey::new("test.noop").unwrap();
         assert!(registry.get_factory(&key).is_some());
@@ -530,10 +549,10 @@ mod tests {
     fn register_replaces_same_version() {
         let registry = ActionRegistry::new();
         registry
-            .register_stateless_instance(meta_with("test.noop", 1, 0), NoopAction)
+            .register_stateless_instance(NoopAction)
             .expect("valid test catalog definition");
         registry
-            .register_stateless_instance(meta_with("test.noop", 1, 0), NoopAction)
+            .register_stateless_instance(NoopAction)
             .expect("valid test catalog definition");
         let key = ActionKey::new("test.noop").unwrap();
         assert_eq!(
@@ -547,10 +566,10 @@ mod tests {
     fn versioned_lookup() {
         let registry = ActionRegistry::new();
         registry
-            .register_stateless_instance(meta_with("test.noop", 1, 0), NoopAction)
+            .register_stateless_instance(NoopAction)
             .expect("valid test catalog definition");
         registry
-            .register_stateless_instance(meta_with("test.noop", 2, 0), NoopAction)
+            .register_stateless_instance(TestNoopEntry(NoopAction))
             .expect("valid test catalog definition");
 
         let key = ActionKey::new("test.noop").unwrap();
@@ -579,20 +598,10 @@ mod tests {
     fn output_ports_returns_declared_ports_for_latest_version() {
         let registry = ActionRegistry::new();
         registry
-            .register_stateless_instance(
-                meta_with("test.noop", 1, 0)
-                    .with_outputs(vec![OutputPort::flow(nebula_core::port_key!("out"))]),
-                NoopAction,
-            )
+            .register_stateless_instance(TestNoopEntry2(NoopAction))
             .expect("valid test catalog definition");
         registry
-            .register_stateless_instance(
-                meta_with("test.noop", 2, 0).with_outputs(vec![
-                    OutputPort::flow(nebula_core::port_key!("out")),
-                    OutputPort::error(nebula_core::port_key!("error")),
-                ]),
-                NoopAction,
-            )
+            .register_stateless_instance(TestNoopEntry3(NoopAction))
             .expect("valid test catalog definition");
 
         let key = ActionKey::new("test.noop").unwrap();
@@ -613,18 +622,10 @@ mod tests {
     fn output_ports_versioned_pins_to_the_requested_version() {
         let registry = ActionRegistry::new();
         registry
-            .register_stateless_instance(
-                meta_with("test.noop", 1, 0)
-                    .with_outputs(vec![OutputPort::flow(nebula_core::port_key!("legacy"))]),
-                NoopAction,
-            )
+            .register_stateless_instance(TestNoopEntry4(NoopAction))
             .expect("valid test catalog definition");
         registry
-            .register_stateless_instance(
-                meta_with("test.noop", 2, 0)
-                    .with_outputs(vec![OutputPort::flow(nebula_core::port_key!("out"))]),
-                NoopAction,
-            )
+            .register_stateless_instance(TestNoopEntry5(NoopAction))
             .expect("valid test catalog definition");
 
         let key = ActionKey::new("test.noop").unwrap();
@@ -667,11 +668,7 @@ mod tests {
     fn output_ports_versioned_pinned_to_unregistered_version_fails_open() {
         let registry = ActionRegistry::new();
         registry
-            .register_stateless_instance(
-                meta_with("test.noop", 1, 0)
-                    .with_outputs(vec![OutputPort::flow(nebula_core::port_key!("out"))]),
-                NoopAction,
-            )
+            .register_stateless_instance(TestNoopEntry2(NoopAction))
             .expect("valid test catalog definition");
 
         let key = ActionKey::new("test.noop").unwrap();

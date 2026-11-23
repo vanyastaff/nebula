@@ -23,7 +23,7 @@ use nebula_action::{
     ActionContext, action::Action, error::ActionError, result::ActionResult,
     stateless::StatelessAction, testing::TestContextBuilder,
 };
-use nebula_core::{Dependencies, action_key};
+use nebula_core::Dependencies;
 use nebula_schema::{
     AuthoredValue, EngineExpressionContext, HasSchema, Property, Schema, ValidSchema, field_key,
 };
@@ -69,12 +69,12 @@ struct PipelineOutput {
 struct PipelineProbe;
 
 impl Action for PipelineProbe {
+    const KEY: &'static str = "test.phase9.pipeline_probe";
     type Input = PipelineInput;
     type Output = PipelineOutput;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("test.phase9.pipeline_probe"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("PipelineProbe"),
             "Phase 9 / Task 9.1 schema → validator → expression pipeline probe",
         )

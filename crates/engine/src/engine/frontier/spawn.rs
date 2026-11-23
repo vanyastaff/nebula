@@ -168,7 +168,7 @@ impl WorkflowEngine {
             NodeFactoryDispatch::DirectRegistry { factory }
             | NodeFactoryDispatch::Frozen { factory, .. } => factory,
         };
-        let metadata = factory.metadata();
+        let metadata = factory.definition();
 
         // Partition incoming connections into flow (to_port=None) and support (to_port=Some)
         let (node_input, support_inputs) = resolve_node_input_with_support(

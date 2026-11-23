@@ -9,7 +9,9 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use super::RemoteEffectDescriptor;
-use crate::{Action, ActionError, ActionInput, ActionMetadata, ActionResult, PreparedActionInput};
+use crate::{
+    Action, ActionDefinition, ActionError, ActionInput, ActionResult, PreparedActionInput,
+};
 
 pub(crate) mod sealed {
     pub trait Sealed {}
@@ -111,7 +113,7 @@ pub trait RemoteEffectFactory: sealed::Sealed + Send + Sync {
     fn descriptor(&self) -> &RemoteEffectDescriptor;
 
     /// Admitted metadata shared with the owning [`crate::ActionFactory`].
-    fn metadata(&self) -> &Arc<ActionMetadata>;
+    fn definition(&self) -> &Arc<ActionDefinition>;
 
     /// Validate and decode input with this factory's retained typed contract.
     ///

@@ -44,7 +44,6 @@ use std::sync::OnceLock;
 
 use chrono::{DateTime, Duration, FixedOffset, SecondsFormat};
 use nebula_action::{ActionContext, ActionError, ActionResult, StatelessAction};
-use nebula_core::action_key;
 use nebula_schema::{
     HasSchema, Predicate, Property, Rule, Schema, ValidSchema, ValidationReport, ValuePath,
     field_key,
@@ -345,12 +344,12 @@ fn build_duration(amount: i64, unit: DurationUnit) -> Result<Duration, ActionErr
 pub struct DateTimeAction;
 
 impl nebula_action::action::Action for DateTimeAction {
+    const KEY: &'static str = "core.datetime";
     type Input = DateTimeInput;
     type Output = Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("core.datetime"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("DateTime"),
             "Offset-aware RFC3339 timestamp formatting, parsing, arithmetic, and diff",
         )

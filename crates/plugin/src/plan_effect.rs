@@ -136,7 +136,7 @@ pub(crate) fn validate_factory_effect(
     match (declared, factory.remote_effect_factory()) {
         (ActionEffectContract::Remote(descriptor), Some(capability)) => {
             descriptor.validate().map_err(|_| InvalidEffectContract)?;
-            if !Arc::ptr_eq(factory.metadata(), capability.metadata())
+            if !Arc::ptr_eq(factory.definition(), capability.definition())
                 || descriptor.as_ref() != capability.descriptor()
             {
                 return Err(InvalidEffectContract);

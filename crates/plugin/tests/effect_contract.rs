@@ -1,10 +1,11 @@
+use std::cell::RefCell;
 use std::sync::{
     Arc, OnceLock,
     atomic::{AtomicBool, Ordering},
 };
 
 use nebula_action::{
-    Action, ActionFactory, ActionMetadataDraft, RemoteEffectInstanceFactory,
+    Action, ActionFactory, ActionMetadata, RemoteEffectInstanceFactory,
     effect::{
         ActionEffectContract, EffectPreparationContext, EffectPreparationError,
         PreparedRemoteEffect, RemoteDestinationGuarantee, RemoteEffectAction,
@@ -53,11 +54,21 @@ fn descriptor(contract_id: &str, invocations: u32) -> RemoteEffectDescriptor {
 }
 
 impl Action for RemoteAction {
+    const KEY: &'static str = "demo.remote";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        remote_draft(&descriptor("demo.contract", 1))
+    fn metadata() -> ActionMetadata {
+        let metadata = ActionMetadata::new(
+            nebula_action::metadata_name!("Remote"),
+            "No-I/O capability fixture",
+        );
+        match DECLARED_CONTRACT.with_borrow(Clone::clone) {
+            Some(contract) => {
+                metadata.with_effect_contract(ActionEffectContract::Remote(Box::new(contract)))
+            },
+            None => metadata,
+        }
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -84,13 +95,24 @@ impl RemoteEffectAction for RemoteAction {
     }
 }
 
-fn remote_draft(contract: &RemoteEffectDescriptor) -> ActionMetadataDraft {
-    ActionMetadataDraft::new(
-        ActionKey::new("demo.remote").unwrap(),
-        nebula_action::metadata_name!("Remote"),
-        "No-I/O capability fixture",
-    )
-    .with_effect_contract(ActionEffectContract::Remote(Box::new(contract.clone())))
+thread_local! {
+    /// The remote contract `RemoteAction::metadata` declares.
+    ///
+    /// Admission reads metadata only from the type; these tests vary the
+    /// declared contract, so they install it before building a factory.
+    static DECLARED_CONTRACT: RefCell<Option<RemoteEffectDescriptor>> =
+        const { RefCell::new(None) };
+}
+
+fn admit(
+    declared: Option<RemoteEffectDescriptor>,
+    action: RemoteAction,
+) -> Result<RemoteEffectInstanceFactory<RemoteAction>, nebula_action::ActionMetadataAdmissionError>
+{
+    DECLARED_CONTRACT.set(declared);
+    let factory = RemoteEffectInstanceFactory::new(action);
+    DECLARED_CONTRACT.set(None);
+    factory
 }
 
 fn remote_factory(
@@ -102,8 +124,7 @@ fn remote_factory(
         changed_descriptor: descriptor("changed.contract", 1),
         changed: Arc::clone(&changed),
     };
-    let factory = RemoteEffectInstanceFactory::new(remote_draft(&contract), action)
-        .expect("coherent remote fixture admits");
+    let factory = admit(Some(contract), action).expect("coherent remote fixture admits");
     (factory, changed)
 }
 
@@ -142,17 +163,12 @@ fn freeze(factory: Arc<dyn ActionFactory>) -> FrozenPluginRegistry {
 #[test]
 fn incoherent_remote_capabilities_are_rejected_before_instantiation() {
     let contract = descriptor("demo.contract", 1);
-    let missing_contract = ActionMetadataDraft::new(
-        ActionKey::new("demo.remote").unwrap(),
-        nebula_action::metadata_name!("Remote"),
-        "No-I/O capability fixture",
-    );
     let action = RemoteAction {
         descriptor: contract.clone(),
         changed_descriptor: descriptor("changed.contract", 1),
         changed: Arc::new(AtomicBool::new(false)),
     };
-    assert!(RemoteEffectInstanceFactory::new(missing_contract, action).is_err());
+    assert!(admit(None, action).is_err());
 
     let mismatched = descriptor("different.contract", 1);
     let action = RemoteAction {
@@ -160,7 +176,7 @@ fn incoherent_remote_capabilities_are_rejected_before_instantiation() {
         changed_descriptor: descriptor("changed.contract", 1),
         changed: Arc::new(AtomicBool::new(false)),
     };
-    assert!(RemoteEffectInstanceFactory::new(remote_draft(&mismatched), action).is_err());
+    assert!(admit(Some(mismatched), action).is_err());
 }
 
 #[test]
@@ -190,7 +206,7 @@ fn exact_loading_rechecks_actual_remote_capability_without_instantiating() {
 fn remote_non_stateless_actions_are_not_durably_compilable() {
     let (factory, _) = remote_factory(descriptor("demo.contract", 1));
     assert_eq!(
-        ActionFactory::metadata(&factory).kind(),
+        ActionFactory::definition(&factory).kind(),
         nebula_action::ActionKind::Stateless
     );
 }

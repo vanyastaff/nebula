@@ -22,7 +22,7 @@ use nebula_action::{
     BranchKey, ControlAction, ControlActionAdapter, ControlHandle, ControlOutcome, OutputPort,
     TerminationReason, ValidationReason, port_key, testing::TestContextBuilder,
 };
-use nebula_core::{Dependencies, action_key};
+use nebula_core::Dependencies;
 use nebula_schema::{HasSchema, PropertyCollector, Schema, StringBuilder, ValidSchema, field_key};
 
 // ── Test helpers ───────────────────────────────────────────────────────────
@@ -106,19 +106,16 @@ struct DemoIfInput {
 }
 
 impl Action for DemoIf {
+    const KEY: &'static str = "demo.if";
     type Input = DemoIfInput;
     type Output = DemoIfInput;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("demo.if"),
-            nebula_action::metadata_name!("If"),
-            "Binary branch",
-        )
-        .with_outputs(vec![
-            OutputPort::flow(port_key!("true")),
-            OutputPort::flow(port_key!("false")),
-        ])
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(nebula_action::metadata_name!("If"), "Binary branch")
+            .with_outputs(vec![
+                OutputPort::flow(port_key!("true")),
+                OutputPort::flow(port_key!("false")),
+            ])
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -205,7 +202,7 @@ async fn demo_if_wrong_type_is_validation_error() {
 #[test]
 fn demo_if_has_control_kind() {
     let adapter = ControlActionAdapter::new(DemoIf).expect("valid test catalog definition");
-    assert_eq!(adapter.metadata().kind(), ActionKind::Control);
+    assert_eq!(adapter.definition().kind(), ActionKind::Control);
 }
 
 // ── DemoSwitch ─ N-way static branch ───────────────────────────────────────
@@ -213,12 +210,12 @@ fn demo_if_has_control_kind() {
 struct DemoSwitch;
 
 impl Action for DemoSwitch {
+    const KEY: &'static str = "demo.switch";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("demo.switch"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Switch"),
             "N-way branch by status field",
         )
@@ -309,12 +306,12 @@ impl DemoRouter {
 }
 
 impl Action for DemoRouter {
+    const KEY: &'static str = "demo.router";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("demo.router"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Router"),
             "Multi-rule routing",
         )
@@ -405,12 +402,12 @@ async fn demo_router_all_match_fires_multiple_ports() {
 struct NeverMatchRouter;
 
 impl Action for NeverMatchRouter {
+    const KEY: &'static str = "demo.never_match_router";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("demo.never_match_router"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("NeverMatchRouter"),
             "Drops every input — used to test Drop code path",
         )
@@ -451,12 +448,12 @@ async fn demo_router_no_rules_match_drops() {
 struct DemoFilter;
 
 impl Action for DemoFilter {
+    const KEY: &'static str = "demo.filter";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("demo.filter"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Filter"),
             "Drop items below threshold",
         )
@@ -526,12 +523,12 @@ async fn demo_filter_distinguishes_drop_from_skip() {
 struct DemoNoOp;
 
 impl Action for DemoNoOp {
+    const KEY: &'static str = "demo.noop";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("demo.noop"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("NoOp"),
             "Pass-through placeholder",
         )
@@ -571,7 +568,7 @@ fn demo_noop_has_control_kind_with_default_ports() {
     // NoOp uses default output ports (one main output) → a non-terminal
     // control node.
     let adapter = ControlActionAdapter::new(DemoNoOp).expect("valid test catalog definition");
-    let meta = adapter.metadata();
+    let meta = adapter.definition();
     assert_eq!(meta.kind(), ActionKind::Control);
     assert!(!meta.outputs().is_empty(), "NoOp is not a terminal sink");
 }
@@ -591,12 +588,12 @@ impl DemoStop {
 }
 
 impl Action for DemoStop {
+    const KEY: &'static str = "demo.stop";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("demo.stop"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Stop"),
             "Terminate execution with success",
         )
@@ -646,7 +643,7 @@ fn demo_stop_is_terminal_control_node() {
     // `outputs` set, which the validator reads to recognise the graph sink.
     let adapter =
         ControlActionAdapter::new(DemoStop::new(None)).expect("valid test catalog definition");
-    let meta = adapter.metadata();
+    let meta = adapter.definition();
     assert_eq!(meta.kind(), ActionKind::Control);
     assert!(meta.outputs().is_empty(), "Stop is a terminal sink");
 }
@@ -668,12 +665,12 @@ impl DemoFail {
 }
 
 impl Action for DemoFail {
+    const KEY: &'static str = "demo.fail";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("demo.fail"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Fail"),
             "Terminate execution with failure",
         )
@@ -724,7 +721,7 @@ async fn demo_fail_terminates_with_failure() {
 fn demo_fail_is_terminal_control_node() {
     let adapter =
         ControlActionAdapter::new(DemoFail::new("E", "m")).expect("valid test catalog definition");
-    let meta = adapter.metadata();
+    let meta = adapter.definition();
     assert_eq!(meta.kind(), ActionKind::Control);
     assert!(meta.outputs().is_empty(), "Fail is a terminal sink");
 }
@@ -758,7 +755,7 @@ fn all_demo_fixtures_are_dyn_control_handles() {
     // Each must report its own distinct action key.
     let keys: Vec<_> = handlers
         .iter()
-        .map(|h| h.metadata().base().key().clone())
+        .map(|h| h.definition().base().key().clone())
         .collect();
     let unique: std::collections::HashSet<_> = keys.iter().collect();
     assert_eq!(unique.len(), 7, "action keys must be distinct");
@@ -802,7 +799,7 @@ fn kind_and_terminality_inference_matches_expectation() {
         ),
     ];
     for (handler, is_terminal) in cases {
-        let meta = handler.metadata();
+        let meta = handler.definition();
         assert_eq!(
             meta.kind(),
             ActionKind::Control,
@@ -891,12 +888,12 @@ impl HasSchema for TypedBranchOutput {
 struct DemoTypedBranch;
 
 impl Action for DemoTypedBranch {
+    const KEY: &'static str = "demo.typed_branch";
     type Input = serde_json::Value;
     type Output = TypedBranchOutput;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("demo.typed_branch"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("TypedBranch"),
             "Branch with typed output",
         )
@@ -942,7 +939,7 @@ fn control_action_adapter_stamps_output_schema_from_action_output_type() {
     // predicate will return false.
     let adapter =
         ControlActionAdapter::new(DemoTypedBranch).expect("valid test catalog definition");
-    let output_schema = adapter.metadata().output_schema();
+    let output_schema = adapter.definition().output_schema();
 
     assert!(
         output_schema

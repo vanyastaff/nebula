@@ -33,7 +33,7 @@ use nebula_action::{
     ActionError, ExecutionEmitter, IdempotencyKey, action::Action, result::ActionResult,
     stateless::StatelessAction,
 };
-use nebula_core::{Dependencies, PluginKey, action_key, id::ExecutionId, node_key};
+use nebula_core::{Dependencies, PluginKey, id::ExecutionId, node_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, ResourceFanoutCoordinator,
     ResourceFanoutFailureKind, WorkflowEngine, WorkflowTriggerConsumerCodec, WorkflowTriggerTarget,
@@ -164,11 +164,11 @@ impl nebula_action::TriggerSource for SliceTriggerSource {
 }
 
 impl Action for SliceTrigger {
+    const KEY: &'static str = "test.dispatch.plugin.trigger";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("test.dispatch.plugin.trigger"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Slice trigger"),
             "Explicit test event source",
         )
@@ -223,16 +223,13 @@ struct EchoHandler {
 }
 
 impl Action for EchoHandler {
+    const KEY: &'static str = "test.dispatch.plugin.echo";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("test.dispatch.plugin.echo"),
-            nebula_action::metadata_name!("Echo"),
-            "echo",
-        )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(nebula_action::metadata_name!("Echo"), "echo")
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -256,17 +253,9 @@ async fn make_engine(stores: &TestStores) -> (Arc<WorkflowEngine>, Arc<AtomicU32
     let count = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("test.dispatch.plugin.echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echo",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            EchoHandler {
-                count: count.clone(),
-            },
-        )
+        .register_stateless_instance(EchoHandler {
+            count: count.clone(),
+        })
         .expect("valid test catalog definition");
     registry
         .register_trigger_factory::<SliceTrigger>()

@@ -22,15 +22,13 @@ impl SnapshotHandler {
 }
 
 impl Action for SnapshotHandler {
+    const KEY: &'static str = "exact.run";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            action_key!("exact.run"),
-            nebula_action::metadata_name!("Run"),
-            "snapshot fixture",
-        )
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(nebula_action::metadata_name!("Run"), "snapshot fixture")
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -85,14 +83,9 @@ pub(super) fn snapshot_registry_counted(
     runtime_registry: &ActionRegistry,
     output: &'static str,
 ) -> (Arc<FrozenPluginRegistry>, Arc<AtomicU32>) {
-    let metadata = SnapshotHandler::metadata()
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly);
     let executions = Arc::new(AtomicU32::new(0));
     runtime_registry
-        .register_stateless_instance(
-            metadata,
-            SnapshotHandler::counted(output, Arc::clone(&executions)),
-        )
+        .register_stateless_instance(SnapshotHandler::counted(output, Arc::clone(&executions)))
         .expect("valid snapshot fixture factory");
     let frozen = frozen_registered_snapshot(runtime_registry);
     (frozen, executions)

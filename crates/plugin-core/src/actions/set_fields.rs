@@ -25,7 +25,6 @@
 use std::sync::OnceLock;
 
 use nebula_action::{ActionContext, ActionError, ActionResult, StatelessAction};
-use nebula_core::action_key;
 use nebula_schema::{HasSchema, Property, Schema, ValidSchema, ValidationReport, field_key};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -116,12 +115,12 @@ impl HasSchema for SetFieldsInput {
 pub struct SetFields;
 
 impl nebula_action::action::Action for SetFields {
+    const KEY: &'static str = "core.set_fields";
     type Input = SetFieldsInput;
     type Output = Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("core.set_fields"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Set Fields"),
             "Merges a list of named field assignments onto a JSON object",
         )
@@ -283,7 +282,7 @@ mod tests {
         let factory = nebula_action::GenericStatelessFactory::<SetFields>::new()
             .expect("set-fields metadata must admit");
         assert_eq!(
-            nebula_action::ActionFactory::metadata(&factory)
+            nebula_action::ActionFactory::definition(&factory)
                 .base()
                 .key()
                 .as_str(),

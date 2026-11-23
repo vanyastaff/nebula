@@ -186,9 +186,8 @@ fn action_attr_with_derive_pattern2_compiles_and_metadata_roundtrips() {
     let action = LocalBearerAction {
         bearer: CredentialRef::default(),
     };
-    let factory = InstanceFactory::new(LocalBearerAction::metadata(), action)
-        .expect("valid test catalog definition");
-    let meta = factory.metadata();
+    let factory = InstanceFactory::new(action).expect("valid test catalog definition");
+    let meta = factory.definition();
     assert_eq!(meta.base().key().as_str(), "local.bearer.fetch");
     assert_eq!(meta.base().name().to_owned(), "Fetch Local Bearer");
 }

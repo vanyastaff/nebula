@@ -419,14 +419,14 @@ async fn knife_step6_cancel_reports_a_failed_enqueue_and_writes_nothing() {
 struct KnifeEcho;
 
 impl nebula_action::action::Action for KnifeEcho {
+    const KEY: &'static str = "echo";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::metadata::ActionMetadataDraft {
-        nebula_action::metadata::ActionMetadataDraft::new(
-            nebula_core::action_key!("knife.echo.static"),
-            nebula_action::metadata_name!("KnifeEcho"),
-            "static",
+    fn metadata() -> nebula_action::metadata::ActionMetadata {
+        nebula_action::metadata::ActionMetadata::new(
+            nebula_action::metadata_name!("echo"),
+            "knife echo handler",
         )
     }
     fn dependencies() -> &'static nebula_core::Dependencies {
@@ -470,7 +470,6 @@ impl nebula_action::stateless::StatelessAction for KnifeEcho {
 async fn knife_step3_manually_composed_consumer_dispatches_start() {
     use std::time::Duration;
 
-    use nebula_core::action_key;
     use nebula_engine::{
         ActionRegistry, ActionRuntime, ControlConsumer, DataPassingPolicy, EngineControlDispatch,
         ExecutionStores, InProcessRunner, WorkflowEngine,
@@ -562,14 +561,7 @@ async fn knife_step3_manually_composed_consumer_dispatches_start() {
     // wrote to ──────────────────────────────────────────────────────────────
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            nebula_action::metadata::ActionMetadataDraft::new(
-                action_key!("echo"),
-                nebula_action::metadata_name!("echo"),
-                "knife echo handler",
-            ),
-            KnifeEcho,
-        )
+        .register_stateless_instance(KnifeEcho)
         .expect("valid test catalog definition");
 
     let runner = Arc::new(InProcessRunner::new());

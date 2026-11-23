@@ -50,7 +50,7 @@ use nebula_action::{
     result::{ActionResult, WaitCondition},
     stateless::StatelessAction,
 };
-use nebula_core::{Dependencies, action_key, id::ExecutionId, node_key, port_key};
+use nebula_core::{Dependencies, id::ExecutionId, node_key, port_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, ControlDispatch, DataPassingPolicy, EngineControlDispatch,
     ExecutionEvent, InProcessRunner, WorkflowEngine,
@@ -85,17 +85,14 @@ fn control_dispatch(
 // ── Action stubs ────────────────────────────────────────────────────────────
 
 macro_rules! static_action_impl {
-    ($ty:ty, $key:expr, $name:expr) => {
+    ($ty:ty, $key:expr, $metadata:expr $(,)?) => {
         impl Action for $ty {
+            const KEY: &'static str = $key;
             type Input = serde_json::Value;
             type Output = serde_json::Value;
 
-            fn metadata() -> nebula_action::ActionMetadataDraft {
-                nebula_action::ActionMetadataDraft::new(
-                    $key,
-                    nebula_action::metadata_name!($name),
-                    "wait_timeout integration test stub",
-                )
+            fn metadata() -> nebula_action::ActionMetadata {
+                $metadata
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -114,8 +111,12 @@ struct WebhookWaitWithTimeout {
 
 static_action_impl!(
     WebhookWaitWithTimeout,
-    action_key!("test.wt.webhook_timeout"),
-    "WebhookWaitWithTimeout"
+    "test.wt.webhook_timeout",
+    nebula_action::ActionMetadata::new(
+        nebula_action::metadata_name!("WebhookWaitWithTimeout"),
+        "wait_timeout stub",
+    )
+    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
 );
 
 impl StatelessAction for WebhookWaitWithTimeout {
@@ -152,8 +153,12 @@ struct CountingEcho {
 
 static_action_impl!(
     CountingEcho,
-    action_key!("test.wt.main_echo"),
-    "CountingEcho"
+    "test.wt.main_echo",
+    nebula_action::ActionMetadata::new(
+        nebula_action::metadata_name!("CountingEcho"),
+        "wait_timeout stub",
+    )
+    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
 );
 
 impl StatelessAction for CountingEcho {
@@ -174,8 +179,12 @@ struct CountingError {
 
 static_action_impl!(
     CountingError,
-    action_key!("test.wt.error_echo"),
-    "CountingError"
+    "test.wt.error_echo",
+    nebula_action::ActionMetadata::new(
+        nebula_action::metadata_name!("CountingError"),
+        "wait_timeout stub",
+    )
+    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
 );
 
 impl StatelessAction for CountingError {
@@ -201,8 +210,12 @@ struct DurationWaitBlocker {
 
 static_action_impl!(
     DurationWaitBlocker,
-    action_key!("test.wt.duration_blocker"),
-    "DurationWaitBlocker"
+    "test.wt.duration_blocker",
+    nebula_action::ActionMetadata::new(
+        nebula_action::metadata_name!("DurationWaitBlocker"),
+        "wait_timeout stub",
+    )
+    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
 );
 
 impl StatelessAction for DurationWaitBlocker {
@@ -351,41 +364,17 @@ fn build_registry(
 ) -> Arc<ActionRegistry> {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("test.wt.webhook_timeout"),
-                nebula_action::metadata_name!("WebhookWaitWithTimeout"),
-                "wait_timeout stub",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            WebhookWaitWithTimeout { timeout },
-        )
+        .register_stateless_instance(WebhookWaitWithTimeout { timeout })
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("test.wt.main_echo"),
-                nebula_action::metadata_name!("CountingEcho"),
-                "wait_timeout stub",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            CountingEcho {
-                invocations: Arc::clone(main_count),
-            },
-        )
+        .register_stateless_instance(CountingEcho {
+            invocations: Arc::clone(main_count),
+        })
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("test.wt.error_echo"),
-                nebula_action::metadata_name!("CountingError"),
-                "wait_timeout stub",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            CountingError {
-                invocations: Arc::clone(error_count),
-            },
-        )
+        .register_stateless_instance(CountingError {
+            invocations: Arc::clone(error_count),
+        })
         .expect("valid test catalog definition");
     registry
 }
@@ -589,17 +578,9 @@ fn build_registry_with_blocker(
 ) -> Arc<ActionRegistry> {
     let registry = build_registry(timeout, main_count, error_count);
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("test.wt.duration_blocker"),
-                nebula_action::metadata_name!("DurationWaitBlocker"),
-                "wait_timeout stub",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            DurationWaitBlocker {
-                duration: blocker_for,
-            },
-        )
+        .register_stateless_instance(DurationWaitBlocker {
+            duration: blocker_for,
+        })
         .expect("valid test catalog definition");
     registry
 }

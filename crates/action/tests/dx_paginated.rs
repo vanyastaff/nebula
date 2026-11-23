@@ -13,7 +13,7 @@ use nebula_action::{
     stateful::{PageResult, PaginatedAction},
     testing::{StatefulTestHarness, TestContextBuilder},
 };
-use nebula_core::{Dependencies, action_key};
+use nebula_core::Dependencies;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, nebula_schema::Schema)]
@@ -28,12 +28,12 @@ struct NumberPaginator {
 }
 
 impl Action for NumberPaginator {
+    const KEY: &'static str = "test.number_paginator";
     type Input = serde_json::Value;
     type Output = NumberPage;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("test.number_paginator"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("NumberPaginator"),
             "Paginate numbers",
         )
@@ -81,12 +81,12 @@ struct LimitedPaginator {
 }
 
 impl Action for LimitedPaginator {
+    const KEY: &'static str = "test.limited_paginator";
     type Input = serde_json::Value;
     type Output = NumberPage;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("test.limited_paginator"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("LimitedPaginator"),
             "Paginate with limit",
         )

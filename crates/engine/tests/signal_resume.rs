@@ -39,7 +39,7 @@ use nebula_action::{
     result::{ActionResult, WaitCondition},
     stateless::StatelessAction,
 };
-use nebula_core::{Dependencies, action_key, id::ExecutionId, node_key, port_key};
+use nebula_core::{Dependencies, id::ExecutionId, node_key, port_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, ControlDispatch, ControlDispatchError, DataPassingPolicy,
     EngineControlDispatch, InProcessRunner, WorkflowEngine,
@@ -74,24 +74,21 @@ fn control_dispatch(
 // ── Action stubs ──────────────────────────────────────────────────────────────
 
 macro_rules! pure_action_metadata {
-    ($key:expr, $name:expr, $description:expr $(,)?) => {
-        nebula_action::metadata::ActionMetadataDraft::new($key, $name, $description)
+    ($name:expr, $description:expr $(,)?) => {
+        nebula_action::metadata::ActionMetadata::new($name, $description)
             .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     };
 }
 
 macro_rules! static_action_impl {
-    ($ty:ty, $key:expr, $name:expr) => {
+    ($ty:ty, $key:expr, $metadata:expr $(,)?) => {
         impl Action for $ty {
+            const KEY: &'static str = $key;
             type Input = serde_json::Value;
             type Output = serde_json::Value;
 
-            fn metadata() -> nebula_action::ActionMetadataDraft {
-                pure_action_metadata!(
-                    $key,
-                    nebula_action::metadata_name!($name),
-                    "signal_resume integration test stub",
-                )
+            fn metadata() -> nebula_action::ActionMetadata {
+                $metadata
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -108,8 +105,43 @@ struct WebhookWaitNode;
 
 static_action_impl!(
     WebhookWaitNode,
-    action_key!("test.signal.webhook_wait"),
-    "WebhookWaitNode"
+    "test.signal.webhook_wait",
+    pure_action_metadata!(
+        nebula_action::metadata_name!("WebhookWaitNode"),
+        "signal_resume integration test stub",
+    ),
+);
+
+nebula_action::stateless_entry!(
+    TestSignalWebhookWaitEntry(WebhookWaitNode) = "test.signal.webhook_wait",
+    pure_action_metadata!(
+        nebula_action::metadata_name!("WebhookWaitNode"),
+        "signal_resume cancel-under-lease test stub",
+    ),
+);
+
+nebula_action::stateless_entry!(
+    TestSignalWebhookWaitEntry2(WebhookWaitNode) = "test.signal.webhook_wait",
+    pure_action_metadata!(
+        nebula_action::metadata_name!("WebhookWaitNode"),
+        "multi-port signal-wait test stub",
+    ),
+);
+
+nebula_action::stateless_entry!(
+    TestSignalWebhookWaitEntry3(WebhookWaitNode) = "test.signal.webhook_wait",
+    pure_action_metadata!(
+        nebula_action::metadata_name!("WebhookWaitNode"),
+        "armed-wait reclaim test stub",
+    ),
+);
+
+nebula_action::stateless_entry!(
+    TestSignalWebhookWaitEntry4(WebhookWaitNode) = "test.signal.webhook_wait",
+    pure_action_metadata!(
+        nebula_action::metadata_name!("WebhookWaitNode"),
+        "SHIP-C atomic-Paused test stub",
+    ),
 );
 
 impl StatelessAction for WebhookWaitNode {
@@ -147,8 +179,11 @@ struct WebhookWaitNodeB;
 
 static_action_impl!(
     WebhookWaitNodeB,
-    action_key!("test.signal.webhook_wait_b"),
-    "WebhookWaitNodeB"
+    "test.signal.webhook_wait_b",
+    pure_action_metadata!(
+        nebula_action::metadata_name!("WebhookWaitNodeB"),
+        "signal_resume integration test stub",
+    ),
 );
 
 impl StatelessAction for WebhookWaitNodeB {
@@ -175,8 +210,35 @@ struct CountingEchoNode {
 
 static_action_impl!(
     CountingEchoNode,
-    action_key!("test.signal.counting_echo"),
-    "CountingEchoNode"
+    "test.signal.counting_echo",
+    pure_action_metadata!(
+        nebula_action::metadata_name!("CountingEchoNode"),
+        "signal_resume integration test stub",
+    ),
+);
+
+nebula_action::stateless_entry!(
+    TestSignalCountingEchoEntry(CountingEchoNode) = "test.signal.counting_echo",
+    pure_action_metadata!(
+        nebula_action::metadata_name!("CountingEchoNode"),
+        "signal_resume cancel-under-lease test stub",
+    ),
+);
+
+nebula_action::stateless_entry!(
+    TestSignalCountingEchoEntry2(CountingEchoNode) = "test.signal.counting_echo",
+    pure_action_metadata!(
+        nebula_action::metadata_name!("CountingEchoNode"),
+        "main-port downstream probe",
+    ),
+);
+
+nebula_action::stateless_entry!(
+    TestSignalCountingEchoEntry3(CountingEchoNode) = "test.signal.counting_echo",
+    pure_action_metadata!(
+        nebula_action::metadata_name!("CountingEchoNode"),
+        "armed-wait reclaim downstream probe",
+    ),
 );
 
 impl StatelessAction for CountingEchoNode {
@@ -199,8 +261,11 @@ struct CountingErrorNode {
 
 static_action_impl!(
     CountingErrorNode,
-    action_key!("test.signal.counting_error"),
-    "CountingErrorNode"
+    "test.signal.counting_error",
+    pure_action_metadata!(
+        nebula_action::metadata_name!("CountingErrorNode"),
+        "error-port downstream probe",
+    ),
 );
 
 impl StatelessAction for CountingErrorNode {
@@ -318,26 +383,12 @@ impl SignalHarness {
         let downstream_invocations = Arc::new(AtomicU32::new(0));
         let registry = Arc::new(ActionRegistry::new());
         registry
-            .register_stateless_instance(
-                pure_action_metadata!(
-                    action_key!("test.signal.webhook_wait"),
-                    nebula_action::metadata_name!("WebhookWaitNode"),
-                    "signal_resume integration test stub",
-                ),
-                WebhookWaitNode,
-            )
+            .register_stateless_instance(WebhookWaitNode)
             .expect("valid test catalog definition");
         registry
-            .register_stateless_instance(
-                pure_action_metadata!(
-                    action_key!("test.signal.counting_echo"),
-                    nebula_action::metadata_name!("CountingEchoNode"),
-                    "signal_resume integration test stub",
-                ),
-                CountingEchoNode {
-                    invocation_count: Arc::clone(&downstream_invocations),
-                },
-            )
+            .register_stateless_instance(CountingEchoNode {
+                invocation_count: Arc::clone(&downstream_invocations),
+            })
             .expect("valid test catalog definition");
         let runner = Arc::new(InProcessRunner::new());
         let metrics = MetricsRegistry::new();
@@ -731,36 +782,15 @@ async fn dispatch_resume_satisfies_all_signal_waits_in_one_pass() {
     let downstream_invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_action_metadata!(
-                action_key!("test.signal.webhook_wait"),
-                nebula_action::metadata_name!("WebhookWaitNode"),
-                "signal_resume integration test stub",
-            ),
-            WebhookWaitNode,
-        )
+        .register_stateless_instance(WebhookWaitNode)
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            pure_action_metadata!(
-                action_key!("test.signal.webhook_wait_b"),
-                nebula_action::metadata_name!("WebhookWaitNodeB"),
-                "signal_resume integration test stub",
-            ),
-            WebhookWaitNodeB,
-        )
+        .register_stateless_instance(WebhookWaitNodeB)
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            pure_action_metadata!(
-                action_key!("test.signal.counting_echo"),
-                nebula_action::metadata_name!("CountingEchoNode"),
-                "signal_resume integration test stub",
-            ),
-            CountingEchoNode {
-                invocation_count: Arc::clone(&downstream_invocations),
-            },
-        )
+        .register_stateless_instance(CountingEchoNode {
+            invocation_count: Arc::clone(&downstream_invocations),
+        })
         .expect("valid test catalog definition");
     let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
@@ -1481,26 +1511,12 @@ async fn dispatch_resume_defers_when_satisfy_commit_is_fenced_out_and_execution_
     let downstream_invocations_2 = Arc::new(AtomicU32::new(0));
     let registry2 = Arc::new(ActionRegistry::new());
     registry2
-        .register_stateless_instance(
-            pure_action_metadata!(
-                action_key!("test.signal.webhook_wait"),
-                nebula_action::metadata_name!("WebhookWaitNode"),
-                "signal_resume integration test stub",
-            ),
-            WebhookWaitNode,
-        )
+        .register_stateless_instance(WebhookWaitNode)
         .expect("valid test catalog definition");
     registry2
-        .register_stateless_instance(
-            pure_action_metadata!(
-                action_key!("test.signal.counting_echo"),
-                nebula_action::metadata_name!("CountingEchoNode"),
-                "signal_resume integration test stub",
-            ),
-            CountingEchoNode {
-                invocation_count: Arc::clone(&downstream_invocations_2),
-            },
-        )
+        .register_stateless_instance(CountingEchoNode {
+            invocation_count: Arc::clone(&downstream_invocations_2),
+        })
         .expect("valid test catalog definition");
     let runner2 = Arc::new(InProcessRunner::new());
     let metrics2 = MetricsRegistry::new();
@@ -1805,26 +1821,12 @@ async fn satisfy_signal_waits_skips_when_execution_cancelled_under_lease() {
     let downstream_invocations_2 = Arc::new(AtomicU32::new(0));
     let registry2 = Arc::new(ActionRegistry::new());
     registry2
-        .register_stateless_instance(
-            pure_action_metadata!(
-                action_key!("test.signal.webhook_wait"),
-                nebula_action::metadata_name!("WebhookWaitNode"),
-                "signal_resume cancel-under-lease test stub",
-            ),
-            WebhookWaitNode,
-        )
+        .register_stateless_instance(TestSignalWebhookWaitEntry(WebhookWaitNode))
         .expect("valid test catalog definition");
     registry2
-        .register_stateless_instance(
-            pure_action_metadata!(
-                action_key!("test.signal.counting_echo"),
-                nebula_action::metadata_name!("CountingEchoNode"),
-                "signal_resume cancel-under-lease test stub",
-            ),
-            CountingEchoNode {
-                invocation_count: Arc::clone(&downstream_invocations_2),
-            },
-        )
+        .register_stateless_instance(TestSignalCountingEchoEntry(CountingEchoNode {
+            invocation_count: Arc::clone(&downstream_invocations_2),
+        }))
         .expect("valid test catalog definition");
     let runner2 = Arc::new(InProcessRunner::new());
     let metrics2 = MetricsRegistry::new();
@@ -1942,38 +1944,17 @@ async fn satisfied_signal_wait_activates_main_port_only_not_error_branch() {
 
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_action_metadata!(
-                action_key!("test.signal.webhook_wait"),
-                nebula_action::metadata_name!("WebhookWaitNode"),
-                "multi-port signal-wait test stub",
-            ),
-            WebhookWaitNode,
-        )
+        .register_stateless_instance(TestSignalWebhookWaitEntry2(WebhookWaitNode))
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            pure_action_metadata!(
-                action_key!("test.signal.counting_echo"),
-                nebula_action::metadata_name!("CountingEchoNode"),
-                "main-port downstream probe",
-            ),
-            CountingEchoNode {
-                invocation_count: Arc::clone(&main_invocations),
-            },
-        )
+        .register_stateless_instance(TestSignalCountingEchoEntry2(CountingEchoNode {
+            invocation_count: Arc::clone(&main_invocations),
+        }))
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            pure_action_metadata!(
-                action_key!("test.signal.counting_error"),
-                nebula_action::metadata_name!("CountingErrorNode"),
-                "error-port downstream probe",
-            ),
-            CountingErrorNode {
-                invocation_count: Arc::clone(&error_invocations),
-            },
-        )
+        .register_stateless_instance(CountingErrorNode {
+            invocation_count: Arc::clone(&error_invocations),
+        })
         .expect("valid test catalog definition");
     let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
@@ -2283,26 +2264,12 @@ async fn armed_signal_wait_is_completed_by_reclaim_drive_not_lost() {
     let downstream = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_action_metadata!(
-                action_key!("test.signal.webhook_wait"),
-                nebula_action::metadata_name!("WebhookWaitNode"),
-                "armed-wait reclaim test stub",
-            ),
-            WebhookWaitNode,
-        )
+        .register_stateless_instance(TestSignalWebhookWaitEntry3(WebhookWaitNode))
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            pure_action_metadata!(
-                action_key!("test.signal.counting_echo"),
-                nebula_action::metadata_name!("CountingEchoNode"),
-                "armed-wait reclaim downstream probe",
-            ),
-            CountingEchoNode {
-                invocation_count: Arc::clone(&downstream),
-            },
-        )
+        .register_stateless_instance(TestSignalCountingEchoEntry3(CountingEchoNode {
+            invocation_count: Arc::clone(&downstream),
+        }))
         .expect("valid test catalog definition");
     let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
@@ -2633,14 +2600,7 @@ async fn signal_park_persists_paused_atomically_no_running_waiting_window() {
 
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_action_metadata!(
-                action_key!("test.signal.webhook_wait"),
-                nebula_action::metadata_name!("WebhookWaitNode"),
-                "SHIP-C atomic-Paused test stub",
-            ),
-            WebhookWaitNode,
-        )
+        .register_stateless_instance(TestSignalWebhookWaitEntry4(WebhookWaitNode))
         .expect("valid test catalog definition");
     let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();

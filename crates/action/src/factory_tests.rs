@@ -9,7 +9,7 @@ use std::{
 };
 
 use nebula_core::{
-    Dependencies, ExecutionId, ResourceRequirement, WorkflowId, action_key, node_key, resource_key,
+    Dependencies, ExecutionId, ResourceRequirement, WorkflowId, node_key, resource_key,
 };
 use nebula_workflow::NodeDefinition;
 use serde_json::Value;
@@ -32,17 +32,14 @@ use crate::{
 struct InvalidMetadataAction;
 
 impl Action for InvalidMetadataAction {
+    const KEY: &'static str = "test.invalid_meta";
     type Input = Value;
     type Output = Value;
 
-    fn metadata() -> ActionMetadataDraft {
+    fn metadata() -> ActionMetadata {
         // Blank names are rejected at construction; an empty description
         // still exercises the action-package admission guard.
-        ActionMetadataDraft::new(
-            action_key!("test.invalid_meta"),
-            crate::metadata_name!("Invalid metadata"),
-            "",
-        )
+        ActionMetadata::new(crate::metadata_name!("Invalid metadata"), "")
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -96,7 +93,7 @@ fn invalid_metadata_never_reaches_instantiation() {
 // ── ValidMetadataAction ──────────────────────────────────────────────────
 //
 // A production-shaped stateless action with a non-empty name, description,
-// and the default input+output ports from `crate::ActionMetadataDraft::new`. Proves
+// and the default input+output ports from `crate::ActionMetadata::new`. Proves
 // that `check_metadata_or_fatal` does NOT reject valid metadata — the
 // positive counterpart to the two fatal-path tests above.
 
@@ -104,12 +101,12 @@ struct FactoryDependency;
 struct ValidMetadataAction;
 
 impl Action for ValidMetadataAction {
+    const KEY: &'static str = "test.valid_meta";
     type Input = Value;
     type Output = Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            action_key!("test.valid_meta"),
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
             crate::metadata_name!("Valid Metadata Action"),
             "A production-shaped action fixture used to prove the metadata gate passes valid registrations.",
         )
@@ -215,14 +212,14 @@ async fn instantiated_handle_shares_factory_metadata_allocation() {
     )
     .expect("stub node key is valid");
     let ctx = TestContextBuilder::new().build();
-    let factory_metadata = factory.metadata();
+    let factory_metadata = factory.definition();
 
     let handle = factory
         .instantiate(&node, &ctx)
         .await
         .expect("handle construction must succeed");
 
-    assert!(Arc::ptr_eq(factory_metadata, handle.metadata()));
+    assert!(Arc::ptr_eq(factory_metadata, handle.definition()));
 }
 
 struct RemoteValueProbe {
@@ -231,11 +228,12 @@ struct RemoteValueProbe {
 }
 
 impl Action for RemoteValueProbe {
+    const KEY: &'static str = "test.remote.value";
     type Input = Value;
     type Output = Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        unreachable!("instance-backed remote admission receives an explicit draft")
+    fn metadata() -> ActionMetadata {
+        remote_draft(&remote_descriptor())
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -265,11 +263,12 @@ struct RemoteBoolProbe {
 }
 
 impl Action for RemoteBoolProbe {
+    const KEY: &'static str = "test.remote.bool";
     type Input = bool;
     type Output = Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        unreachable!("instance-backed remote admission receives an explicit draft")
+    fn metadata() -> ActionMetadata {
+        remote_draft(&remote_descriptor())
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -302,9 +301,8 @@ fn remote_descriptor() -> RemoteEffectDescriptor {
     RemoteEffectDescriptor::new("test.remote", 1, policy).expect("fixture descriptor is valid")
 }
 
-fn remote_draft(key: &'static str, descriptor: &RemoteEffectDescriptor) -> ActionMetadataDraft {
-    ActionMetadataDraft::new(
-        nebula_core::ActionKey::new(key).expect("fixture key is valid"),
+fn remote_draft(descriptor: &RemoteEffectDescriptor) -> ActionMetadata {
+    ActionMetadata::new(
         crate::metadata_name!("Remote probe"),
         "Remote input contract probe",
     )
@@ -325,21 +323,15 @@ fn effect_context() -> EffectPreparationContext {
 async fn equal_schema_remote_contract_rejects_foreign_factory_token() {
     let descriptor = remote_descriptor();
     let right_preparations = Arc::new(AtomicUsize::new(0));
-    let left = RemoteEffectInstanceFactory::new(
-        remote_draft("test.remote.left", &descriptor),
-        RemoteValueProbe {
-            descriptor: descriptor.clone(),
-            preparations: Arc::new(AtomicUsize::new(0)),
-        },
-    )
+    let left = RemoteEffectInstanceFactory::new(RemoteValueProbe {
+        descriptor: descriptor.clone(),
+        preparations: Arc::new(AtomicUsize::new(0)),
+    })
     .expect("left factory admission succeeds");
-    let right = RemoteEffectInstanceFactory::new(
-        remote_draft("test.remote.right", &descriptor),
-        RemoteValueProbe {
-            descriptor,
-            preparations: Arc::clone(&right_preparations),
-        },
-    )
+    let right = RemoteEffectInstanceFactory::new(RemoteValueProbe {
+        descriptor,
+        preparations: Arc::clone(&right_preparations),
+    })
     .expect("right factory admission succeeds");
     let prepared = RemoteEffectFactory::prepare_input(
         &left,
@@ -359,21 +351,15 @@ async fn equal_schema_remote_contract_rejects_foreign_factory_token() {
 async fn different_schema_remote_contract_rejects_foreign_factory_token() {
     let descriptor = remote_descriptor();
     let right_preparations = Arc::new(AtomicUsize::new(0));
-    let left = RemoteEffectInstanceFactory::new(
-        remote_draft("test.remote.value", &descriptor),
-        RemoteValueProbe {
-            descriptor: descriptor.clone(),
-            preparations: Arc::new(AtomicUsize::new(0)),
-        },
-    )
+    let left = RemoteEffectInstanceFactory::new(RemoteValueProbe {
+        descriptor: descriptor.clone(),
+        preparations: Arc::new(AtomicUsize::new(0)),
+    })
     .expect("value factory admission succeeds");
-    let right = RemoteEffectInstanceFactory::new(
-        remote_draft("test.remote.bool", &descriptor),
-        RemoteBoolProbe {
-            descriptor,
-            preparations: Arc::clone(&right_preparations),
-        },
-    )
+    let right = RemoteEffectInstanceFactory::new(RemoteBoolProbe {
+        descriptor,
+        preparations: Arc::clone(&right_preparations),
+    })
     .expect("bool factory admission succeeds");
     let prepared =
         RemoteEffectFactory::prepare_input(&left, ActionInput::Raw(serde_json::json!(true)))

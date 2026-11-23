@@ -39,7 +39,6 @@
 use std::sync::OnceLock;
 
 use nebula_action::{ActionContext, ActionError, ActionResult, StatelessAction};
-use nebula_core::action_key;
 use nebula_schema::{
     HasSchema, ListField, Property, Schema, ValidSchema, ValidationReport, field_key,
 };
@@ -316,12 +315,12 @@ fn flatten_object(source: Map<String, Value>, separator: &str) -> Map<String, Va
 pub struct JsonTransform;
 
 impl nebula_action::action::Action for JsonTransform {
+    const KEY: &'static str = "core.json_transform";
     type Input = JsonTransformInput;
     type Output = Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("core.json_transform"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("JSON Transform"),
             "Applies a sequence of pick/omit/rename/flatten operations to a JSON object",
         )

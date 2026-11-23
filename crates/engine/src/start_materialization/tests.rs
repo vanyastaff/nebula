@@ -2,10 +2,10 @@ use nebula_resource::ProviderKey;
 use std::{any::TypeId, fmt, sync::OnceLock};
 
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionFactory, ActionMetadataDraft, ActionResult,
+    Action, ActionContext, ActionError, ActionFactory, ActionMetadata, ActionResult,
     InstanceFactory, StatelessAction,
 };
-use nebula_core::{ActionKey, ArtifactSetDigest, Dependencies, OrgId, WorkspaceId, node_key};
+use nebula_core::{ArtifactSetDigest, Dependencies, OrgId, WorkspaceId, node_key};
 use nebula_plugin::{Plugin, PluginManifest, PluginRegistry, ResolvedPlugin};
 use nebula_resource::{
     KindActivator, Provider, Resident, ResidentConfig, ResourceFactory, ResourceMetadata,
@@ -157,16 +157,13 @@ impl HasSchema for EmptyContract {
 struct FixtureAction;
 
 impl Action for FixtureAction {
+    const KEY: &'static str = "start.run";
     type Input = EmptyContract;
     type Output = EmptyContract;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            ActionKey::new("start.run").unwrap(),
-            nebula_action::metadata_name!("Run"),
-            "start fixture",
-        )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(nebula_action::metadata_name!("Run"), "start fixture")
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -188,12 +185,12 @@ impl StatelessAction for FixtureAction {
 struct ResourceBoundAction;
 
 impl Action for ResourceBoundAction {
+    const KEY: &'static str = "start.resource_bound";
     type Input = EmptyContract;
     type Output = EmptyContract;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            ActionKey::new("start.resource_bound").unwrap(),
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
             nebula_action::metadata_name!("Resource Bound"),
             "resource-bound start fixture",
         )
@@ -299,12 +296,11 @@ impl Plugin for FixturePlugin {
     }
     fn actions(&self) -> Vec<Arc<dyn ActionFactory>> {
         let mut actions: Vec<Arc<dyn ActionFactory>> = vec![Arc::new(
-            InstanceFactory::new(FixtureAction::metadata(), FixtureAction)
-                .expect("start fixture admits"),
+            InstanceFactory::new(FixtureAction).expect("start fixture admits"),
         )];
         if self.include_resource_bound_action {
             actions.push(Arc::new(
-                InstanceFactory::new(ResourceBoundAction::metadata(), ResourceBoundAction)
+                InstanceFactory::new(ResourceBoundAction)
                     .expect("resource-bound start fixture admits"),
             ));
         }

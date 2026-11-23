@@ -1,12 +1,12 @@
 use std::marker::PhantomData;
 
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionFactory, ActionMetadataDraft, ActionResult,
+    Action, ActionContext, ActionError, ActionFactory, ActionMetadata, ActionResult,
     InstanceFactory, StatelessAction,
 };
 use nebula_core::{
     ArtifactSetDigest, Dependencies, ExecutablePlanRevisionId, WorkerFlavorRevisionId, WorkflowId,
-    WorkflowVersionId, action_key, node_key,
+    WorkflowVersionId, node_key,
 };
 use nebula_plugin::{Plugin, PluginManifest, PluginRegistry, ResolvedPlugin};
 use nebula_schema::{HasSchema, ValidSchema};
@@ -33,12 +33,12 @@ impl<I> Action for TestAction<I>
 where
     I: DeserializeOwned + HasSchema + Send + Sync + 'static,
 {
+    const KEY: &'static str = "demo.run";
     type Input = I;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            action_key!("demo.run"),
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
             nebula_action::metadata_name!("Run"),
             "exact revision fixture",
         )
@@ -97,8 +97,7 @@ where
     I: DeserializeOwned + HasSchema + Send + Sync + 'static,
 {
     let action: Arc<dyn ActionFactory> = Arc::new(
-        InstanceFactory::new(TestAction::<I>::metadata(), TestAction(PhantomData::<I>))
-            .expect("typed fixture metadata admits"),
+        InstanceFactory::new(TestAction(PhantomData::<I>)).expect("typed fixture metadata admits"),
     );
     let plugin = TestPlugin {
         manifest: PluginManifest::builder("demo", "Demo")

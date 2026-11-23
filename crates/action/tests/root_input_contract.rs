@@ -14,7 +14,7 @@ use nebula_action::{
     Action, ActionContext, ActionError, ActionFactory, ActionHandle, ActionResult, InstanceFactory,
     StatelessAction, TestContextBuilder,
 };
-use nebula_core::{Dependencies, action_key, node_key};
+use nebula_core::{Dependencies, node_key};
 use nebula_schema::{AuthoredValue, HasSchema, ValidSchema, ValidationReport};
 use nebula_workflow::NodeDefinition;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -29,12 +29,12 @@ impl<T> Action for RootEcho<T>
 where
     T: HasSchema + DeserializeOwned + Serialize + Send + Sync + 'static,
 {
+    const KEY: &'static str = "test.root_echo";
     type Input = T;
     type Output = T;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("test.root_echo"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Root echo"),
             "Echo the declared root input without coercion",
         )
@@ -65,13 +65,10 @@ where
     T: HasSchema + DeserializeOwned + Serialize + Send + Sync + 'static,
 {
     let calls = Arc::new(AtomicUsize::new(0));
-    let factory = InstanceFactory::new(
-        RootEcho::<T>::metadata(),
-        RootEcho {
-            calls: Arc::clone(&calls),
-            marker: PhantomData,
-        },
-    )
+    let factory = InstanceFactory::new(RootEcho {
+        calls: Arc::clone(&calls),
+        marker: PhantomData,
+    })
     .unwrap();
     (factory, calls)
 }
@@ -114,7 +111,7 @@ where
         + 'static,
 {
     let (factory, _) = factory::<T>();
-    let metadata = factory.metadata();
+    let metadata = factory.definition();
     let schema = metadata.base().schema();
     let wire = serde_json::to_value(input).unwrap();
     let resolved = schema

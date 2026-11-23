@@ -21,15 +21,12 @@ use std::time::SystemTime;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use nebula_action::{
-    Action, ActionMetadataDraft, ActionResult, FromWorkflowNode, GenericTriggerFactory,
-    InstanceFactory, RequiredPolicy, SignaturePolicy, SignatureScheme, StatelessAction,
-    TriggerAction, TriggerContext, TriggerEventOutcome, TriggerHandler, WebhookAction,
-    WebhookConfig, WebhookRequest, WebhookResponse, WebhookSource, WebhookTriggerAdapter,
-    hmac_sha256_compute,
+    Action, ActionMetadata, ActionResult, FromWorkflowNode, GenericTriggerFactory, InstanceFactory,
+    RequiredPolicy, SignaturePolicy, SignatureScheme, StatelessAction, TriggerAction,
+    TriggerContext, TriggerEventOutcome, TriggerHandler, WebhookAction, WebhookConfig,
+    WebhookRequest, WebhookResponse, WebhookSource, WebhookTriggerAdapter, hmac_sha256_compute,
 };
-use nebula_core::{
-    BaseContext, Dependencies, NodeKey, WorkflowId, action_key, node_key, scope::Principal,
-};
+use nebula_core::{BaseContext, Dependencies, NodeKey, WorkflowId, node_key, scope::Principal};
 use nebula_storage::inmem::{
     InMemoryExecutionStore, InMemoryWebhookActivationStore, InMemoryWorkflowVersionStore,
 };
@@ -78,12 +75,12 @@ async fn start_failures_are_payload_free_and_preserve_retryability() {
 struct FixtureStatelessAction;
 
 impl Action for FixtureStatelessAction {
+    const KEY: &'static str = "core.echo";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            action_key!("core.echo"),
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
             nebula_action::metadata_name!("Echo fixture"),
             "Admission fixture",
         )
@@ -109,12 +106,12 @@ impl StatelessAction for FixtureStatelessAction {
 struct FixtureTriggerAction;
 
 impl Action for FixtureTriggerAction {
+    const KEY: &'static str = "test.webhook";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            action_key!("test.webhook"),
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
             nebula_action::metadata_name!("Webhook fixture"),
             "Admission fixture",
         )
@@ -177,7 +174,7 @@ impl nebula_plugin::Plugin for FixturePlugin {
     fn actions(&self) -> Vec<Arc<dyn nebula_action::ActionFactory>> {
         let factory: Arc<dyn nebula_action::ActionFactory> = match self.action {
             FixtureAction::Stateless => Arc::new(
-                InstanceFactory::new(FixtureStatelessAction::metadata(), FixtureStatelessAction)
+                InstanceFactory::new(FixtureStatelessAction)
                     .expect("valid test catalog definition"),
             ),
             FixtureAction::Trigger => Arc::new(
@@ -350,12 +347,12 @@ struct ConfigurableWebhookAction {
 }
 
 impl Action for ConfigurableWebhookAction {
+    const KEY: &'static str = "test.dispatch.configurable";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            action_key!("test.dispatch.configurable"),
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
             nebula_action::metadata_name!("ConfigurableWebhookAction"),
             "Test fixture",
         )

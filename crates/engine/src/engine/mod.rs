@@ -1685,7 +1685,7 @@ impl WorkflowEngine {
 
         for (metadata, factory) in plugin.action_definitions() {
             let action_key = metadata.base().key();
-            debug_assert!(Arc::ptr_eq(metadata, factory.metadata()));
+            debug_assert!(Arc::ptr_eq(metadata, factory.definition()));
             self.runtime
                 .registry()
                 .register_factory(Arc::clone(factory));
@@ -2537,7 +2537,7 @@ impl WorkflowEngine {
                     factories
                         .get(source_id)
                         .ok_or(EngineError::ExactFactoryUnavailable)?
-                        .metadata()
+                        .definition()
                         .outputs()
                         .to_vec(),
                 ),
@@ -3306,7 +3306,7 @@ impl NodeTask {
         else {
             return None;
         };
-        if !crate::effect_driver::JournalShape::of(factory.metadata().kind()).is_journaled()
+        if !crate::effect_driver::JournalShape::of(factory.definition().kind()).is_journaled()
             || factory.remote_effect_factory().is_some()
         {
             return None;
@@ -3314,7 +3314,7 @@ impl NodeTask {
         let (Some(ledger), Some(fencing)) = (&self.operation_ledger, self.fencing) else {
             return None;
         };
-        let shape = crate::effect_driver::JournalShape::of(factory.metadata().kind());
+        let shape = crate::effect_driver::JournalShape::of(factory.definition().kind());
         // Only a stateful action's iterations and an agent's turns are
         // checkpointed.
         let checkpoints = shape.is_gated().then(|| self.checkpoints.clone()).flatten();
@@ -3349,7 +3349,7 @@ impl NodeTask {
         // The kind's reason comes first: a run with stores would not
         // journal the action either.
         let read_only_detail = crate::effect_driver::JournalShape::read_only_detail(
-            self.factory_dispatch.factory().metadata().kind(),
+            self.factory_dispatch.factory().definition().kind(),
         )
         .or_else(|| storeless.then_some(JOURNAL_NEEDS_STORES));
         match (&self.engine_resources, journal, read_only_detail) {
@@ -3494,7 +3494,10 @@ impl NodeTask {
         }
 
         let resources = self.dispatch_resources(
-            self.factory_dispatch.factory().metadata().effect_contract(),
+            self.factory_dispatch
+                .factory()
+                .definition()
+                .effect_contract(),
             journal,
         );
 
@@ -3615,7 +3618,7 @@ impl NodeTask {
                 action_version,
             } => {
                 use nebula_action::effect::ActionEffectContract;
-                let metadata = factory.metadata();
+                let metadata = factory.definition();
                 if metadata.effect_contract() != &effect_contract
                     || metadata.base().version() != &action_version
                 {
@@ -3687,7 +3690,7 @@ impl NodeTask {
                             clock: self.clock.as_ref(),
                             cancellation: &self.cancel,
                         };
-                        if !Arc::ptr_eq(factory.metadata(), remote.metadata()) {
+                        if !Arc::ptr_eq(factory.definition(), remote.definition()) {
                             return Err(crate::EffectExecutionError::InvalidContract.into());
                         }
                         let input = remote
