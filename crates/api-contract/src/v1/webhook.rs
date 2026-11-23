@@ -20,7 +20,7 @@ use zeroize::Zeroize;
 fn write_only_object_schema() -> utoipa::openapi::schema::Object {
     utoipa::openapi::schema::ObjectBuilder::new()
         .schema_type(utoipa::openapi::schema::Type::Object)
-        .write_only(Some(true))
+        .write_only(true)
         .description(Some(
             "Provider-specific non-secret configuration accepted only during registration; the selected trusted factory validates it before persistence.",
         ))
