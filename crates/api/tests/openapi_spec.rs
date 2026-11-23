@@ -1257,10 +1257,7 @@ async fn served_spec_round_trips_through_oas3_parser() {
     let parsed: oas3::OpenApiV3Spec =
         serde_json::from_slice(&json_bytes).expect("served spec must parse as oas3::OpenApiV3Spec");
 
-    let path_count = parsed
-        .paths
-        .as_ref()
-        .map_or(0, std::collections::BTreeMap::len);
+    let path_count = parsed.paths.as_ref().map_or(0, oas3::Map::len);
     assert!(path_count > 0, "oas3 parser must observe at least one path");
     assert!(
         !parsed.info.title.is_empty(),

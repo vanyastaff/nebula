@@ -44,14 +44,22 @@ macro_rules! attach_sentry {
     ($layers:expr) => {{
         #[cfg(feature = "sentry")]
         {
-            $layers.push(Box::new(sentry_tracing::layer().event_filter(|md| {
-                use sentry_tracing::EventFilter;
-                match *md.level() {
-                    tracing::Level::ERROR => EventFilter::Event,
-                    tracing::Level::WARN => EventFilter::Breadcrumb,
-                    _ => EventFilter::Ignore,
-                }
-            })));
+            // sentry-tracing 0.49 splits the legacy combined layer: spans at
+            // INFO and above become transactions, WARN events become
+            // breadcrumbs and ERROR events become Sentry events; lower-level
+            // events are not sent.
+            use tracing_subscriber::{Layer as _, filter::LevelFilter};
+            $layers.push(Box::new(
+                sentry_tracing::SpanLayer::new().with_filter(LevelFilter::INFO),
+            ));
+            $layers.push(Box::new(
+                sentry_tracing::BreadcrumbLayer::new().with_filter(
+                    tracing_subscriber::filter::filter_fn(|md| *md.level() == tracing::Level::WARN),
+                ),
+            ));
+            $layers.push(Box::new(
+                sentry_tracing::ErrorLayer::new().with_filter(LevelFilter::ERROR),
+            ));
         }
     }};
 }

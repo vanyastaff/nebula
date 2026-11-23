@@ -285,7 +285,7 @@ pub(crate) fn create_test_jwt() -> String {
             exp: now + 3600,
             iat: now,
         },
-        &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
+        &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()).expect("non-empty HMAC secret"),
     )
     .unwrap()
 }
@@ -901,7 +901,7 @@ pub(crate) mod me_support {
                 exp: now + 3600,
                 iat: now,
             },
-            &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
+            &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()).expect("non-empty HMAC secret"),
         )
         .unwrap()
     }

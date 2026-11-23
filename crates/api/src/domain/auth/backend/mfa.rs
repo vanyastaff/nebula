@@ -3,8 +3,10 @@
 //! Built on top of `totp-rs` so we get the otpauth URI rendering for free.
 //! Standard parameters: SHA-1 / 6 digits / 30 s window / ±1 step skew.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use rand::Rng;
-use totp_rs::{Algorithm, Secret, TOTP};
+use totp_rs::{Algorithm, Builder, Secret, Totp};
 
 use super::error::AuthError;
 
@@ -18,69 +20,56 @@ pub const DIGITS: usize = 6;
 /// 30-second TOTP step.
 pub const STEP_SECS: u64 = 30;
 
+/// Build the standard TOTP (SHA-1, [`DIGITS`], ±1 step, [`STEP_SECS`]).
+fn totp(secret: Secret, account_name: &str) -> Result<Totp, AuthError> {
+    Builder::new()
+        .with_algorithm(Algorithm::SHA1)
+        .with_digits(DIGITS as u8)
+        .with_skew(1)
+        .with_step_duration(STEP_SECS)
+        .with_secret(secret)
+        .with_issuer(Some(ISSUER))
+        .with_account_name(account_name)
+        .build()
+        .map_err(|e| AuthError::Crypto(format!("totp ctor: {e}")))
+}
+
+/// Seconds since the Unix epoch, as an error rather than a panic when the
+/// clock is set before it.
+fn unix_now() -> Result<u64, AuthError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .map_err(|e| AuthError::Crypto(format!("totp clock: {e}")))
+}
+
 /// Mint a fresh TOTP secret and the otpauth URI for `account_name`.
 ///
 /// Returns `(secret_base32, otpauth_uri)`.
 pub fn mint_secret(account_name: &str) -> Result<(String, String), AuthError> {
     let mut bytes = [0u8; 20];
     rand::rng().fill_bytes(&mut bytes);
-    let secret = Secret::Raw(bytes.to_vec());
-    let secret_b32 = secret.to_encoded().to_string();
-
-    let totp = TOTP::new(
-        Algorithm::SHA1,
-        DIGITS,
-        1,
-        STEP_SECS,
-        secret
-            .to_bytes()
-            .map_err(|e| AuthError::Crypto(format!("totp secret: {e}")))?,
-        Some(ISSUER.to_owned()),
-        account_name.to_owned(),
-    )
-    .map_err(|e| AuthError::Crypto(format!("totp ctor: {e}")))?;
-
-    Ok((secret_b32, totp.get_url()))
+    let secret = Secret::new_stack(bytes);
+    let secret_b32 = secret.to_base32();
+    let url = totp(secret, account_name)?
+        .to_url()
+        .map_err(|e| AuthError::Crypto(format!("totp url: {e}")))?;
+    Ok((secret_b32, url))
 }
 
 /// Verify `code` against `secret_base32` using the standard ±1-step skew.
 pub fn verify_code(secret_base32: &str, code: &str) -> Result<bool, AuthError> {
-    let secret_bytes = Secret::Encoded(secret_base32.to_owned())
-        .to_bytes()
-        .map_err(|_| AuthError::InvalidMfaCode)?;
-    let totp = TOTP::new(
-        Algorithm::SHA1,
-        DIGITS,
-        1,
-        STEP_SECS,
-        secret_bytes,
-        Some(ISSUER.to_owned()),
-        "verify".to_owned(),
-    )
-    .map_err(|e| AuthError::Crypto(format!("totp ctor: {e}")))?;
-    totp.check_current(code)
-        .map_err(|e| AuthError::Crypto(format!("totp check: {e}")))
+    let secret = Secret::try_from_base32(secret_base32).map_err(|_| AuthError::InvalidMfaCode)?;
+    Ok(totp(secret, "verify")?.check(code, unix_now()?).is_some())
 }
 
 /// Generate the current code for `secret_base32`. Used by tests and the
 /// confirm-enrollment loop in [`super::InMemoryAuthBackend`].
 #[doc(hidden)]
 pub fn current_code(secret_base32: &str) -> Result<String, AuthError> {
-    let secret_bytes = Secret::Encoded(secret_base32.to_owned())
-        .to_bytes()
+    let secret = Secret::try_from_base32(secret_base32)
         .map_err(|_| AuthError::Crypto("invalid base32 secret".to_owned()))?;
-    let totp = TOTP::new(
-        Algorithm::SHA1,
-        DIGITS,
-        1,
-        STEP_SECS,
-        secret_bytes,
-        Some(ISSUER.to_owned()),
-        "current".to_owned(),
-    )
-    .map_err(|e| AuthError::Crypto(format!("totp ctor: {e}")))?;
-    totp.generate_current()
-        .map_err(|e| AuthError::Crypto(format!("totp generate: {e}")))
+    Ok(totp(secret, "current")?.generate(unix_now()?).to_string())
 }
 
 #[cfg(test)]
