@@ -328,7 +328,7 @@ fn declare_fixture(root: &Path, directory: &str, declaration: &str) {
 }
 
 fn policy(owner: Option<&str>, target: &str) -> String {
-    let owner = owner.map_or_else(String::new, |owner| format!("owner = \"{owner}\"\n"));
+    let owner = owner.map_or_default(|owner| format!("owner = \"{owner}\"\n"));
     format!("[package.metadata.nebula.fixture]\n{owner}test-target = \"{target}\"\n")
 }
 

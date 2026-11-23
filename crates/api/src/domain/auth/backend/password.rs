@@ -5,10 +5,7 @@
 //! within the operational SLO "login p99 < 200 ms" budget while keeping the
 //! brute-force factor at ≥ 2^16.
 
-use argon2::{
-    Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version,
-    password_hash::{SaltString, rand_core::OsRng},
-};
+use argon2::{Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version};
 
 use std::sync::{Arc, LazyLock};
 
@@ -96,10 +93,10 @@ pub fn validate_registration<'a>(
 
 /// Hash `password` with Argon2id and return the encoded PHC string.
 pub fn hash_password(password: &str) -> Result<String, AuthError> {
-    let salt = SaltString::generate(&mut OsRng);
+    // password-hash 0.6 draws the recommended 16-byte salt from the OS RNG.
     let argon2 = Argon2::new(argon2::Algorithm::Argon2id, Version::V0x13, params()?);
     argon2
-        .hash_password(password.as_bytes(), &salt)
+        .hash_password(password.as_bytes())
         .map(|h| h.to_string())
         .map_err(|e| AuthError::Crypto(format!("argon2 hash: {e}")))
 }
@@ -122,6 +119,16 @@ fn params() -> Result<Params, AuthError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A hash minted by argon2 0.5 / password-hash 0.5 (stored before the
+    /// 0.6 upgrade) must keep verifying: rows in `users` outlive the crate.
+    #[test]
+    fn hash_from_argon2_0_5_still_verifies() {
+        const LEGACY: &str = "$argon2id$v=19$m=19456,t=2,p=1$GaU0SWNVTpJXKvezzC/ygA$\
+                              Ua0ebFXIgeckBhELnfbzM22IJ/9pjNCc6IK4BngM23I";
+        assert!(verify_password(LEGACY, "argon2-0.5 era password").unwrap());
+        assert!(!verify_password(LEGACY, "another password").unwrap());
+    }
 
     #[test]
     fn hash_then_verify_succeeds() {

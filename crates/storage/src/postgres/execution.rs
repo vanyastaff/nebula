@@ -77,11 +77,7 @@ pub(super) async fn insert_created_execution(
     .execute(&mut **tx)
     .await
     .map_err(|error| storage_error_for("execution", error))?;
-    if res.rows_affected() == 1 {
-        Ok(())
-    } else {
-        Err(crate::execution_state::oversized_execution_state())
-    }
+    (res.rows_affected() == 1).ok_or_else(crate::execution_state::oversized_execution_state)
 }
 
 /// Postgres-backed execution aggregate. Wrap a pool whose schema was

@@ -186,11 +186,8 @@ fn named_field_composes_json_pointer_segments() {
     struct NonEmpty;
     impl Validate<Value> for NonEmpty {
         fn validate(&self, input: &Value) -> Result<(), ValidationError> {
-            if input.as_str().is_some_and(|s| !s.is_empty()) {
-                Ok(())
-            } else {
-                Err(ValidationError::new("not_empty", "must not be empty"))
-            }
+            (input.as_str().is_some_and(|s| !s.is_empty()))
+                .ok_or_else(|| ValidationError::new("not_empty", "must not be empty"))
         }
     }
     let bare = named_field("name", NonEmpty, identity);

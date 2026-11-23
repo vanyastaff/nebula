@@ -19,11 +19,8 @@ struct CountingValidator {
 impl Validate<str> for CountingValidator {
     fn validate(&self, _input: &str) -> Result<(), ValidationError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        if self.should_pass {
-            Ok(())
-        } else {
-            Err(ValidationError::new(self.name, "forced failure"))
-        }
+        self.should_pass
+            .ok_or_else(|| ValidationError::new(self.name, "forced failure"))
     }
 }
 

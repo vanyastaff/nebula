@@ -253,11 +253,7 @@ pub(super) fn check_dangling(
         issues.truncate(MAX_GRAPH_DIAGNOSTICS - 1);
         issues.push(AdmissionDiagnostic::root(AdmissionIssue::DiagnosticsLimit));
     }
-    if issues.is_empty() {
-        Ok(())
-    } else {
-        Err(AdmissionFailure(issues))
-    }
+    issues.is_empty().ok_or(AdmissionFailure(issues))
 }
 
 pub(super) fn check_reachability(

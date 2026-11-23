@@ -352,11 +352,7 @@ impl WorkflowStore for SqliteWorkflowStore {
         .execute(&self.pool)
         .await
         .map_err(storage_error)?;
-        if res.rows_affected() > 0 {
-            Ok(())
-        } else {
-            Err(StorageError::not_found("workflow", id))
-        }
+        (res.rows_affected() > 0).ok_or_else(|| StorageError::not_found("workflow", id))
     }
 
     async fn list(&self, scope: &Scope) -> Result<Vec<WorkflowRecord>, StorageError> {

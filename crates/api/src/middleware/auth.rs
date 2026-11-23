@@ -273,7 +273,9 @@ async fn authenticate(state: &AppState, mut request: Request) -> Result<Request,
             return Ok(request);
         }
 
-        let key = DecodingKey::from_secret(state.jwt_secret.as_bytes());
+        // jsonwebtoken 12 refuses an empty HMAC secret; fail closed.
+        let key = DecodingKey::from_secret(state.jwt_secret.as_bytes())
+            .map_err(|_| StatusCode::UNAUTHORIZED)?;
         let mut validation = Validation::new(Algorithm::HS256);
         validation.validate_exp = true;
         if let Some(issuer) = state.jwt_issuer.as_deref() {
@@ -575,7 +577,7 @@ mod tests {
                 exp: now + 3_600,
                 iat: now,
             },
-            &EncodingKey::from_secret(config.jwt_secret.as_bytes()),
+            &EncodingKey::from_secret(config.jwt_secret.as_bytes()).expect("non-empty HMAC secret"),
         )
         .expect("encode JWT");
         let backend: Arc<dyn AuthBackend> = backend;
@@ -758,7 +760,8 @@ mod tests {
         let token = encode(
             &Header::default(),
             &claims,
-            &EncodingKey::from_secret(ApiConfig::for_test().jwt_secret.as_bytes()),
+            &EncodingKey::from_secret(ApiConfig::for_test().jwt_secret.as_bytes())
+                .expect("non-empty HMAC secret"),
         )
         .expect("encode JWT");
         Router::new()

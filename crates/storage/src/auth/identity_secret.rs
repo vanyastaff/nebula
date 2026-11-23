@@ -353,11 +353,7 @@ fn valid_key_id(key_id: &str) -> bool {
 }
 
 fn validate_owner(user_id: &[u8]) -> Result<(), IdentitySecretError> {
-    if user_id.len() == USER_ID_BYTES {
-        Ok(())
-    } else {
-        Err(IdentitySecretError::InvalidOwner)
-    }
+    (user_id.len() == USER_ID_BYTES).ok_or(IdentitySecretError::InvalidOwner)
 }
 
 fn totp_aad(purpose: TotpSecretPurpose, user_id: &[u8]) -> Vec<u8> {

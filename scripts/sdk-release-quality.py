@@ -74,7 +74,7 @@ def plan(features, base):
         commands["semver-classification"].append([
             "cargo", "semver-checks", "check-release", "--package", package, "--all-features", "--baseline-rev", base])
         commands["msrv"].append([
-            "cargo", "+1.97.1", "check", "--locked", "-p", package, "--all-features", "--all-targets"])
+            "cargo", "+1.100.0", "check", "--locked", "-p", package, "--all-features", "--all-targets"])
         commands["rustdoc"].append([
             "cargo", "doc", "--locked", "-p", package, "--all-features", "--no-deps"])
     return commands
@@ -125,7 +125,7 @@ def run(args):
     require(all(any(package["name"] == name for package in metadata["packages"]) for name in PACKAGES),
             "supported transport package is absent")
     toolchain = subprocess.check_output(["rustc", "--version"], text=True).strip()
-    require(toolchain.startswith("rustc 1.97.1 "), "release toolchain must be pinned stable 1.97.1")
+    require(toolchain.startswith("rustc 1.100.0 "), "release toolchain must be pinned stable 1.100.0")
     args.output.mkdir()
     observations = []
     environment = dict(os.environ, CARGO_BUILD_JOBS="8", RUSTDOCFLAGS="-D warnings", INSTA_UPDATE="no")
@@ -157,7 +157,7 @@ def verify(args):
     require(report["base_revision"] == args.base_revision, "untrusted compatibility baseline")
     manifest = tomllib.loads(args.sdk_manifest.read_text(encoding="utf-8"))
     require(report["sdk_features"] == sorted(manifest["features"]), "source feature inventory was narrowed")
-    require(report["toolchain"].startswith("rustc 1.97.1 "), "wrong release toolchain")
+    require(report["toolchain"].startswith("rustc 1.100.0 "), "wrong release toolchain")
     commands = plan(report["sdk_features"], report["base_revision"])
     require(len(report["observations"]) == len(CASES), "incomplete or duplicate NS20 inventory")
     expected_files = {"sdk-release-quality.json"}

@@ -9,7 +9,6 @@ authors.workspace = true
 description = "Execution state, journals, idempotency, and planning for the Nebula workflow engine"
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 documentation.workspace = true
 
 [features]

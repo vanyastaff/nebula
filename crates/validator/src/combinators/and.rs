@@ -107,11 +107,8 @@ mod tests {
 
     impl Validate<str> for MinLength {
         fn validate(&self, input: &str) -> Result<(), ValidationError> {
-            if input.len() >= self.0 {
-                Ok(())
-            } else {
-                Err(ValidationError::min_length("", self.0, input.len()))
-            }
+            (input.len() >= self.0)
+                .ok_or_else(|| ValidationError::min_length("", self.0, input.len()))
         }
     }
 
@@ -119,11 +116,8 @@ mod tests {
 
     impl Validate<str> for MaxLength {
         fn validate(&self, input: &str) -> Result<(), ValidationError> {
-            if input.len() <= self.0 {
-                Ok(())
-            } else {
-                Err(ValidationError::max_length("", self.0, input.len()))
-            }
+            (input.len() <= self.0)
+                .ok_or_else(|| ValidationError::max_length("", self.0, input.len()))
         }
     }
 

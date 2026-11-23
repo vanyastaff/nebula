@@ -44,7 +44,7 @@ impl crate::CredentialPersistence for SlotStore {
         let head = self.get_head(selector).await?;
         if let Some((operation, reads)) = &self.in_flight
             && reads
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |left| {
                     left.checked_sub(1)
                 })
                 .is_ok()

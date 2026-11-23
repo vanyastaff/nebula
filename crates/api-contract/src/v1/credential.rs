@@ -18,7 +18,7 @@ use utoipa::{IntoParams, ToSchema};
 fn write_only_object_schema() -> utoipa::openapi::schema::Object {
     utoipa::openapi::schema::ObjectBuilder::new()
         .schema_type(utoipa::openapi::schema::Type::Object)
-        .write_only(Some(true))
+        .write_only(true)
         .description(Some(
             "Sensitive caller-supplied credential material; accepted only as input.",
         ))
@@ -29,7 +29,7 @@ fn write_only_object_schema() -> utoipa::openapi::schema::Object {
 fn read_only_object_schema() -> utoipa::openapi::schema::Object {
     utoipa::openapi::schema::ObjectBuilder::new()
         .schema_type(utoipa::openapi::schema::Type::Object)
-        .read_only(Some(true))
+        .read_only(true)
         .description(Some(
             "Server-generated, short-lived interaction authority; returned only as output.",
         ))

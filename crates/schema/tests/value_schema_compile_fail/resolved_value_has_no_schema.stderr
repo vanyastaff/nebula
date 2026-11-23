@@ -1,8 +1,8 @@
-error[E0277]: the trait bound `ValueTree<Infallible>: HasSchema` is not satisfied
+error[E0277]: the trait bound `ValueTree<!>: HasSchema` is not satisfied
  --> tests/value_schema_compile_fail/resolved_value_has_no_schema.rs:4:31
   |
 4 |     let _schema = schema_of::<ResolvedValue>();
-  |                               ^^^^^^^^^^^^^ the trait `HasSchema` is not implemented for `ValueTree<Infallible>`
+  |                               ^^^^^^^^^^^^^ the trait `HasSchema` is not implemented for `ValueTree<!>`
   |
   = help: the following other types implement trait `HasSchema`:
             ()

@@ -4,7 +4,7 @@
 //! All tests use a deterministic [`MockClock`] so replay-window
 //! assertions are immune to wall-clock drift.
 
-use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+use base64::engine::general_purpose::STANDARD as B64;
 
 use super::*;
 

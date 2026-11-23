@@ -193,11 +193,7 @@ fn verify_report(stdout: &str, healthy: bool) -> Result<(), RequiredPostgresqlEr
 
 fn verify_diagnostic(stderr: &str, scenario: &str) -> Result<(), RequiredPostgresqlError> {
     if scenario == "healthy_database" {
-        return if stderr.is_empty() {
-            Ok(())
-        } else {
-            Err(RequiredPostgresqlError::Diagnostic)
-        };
+        return stderr.is_empty().ok_or(RequiredPostgresqlError::Diagnostic);
     }
     let expected = match scenario {
         "absent_url" => "NEBULA_REQUIRE_POSTGRES is set but DATABASE_URL is absent or non-Unicode",

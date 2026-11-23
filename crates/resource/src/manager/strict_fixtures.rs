@@ -314,7 +314,7 @@ macro_rules! strict_provider {
                 self.pins.fetch_add(1, Ordering::SeqCst);
                 let rotate = self
                     .pin_rotations
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| match left {
+                    .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| match left {
                         0 => None,
                         usize::MAX => Some(usize::MAX),
                         left => Some(left - 1),

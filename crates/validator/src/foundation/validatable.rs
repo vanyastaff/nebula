@@ -540,11 +540,8 @@ mod tests {
 
         impl Validate<str> for MinLength {
             fn validate(&self, input: &str) -> Result<(), ValidationError> {
-                if input.len() >= self.min {
-                    Ok(())
-                } else {
-                    Err(ValidationError::new("min_length", "too short"))
-                }
+                (input.len() >= self.min)
+                    .ok_or_else(|| ValidationError::new("min_length", "too short"))
             }
         }
 
@@ -573,11 +570,7 @@ mod tests {
 
         impl Validate<i64> for MinValue {
             fn validate(&self, input: &i64) -> Result<(), ValidationError> {
-                if *input >= self.min {
-                    Ok(())
-                } else {
-                    Err(ValidationError::new("min_value", "too small"))
-                }
+                (*input >= self.min).ok_or_else(|| ValidationError::new("min_value", "too small"))
             }
         }
 

@@ -8,7 +8,6 @@ authors.workspace = true
 description = "Workflow definition, DAG graph, and validation for the Nebula workflow engine"
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]

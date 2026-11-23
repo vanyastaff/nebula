@@ -439,7 +439,7 @@ impl ClientApp {
             }
             if self.profile.is_some() {
                 if ui.button("Workspace…").clicked() {
-                    self.show_connection = !self.show_connection;
+                    self.show_connection.toggle();
                 }
                 if ui.button("Disconnect").clicked() {
                     self.disconnect();

@@ -288,11 +288,7 @@ mod tests {
 
     impl<T: Ord> Validate<T> for Min<T> {
         fn validate(&self, input: &T) -> Result<(), ValidationError> {
-            if input >= &self.0 {
-                Ok(())
-            } else {
-                Err(ValidationError::new("min", "Value too small"))
-            }
+            (input >= &self.0).ok_or_else(|| ValidationError::new("min", "Value too small"))
         }
     }
 
@@ -301,11 +297,8 @@ mod tests {
 
     impl<T: AsRef<str> + ?Sized> Validate<T> for MinLen {
         fn validate(&self, input: &T) -> Result<(), ValidationError> {
-            if input.as_ref().len() >= self.0 {
-                Ok(())
-            } else {
-                Err(ValidationError::new("min_length", "String too short"))
-            }
+            (input.as_ref().len() >= self.0)
+                .ok_or_else(|| ValidationError::new("min_length", "String too short"))
         }
     }
 

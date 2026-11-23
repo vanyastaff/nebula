@@ -135,11 +135,7 @@ impl OAuthTransactionBinding {
         }
 
         let presented = presented.ok_or(AuthError::InvalidToken)?;
-        if bool::from(self.value.as_bytes().ct_eq(presented.as_bytes())) {
-            Ok(())
-        } else {
-            Err(AuthError::InvalidToken)
-        }
+        bool::from(self.value.as_bytes().ct_eq(presented.as_bytes())).ok_or(AuthError::InvalidToken)
     }
 }
 

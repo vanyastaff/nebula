@@ -2,11 +2,11 @@ error[E0277]: the trait bound `AdmittedSchemaGraph: serde::Deserialize<'de>` is 
  --> tests/definition_compile_fail/admitted_graph_deserialize.rs:4:34
   |
 4 |     let _: AdmittedSchemaGraph = serde_json::from_str("{}").unwrap();
-  |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `serde_core::de::Deserialize<'_>` is not implemented for `AdmittedSchemaGraph`
+  |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `nebula_schema::__private::serde::Deserialize<'_>` is not implemented for `AdmittedSchemaGraph`
   |
   = note: for local types consider adding `#[derive(serde::Deserialize)]` to your `AdmittedSchemaGraph` type
   = note: for types from other crates check whether the crate offers a `serde` feature flag
-  = help: the following other types implement trait `serde_core::de::Deserialize<'de>`:
+  = help: the following other types implement trait `nebula_schema::__private::serde::Deserialize<'de>`:
             &'a Path
             &'a [u8]
             &'a str
@@ -20,7 +20,6 @@ note: required by a bound in `serde_json::from_str`
  --> $CARGO/serde_json-$VERSION/src/de.rs
   |
   | pub fn from_str<'a, T>(s: &'a str) -> Result<T>
-  |        -------- required by a bound in this function
   | where
   |     T: de::Deserialize<'a>,
   |        ^^^^^^^^^^^^^^^^^^^ required by this bound in `from_str`

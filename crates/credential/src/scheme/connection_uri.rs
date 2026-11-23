@@ -129,7 +129,7 @@ impl ConnectionUri {
         use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
         let user_enc = utf8_percent_encode(&self.username, NON_ALPHANUMERIC);
         let pass_enc = utf8_percent_encode(self.password.expose_secret(), NON_ALPHANUMERIC);
-        let port_part = self.port.map(|p| format!(":{p}")).unwrap_or_default();
+        let port_part = self.port.map_or_default(|p| format!(":{p}"));
         let url = format!(
             "{}://{}:{}@{}{}/{}",
             self.scheme, user_enc, pass_enc, self.host, port_part, self.database,

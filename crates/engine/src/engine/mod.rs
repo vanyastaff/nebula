@@ -1079,7 +1079,8 @@ impl WorkflowEngine {
                 Ordering::Acquire,
             );
         });
-        let rollback = scopeguard::guard(Arc::clone(&release_generation), |release| release());
+        let rollback =
+            std::mem::DropGuard::new(Arc::clone(&release_generation), |release| release());
         let driver = match nebula_resource::ResourceFanoutDriver::try_spawn(
             Arc::clone(&self.resource_fanout_index),
             manager,
@@ -1098,7 +1099,7 @@ impl WorkflowEngine {
                 return Err(ResourceReconciliationStartupError::Driver(error));
             },
         };
-        let _ = scopeguard::ScopeGuard::into_inner(rollback);
+        let _ = std::mem::DropGuard::dismiss(rollback);
         Ok(Some(driver))
     }
 
@@ -1346,7 +1347,7 @@ impl WorkflowEngine {
                     );
                     refused.insert((node, key));
                 },
-                _ if refused.contains(&(node.clone(), key.clone())) => {},
+                _ if refused.contains(&(node, key.clone())) => {},
                 _ => {
                     node_rows.insert(key, row.slot_identity.clone());
                 },
@@ -2732,7 +2733,7 @@ impl WorkflowEngine {
         let started = Instant::now();
 
         self.install_execution_resource_context(execution_id, workflow.id, run_acquire_scope);
-        let _execution_resource_guard = scopeguard::guard(execution_id, |id| {
+        let _execution_resource_guard = std::mem::DropGuard::new(execution_id, |id| {
             self.remove_execution_resource_context(id);
         });
 

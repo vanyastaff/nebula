@@ -234,10 +234,10 @@ pub(crate) fn add_problem_response_contract(openapi: &mut utoipa::openapi::OpenA
                  concurrent request limit (Retry-After carries retry advice)."
             };
             layer_failures.push(("503", unavailable));
-            let takes_json_body = operation
-                .request_body
-                .as_ref()
-                .is_some_and(|body| body.content.contains_key("application/json"));
+            let takes_json_body = operation.request_body.as_ref().is_some_and(|body| {
+                matches!(body, utoipa::openapi::RefOr::T(body)
+                        if body.content.contains_key("application/json"))
+            });
             if takes_json_body {
                 layer_failures.extend([
                     ("400", "Request body is not a valid JSON document."),
@@ -282,6 +282,7 @@ fn add_layer_failure(operation: &mut Operation, status: &str, description: &str)
                     ContentBuilder::new()
                         .schema(Some(Ref::from_schema_name("ProblemDetails")))
                         .build()
+                        .into()
                 });
         },
         Entry::Occupied(_) => {},
@@ -314,14 +315,16 @@ fn normalize_problem_responses(operation: &mut Operation) {
         };
         let is_stub = status == "501";
         let is_problem = response.content.values().any(|content| {
-            matches!(&content.schema, Some(RefOr::Ref(reference))
-                if reference.ref_location == "#/components/schemas/ProblemDetails")
+            matches!(content, RefOr::T(content) if matches!(&content.schema, Some(RefOr::Ref(reference))
+                if reference.ref_location == "#/components/schemas/ProblemDetails"))
         });
         if !is_stub && !is_problem {
             continue;
         }
         if let Some(mut content) = response.content.shift_remove("application/json") {
-            content.schema = Some(Ref::from_schema_name("ProblemDetails").into());
+            if let RefOr::T(content) = &mut content {
+                content.schema = Some(Ref::from_schema_name("ProblemDetails").into());
+            }
             response
                 .content
                 .insert("application/problem+json".to_owned(), content);

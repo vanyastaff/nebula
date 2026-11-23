@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use quick_xml::{
     Reader, XmlVersion,
-    encoding::Decoder,
     events::{BytesCData, BytesRef, BytesStart, BytesText, Event},
 };
 
@@ -175,10 +174,10 @@ impl JunitParser {
         loop {
             match reader.read_event() {
                 Ok(Event::Start(start)) => {
-                    parser.start_element(&start, reader.decoder())?;
+                    parser.start_element(&start)?;
                 },
                 Ok(Event::Empty(start)) => {
-                    let element = parser.start_element(&start, reader.decoder())?;
+                    let element = parser.start_element(&start)?;
                     parser.end_element(element)?;
                 },
                 Ok(Event::End(end)) => {
@@ -205,11 +204,7 @@ impl JunitParser {
         parser.finish()
     }
 
-    fn start_element(
-        &mut self,
-        start: &BytesStart<'_>,
-        decoder: Decoder,
-    ) -> Result<Element, VerificationError> {
+    fn start_element(&mut self, start: &BytesStart<'_>) -> Result<Element, VerificationError> {
         if self.stack.len() >= MAX_XML_DEPTH {
             return invalid_junit(format!("XML nesting exceeds {MAX_XML_DEPTH} elements"));
         }
@@ -222,7 +217,7 @@ impl JunitParser {
                 parent.map_or("the document root", Element::name)
             ));
         }
-        let attributes = decode_attributes(start, decoder)?;
+        let attributes = decode_attributes(start)?;
         element.validate_attributes(&attributes)?;
         if element.captures_marker_output() {
             let case = self.case_mut(element)?;
@@ -339,20 +334,12 @@ impl JunitParser {
     }
 
     fn capture_text(&mut self, text: &BytesText<'_>) -> Result<(), VerificationError> {
-        let decoded = text
-            .xml_content(XmlVersion::Implicit1_0)
-            .map_err(|source| VerificationError::InvalidJunit {
-                detail: format!("cannot decode XML text: {source}"),
-            })?;
+        let decoded = text.xml_content(XmlVersion::Implicit1_0);
         self.capture_decoded_text(&decoded)
     }
 
     fn capture_cdata(&mut self, cdata: &BytesCData<'_>) -> Result<(), VerificationError> {
-        let decoded = cdata
-            .xml_content(XmlVersion::Implicit1_0)
-            .map_err(|source| VerificationError::InvalidJunit {
-                detail: format!("cannot decode XML CDATA: {source}"),
-            })?;
+        let decoded = cdata.xml_content(XmlVersion::Implicit1_0);
         self.capture_decoded_text(&decoded)
     }
 
@@ -365,12 +352,7 @@ impl JunitParser {
                 })? {
             character.to_string()
         } else {
-            let name = reference
-                .decode()
-                .map_err(|source| VerificationError::InvalidJunit {
-                    detail: format!("cannot decode XML entity reference: {source}"),
-                })?;
-            match name.as_ref() {
+            match &**reference {
                 "amp" => "&",
                 "apos" => "'",
                 "gt" => ">",
@@ -484,29 +466,25 @@ enum Element {
 }
 
 impl Element {
-    fn from_name(name: &[u8]) -> Result<Self, VerificationError> {
+    fn from_name(name: &str) -> Result<Self, VerificationError> {
         match name {
-            b"testsuites" => Ok(Self::Testsuites),
-            b"testsuite" => Ok(Self::Testsuite),
-            b"testcase" => Ok(Self::Testcase),
-            b"failure" => Ok(Self::Failure),
-            b"error" => Ok(Self::Error),
-            b"skipped" => Ok(Self::Skipped),
-            b"system-out" => Ok(Self::SystemOut),
-            b"system-err" => Ok(Self::SystemErr),
-            b"description" => Ok(Self::Description),
-            b"properties" => Ok(Self::Properties),
-            b"property" => Ok(Self::Property),
-            b"retry" | b"rerunFailure" | b"rerunError" | b"flakyFailure" | b"flakyError" => {
+            "testsuites" => Ok(Self::Testsuites),
+            "testsuite" => Ok(Self::Testsuite),
+            "testcase" => Ok(Self::Testcase),
+            "failure" => Ok(Self::Failure),
+            "error" => Ok(Self::Error),
+            "skipped" => Ok(Self::Skipped),
+            "system-out" => Ok(Self::SystemOut),
+            "system-err" => Ok(Self::SystemErr),
+            "description" => Ok(Self::Description),
+            "properties" => Ok(Self::Properties),
+            "property" => Ok(Self::Property),
+            "retry" | "rerunFailure" | "rerunError" | "flakyFailure" | "flakyError" => {
                 invalid_junit(format!(
-                    "retry, rerun, and flaky element `{}` is forbidden",
-                    String::from_utf8_lossy(name)
+                    "retry, rerun, and flaky element `{name}` is forbidden"
                 ))
             },
-            _ => invalid_junit(format!(
-                "unsupported JUnit element `{}`",
-                String::from_utf8_lossy(name)
-            )),
+            _ => invalid_junit(format!("unsupported JUnit element `{name}`")),
         }
     }
 
@@ -601,20 +579,15 @@ impl Element {
 
 fn decode_attributes(
     start: &BytesStart<'_>,
-    decoder: Decoder,
 ) -> Result<BTreeMap<String, String>, VerificationError> {
     let mut decoded = BTreeMap::new();
     for attribute in start.attributes().with_checks(true) {
         let attribute = attribute.map_err(|source| VerificationError::InvalidJunit {
             detail: format!("invalid XML attribute: {source}"),
         })?;
-        let name = std::str::from_utf8(attribute.key.as_ref())
-            .map_err(|source| VerificationError::InvalidJunit {
-                detail: format!("XML attribute name is not UTF-8: {source}"),
-            })?
-            .to_owned();
+        let name = attribute.key.as_ref().to_owned();
         let value = attribute
-            .decoded_and_normalized_value(XmlVersion::Implicit1_0, decoder)
+            .normalized_value(XmlVersion::Implicit1_0)
             .map_err(|source| VerificationError::InvalidJunit {
                 detail: format!("cannot decode XML attribute `{name}`: {source}"),
             })?

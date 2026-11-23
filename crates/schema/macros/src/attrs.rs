@@ -996,26 +996,23 @@ impl FieldEntry {
                         ));
                     },
                 }
-                Ok(())
             },
-            FieldEntry::Flag(name) => {
-                match name.to_string().as_str() {
-                    "secret" => out.secret = true,
-                    "multiline" => out.multiline = true,
-                    "no_expression" => out.no_expression = true,
-                    "expression_required" => out.expression_required = true,
-                    "enum_select" => out.enum_select = true,
-                    "skip" => out.skip = true,
-                    other => {
-                        return Err(syn::Error::new(
-                            name.span(),
-                            format!("unknown #[field(..)] flag `{other}`"),
-                        ));
-                    },
-                }
-                Ok(())
+            FieldEntry::Flag(name) => match name.to_string().as_str() {
+                "secret" => out.secret = true,
+                "multiline" => out.multiline = true,
+                "no_expression" => out.no_expression = true,
+                "expression_required" => out.expression_required = true,
+                "enum_select" => out.enum_select = true,
+                "skip" => out.skip = true,
+                other => {
+                    return Err(syn::Error::new(
+                        name.span(),
+                        format!("unknown #[field(..)] flag `{other}`"),
+                    ));
+                },
             },
         }
+        Ok(())
     }
 }
 
@@ -1057,35 +1054,30 @@ impl ValidateEntry {
 
     fn apply(self, out: &mut ValidateAttrs) -> syn::Result<()> {
         match self {
-            ValidateEntry::Flag(name) => {
-                match name.to_string().as_str() {
-                    "required" => out.required = true,
-                    "url" => out.url = true,
-                    "email" => out.email = true,
-                    other => {
-                        return Err(syn::Error::new(
-                            name.span(),
-                            format!("unknown #[validate(..)] flag `{other}`"),
-                        ));
-                    },
-                }
-                Ok(())
+            ValidateEntry::Flag(name) => match name.to_string().as_str() {
+                "required" => out.required = true,
+                "url" => out.url = true,
+                "email" => out.email = true,
+                other => {
+                    return Err(syn::Error::new(
+                        name.span(),
+                        format!("unknown #[validate(..)] flag `{other}`"),
+                    ));
+                },
             },
             ValidateEntry::Length { min, max } => {
                 out.min_length = min;
                 out.max_length = max;
-                Ok(())
             },
             ValidateEntry::Range { min, max } => {
                 out.min = min;
                 out.max = max;
-                Ok(())
             },
             ValidateEntry::Pattern(pat) => {
                 out.pattern = Some(pat);
-                Ok(())
             },
         }
+        Ok(())
     }
 }
 
@@ -1294,7 +1286,6 @@ impl SchemaEntry {
         match self {
             Self::Reserved { keys } => {
                 out.reserved.extend(keys);
-                Ok(())
             },
             Self::Condition { name, expression } => {
                 if out.conditions.iter().any(|(existing, _)| existing == &name) {
@@ -1306,9 +1297,9 @@ impl SchemaEntry {
                     nebula_macro_support::slot::ConditionScope::LocalRecord,
                 )?;
                 out.conditions.push((name, expression));
-                Ok(())
             },
         }
+        Ok(())
     }
 }
 

@@ -47,9 +47,9 @@ fn decode_hex(value: &str) -> Result<[u8; 32], TransportDigestParseError> {
     }
 
     let mut bytes = [0_u8; 32];
-    for (index, pair) in encoded.chunks_exact(2).enumerate() {
-        let high = hex_nibble(pair[0], index * 2)?;
-        let low = hex_nibble(pair[1], index * 2 + 1)?;
+    for (index, &[high, low]) in encoded.as_chunks::<2>().0.iter().enumerate() {
+        let high = hex_nibble(high, index * 2)?;
+        let low = hex_nibble(low, index * 2 + 1)?;
         bytes[index] = (high << 4) | low;
     }
     Ok(bytes)

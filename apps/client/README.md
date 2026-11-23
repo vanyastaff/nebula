@@ -76,6 +76,6 @@ clipboard, accessibility, packaging and updates. Those require their own release
 
 The UI uses Inter from the Google Fonts `ofl/inter` distribution (SIL Open Font
 License, retained in `licenses/Inter-OFL.txt`) and unmodified fallback fonts from
-`epaint_default_fonts 0.36.2`. Their original
+`epaint_default_fonts 0.37.0`. Their original
 notices are retained in `licenses/` and copied into the browser bundle. Native
 distribution must include those notices alongside the executable.

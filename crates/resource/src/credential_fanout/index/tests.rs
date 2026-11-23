@@ -473,7 +473,7 @@ fn staged_bind_refcount_protects_a_concurrent_live_row() {
         2
     );
 
-    // Call A's `register` fails -> its scopeguard releases A's
+    // Call A's `register` fails -> its `DropGuard` releases A's
     // reference. B is still live, so the row MUST survive.
     idx.unbind_staged_entry(&cid, &bound(&key, &scope, "db", id.clone()));
     assert_eq!(

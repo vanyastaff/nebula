@@ -5,14 +5,14 @@
 //! each dispatch, the registry calls
 //! [`instantiate`](ActionFactory::instantiate) with the current
 //! [`NodeDefinition`](nebula_workflow::NodeDefinition) + an
-//! [`ActionContext`](crate::ActionContext); the factory builds a fresh
-//! [`ActionHandle`](crate::ActionHandle) ready for dispatch.
+//! [`ActionContext`]; the factory builds a fresh
+//! [`ActionHandle`] ready for dispatch.
 //!
 //! The default `GenericStatelessFactory<A>` / `GenericStatefulFactory<A>` /
 //! `GenericTriggerFactory<A>` / `GenericResourceFactory<A>` /
 //! `GenericControlFactory<A>` types wrap any `A: Action + FromWorkflowNode`
 //! into an [`ActionFactory`] by routing through
-//! [`FromWorkflowNode::from_workflow_node`](crate::FromWorkflowNode::from_workflow_node)
+//! [`FromWorkflowNode::from_workflow_node`]
 //! and then erasing to the matching [`ActionHandle`] variant.
 
 use std::{any::Any, future::Future, marker::PhantomData, pin::Pin, sync::Arc};

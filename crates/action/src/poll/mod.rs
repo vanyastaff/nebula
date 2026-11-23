@@ -1001,7 +1001,7 @@ fn apply_jitter(secs: f64, jitter_fraction: f64, identity_seed: u64) -> f64 {
         .subsec_nanos() as u64;
     let seed = time_seed ^ identity_seed;
     let normalized = (seed % 1_000_000) as f64 / 1_000_000.0;
-    let jitter = (normalized * 2.0 - 1.0) * jitter_fraction;
+    let jitter = normalized.mul_add(2.0, -1.0) * jitter_fraction;
     (secs * (1.0 + jitter)).max(0.001)
 }
 

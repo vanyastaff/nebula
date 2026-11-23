@@ -111,11 +111,9 @@ impl BoundedProvider for Seats {
         if self.reset_block.load(Ordering::SeqCst) {
             self.reset_gate.notified().await;
         }
-        if self.reset_ok.load(Ordering::SeqCst) {
-            Ok(())
-        } else {
-            Err(Error::transient("seat reset failed"))
-        }
+        self.reset_ok
+            .load(Ordering::SeqCst)
+            .ok_or_else(|| Error::transient("seat reset failed"))
     }
 }
 

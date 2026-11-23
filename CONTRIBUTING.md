@@ -52,7 +52,7 @@ lefthook install
 
 | Tool             | Why                                                      |
 |------------------|----------------------------------------------------------|
-| `cargo`          | Rust 1.97+, edition 2024, resolver 3                     |
+| `cargo`          | Rust 1.100+, edition 2024, resolver 3                    |
 | `task`           | `Taskfile.yml` is the canonical entry point              |
 | `lefthook`       | Local pre-commit / pre-push (mirrors CI required jobs)   |
 | `convco`         | Conventional-Commits validation                          |

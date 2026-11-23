@@ -249,7 +249,7 @@ pub enum ActionError {
     /// user input.
     #[error("validation ({}): field `{field}`{}",
         reason.as_str(),
-        detail.as_deref().map(|detail| format!(" — {detail}")).unwrap_or_default()
+        detail.as_deref().map_or_default(|detail| format!(" — {detail}"))
     )]
     Validation {
         /// The field or input area that failed validation. Must be a

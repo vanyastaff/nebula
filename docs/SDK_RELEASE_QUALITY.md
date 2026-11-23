@@ -11,7 +11,7 @@ The five required cases are:
 | --- | --- |
 | `api-snapshots` | Existing `public_api_snapshot` tests for default, minimal, all, and each declared SDK feature |
 | `semver-classification` | Pinned cargo-semver-checks for `nebula-sdk` and `nebula-api-contract` against an immutable compatibility baseline |
-| `msrv` | Both supported packages checked with pinned stable Rust 1.97.1, all features and targets |
+| `msrv` | Both supported packages checked with pinned stable Rust 1.100.0, all features and targets |
 | `rustdoc` | Both supported packages documented with all features and `RUSTDOCFLAGS=-D warnings` |
 | `supported-feature-matrices` | SDK all-target checks per actual Cargo feature plus SDK-only perimeter and persona consumer tests |
 

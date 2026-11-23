@@ -86,7 +86,7 @@ impl<K: std::hash::Hash + Eq + Send + Sync + 'static, V: Clone + Send + Sync + '
 
     #[inline]
     fn record_hit(&self) {
-        // 32-bit saturation done atomically via `fetch_update`: a
+        // 32-bit saturation done atomically via `try_update`: a
         // load+`fetch_add` pair would race near `u32::MAX`, allowing two
         // threads to both pass the guard and both increment, wrapping
         // the high half into the low half and corrupting both counters
@@ -95,7 +95,7 @@ impl<K: std::hash::Hash + Eq + Send + Sync + 'static, V: Clone + Send + Sync + '
         // for an observability counter.
         let _ = self
             .packed_stats
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |prev| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |prev| {
                 if (prev >> 32) >= u32::MAX as u64 {
                     None
                 } else {
@@ -108,7 +108,7 @@ impl<K: std::hash::Hash + Eq + Send + Sync + 'static, V: Clone + Send + Sync + '
     fn record_miss(&self) {
         let _ = self
             .packed_stats
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |prev| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |prev| {
                 if (prev & Self::LOW_MASK) >= u32::MAX as u64 {
                     None
                 } else {

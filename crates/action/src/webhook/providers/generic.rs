@@ -244,7 +244,7 @@ fn percent_decode(s: &str) -> String {
         out.push(b);
         i += 1;
     }
-    String::from_utf8_lossy(&out).into_owned()
+    String::from_utf8_lossy_owned(out)
 }
 
 const fn hex_nibble(b: u8) -> Option<u8> {

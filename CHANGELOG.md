@@ -204,6 +204,25 @@ changes are expected between minor releases — call them out here.
 
 ### Changed
 
+- **Rust 1.100 is the toolchain and the MSRV.** `rust-toolchain.toml`,
+  `rust-version`, clippy's `msrv` and every CI pin move from 1.97 to 1.100.
+  Code adopts what 1.98–1.100 stabilised: `std::mem::DropGuard` replaces the
+  `scopeguard` crate, `Atomic::try_update` replaces the deprecated
+  `fetch_update`, and `bool::ok_or(_else)`, `Option::map_or_default`,
+  `str::trim_prefix`/`trim_suffix`, `Vec::from_fn`,
+  `String::from_utf8_lossy_owned` and `bool::toggle` replace hand-rolled
+  equivalents. `ShutdownError::ResourceTeardownFailed::source` and
+  `PlanFlavorRevisionBridgeError::StoredPairMismatch` fields are boxed.
+
+- **Dependencies move to their current majors.** Among them opentelemetry
+  0.33, sentry 0.49 (the combined tracing layer becomes span, breadcrumb and
+  error layers with the same level routing; an out-of-range
+  `SENTRY_TRACES_SAMPLE_RATE` now falls back to 0.1 instead of panicking),
+  jsonwebtoken 12, totp-rs 6, utoipa 6, jsonschema 0.63, aes-gcm 0.11, argon2
+  0.6 (hashes from 0.5 still verify), quick-xml 0.42, parking_lot 0.13, ulid 3
+  and eframe 0.37. `nebula-client`'s UI-only dependencies are now behind its
+  `ui` feature.
+
 - **A cluster rate-limit slot costs one PostgreSQL round trip.**
   `PgLimitStore::reserve` used a four-step transaction (`BEGIN`, a locking
   upsert, an `UPDATE`, `COMMIT`) for every rate-limited provider attempt. A

@@ -265,11 +265,8 @@ impl LoadSignal for ConstantLoad {
 }
 
 fn validate_unit_interval(field: &'static str, value: f64) -> Result<(), ConfigError> {
-    if value.is_finite() && (0.0..=1.0).contains(&value) {
-        Ok(())
-    } else {
-        Err(ConfigError::new(field, "must be finite and in 0.0..=1.0"))
-    }
+    (value.is_finite() && (0.0..=1.0).contains(&value))
+        .ok_or_else(|| ConfigError::new(field, "must be finite and in 0.0..=1.0"))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

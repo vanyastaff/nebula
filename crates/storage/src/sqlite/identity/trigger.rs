@@ -216,10 +216,6 @@ impl TriggerStore for SqliteTriggerStore {
         .execute(&self.pool)
         .await
         .map_err(storage_error)?;
-        if res.rows_affected() > 0 {
-            Ok(())
-        } else {
-            Err(StorageError::not_found("trigger", id))
-        }
+        (res.rows_affected() > 0).ok_or_else(|| StorageError::not_found("trigger", id))
     }
 }

@@ -690,7 +690,7 @@ impl StoredResourceActivator {
                 .is_some_and(|active| active.activated == entry.stale.activated);
             if !serving {
                 if retire(context, &entry.stale.activated) {
-                    retired.push(entry.stale.activated.clone());
+                    retired.push(entry.stale.activated);
                 } else {
                     still_pending.push(entry);
                 }
@@ -1110,11 +1110,12 @@ async fn serves(context: &ActivationContext<'_>, activated: &ActivatedResource) 
     ) else {
         return false;
     };
-    if row.phase().is_accepting() {
-        return true;
-    }
+    let accepting = row.phase().is_accepting();
     #[cfg(feature = "rotation")]
-    if context.fanout.is_some() && row.phase() == nebula_resource::ResourcePhase::Initializing {
+    if !accepting
+        && context.fanout.is_some()
+        && row.phase() == nebula_resource::ResourcePhase::Initializing
+    {
         return context
             .manager
             .until_accepting(
@@ -1126,7 +1127,7 @@ async fn serves(context: &ActivationContext<'_>, activated: &ActivatedResource) 
             .await
             .is_ok();
     }
-    false
+    accepting
 }
 
 /// Whether the credentials a registration was built with are still the

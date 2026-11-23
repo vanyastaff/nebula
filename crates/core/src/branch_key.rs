@@ -2,7 +2,7 @@
 //!
 //! A `BranchKey` names a specific branch selected by an action (e.g. `"true"`,
 //! `"false"`, `"case_1"`). It shares the same validation rules as
-//! [`PortKey`](crate::PortKey) but is a **distinct type**: assigning a
+//! [`PortKey`] but is a **distinct type**: assigning a
 //! `BranchKey` where a `PortKey` is required (or vice-versa) is a compile-time
 //! type error.
 //!

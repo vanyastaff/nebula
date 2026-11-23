@@ -301,7 +301,8 @@ fn token_for(config: &ApiConfig, user: UserId, lifetime: u64) -> String {
             iat: now,
             exp: now + lifetime,
         },
-        &jsonwebtoken::EncodingKey::from_secret(config.jwt_secret.as_bytes()),
+        &jsonwebtoken::EncodingKey::from_secret(config.jwt_secret.as_bytes())
+            .expect("non-empty HMAC secret"),
     )
     .unwrap()
 }

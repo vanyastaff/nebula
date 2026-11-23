@@ -1,7 +1,7 @@
 //! `ActionHandle` enum + object-safe per-variant sub-traits.
 //!
 //! The engine cannot dispatch on the
-//! `Sized` [`Action`](crate::Action) trait directly because Variant A makes
+//! `Sized` [`Action`] trait directly because Variant A makes
 //! it object-unsafe. Instead, the engine works against an enum
 //! [`ActionHandle`] whose variants wrap `Box<dyn XxxHandle>` trait objects
 //! — one per execution-shape kind:
@@ -14,7 +14,7 @@
 //! - [`AgentHandle`] — multi-turn reasoning loop with budget and per-turn timeout.
 //!
 //! The engine produces an `ActionHandle` per execution via
-//! [`ActionFactory::instantiate`](crate::ActionFactory::instantiate).
+//! [`ActionFactory::instantiate`].
 
 use std::{any::Any, fmt, sync::Arc};
 

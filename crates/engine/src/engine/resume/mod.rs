@@ -827,7 +827,7 @@ impl WorkflowEngine {
         }
         let binding_manifests = &self.credential_bindings_by_execution;
         let credential_scopes = &self.credential_scopes_by_execution;
-        let _credential_context_guard = scopeguard::guard(execution_id, move |id| {
+        let _credential_context_guard = std::mem::DropGuard::new(execution_id, move |id| {
             binding_manifests.remove(&id);
             credential_scopes.remove(&id);
         });
@@ -838,7 +838,7 @@ impl WorkflowEngine {
             workflow_id,
             Some(resource_acquire_scope_for(scope)),
         );
-        let _execution_resource_guard = scopeguard::guard(execution_id, |id| {
+        let _execution_resource_guard = std::mem::DropGuard::new(execution_id, |id| {
             self.remove_execution_resource_context(id);
         });
 

@@ -292,7 +292,7 @@ fn tagged_operation_variants_and_defaults_keep_their_serde_wire_shape() {
         json!({"op": "flatten", "separator": ""}),
     ] {
         assert_wire::<json_transform::JsonTransformInput>(
-            json!({"data": null, "operations": [operation.clone()]}),
+            json!({"data": null, "operations": [operation]}),
         );
         assert_wire::<map::MapInput>(json!({"data": [], "operations": [operation]}));
     }

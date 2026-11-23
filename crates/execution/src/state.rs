@@ -326,9 +326,6 @@ impl NodeExecutionState {
     /// impossible because `next_attempt_at` is also the retry-wake instant for
     /// a `WaitingRetry` node (where no `wait_wake` applies). Pairing every write
     /// behind this method is the next-best guard.
-    ///
-    /// [`WaitWake::Completion`]: WaitWake::Completion
-    /// [`ExecutionState::park_node`]: ExecutionState::park_node
     pub fn arm_wait_completion(&mut self, when: DateTime<Utc>) {
         self.next_attempt_at = Some(when);
         self.wait_wake = Some(WaitWake::Completion);

@@ -3,7 +3,7 @@
 //! Stateless actions are pure functions from input to result — no state is
 //! kept between executions, and the engine may run multiple instances in
 //! parallel. For iterative execution with persistent state, use
-//! [`StatefulAction`](crate::stateful::StatefulAction).
+//! [`StatefulAction`].
 //!
 //! ## Cancellation
 //!

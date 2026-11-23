@@ -1295,11 +1295,10 @@ fn ensure_resource_exists(
     scope: &Scope,
     resource_id: SharedResourceId,
 ) -> Result<(), StorageError> {
-    if state.resources.contains_key(&(scope.clone(), resource_id)) {
-        Ok(())
-    } else {
-        Err(opaque_not_found("shared resource"))
-    }
+    state
+        .resources
+        .contains_key(&(scope.clone(), resource_id))
+        .ok_or_else(|| opaque_not_found("shared resource"))
 }
 
 fn ensure_live_source_token(
@@ -1307,11 +1306,8 @@ fn ensure_live_source_token(
     token: &ResourceSourceLeaseToken,
     now: DateTime<Utc>,
 ) -> Result<(), StorageError> {
-    if lease.token == *token && now < lease.expires_at {
-        Ok(())
-    } else {
-        Err(opaque_fenced("resource source lease"))
-    }
+    (lease.token == *token && now < lease.expires_at)
+        .ok_or_else(|| opaque_fenced("resource source lease"))
 }
 
 fn opaque_not_found(entity: &'static str) -> StorageError {

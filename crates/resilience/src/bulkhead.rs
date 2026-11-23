@@ -281,7 +281,7 @@ impl Bulkhead {
 
         // Try to enqueue via `try_update` (Rust 1.95).
         // Signature is `try_update(set_order, fetch_order, f)` — maps from
-        // `fetch_update(success=AcqRel, failure=Acquire, f)` as
+        // `try_update(success=AcqRel, failure=Acquire, f)` as
         // `set_order := success = AcqRel`, `fetch_order := failure = Acquire`.
         let enqueued = self
             .waiting_count

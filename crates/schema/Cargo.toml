@@ -8,7 +8,6 @@ authors.workspace = true
 description = "Schema definition system for Nebula workflow surfaces"
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 documentation.workspace = true
 
 [features]

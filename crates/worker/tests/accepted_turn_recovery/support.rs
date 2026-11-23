@@ -417,7 +417,7 @@ impl Backend {
                     .unwrap();
                 let schema = format!(
                     "worker_recovery_{}",
-                    ulid::Ulid::new().to_string().to_lowercase()
+                    ulid::Ulid::generate().to_string().to_lowercase()
                 );
                 sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
                     .execute(&admin)
@@ -588,7 +588,7 @@ async fn materialize(
     )
     .unwrap();
     let command = ControlMsg {
-        id: ulid::Ulid::new().to_bytes(),
+        id: ulid::Ulid::generate().to_bytes(),
         execution_id: id.to_string(),
         command: ControlCommand::Start,
         scope: scope.clone(),

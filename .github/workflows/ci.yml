@@ -57,7 +57,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: "1.97"
+          toolchain: "1.100"
           components: rustfmt
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -76,7 +76,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: "1.97"
+          toolchain: "1.100"
           components: clippy
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
@@ -116,7 +116,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: "1.97"
+          toolchain: "1.100"
       - name: Install cargo-hack
         uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
         with:
@@ -132,6 +132,13 @@ jobs:
       # workspace-level all / default / no-default configurations, so a
       # warning that fires *only* under a single isolated feature — the exact
       # blind spot this job exists for — was previously invisible here.
+      # `--no-dev-deps` strips every `[dev-dependencies]` table while it runs,
+      # so workspace deps used only by tests/benches look unused to Cargo's
+      # `unused_workspace_dependencies` lint (Cargo 1.100) and the warning is
+      # promoted to an error by `build.warnings = deny`. Silence that one lint
+      # in this job's checkout only; every other build keeps it at `warn`.
+      - name: Allow dev-only workspace deps under --no-dev-deps
+        run: printf '\n[workspace.lints.cargo]\nunused_workspace_dependencies = "allow"\n' >> Cargo.toml
       - name: cargo hack check (each feature, workspace)
         env:
           CARGO_BUILD_WARNINGS: deny
@@ -154,7 +161,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: "1.97"
+          toolchain: "1.100"
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
         with:
@@ -167,7 +174,7 @@ jobs:
   # ── MSRV ───────────────────────────────────────────────────────────────────
   # Tier 2: skipped on draft PRs.
   msrv:
-    name: MSRV (1.97)
+    name: MSRV (1.100)
     needs: [check]
     if: >-
       github.event_name != 'pull_request' ||
@@ -178,10 +185,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - name: Install Rust 1.97
+      - name: Install Rust 1.100
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: "1.97"
+          toolchain: "1.100"
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
         with:
@@ -215,7 +222,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: "1.97"
+          toolchain: "1.100"
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
         with:
@@ -244,7 +251,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: "1.97"
+          toolchain: "1.100"
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
         with:
@@ -270,7 +277,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: "1.97"
+          toolchain: "1.100"
       - name: Install cargo-deny
         uses: taiki-e/install-action@481c34c1cf3a84c68b5e46f4eccfc82af798415a # v2.75.23
         with:
@@ -297,7 +304,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: "1.97"
+          toolchain: "1.100"
       - name: Assert test-only crates absent from binary dep trees
         run: |
           set -euo pipefail
@@ -323,13 +330,24 @@ jobs:
   #     is 1.96.0-nightly;
   #   * above format 57, the tool rejects the JSON (current nightly emits 60,
   #     and 0.5.0 is the latest release, so there is no newer tool to move to).
-  # nightly-2026-04-20 (1.97.0-nightly) is inside that window. When the MSRV
-  # next moves, find a nightly at or above it that still emits the format the
-  # installed tool requires, or bump the tool first if one exists.
+  # The 1.100 MSRV bump closed that window: every nightly at or above 1.100
+  # emits format 61+, and 0.5.0 is still the newest tool. The job therefore
+  # keeps nightly-2026-04-20 (1.97.0-nightly) and lowers the workspace
+  # `rust-version` to 1.97 in its own checkout only, so the surface crates
+  # must keep building on that nightly. Std APIs stabilised in 1.98-1.100 are
+  # still feature-gated there, so `scripts/external-types-rustc-wrapper.sh`
+  # (workspace crates only) and RUSTDOCFLAGS enable exactly those gates; add a
+  # gate to NEBULA_NIGHTLY_FEATURES when new code needs one. Drop the override
+  # step, the wrapper and the feature list once a tool release understands a
+  # nightly at or above the MSRV.
   external-types:
     name: Public API surface (sdk, api)
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      NEBULA_NIGHTLY_FEATURES: bool_to_result,trim_prefix_suffix,vec_from_fn,result_option_map_or_default,string_from_utf8_lossy_owned,drop_guard
+      RUSTC_WORKSPACE_WRAPPER: ${{ github.workspace }}/scripts/external-types-rustc-wrapper.sh
+      RUSTDOCFLAGS: -Aunused_features -Zcrate-attr=feature(bool_to_result,trim_prefix_suffix,vec_from_fn,result_option_map_or_default,string_from_utf8_lossy_owned,drop_guard)
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -341,6 +359,10 @@ jobs:
         uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
         with:
           tool: cargo-check-external-types@0.5.0
+      - name: Lower workspace rust-version for the pinned nightly
+        # See the comment above the job: the pinned nightly is older than
+        # the MSRV. Local to this job's checkout, never committed.
+        run: sed -i 's/^rust-version = ".*"$/rust-version = "1.97"/' Cargo.toml
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
         with:
@@ -383,7 +405,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: "1.97"
+          toolchain: "1.100"
       - name: Install cargo-nextest
         uses: taiki-e/install-action@481c34c1cf3a84c68b5e46f4eccfc82af798415a # v2.75.23
         with:

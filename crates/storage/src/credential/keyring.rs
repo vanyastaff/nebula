@@ -45,7 +45,7 @@ impl CredentialKeyring {
             .to_owned();
         let encoded_keys: Vec<_> = configured
             .filter(|value| !value.trim().is_empty())
-            .map_or_else(Vec::new, |value| value.split(',').map(str::trim).collect());
+            .map_or_default(|value| value.split(',').map(str::trim).collect());
         if encoded_keys.len() > MAX_LEGACY_MASTER_KEYS {
             return Err(CredentialKeyringError::TooManyLegacyKeys);
         }

@@ -506,13 +506,12 @@ pub fn snapshot(registry: &MetricsRegistry) -> String {
             } else {
                 let inf_labels = format!("{},le=\"+Inf\"}}", &label_str[..label_str.len() - 1]);
                 let _ = writeln!(out, "{name}_bucket{inf_labels} {count}");
-                let sum_labels = label_str.clone();
                 let _ = writeln!(
                     out,
-                    "{name}_sum{sum_labels} {}",
+                    "{name}_sum{label_str} {}",
                     format_prometheus_float(sum)
                 );
-                let _ = writeln!(out, "{name}_count{sum_labels} {count}");
+                let _ = writeln!(out, "{name}_count{label_str} {count}");
             }
         }
     }

@@ -80,11 +80,7 @@ pub fn assert_tenant_access_coverage(openapi: &OpenApi) -> Result<(), AccessCove
         }
     }
 
-    if failures.is_empty() {
-        Ok(())
-    } else {
-        Err(AccessCoverageError { failures })
-    }
+    failures.is_empty().ok_or(AccessCoverageError { failures })
 }
 
 fn annotate_paths(paths: &mut utoipa::openapi::path::Paths, scope: &str) {

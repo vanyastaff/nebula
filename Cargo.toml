@@ -52,13 +52,12 @@ resolver = "3"
 # breaking API changes. Migration details belong in CHANGELOG.md.
 version = "0.33.0"
 edition = "2024"
-rust-version = "1.97"
+rust-version = "1.100"
 keywords = ["workflow", "integrations", "no-code", "low-code", "automation"]
 authors = ["Vanya Stafford <vanya.john.stafford@gmail.com>"]
 description = "Workflow automation toolkit"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/vanyastaff/nebula"
-homepage = "https://github.com/vanyastaff/nebula"
 documentation = "https://docs.rs/nebula"
 
 [workspace.dependencies]
@@ -80,8 +79,8 @@ serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_json = { version = "1.0.149", features = ["raw_value"] }
 # Exact comparisons between JSON integers and floating-point numbers.
 num-cmp = "0.1.0"
-jsonschema = { version = "0.49.1", default-features = false }
-quick-xml = { version = "0.41.0", default-features = false }
+jsonschema = { version = "0.63.1", default-features = false }
+quick-xml = { version = "0.42.0", default-features = false }
 toml = "1"
 
 # Logging and tracing
@@ -92,8 +91,8 @@ tracing-subscriber = { version = "0.3.23", default-features = false }
 
 # Concurrency and synchronization
 dashmap = { version = "6.1.0", default-features = false }
-lru = { version = "0.18.2", default-features = false }
-parking_lot = { version = "0.12.5", default-features = false }
+lru = { version = "0.19.2", default-features = false }
+parking_lot = { version = "0.13.0", default-features = false }
 moka = { version = "0.12", default-features = false }
 arc-swap = "1.9"
 
@@ -104,7 +103,7 @@ unicode-width = "0.2"
 petgraph = "0.8"
 domain-key = { version = "0.6.0", features = ["serde", "ulid", "uuid"] }
 uuid = { version = "1.23", features = ["v4", "serde"] }
-ulid = "1.2.1"
+ulid = "3.0.0"
 chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
 chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
 smallvec = { version = "1.15", features = ["union", "const_generics", "serde"] }
@@ -113,12 +112,12 @@ indexmap = { version = "2", features = ["serde"] }
 # String and data processing
 regex = "1.12"
 url = { version = "2.5", features = ["serde"] }
-base64 = "0.22.1"
+base64 = "0.23.1"
 bytes = "1.11.1"
 lasso = { version = "0.7", features = ["multi-threaded"] }
 
 # Crypto
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 blake3 = "1.5"
 sha2 = "0.11"
 hmac = "0.13"
@@ -126,8 +125,8 @@ hex = "0.4"
 subtle = "2.6"
 zeroize = { version = "1.8.2", features = ["std", "zeroize_derive"] }
 secrecy = { version = "0.10", features = ["serde"] }
-argon2 = { version = "0.5.3", default-features = false, features = ["std"] }
-totp-rs = { version = "5", default-features = false, features = ["otpauth"] }
+argon2 = { version = "0.6.0", default-features = false, features = ["alloc", "password-hash", "getrandom"] }
+totp-rs = { version = "6", default-features = false, features = ["otpauth"] }
 
 # CLI
 cargo_metadata = "=0.23.1"
@@ -165,37 +164,37 @@ lettre = { version = "0.11", default-features = false, features = [
 # `utoipa-axum` is the only mounting path that ties the served `axum::Router`
 # to the generated `OpenApi` value — handlers without `#[utoipa::path]` cannot
 # pass through `routes!()`. This is the structural drift-detection guarantee.
-utoipa = { version = "5.5", features = ["axum_extras", "macros"] }
-utoipa-axum = "0.2"
-utoipa-swagger-ui = { version = "9", features = ["axum"] }
+utoipa = { version = "6.0", features = ["axum_extras", "macros"] }
+utoipa-axum = "0.3"
+utoipa-swagger-ui = { version = "10", features = ["axum"] }
 # Spec validation in tests — typed 3.1 parser; round-tripping the served JSON
 # is hermetic (no meta-schema fixture to maintain).
-oas3 = "0.21"
+# `default-features = false`: oas3 0.22 turns on `serde_json/preserve_order` by
+# default, which would change JSON map ordering (and `Value` size) workspace-wide.
+oas3 = { version = "0.22", default-features = false }
 
 # JSON Web Tokens
-jsonwebtoken = { version = "10", features = ["rust_crypto"] }
+jsonwebtoken = { version = "12", features = ["rust_crypto"] }
 
 # Random number generation
 rand = "0.10"
 
 
 # Observability (optional)
-opentelemetry = "0.32.0"
-opentelemetry-otlp = { version = "0.32.0", features = ["grpc-tonic", "trace", "metrics"] }
-opentelemetry_sdk = { version = "0.32.1", features = ["rt-tokio", "metrics"] }
-tracing-opentelemetry = "0.33.0"
+opentelemetry = "0.33.1"
+opentelemetry-otlp = { version = "0.33.1", features = ["grpc-tonic", "trace", "metrics"] }
+opentelemetry_sdk = { version = "0.33.1", features = ["rt-tokio", "metrics"] }
+tracing-opentelemetry = "0.34.0"
 tempfile = "3.27.0"
 proptest = "1.11"
-criterion = { package = "codspeed-criterion-compat", version = "4" }
+criterion = { package = "codspeed-criterion-compat", version = "6" }
 
 # Test helpers — crates opt in via [dev-dependencies]
-assert_cmd = "2.0.17"
 assert_fs = "1.1.2"
 insta = { version = "1.47.2", features = ["json", "redactions"] }
-mockall = "0.13.1"
-predicates = "3.1.3"
+mockall = "0.15.0"
 pretty_assertions = "1.4.1"
-rstest = "0.24.0"
+rstest = "0.29.0"
 wiremock = "0.6"
 rcgen = { version = "0.14.8", default-features = false, features = ["aws_lc_rs"] }
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["aws_lc_rs", "tls12"] }
@@ -204,10 +203,9 @@ tokio-rustls = { version = "0.26.4", default-features = false, features = ["aws_
 semver = { version = "1", features = ["serde"] }
 
 # RAII guard — bind-before-register + rollback-on-failure pattern
-scopeguard = "1"
 
 # Compact inline string (≤24 bytes heap-free; used in error ABI + future ID types)
-compact_str = { version = "0.9", features = ["serde"] }
+compact_str = { version = "0.10", features = ["serde"] }
 
 # Compile-time layout assertions
 static_assertions = "1"
@@ -227,7 +225,6 @@ proc-macro2 = "1"
 nebula-api-contract = { path = "crates/api-contract", version = "=0.33.0" }
 nebula-env = { path = "crates/env" }
 nebula-error = { path = "crates/error" }
-nebula-error-macros = { path = "crates/error/macros" }
 
 
 # ─── Workspace-wide lint policy ──────────────────────────────────────────────
@@ -313,6 +310,9 @@ match_wildcard_for_single_variants = "allow"
 needless_continue = "allow"
 format_push_string = "allow"                 # `push_str(&format!(...))` is idiomatic enough
 unused_async = "allow"                       # bench helpers (criterion.to_async) + public API forward-compat
+assert_is_empty = "allow"                    # `assert!(x.is_empty())` is clearer than `assert_eq!(x, [] as [T; 0])`
+empty_enums = "allow"                        # uninhabited markers + serde `deny_unknown_fields` derive expansions
+unused_async_trait_impl = "allow"            # same: an `async fn` impl reads better than `impl Future` + `ready(..)`
 unused_self = "allow"                        # pedantic noise on trait impls where `self` is required by signature
 unnecessary_wraps = "allow"                  # API-consistency `Result` on builtin tables, `fn main() -> Result<…>`
 

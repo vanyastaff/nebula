@@ -39,7 +39,7 @@ class Admission(unittest.TestCase):
             observations.append({"case": case, "executions": executions})
         self.report = {"schema_version": 1, "gate": "NS20", "identity": quality.identity(self.args),
                        "base_revision": "b" * 40, "sdk_features": ["default", "derive", "embedded", "http"],
-                       "toolchain": "rustc 1.97.1 (synthetic fixture)", "observations": observations}
+                       "toolchain": "rustc 1.100.0 (synthetic fixture)", "observations": observations}
 
     def verify(self):
         (self.candidate / "sdk-release-quality.json").write_text(json.dumps(self.report), encoding="utf-8")

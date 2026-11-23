@@ -15,30 +15,6 @@ description = "Runnable end-user examples for the Nebula workspace"
 path = "src/lib.rs"
 doc = false
 
-[dependencies]
-async-trait = { workspace = true }
-nebula-expression = { path = "../crates/expression" }
-nebula-core = { path = "../crates/core" }
-nebula-resource = { path = "../crates/resource" }
-nebula-schema = { path = "../crates/schema" }
-nebula-engine = { path = "../crates/engine" }
-nebula-workflow = { path = "../crates/workflow" }
-nebula-plugin-core = { path = "../crates/plugin-core" }
-nebula-action = { path = "../crates/action" }
-nebula-execution = { path = "../crates/execution" }
-nebula-eventbus = { path = "../crates/eventbus" }
-nebula-metrics = { path = "../crates/metrics" }
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
-anyhow = { workspace = true }
-chrono = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
-tokio-util = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
-parking_lot = { workspace = true }
-futures = { workspace = true }
-
 [[example]]
 name = "expression_error_messages"
 path = "examples/expression_error_messages.rs"
@@ -111,6 +87,30 @@ path = "examples/workflow_batch_etl.rs"
 workspace = true
 
 [dev-dependencies]
+# Everything here is used only by the `examples/` targets; the lib is an empty
+# placeholder, so a regular dependency would trip `cargo::unused_dependencies`.
+async-trait = { workspace = true }
+nebula-expression = { path = "../crates/expression" }
+nebula-core = { path = "../crates/core" }
+nebula-resource = { path = "../crates/resource" }
+nebula-schema = { path = "../crates/schema" }
+nebula-workflow = { path = "../crates/workflow" }
+nebula-action = { path = "../crates/action" }
+nebula-execution = { path = "../crates/execution" }
+nebula-eventbus = { path = "../crates/eventbus" }
+nebula-metrics = { path = "../crates/metrics" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+parking_lot = { workspace = true }
+futures = { workspace = true }
+anyhow = { workspace = true }
+nebula-plugin-core = { path = "../crates/plugin-core" }
+nebula-engine = { path = "../crates/engine" }
 axum = { workspace = true }
 jsonwebtoken = { workspace = true }
 nebula-api = { path = "../crates/api", features = ["test-util"] }

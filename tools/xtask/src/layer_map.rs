@@ -150,11 +150,9 @@ fn list(violations: &[Violation]) -> String {
 pub(crate) fn check_workspace(root: &Path) -> Result<(), LayerMapError> {
     let inputs = load(root)?;
     let violations = check(&inputs);
-    if violations.is_empty() {
-        Ok(())
-    } else {
-        Err(LayerMapError::Violations(violations))
-    }
+    violations
+        .is_empty()
+        .ok_or(LayerMapError::Violations(violations))
 }
 
 fn load(root: &Path) -> Result<Inputs, LayerMapError> {
@@ -280,8 +278,7 @@ fn parse_wrappers(path: &Path) -> Result<BTreeMap<String, BTreeSet<String>>, Lay
 /// The short name a crate has in the layer map: `nebula-` dropped, and a
 /// `-macros` crate named after its parent.
 fn short_name(package: &str) -> &str {
-    let short = package.strip_prefix("nebula-").unwrap_or(package);
-    short.strip_suffix("-macros").unwrap_or(short)
+    package.trim_prefix("nebula-").trim_suffix("-macros")
 }
 
 pub(crate) fn check(inputs: &Inputs) -> Vec<Violation> {

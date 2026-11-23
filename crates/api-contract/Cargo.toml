@@ -8,7 +8,6 @@ authors.workspace = true
 description = "Versioned Nebula HTTP transport contract"
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
@@ -17,7 +16,7 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 zeroize = { workspace = true }
 # Do not inherit the server's axum_extras feature into this wire boundary.
-utoipa = { version = "5.5", default-features = false, features = ["macros"], optional = true }
+utoipa = { version = "6.0", default-features = false, features = ["macros"], optional = true }
 
 [features]
 default = []

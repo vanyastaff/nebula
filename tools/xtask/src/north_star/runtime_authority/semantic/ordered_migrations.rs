@@ -233,11 +233,7 @@ fn verify_sentinel(value: &Value, scenario: &str) -> Result<(), OrderedMigration
         };
     }
     let expected = serde_json::json!({"execution":{"fencing_generation":1,"id":"migration-sentinel","org_id":"org","state":{"sentinel":true},"status":"running","version":1,"workflow_id":"workflow","workspace_id":"workspace"},"journal":[{"payload":{"event":"preserved"},"seq":1}]});
-    if value == &expected {
-        Ok(())
-    } else {
-        Err(OrderedMigrationError::Sentinel)
-    }
+    (value == &expected).ok_or(OrderedMigrationError::Sentinel)
 }
 
 fn object<'a>(

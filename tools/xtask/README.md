@@ -218,7 +218,7 @@ cargo xtask north-star-gates build-runtime-authority-bundle \
   --job-id postgres-conformance \
   --run-id "$RUN_ID" \
   --run-attempt "$RUN_ATTEMPT" \
-  --toolchain "rustc 1.97.1"
+  --toolchain "rustc 1.100.0"
 
 cargo xtask north-star-gates verify-runtime-authority \
   --artifact-root /immutable/runtime-authority \

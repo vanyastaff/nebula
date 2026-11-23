@@ -517,11 +517,9 @@ async fn delete_drained_locked(
         ArtifactLifecycle::Deleted => {
             // Repeating a delete against its own tombstone succeeds, so a
             // caller whose acknowledgement was lost can reconcile the commit.
-            return if identity.payload_is_cleared {
-                Ok(())
-            } else {
-                Err(RevisionCatalogError::CorruptRecord { target })
-            };
+            return identity
+                .payload_is_cleared
+                .ok_or(RevisionCatalogError::CorruptRecord { target });
         },
         ArtifactLifecycle::Draining => {},
     }

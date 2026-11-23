@@ -7,14 +7,14 @@ description = "Loom CAS atomicity probe for the credential refresh-claim pattern
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 documentation.workspace = true
 keywords.workspace = true
 publish = false
 
-[dependencies]
-# Loom is the only runtime dep. Optional so the probe compiles cheaply
-# under non-loom builds (the test file itself is gated by `#![cfg(loom)]`).
+# Loom is the only runtime dep. Optional and `cfg(loom)`-only so the probe
+# compiles cheaply under non-loom builds (the crate itself is gated by
+# `#![cfg(loom)]`, so an unconditional dep would read as unused).
+[target.'cfg(loom)'.dependencies]
 loom = { version = "0.7", optional = true }
 
 [features]

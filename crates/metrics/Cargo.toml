@@ -8,7 +8,6 @@ authors.workspace = true
 description = "In-memory metrics primitives, naming policy, label safety, and Prometheus export for the Nebula workflow engine"
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]

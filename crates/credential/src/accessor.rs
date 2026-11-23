@@ -1,9 +1,9 @@
 //! Default credential accessor stub.
 //!
-//! The [`CredentialAccessor`](nebula_core::accessor::CredentialAccessor) trait
+//! The [`CredentialAccessor`] trait
 //! is defined in `nebula_core::accessor` and re-exported at the crate root.
 //! This module ships only the no-op stub used by
-//! [`CredentialContext`](crate::CredentialContext) when the runtime does not
+//! [`CredentialContext`] when the runtime does not
 //! inject a real accessor.
 //!
 //! The engine-runtime accessor that enforces per-action allowlists lives in
