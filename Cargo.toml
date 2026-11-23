@@ -79,7 +79,7 @@ serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_json = { version = "1.0.149", features = ["raw_value"] }
 # Exact comparisons between JSON integers and floating-point numbers.
 num-cmp = "0.1.0"
-jsonschema = { version = "0.49.1", default-features = false }
+jsonschema = { version = "0.63.1", default-features = false }
 quick-xml = { version = "0.42.0", default-features = false }
 toml = "1"
 
