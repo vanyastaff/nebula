@@ -302,9 +302,12 @@ impl AcquireLink {
         }
     }
 
-    /// [`Manager::reject_if_tainted_or_shutting_down_post_count`], through
-    /// the link's shutdown fence.
-    fn reject_if_tainted_or_shutting_down_post_count<R: Provider>(
+    /// The post-count taint and shutdown re-check, through the link's
+    /// shutdown fence. The contract is documented on
+    /// [`Manager::reject_if_tainted_or_shutting_down_post_count`], which
+    /// delegates here: taint first, then `shutdown_guard`, both after this
+    /// acquire's increment is visible to the drains.
+    pub(crate) fn reject_if_tainted_or_shutting_down_post_count<R: Provider>(
         &self,
         managed: &ManagedResource<R>,
     ) -> Result<(), Error> {

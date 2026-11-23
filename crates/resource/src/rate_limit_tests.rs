@@ -1127,7 +1127,12 @@ impl nebula_resilience::rate_limiter::gcra::LimitStore for Hangs {
 }
 
 fn hanging_chat_limiter() -> (ResourceLimiter, Arc<dyn ErasedLimitStore>) {
-    let store: Arc<dyn ErasedLimitStore> = Arc::new(Hangs(MemoryLimitStore::new()));
+    chat_limiter_over(Arc::new(Hangs(MemoryLimitStore::new())))
+}
+
+fn chat_limiter_over(
+    store: Arc<dyn ErasedLimitStore>,
+) -> (ResourceLimiter, Arc<dyn ErasedLimitStore>) {
     let base = LimitKey::new("acct:test").unwrap();
     let limits = ResourceLimiter::new(
         Some(Quota::new(
@@ -1199,6 +1204,85 @@ async fn background_refunds_are_bounded() {
         0,
         "each is abandoned after its budget"
     );
+}
+
+/// Books like the in-memory store, but unwinds out of every refund.
+struct RefundPanics(MemoryLimitStore);
+
+impl nebula_resilience::rate_limiter::gcra::LimitStore for RefundPanics {
+    async fn reserve(
+        &self,
+        key: &LimitKey,
+        rate: &Rate,
+        request: ReserveRequest,
+    ) -> Result<Result<Grant, Denied>, LimitStoreError> {
+        nebula_resilience::rate_limiter::gcra::LimitStore::reserve(&self.0, key, rate, request)
+            .await
+    }
+
+    async fn penalize(
+        &self,
+        key: &LimitKey,
+        rate: &Rate,
+        retry_after: Duration,
+        max_penalty: Duration,
+    ) -> Result<(), LimitStoreError> {
+        nebula_resilience::rate_limiter::gcra::LimitStore::penalize(
+            &self.0,
+            key,
+            rate,
+            retry_after,
+            max_penalty,
+        )
+        .await
+    }
+
+    async fn cancel(
+        &self,
+        _key: &LimitKey,
+        _rate: &Rate,
+        _grant: &Grant,
+    ) -> Result<bool, LimitStoreError> {
+        panic!("a careless store unwinds out of a refund");
+    }
+
+    async fn penalty(&self, key: &LimitKey) -> Result<Duration, LimitStoreError> {
+        nebula_resilience::rate_limiter::gcra::LimitStore::penalty(&self.0, key).await
+    }
+}
+
+/// A store that panics in a refund gives its background slot back: the
+/// bound on pending refunds never shrinks, however many refunds unwind.
+#[tokio::test]
+async fn a_panicking_refund_gives_its_slot_back() {
+    let (limits, store) = chat_limiter_over(Arc::new(RefundPanics(MemoryLimitStore::new())));
+    let key = LimitKey::new("acct:test").unwrap();
+    let rate = per_second(100, 100);
+    let grant = Grant {
+        wait: Duration::ZERO,
+        permits: 1,
+        allow_at: 0,
+        end_tat: 0,
+        seq: 0,
+    };
+    // More rounds than the bound: a leaked slot per panic would end with
+    // every slot taken and later refunds silently skipped.
+    for _ in 0..3 {
+        for _ in 0..MAX_PENDING_REFUNDS {
+            limits.release(&store, &key, &rate, grant);
+        }
+        for _ in 0..1_000 {
+            if limits.refunds.load(Ordering::SeqCst) == 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            limits.refunds.load(Ordering::SeqCst),
+            0,
+            "every unwound refund returned its slot"
+        );
+    }
 }
 
 /// The permit an acquire books before the per-attempt latch is never

@@ -639,7 +639,7 @@ fn settle(
     // tracker unblocks `revoke_slot`'s isolated per-resource drain.
     if let Some((manager, per_resource)) = drain_counters {
         for tracker in [&manager, &per_resource] {
-            if tracker.0.fetch_sub(1, AtomicOrdering::Release) == 1 {
+            if tracker.0.fetch_sub(1, AtomicOrdering::AcqRel) == 1 {
                 tracker.1.notify_waiters();
             }
         }
