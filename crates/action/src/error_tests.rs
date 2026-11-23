@@ -433,7 +433,8 @@ fn core_resource_unavailable_retryable_becomes_action_retryable() {
 fn core_resource_not_found_is_fatal_and_names_the_resource() {
     let action: ActionError = nebula_core::CoreError::resource_not_found("postgres").into();
     assert!(action.is_fatal(), "an unregistered resource never retries");
-    assert_eq!(action.to_string(), "fatal: resource not found: postgres");
+    let cause = std::error::Error::source(&action).expect("the core error is the cause");
+    assert_eq!(cause.to_string(), "resource not found: postgres");
 }
 
 #[test]
