@@ -449,3 +449,192 @@ async fn built_epoch_matches_slot_epoch_with_no_race() {
         "with no racing store, built_epoch is exactly the live slot epoch"
     );
 }
+
+// ---------------------------------------------------------------------
+// The state lock: shared between acquires of a live master, exclusive for
+// everything that builds, rotates or closes.
+// ---------------------------------------------------------------------
+
+/// Counts the callers inside `is_alive_sync` at once, holding each one there
+/// until a second arrives or `MEET_WINDOW` runs out.
+#[derive(Default)]
+struct Meeting {
+    inside: std::sync::Mutex<(usize, usize)>,
+    arrived: std::sync::Condvar,
+}
+
+/// Long enough for the second acquire to reach the check on a loaded CI
+/// machine; only a regression ever waits it out.
+const MEET_WINDOW: Duration = Duration::from_secs(5);
+
+impl Meeting {
+    fn attend(&self) {
+        let mut inside = self
+            .inside
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        inside.0 += 1;
+        inside.1 = inside.1.max(inside.0);
+        self.arrived.notify_all();
+        let (mut inside, _timed_out) = self
+            .arrived
+            .wait_timeout_while(inside, MEET_WINDOW, |inside| inside.1 < 2)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        inside.0 -= 1;
+    }
+
+    fn most_at_once(&self) -> usize {
+        self.inside
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .1
+    }
+}
+
+#[derive(Clone)]
+struct MeetingResident {
+    /// Where concurrent liveness checks meet; `None` checks without waiting.
+    meeting: Option<Arc<Meeting>>,
+    /// Parks `on_credential_refresh` until released.
+    hook_entered: Arc<Notify>,
+    hook_release: Arc<Notify>,
+}
+
+impl MeetingResident {
+    fn new(meeting: Option<Arc<Meeting>>) -> Self {
+        Self {
+            meeting,
+            hook_entered: Arc::default(),
+            hook_release: Arc::default(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for MeetingResident {
+    type Config = bool;
+    type Instance = u32;
+    type Topology = Resident<Self>;
+
+    fn key() -> ResourceKey {
+        resource_key!("meeting-resident")
+    }
+
+    async fn create(&self, _config: &bool, _ctx: &ResourceContext) -> Result<u32, Error> {
+        Ok(1)
+    }
+
+    async fn on_credential_refresh(&self, _slot: &str, _instance: &u32) -> Result<(), Error> {
+        self.hook_entered.notify_one();
+        self.hook_release.notified().await;
+        Ok(())
+    }
+
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("meeting-resident"), "")
+    }
+}
+
+crate::no_credential_slots!(MeetingResident);
+
+impl ResidentProvider for MeetingResident {
+    fn is_alive_sync(&self, _runtime: &u32) -> bool {
+        if let Some(meeting) = &self.meeting {
+            meeting.attend();
+        }
+        true
+    }
+}
+
+/// Two acquires of a live master are inside the liveness check together. An
+/// exclusive hold on the hit path admits them one at a time, so each acquire
+/// of a busy resident parks behind the previous one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn acquires_of_a_live_master_do_not_queue_behind_each_other() {
+    let meeting = Arc::new(Meeting::default());
+    let resource = MeetingResident::new(Some(Arc::clone(&meeting)));
+    let rt = Arc::new(Resident::<MeetingResident>::new(Config::default()));
+    let ctx = Arc::new(test_ctx());
+    let retained = Arc::new(crate::RetainedStore::for_test());
+    // The first acquire builds the master and checks nothing.
+    let first = rt
+        .clone_or_create(&resource, &true, ctx.as_ref(), &retained)
+        .await
+        .expect("create the master");
+
+    let acquires: Vec<_> = (0..2)
+        .map(|_| {
+            let (resource, rt, ctx, retained) = (
+                resource.clone(),
+                Arc::clone(&rt),
+                Arc::clone(&ctx),
+                Arc::clone(&retained),
+            );
+            tokio::spawn(async move {
+                rt.clone_or_create(&resource, &true, ctx.as_ref(), &retained)
+                    .await
+                    .expect("share the master")
+            })
+        })
+        .collect();
+    for acquire in acquires {
+        let shared = acquire.await.expect("acquire task");
+        assert!(Arc::ptr_eq(shared.entry(), first.entry()));
+    }
+
+    assert_eq!(
+        meeting.most_at_once(),
+        2,
+        "both acquires checked the live master at the same time"
+    );
+}
+
+/// The shared hold is still a hold: an acquire that arrives while a rotation
+/// hook runs waits for the hook, as it did under the exclusive lock.
+#[tokio::test]
+async fn a_rotation_hook_in_progress_holds_back_an_acquire() {
+    let resource = MeetingResident::new(None);
+    let rt = Arc::new(Resident::<MeetingResident>::new(Config::default()));
+    let ctx = Arc::new(test_ctx());
+    let retained = Arc::new(crate::RetainedStore::for_test());
+    let master = rt
+        .clone_or_create(&resource, &true, ctx.as_ref(), &retained)
+        .await
+        .expect("create the master");
+
+    let hook = tokio::spawn({
+        let (resource, rt, retained) = (resource.clone(), Arc::clone(&rt), Arc::clone(&retained));
+        async move {
+            rt.dispatch_resident_hook(&resource, &retained, "slot", true)
+                .await
+        }
+    });
+    resource.hook_entered.notified().await;
+
+    let mut acquire = tokio::spawn({
+        let (resource, rt, ctx, retained) = (
+            resource.clone(),
+            Arc::clone(&rt),
+            Arc::clone(&ctx),
+            Arc::clone(&retained),
+        );
+        async move {
+            rt.clone_or_create(&resource, &true, ctx.as_ref(), &retained)
+                .await
+        }
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut acquire)
+            .await
+            .is_err(),
+        "the acquire waits while the hook holds the state exclusively"
+    );
+
+    resource.hook_release.notify_one();
+    assert!(hook.await.expect("hook task").is_ok());
+    let shared = acquire
+        .await
+        .expect("acquire task")
+        .expect("the acquire proceeds once the hook returns");
+    assert!(Arc::ptr_eq(shared.entry(), master.entry()));
+}

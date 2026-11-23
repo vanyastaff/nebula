@@ -409,3 +409,68 @@ async fn normal_drain_transfers_idle_owners_without_abandonment() {
     queue.close();
     ReleaseQueue::shutdown(workers).await;
 }
+
+#[tokio::test]
+async fn checkout_of_an_empty_queue_does_not_wait_for_the_idle_lock() {
+    let store = InstanceStore::<u32>::new(None);
+    // Held as a rotation walk or a deposit in progress would hold it.
+    let idle = store.lock_idle().await;
+
+    let checkout = store.checkout();
+    tokio::pin!(checkout);
+    let std::task::Poll::Ready(checkout) = futures::poll!(checkout.as_mut()) else {
+        panic!("an empty queue has nothing to fence, so nothing to wait for");
+    };
+    assert!(checkout.fresh.is_none());
+    assert!(checkout.stale.is_empty());
+    drop(idle);
+}
+
+#[tokio::test]
+async fn checkout_waits_for_the_idle_lock_while_an_entry_is_idle() {
+    let store = InstanceStore::new(None);
+    let epoch = store.stamp_epoch();
+    assert_eq!(
+        store.return_entry(1_u32, epoch).await,
+        ReturnOutcome::Recycled
+    );
+    let idle = store.lock_idle().await;
+
+    let checkout = store.checkout();
+    tokio::pin!(checkout);
+    assert!(
+        futures::poll!(checkout.as_mut()).is_pending(),
+        "an idle entry is handed out only under the lock that fences it"
+    );
+    drop(idle);
+    assert_eq!(
+        checkout.await.fresh.map(|entry| entry.into_parts().0),
+        Some(1)
+    );
+}
+
+#[tokio::test]
+async fn an_entry_deposited_under_a_held_lock_is_seen_once_the_lock_is_released() {
+    let store = InstanceStore::new(None);
+    let epoch = store.stamp_epoch();
+    let mut idle = store.lock_idle().await;
+    assert_eq!(
+        store.deposit_fresh_locked(&mut idle, 5_u32, epoch),
+        ReturnOutcome::Recycled
+    );
+    // Not released yet: a checkout now orders before the deposit.
+    assert!(store.checkout().await.fresh.is_none());
+    drop(idle);
+    assert_eq!(
+        store
+            .checkout()
+            .await
+            .fresh
+            .map(|entry| entry.into_parts().0),
+        Some(5)
+    );
+    // The queue is empty again, and so reported without the lock.
+    let idle = store.lock_idle().await;
+    assert!(store.checkout().await.fresh.is_none());
+    drop(idle);
+}
