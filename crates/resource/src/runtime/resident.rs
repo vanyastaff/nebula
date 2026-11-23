@@ -13,7 +13,7 @@
 use crate::resource::ProviderKey;
 use std::{marker::PhantomData, sync::Arc};
 
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 use crate::topology::store::StoreView;
 use crate::{
@@ -26,10 +26,16 @@ use crate::{
 
 /// One retained master shared by leases without requiring instance cloning.
 ///
-/// Creation, rotation, and terminal close serialize on one state lock. This
-/// excludes transient Arc owners outside the lock from final-owner extraction.
+/// Creation, rotation, and terminal close serialize on one state lock, held
+/// exclusively. This excludes transient Arc owners outside the lock from
+/// final-owner extraction.
+///
+/// An acquire that finds the current master alive under the current config
+/// only reads that state, so it holds the lock shared: concurrent acquires of
+/// one resident do not queue behind each other, and all of them still wait
+/// for a creation, a rotation hook or a close in progress.
 pub struct Resident<R: Provider> {
-    state: Mutex<ResidentState>,
+    state: RwLock<ResidentState>,
     config: Config,
     /// Every master this topology built that may still be alive: the current
     /// one and displaced ones guards still hold.
@@ -54,7 +60,7 @@ struct ResidentState {
 
 impl<R: Provider> std::fmt::Debug for Resident<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let state = self.state.try_lock().ok();
+        let state = self.state.try_read().ok();
         f.debug_struct("Resident")
             .field("config", &self.config)
             .field(
@@ -70,7 +76,7 @@ impl<R: Provider> Resident<R> {
     /// Creates a resident topology without initializing its master.
     pub fn new(config: Config) -> Self {
         Self {
-            state: Mutex::new(ResidentState {
+            state: RwLock::new(ResidentState {
                 master: None,
                 built_epoch: 0,
                 built_fingerprint: 0,
@@ -104,12 +110,12 @@ impl<R: Provider> Resident<R> {
 
     /// Reports whether a master is currently retained.
     pub async fn is_initialized(&self) -> bool {
-        self.state.lock().await.master.is_some()
+        self.state.read().await.master.is_some()
     }
 
     #[cfg(test)]
     pub(crate) async fn built_epoch_for_test(&self) -> u64 {
-        self.state.lock().await.built_epoch
+        self.state.read().await.built_epoch
     }
 
     /// Per-slot rotation hook dispatch for the Resident topology, with the
@@ -165,7 +171,7 @@ impl<R: Provider> Resident<R> {
         // Serialise against the create slow path: the reconcile must not
         // interleave with an instance being built / its epoch being
         // published, so delivery is exactly-once.
-        let mut state = self.state.lock().await;
+        let mut state = self.state.write().await;
 
         let Some(runtime) = state.master.and_then(|id| retained.lease(id)) else {
             // No live runtime. Not a stale-skip: nothing is bound to a
@@ -256,6 +262,26 @@ impl<R> Resident<R>
 where
     R: crate::topology::resident::ResidentProvider + Send + Sync + 'static,
 {
+    /// Another lease entry on the current master, when it is open, alive and
+    /// built from the config with `config_fingerprint`.
+    ///
+    /// Reads `state` only; the caller holds it at least shared. `None` sends
+    /// the caller to the exclusive path, which decides everything else.
+    fn share_current(
+        state: &ResidentState,
+        resource: &R,
+        config_fingerprint: u64,
+        retained: &crate::RetainedStore<Arc<R::Instance>>,
+    ) -> Option<CreatedEntry<Arc<R::Instance>>> {
+        if state.closed || state.built_fingerprint != config_fingerprint {
+            return None;
+        }
+        let master = state.master.and_then(|id| retained.lease(id))?;
+        resource
+            .is_alive_sync(&master)
+            .then(|| CreatedEntry::new(Arc::clone(&master)))
+    }
+
     /// Builds before replacing, preserving the old master on failure.
     async fn clone_or_create(
         &self,
@@ -271,7 +297,22 @@ where
         let config_fingerprint = ctx
             .admitted_config_fingerprint()
             .unwrap_or_else(|| resource_config.fingerprint());
-        let mut state = self.state.lock().await;
+        // The steady state: the master is alive and built from this config.
+        // Sharing it changes nothing in `state`, so a shared hold is enough,
+        // and an exclusive one here would hand the lock from acquire to
+        // acquire, parking every caller behind the previous one.
+        {
+            let state = self.state.read().await;
+            if let Some(shared) =
+                Self::share_current(&state, resource, config_fingerprint, retained)
+            {
+                return Ok(shared);
+            }
+        }
+        // Anything else may build, replace or refuse. The exclusive hold
+        // starts from scratch: the state may have changed between the two
+        // holds, and another acquire may have built the master meanwhile.
+        let mut state = self.state.write().await;
         if state.closed {
             return Err(Error::cancelled().with_resource_key(R::key()));
         }
@@ -382,7 +423,7 @@ where
     }
 
     async fn quiesce(&self) -> Result<(), Error> {
-        let mut state = self.state.lock().await;
+        let mut state = self.state.write().await;
         state.closed = true;
         state.master = None;
         Ok(())
