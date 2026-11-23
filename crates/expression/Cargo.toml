@@ -7,7 +7,6 @@ authors.workspace = true
 license.workspace = true
 description = "Powerful expression language for Nebula workflow automation, compatible with n8n syntax"
 repository.workspace = true
-homepage.workspace = true
 documentation.workspace = true
 keywords = ["expression", "template", "workflow", "n8n", "automation"]
 categories = ["template-engine", "parser-implementations"]

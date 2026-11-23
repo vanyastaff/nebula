@@ -272,7 +272,7 @@ impl DriverLifecycle {
                 )
                 .is_ok()
         {
-            let _completion = scopeguard::guard((), |()| {
+            let _completion = std::mem::DropGuard::new((), |()| {
                 self.finished
                     .store(true, std::sync::atomic::Ordering::Release);
                 self.completion.notify_one();
@@ -361,7 +361,7 @@ impl ResourceFanoutDriver {
         let task_lifecycle = Arc::clone(&lifecycle);
         let mut credential_sub = credential_bus.map(|bus| bus.subscribe());
         let mut lease_sub = lease_bus.map(|bus| bus.subscribe());
-        let driver_lifecycle_on_exit = scopeguard::guard(
+        let driver_lifecycle_on_exit = std::mem::DropGuard::new(
             (reconciliation_lease, task_lifecycle),
             |(lease, lifecycle)| {
                 drop(lease);

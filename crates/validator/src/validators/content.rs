@@ -116,11 +116,9 @@ pub struct Email;
 
 impl Validate<str> for Email {
     fn validate(&self, input: &str) -> Result<(), ValidationError> {
-        if email_regex()?.is_match(input) {
-            Ok(())
-        } else {
-            Err(ValidationError::invalid_format("", "email"))
-        }
+        email_regex()?
+            .is_match(input)
+            .ok_or_else(|| ValidationError::invalid_format("", "email"))
     }
 }
 
@@ -152,11 +150,9 @@ pub struct Url;
 
 impl Validate<str> for Url {
     fn validate(&self, input: &str) -> Result<(), ValidationError> {
-        if url_regex()?.is_match(input) {
-            Ok(())
-        } else {
-            Err(ValidationError::invalid_format("", "url"))
-        }
+        url_regex()?
+            .is_match(input)
+            .ok_or_else(|| ValidationError::invalid_format("", "url"))
     }
 }
 

@@ -46,7 +46,7 @@ jobs:
       - name: Install pinned Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: 1.97.1
+          toolchain: 1.100.0
 
       - name: Validate North Star gate policy
         run: cargo xtask north-star-gates validate
@@ -137,7 +137,7 @@ jobs:
       - name: Install pinned Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: 1.97.1
+          toolchain: 1.100.0
 
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
@@ -230,7 +230,7 @@ jobs:
       - name: Install pinned Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: 1.97.1
+          toolchain: 1.100.0
 
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
@@ -404,7 +404,7 @@ jobs:
             --job-id "postgres-conformance" \
             --run-id "${{ github.run_id }}" \
             --run-attempt "${{ github.run_attempt }}" \
-            --toolchain "rustc 1.97.1"
+            --toolchain "rustc 1.100.0"
           # Authenticate the manifest through job outputs, outside the upload.
           manifest_sha256=$(sha256sum target/runtime-authority-expected.json)
           echo "expected-provenance-sha256=${manifest_sha256%% *}" >> "$GITHUB_OUTPUT"
@@ -461,7 +461,7 @@ jobs:
       - name: Install pinned Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: 1.97.1
+          toolchain: 1.100.0
 
       - name: Download producer-owned evidence candidate
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7

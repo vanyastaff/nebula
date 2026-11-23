@@ -2060,11 +2060,9 @@ pub(crate) fn validate_node_parameters(
     if action.input_schema.schema.scalar_schema().is_some() {
         // An empty parameter map passes the predecessor/root payload through.
         // Named parameters always produce an object and cannot author a scalar.
-        return if parameters.is_empty() {
-            Ok(())
-        } else {
-            Err(noncanonical("nodes.parameters.schema"))
-        };
+        return parameters
+            .is_empty()
+            .ok_or_else(|| noncanonical("nodes.parameters.schema"));
     }
 
     let supplied = parameters
@@ -2195,7 +2193,7 @@ fn rule_depends_on_reference(rule: &nebula_schema::Rule, referenced: &HashSet<&s
     let mut field_references = Vec::new();
     rule.field_references(&mut field_references);
     field_references.into_iter().any(|reference| {
-        let reference = reference.strip_prefix('#').unwrap_or(reference);
+        let reference = reference.trim_prefix('#');
         let root = reference
             .strip_prefix('/')
             .and_then(|path| path.split('/').next())

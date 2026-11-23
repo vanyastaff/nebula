@@ -578,11 +578,7 @@ fn canonical_inner_nested_rejects_invalid_nested_element() {
     reason = "custom-validator contract passes fields by reference"
 )]
 fn validate_even(value: &i32) -> Result<(), ValidationError> {
-    if value % 2 == 0 {
-        Ok(())
-    } else {
-        Err(ValidationError::new("even", "must be even"))
-    }
+    (value % 2 == 0).ok_or_else(|| ValidationError::new("even", "must be even"))
 }
 
 #[derive(Validator)]

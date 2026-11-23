@@ -343,11 +343,7 @@ fn validate_runtime_threshold(
         ),
         _ => false,
     };
-    if matches_policy {
-        Ok(())
-    } else {
-        Err(VerificationError::PolicyMismatch)
-    }
+    matches_policy.ok_or(VerificationError::PolicyMismatch)
 }
 
 fn values_match(actual: &[String], expected: &[&str]) -> bool {
@@ -439,11 +435,7 @@ impl RunnerIdentity {
             self.run_id.as_str(),
             self.run_attempt,
         );
-        if recorded == running {
-            Ok(())
-        } else {
-            Err(VerificationError::ProvenanceMismatch)
-        }
+        (recorded == running).ok_or(VerificationError::ProvenanceMismatch)
     }
 }
 

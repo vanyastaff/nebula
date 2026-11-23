@@ -75,33 +75,54 @@ macro_rules! method_marker {
 
 method_marker!(
     /// `GET`: reads.
-    Get, GET, Read, "http.get"
+    Get,
+    GET,
+    Read,
+    "http.get"
 );
 method_marker!(
     /// `HEAD`: reads.
-    Head, HEAD, Read, "http.head"
+    Head,
+    HEAD,
+    Read,
+    "http.head"
 );
 method_marker!(
     /// `OPTIONS`: reads.
-    Options, OPTIONS, Read, "http.options"
+    Options,
+    OPTIONS,
+    Read,
+    "http.options"
 );
 method_marker!(
     /// `PUT`: idempotent by HTTP semantics; [`Request::as_write`] declares a
     /// provider that breaks them.
-    Put, PUT, Idempotent, "http.put"
+    Put,
+    PUT,
+    Idempotent,
+    "http.put"
 );
 method_marker!(
     /// `DELETE`: idempotent by HTTP semantics; [`Request::as_write`]
     /// declares a provider that breaks them.
-    Delete, DELETE, Idempotent, "http.delete"
+    Delete,
+    DELETE,
+    Idempotent,
+    "http.delete"
 );
 method_marker!(
     /// `POST`: a write; [`Request::idempotency_key`] makes it idempotent.
-    Post, POST, Write, "http.post"
+    Post,
+    POST,
+    Write,
+    "http.post"
 );
 method_marker!(
     /// `PATCH`: a write; [`Request::idempotency_key`] makes it idempotent.
-    Patch, PATCH, Write, "http.patch"
+    Patch,
+    PATCH,
+    Write,
+    "http.patch"
 );
 
 /// A `POST` or `PATCH` carrying an `Idempotency-Key`: the provider absorbs a

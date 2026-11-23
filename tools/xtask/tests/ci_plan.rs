@@ -768,7 +768,7 @@ fn nightly_refresh_chaos_targets_the_existing_storage_harness() {
         "nightly refresh chaos target must exist in the package selected by the workflow"
     );
     for required in [
-        "toolchain: 1.97.1",
+        "toolchain: 1.100.0",
         "-p nebula-storage",
         "--test refresh_coordinator_chaos",
         "--features chaos-full",

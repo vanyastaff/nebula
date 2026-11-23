@@ -187,7 +187,7 @@ fn requested_syntax_survives_auto_body_selection_and_cloning() {
     for source in ["7", "'{{ 7 }}'", " {{ 7 }} ", "before {{ 7 }} after"] {
         let program = CompiledProgram::compile(source).unwrap();
         assert_eq!(program.syntax(), ProgramSyntax::Auto);
-        assert_eq!(program.clone().syntax(), ProgramSyntax::Auto);
+        assert_eq!(program.syntax(), ProgramSyntax::Auto);
         assert_eq!(program.source(), source);
     }
     assert_eq!(

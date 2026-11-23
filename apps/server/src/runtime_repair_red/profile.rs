@@ -673,11 +673,7 @@ async fn observe_execution_lifecycle(
             () = shutdown.cancelled() => {},
             event = execution_events.recv() => {
                 let Some(event) = event else {
-                    return if shutdown.is_cancelled() {
-                        Ok(())
-                    } else {
-                        Err(EvidenceIntegrityError::ControlClosed)
-                    };
+                    return shutdown.is_cancelled().ok_or(EvidenceIntegrityError::ControlClosed);
                 };
                 observations.record_event(event)?;
                 if execution_events.lagged_count() > 0 {

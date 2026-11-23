@@ -136,11 +136,9 @@ pub(crate) fn validate_action_package(
         }
     }
 
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(ActionPackageValidationErrors { errors })
-    }
+    errors
+        .is_empty()
+        .ok_or(ActionPackageValidationErrors { errors })
 }
 
 #[cfg(test)]

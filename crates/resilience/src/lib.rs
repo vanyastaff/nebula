@@ -145,6 +145,13 @@
 #![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::perf)]
 // Reason: types like CircuitBreakerConfig deliberately repeat the module name for readability.
 #![allow(clippy::module_name_repetitions)]
+// The crate-level `warn(clippy::all)` above re-enables what the workspace
+// allows: the rate limiters implement the async `RateLimiter` trait with
+// plain `async fn`s that happen not to await.
+#![expect(
+    clippy::unused_async_trait_impl,
+    reason = "an `async fn` trait impl reads better than `impl Future` + `ready(..)`"
+)]
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]

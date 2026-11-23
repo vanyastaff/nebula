@@ -1152,7 +1152,7 @@ impl ResourceActivatorRegistry {
     /// call makes the `Manager` row discoverable, and a failed `register`
     /// removes the staged bind via RAII compensation (no orphan reverse-index
     /// rows). See `registrar.rs`'s documentation for the full ordering
-    /// argument (bind-before-publish → no silent live-row miss; scopeguard
+    /// argument (bind-before-publish → no silent live-row miss; `DropGuard`
     /// compensation → no orphan on failure; residual pre-publish window
     /// documented there).
     ///
@@ -1292,7 +1292,7 @@ impl ResourceActivatorRegistry {
         }
 
         // RAII compensation: remove staged binds if register fails.
-        let rollback = scopeguard::guard((fanout_index, staged), |(idx, staged)| {
+        let rollback = std::mem::DropGuard::new((fanout_index, staged), |(idx, staged)| {
             if let Some(idx) = idx {
                 for (cred_id, bind) in &staged {
                     idx.unbind_staged_entry(cred_id, bind);
@@ -1325,7 +1325,7 @@ impl ResourceActivatorRegistry {
             &slot_identity,
             fanout_index.map(Arc::as_ref),
         )?;
-        scopeguard::ScopeGuard::into_inner(rollback);
+        std::mem::DropGuard::dismiss(rollback);
         Ok(ResourceRegistrationOutcome {
             resource_key,
             slot_identity,

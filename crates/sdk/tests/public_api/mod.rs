@@ -410,7 +410,7 @@ impl CrateModel {
                         },
                         |relative| dirs.file_dir.join(relative),
                     );
-                    let file_dir = file.parent().map(Path::to_path_buf).unwrap_or_default();
+                    let file_dir = file.parent().map_or_default(Path::to_path_buf);
                     let child_dir = if file.file_name().is_some_and(|name| name == "mod.rs") {
                         file_dir.clone()
                     } else {
@@ -1089,7 +1089,7 @@ fn render_impls(workspace: &Workspace, id: &ItemId) -> Vec<String> {
         header.attrs.retain(|attr| attr.path().is_ident("cfg"));
         header.items.clear();
         let head = render(header.to_token_stream());
-        let head = head.strip_suffix(" {}").unwrap_or(&head).to_owned();
+        let head = head.trim_suffix(" {}").to_owned();
         if item.trait_.is_some() {
             trait_impls.insert(head);
             continue;

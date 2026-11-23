@@ -67,11 +67,9 @@ crate::no_credential_slots!(MockBounded);
 impl BoundedProvider for MockBounded {
     async fn reset(&self, _instance: &mut u32) -> Result<(), Error> {
         self.reset_calls.fetch_add(1, Ordering::Relaxed);
-        if self.reset_ok.load(Ordering::Relaxed) {
-            Ok(())
-        } else {
-            Err(Error::transient("reset failed"))
-        }
+        self.reset_ok
+            .load(Ordering::Relaxed)
+            .ok_or_else(|| Error::transient("reset failed"))
     }
 }
 

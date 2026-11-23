@@ -291,7 +291,7 @@ mod tests {
                  already-persisted row"
             );
             assert_eq!(
-                serde_json::from_value::<CredentialReconcileDecisionV1>(wire.clone())
+                serde_json::from_value::<CredentialReconcileDecisionV1>(wire)
                     .expect("every spelling this route emits must also decode"),
                 reconcile_decision_from_port(port),
                 "the wire vocabulary must round-trip, so a client can send back what it was told"

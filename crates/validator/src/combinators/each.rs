@@ -163,11 +163,7 @@ mod tests {
 
     impl Validate<i32> for Positive {
         fn validate(&self, input: &i32) -> Result<(), ValidationError> {
-            if *input > 0 {
-                Ok(())
-            } else {
-                Err(ValidationError::new("positive", "Must be positive"))
-            }
+            (*input > 0).ok_or_else(|| ValidationError::new("positive", "Must be positive"))
         }
     }
 

@@ -1542,7 +1542,7 @@ impl<'a> GraphCompiler<'a> {
             if intrinsic_error && connection.to_port.is_some() {
                 self.diagnostics.push(
                     DiagnosticCode::UnsupportedTargetPort,
-                    path.clone().child("to_port"),
+                    path.child("to_port"),
                     DiagnosticValue::DefaultFlowInput,
                     DiagnosticValue::UnsupportedVariant,
                     Remediation::UseDefaultFlowInput,
@@ -1557,7 +1557,7 @@ impl<'a> GraphCompiler<'a> {
                 else {
                     self.diagnostics.push(
                         DiagnosticCode::UnsupportedSourcePort,
-                        path.clone().child("from_port"),
+                        path.child("from_port"),
                         DiagnosticValue::MainOutput,
                         DiagnosticValue::Missing,
                         Remediation::UseMainOutput,
@@ -1573,7 +1573,7 @@ impl<'a> GraphCompiler<'a> {
                 ) {
                     self.diagnostics.push(
                         DiagnosticCode::UnsupportedSourcePort,
-                        path.clone().child("from_port"),
+                        path.child("from_port"),
                         DiagnosticValue::MainOutput,
                         DiagnosticValue::UnsupportedVariant,
                         Remediation::UseMainOutput,
@@ -1592,7 +1592,7 @@ impl<'a> GraphCompiler<'a> {
                     if flow_count != 1 {
                         self.diagnostics.push(
                             DiagnosticCode::UnsupportedTargetPort,
-                            path.clone().child("to_port"),
+                            path.child("to_port"),
                             DiagnosticValue::DefaultFlowInput,
                             DiagnosticValue::UnsupportedVariant,
                             Remediation::UseDefaultOrSupportInput,
@@ -1609,7 +1609,7 @@ impl<'a> GraphCompiler<'a> {
                     if !matches!(explain_assignable(&producer, &consumer), Assignability::Yes) {
                         self.diagnostics.push(
                             DiagnosticCode::SchemaIncompatible,
-                            path.clone(),
+                            path,
                             DiagnosticValue::CompatibleSchema,
                             DiagnosticValue::IncompatibleSchema,
                             Remediation::AlignSchemas,
@@ -1625,7 +1625,7 @@ impl<'a> GraphCompiler<'a> {
                     else {
                         self.diagnostics.push(
                             DiagnosticCode::UnsupportedTargetPort,
-                            path.clone().child("to_port"),
+                            path.child("to_port"),
                             DiagnosticValue::SupportInput,
                             DiagnosticValue::Missing,
                             Remediation::UseDefaultOrSupportInput,
@@ -1640,7 +1640,7 @@ impl<'a> GraphCompiler<'a> {
                     else {
                         self.diagnostics.push(
                             DiagnosticCode::UnsupportedTargetPort,
-                            path.clone().child("to_port"),
+                            path.child("to_port"),
                             DiagnosticValue::SupportInput,
                             DiagnosticValue::UnsupportedVariant,
                             Remediation::UseDefaultOrSupportInput,
@@ -1650,7 +1650,7 @@ impl<'a> GraphCompiler<'a> {
                     if allowed_tags.is_some() {
                         self.diagnostics.push(
                             DiagnosticCode::UnsupportedTagFilter,
-                            path.clone().child("to_port"),
+                            path.child("to_port"),
                             DiagnosticValue::SupportInput,
                             DiagnosticValue::UnsupportedVariant,
                             Remediation::RemoveTagFilter,
@@ -1663,7 +1663,7 @@ impl<'a> GraphCompiler<'a> {
                     {
                         self.diagnostics.push(
                             DiagnosticCode::NodeTypeFilterRejected,
-                            path.clone().child("to_port"),
+                            path.child("to_port"),
                             DiagnosticValue::SupportInput,
                             DiagnosticValue::UnsupportedVariant,
                             Remediation::SelectAllowedNodeType,

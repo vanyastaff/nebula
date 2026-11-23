@@ -145,11 +145,9 @@ impl RefreshClaimStore for StatefulClaimRepo {
     }
 
     async fn heartbeat(&self, _token: &ClaimToken, _ttl: Duration) -> Result<(), HeartbeatError> {
-        if self.active.load(Ordering::SeqCst) {
-            Ok(())
-        } else {
-            Err(HeartbeatError::ClaimLost)
-        }
+        self.active
+            .load(Ordering::SeqCst)
+            .ok_or(HeartbeatError::ClaimLost)
     }
 
     async fn release(&self, _token: ClaimToken) -> Result<(), RefreshClaimError> {
@@ -160,11 +158,9 @@ impl RefreshClaimStore for StatefulClaimRepo {
     }
 
     async fn mark_sentinel(&self, _token: &ClaimToken) -> Result<(), RefreshClaimError> {
-        if self.active.load(Ordering::SeqCst) {
-            Ok(())
-        } else {
-            Err(RefreshClaimError::InvalidState)
-        }
+        self.active
+            .load(Ordering::SeqCst)
+            .ok_or(RefreshClaimError::InvalidState)
     }
 }
 

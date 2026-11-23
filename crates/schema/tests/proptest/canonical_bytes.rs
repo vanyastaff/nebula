@@ -38,7 +38,7 @@ proptest! {
             let bytes = authored.canonical_bytes().unwrap();
             prop_assert!(!canons.contains(&bytes));
             let decoded: AuthoredValue = serde_json::from_slice(&serde_json::to_vec(&authored).unwrap()).unwrap();
-            prop_assert_eq!(decoded.canonical_bytes().unwrap(), bytes.clone());
+            prop_assert_eq!(&decoded.canonical_bytes().unwrap(), &bytes);
             prop_assert_eq!(decoded.content_id().unwrap(), authored.content_id().unwrap());
             canons.push(bytes);
         }

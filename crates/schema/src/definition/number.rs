@@ -40,7 +40,7 @@ struct Decimal {
 impl Decimal {
     fn parse(number: &Number) -> Result<Self, AdmissionIssue> {
         let rendered = number.to_string();
-        let unsigned = rendered.strip_prefix('-').unwrap_or(&rendered);
+        let unsigned = rendered.trim_prefix('-');
         let (mantissa, exponent) = unsigned.split_once(['e', 'E']).map_or(
             Ok((unsigned, 0i64)),
             |(mantissa, exponent)| {

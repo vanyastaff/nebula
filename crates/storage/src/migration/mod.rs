@@ -388,11 +388,7 @@ where
         .fetch_one(connection)
         .await
         .map_err(|_| E::from(CatalogSetupError::Unavailable))?;
-    if enabled == 1 {
-        Ok(())
-    } else {
-        Err(E::from(CatalogSetupError::Unavailable))
-    }
+    (enabled == 1).ok_or_else(|| E::from(CatalogSetupError::Unavailable))
 }
 
 #[cfg(feature = "sqlite")]

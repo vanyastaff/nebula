@@ -116,11 +116,8 @@ mod tests {
 
     impl Validate<String> for MinLength {
         fn validate(&self, input: &String) -> Result<(), ValidationError> {
-            if input.len() >= self.min {
-                Ok(())
-            } else {
-                Err(ValidationError::min_length("", self.min, input.len()))
-            }
+            (input.len() >= self.min)
+                .ok_or_else(|| ValidationError::min_length("", self.min, input.len()))
         }
     }
 

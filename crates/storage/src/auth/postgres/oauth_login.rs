@@ -242,11 +242,7 @@ async fn finalize_for_canonical_user(
 }
 
 fn validate_active_user(user: &UserRow) -> Result<(), StorageError> {
-    if user.id.len() == USER_ID_BYTES {
-        Ok(())
-    } else {
-        Err(operation_error())
-    }
+    (user.id.len() == USER_ID_BYTES).ok_or_else(operation_error)
 }
 
 async fn load_linked_user(
@@ -318,11 +314,7 @@ async fn delete_candidate_user(
         .await
         .map_err(|_| operation_error())?
         .rows_affected();
-    if deleted == 1 {
-        Ok(())
-    } else {
-        Err(operation_error())
-    }
+    (deleted == 1).ok_or_else(operation_error)
 }
 
 async fn insert_session(

@@ -183,7 +183,7 @@ pub enum WorkflowError {
     #[classify(category = "validation", code = "WORKFLOW:INVALID_RETRY_CONFIG")]
     #[error(
         "invalid retry_policy{}: {reason}",
-        node.as_ref().map_or(String::new(), |n| format!(" on node {n}"))
+        node.as_ref().map_or_default(|n| format!(" on node {n}"))
     )]
     InvalidRetryConfig {
         /// The node carrying the bad config, or `None` for workflow-default

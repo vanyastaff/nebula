@@ -1627,7 +1627,7 @@ impl ResourceLimiter {
     ) {
         let reserved = self
             .refunds
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |running| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |running| {
                 (running < MAX_PENDING_REFUNDS).then_some(running + 1)
             });
         if reserved.is_err() {

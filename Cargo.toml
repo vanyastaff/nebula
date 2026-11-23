@@ -52,13 +52,12 @@ resolver = "3"
 # breaking API changes. Migration details belong in CHANGELOG.md.
 version = "0.33.0"
 edition = "2024"
-rust-version = "1.97"
+rust-version = "1.100"
 keywords = ["workflow", "integrations", "no-code", "low-code", "automation"]
 authors = ["Vanya Stafford <vanya.john.stafford@gmail.com>"]
 description = "Workflow automation toolkit"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/vanyastaff/nebula"
-homepage = "https://github.com/vanyastaff/nebula"
 documentation = "https://docs.rs/nebula"
 
 [workspace.dependencies]
@@ -189,11 +188,9 @@ proptest = "1.11"
 criterion = { package = "codspeed-criterion-compat", version = "4" }
 
 # Test helpers — crates opt in via [dev-dependencies]
-assert_cmd = "2.0.17"
 assert_fs = "1.1.2"
 insta = { version = "1.47.2", features = ["json", "redactions"] }
 mockall = "0.13.1"
-predicates = "3.1.3"
 pretty_assertions = "1.4.1"
 rstest = "0.24.0"
 wiremock = "0.6"
@@ -204,7 +201,6 @@ tokio-rustls = { version = "0.26.4", default-features = false, features = ["aws_
 semver = { version = "1", features = ["serde"] }
 
 # RAII guard — bind-before-register + rollback-on-failure pattern
-scopeguard = "1"
 
 # Compact inline string (≤24 bytes heap-free; used in error ABI + future ID types)
 compact_str = { version = "0.9", features = ["serde"] }
@@ -227,7 +223,6 @@ proc-macro2 = "1"
 nebula-api-contract = { path = "crates/api-contract", version = "=0.33.0" }
 nebula-env = { path = "crates/env" }
 nebula-error = { path = "crates/error" }
-nebula-error-macros = { path = "crates/error/macros" }
 
 
 # ─── Workspace-wide lint policy ──────────────────────────────────────────────
@@ -313,6 +308,9 @@ match_wildcard_for_single_variants = "allow"
 needless_continue = "allow"
 format_push_string = "allow"                 # `push_str(&format!(...))` is idiomatic enough
 unused_async = "allow"                       # bench helpers (criterion.to_async) + public API forward-compat
+assert_is_empty = "allow"                    # `assert!(x.is_empty())` is clearer than `assert_eq!(x, [] as [T; 0])`
+empty_enums = "allow"                        # uninhabited markers + serde `deny_unknown_fields` derive expansions
+unused_async_trait_impl = "allow"            # same: an `async fn` impl reads better than `impl Future` + `ready(..)`
 unused_self = "allow"                        # pedantic noise on trait impls where `self` is required by signature
 unnecessary_wraps = "allow"                  # API-consistency `Result` on builtin tables, `fn main() -> Result<…>`
 

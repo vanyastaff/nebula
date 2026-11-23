@@ -177,7 +177,7 @@ struct ProviderAdapter {
 #[async_trait::async_trait]
 impl PreparedEffectAdapter for ProviderAdapter {
     async fn invoke(&self, context: &dyn EffectInvocationContext) -> EffectInvocationOutcome {
-        let _drop = scopeguard::guard((), |()| self.provider.dropped.notify_one());
+        let _drop = std::mem::DropGuard::new((), |()| self.provider.dropped.notify_one());
         self.provider.calls.lock().push(context.operation_id());
         if matches!(self.provider.behavior, ProviderBehavior::BeforeBoundary)
             && self.provider.calls.lock().len() == 1

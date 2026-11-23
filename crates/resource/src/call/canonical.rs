@@ -1038,11 +1038,7 @@ fn transcode(out: &mut Vec<u8>, budget: &Budget, text: &str) -> Result<(), Canon
     let mut raw = RawJson { text, at: 0 };
     raw.value(out, budget, 0)?;
     raw.skip_whitespace();
-    if raw.at == text.len() {
-        Ok(())
-    } else {
-        Err(CanonicalError::Unserializable)
-    }
+    (raw.at == text.len()).ok_or(CanonicalError::Unserializable)
 }
 
 /// Deepest nesting of raw JSON text transcoded, as deep as `serde_json`
@@ -1270,7 +1266,7 @@ fn decimal(text: &str) -> Result<Decimal, CanonicalError> {
     let exponent: i128 = match exponent {
         None => 0,
         Some(exponent) => {
-            if !digits_only(exponent.strip_prefix(['+', '-']).unwrap_or(exponent)) {
+            if !digits_only(exponent.trim_prefix(['+', '-'])) {
                 return Err(refused);
             }
             exponent.parse().map_err(|_| refused)?

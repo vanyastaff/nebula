@@ -82,7 +82,7 @@ Keep task state in the conversation or local ignored notes, not in this guide.
 
 ## Tech Stack
 
-Rust 1.97+, edition 2024, resolver 3 · Tokio · `thiserror` in libs / `anyhow` in bins ·
+Rust 1.100+, edition 2024, resolver 3 · Tokio · `thiserror` in libs / `anyhow` in bins ·
 PostgreSQL + SQLite (`crates/storage/migrations/`) · `cargo nextest` + doctests ·
 `Taskfile.yml` for tasks (`task --list`) · `lefthook.yml` mirrors CI required jobs.
 
@@ -118,7 +118,7 @@ nebula/
 ├── Taskfile.yml        # task runner; `task dev:check` = pre-PR gate
 ├── deny.toml           # cargo-deny: layer wrappers, licenses, advisories (CI gate)
 ├── lefthook.yml        # pre-commit / pre-push, mirrors CI
-├── clippy.toml         # lint thresholds (msrv 1.97)
+├── clippy.toml         # lint thresholds (msrv 1.100)
 ├── rustfmt.toml        # stable-only, pinned toolchain
 ├── .mcp.json           # MCP servers
 ├── crates/             # workspace members

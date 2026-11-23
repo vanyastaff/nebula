@@ -15,7 +15,7 @@
 //! sleeps to synchronize: advisory locks gate the backend and every wait on
 //! the database is a bounded poll.
 
-use std::{str::FromStr as _, time::Duration};
+use std::time::Duration;
 
 use nebula_credential::{BasicAuthCredential, CredentialGuard, scheme::IdentityPassword};
 use nebula_resource::{

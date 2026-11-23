@@ -1042,7 +1042,7 @@ fn workflow_step_script(job: &str, step_name: &str) -> String {
     run.lines()
         .skip(1)
         .take_while(|line| line.starts_with("        ") || line.trim().is_empty())
-        .map(|line| line.strip_prefix("        ").unwrap_or(line))
+        .map(|line| line.trim_prefix("        "))
         .collect::<Vec<_>>()
         .join("\n")
 }

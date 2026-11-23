@@ -33,9 +33,8 @@
 //! 2. **LIFO within a branch.** If multiple resources are registered at the same branch level,
 //!    [`DashScopedResourceMap::pop`] returns them in reverse registration order so cleanup runs in
 //!    the inverse order of `push`.
-//! 3. **Cancel-safe.** The [`ScopedResourceGuard`] wraps the popped entry in a
-//!    `scopeguard::ScopeGuard` so cleanup fires even if the engine task panics or the cancellation
-//!    token trips mid-execution.
+//! 3. **Cancel-safe.** The [`ScopedResourceGuard`] runs cleanup from its `Drop` impl, so it
+//!    fires even if the engine task panics or the cancellation token trips mid-execution.
 //! 4. **Per-resource timeout.** Each `cleanup` future is wrapped in `tokio::time::timeout` at
 //!    [`DEFAULT_CLEANUP_TIMEOUT`] (30s). On overrun the future is dropped and a
 //!    `ScopedResourceCleanupTimeout` event is emitted via the engine's event bus.

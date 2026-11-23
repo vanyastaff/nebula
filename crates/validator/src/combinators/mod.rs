@@ -221,11 +221,8 @@ mod integration_tests {
 
     impl Validate<String> for MinLength {
         fn validate(&self, input: &String) -> Result<(), ValidationError> {
-            if input.len() >= self.min {
-                Ok(())
-            } else {
-                Err(ValidationError::min_length("", self.min, input.len()))
-            }
+            (input.len() >= self.min)
+                .ok_or_else(|| ValidationError::min_length("", self.min, input.len()))
         }
     }
 
@@ -235,11 +232,8 @@ mod integration_tests {
 
     impl Validate<String> for MaxLength {
         fn validate(&self, input: &String) -> Result<(), ValidationError> {
-            if input.len() <= self.max {
-                Ok(())
-            } else {
-                Err(ValidationError::max_length("", self.max, input.len()))
-            }
+            (input.len() <= self.max)
+                .ok_or_else(|| ValidationError::max_length("", self.max, input.len()))
         }
     }
 
@@ -313,21 +307,15 @@ mod doc_tests {
 
         impl Validate<String> for MinLength {
             fn validate(&self, input: &String) -> Result<(), ValidationError> {
-                if input.len() >= self.min {
-                    Ok(())
-                } else {
-                    Err(ValidationError::min_length("", self.min, input.len()))
-                }
+                (input.len() >= self.min)
+                    .ok_or_else(|| ValidationError::min_length("", self.min, input.len()))
             }
         }
 
         impl Validate<String> for MaxLength {
             fn validate(&self, input: &String) -> Result<(), ValidationError> {
-                if input.len() <= self.max {
-                    Ok(())
-                } else {
-                    Err(ValidationError::max_length("", self.max, input.len()))
-                }
+                (input.len() <= self.max)
+                    .ok_or_else(|| ValidationError::max_length("", self.max, input.len()))
             }
         }
 

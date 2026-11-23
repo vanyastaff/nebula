@@ -476,11 +476,11 @@ async fn invariant_4_consume_rejects_mismatched_session() {
 
 #[test]
 fn invariant_5_oauth2_pending_secrets_are_secret_string() {
-    fn _compile_time_witness(p: &OAuth2Pending) {
+    fn compile_time_witness(p: &OAuth2Pending) {
         let _: &SecretString = &p.client_secret;
         let _: &SecretString = &p.pkce_verifier;
     }
-    let _ = _compile_time_witness;
+    let _ = compile_time_witness;
 }
 
 #[test]

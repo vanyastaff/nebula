@@ -206,7 +206,7 @@ async fn circuit_breaker_below_threshold_stays_closed() {
 
 /// B8: Verifies that dropping a Winner without calling complete()
 /// leaves the in-flight entry, and that a subsequent sync complete()
-/// (as scopeguard would call) cleans it up so new callers become Winners.
+/// (as a drop guard would call) cleans it up so new callers become Winners.
 #[tokio::test]
 async fn inflight_entry_cleaned_after_sync_complete() {
     let coord = L1RefreshCoalescer::new();

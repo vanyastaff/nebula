@@ -206,9 +206,10 @@ pub enum ShutdownError {
     ResourceTeardownFailed {
         /// Resource whose cleanup failed.
         key: nebula_core::ResourceKey,
-        /// Typed provider or framework failure.
+        /// Typed provider or framework failure, boxed to keep the
+        /// `Result<_, ShutdownError>` returned by shutdown small.
         #[source]
-        source: crate::Error,
+        source: Box<crate::Error>,
     },
 }
 
@@ -263,7 +264,7 @@ fn retirement_failure(failure: RetirementFailure) -> ShutdownError {
     );
     ShutdownError::ResourceTeardownFailed {
         key: failure.key,
-        source: failure.source,
+        source: Box::new(failure.source),
     }
 }
 

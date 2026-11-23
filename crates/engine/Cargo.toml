@@ -59,7 +59,6 @@ secrecy = { workspace = true }
 uuid = { workspace = true, features = ["v4", "serde"] }
 ulid = { workspace = true }
 parking_lot = { workspace = true }
-scopeguard = { workspace = true }
 futures = { workspace = true }
 zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
 

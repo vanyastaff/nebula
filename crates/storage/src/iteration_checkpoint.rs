@@ -140,11 +140,7 @@ pub(crate) fn require_stored_version(
     stored: &str,
     key: &nebula_storage_port::IterationCheckpointKey<'_>,
 ) -> Result<(), IterationCheckpointError> {
-    if stored == key.action_version() {
-        Ok(())
-    } else {
-        Err(IterationCheckpointError::InvalidRecord)
-    }
+    (stored == key.action_version()).ok_or(IterationCheckpointError::InvalidRecord)
 }
 
 /// The SQL value of a `u64` the record already bounded to `i64`.

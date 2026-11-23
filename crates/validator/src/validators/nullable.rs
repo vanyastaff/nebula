@@ -47,11 +47,9 @@ pub struct Required<T> {
 
 impl<T> Validate<Option<T>> for Required<T> {
     fn validate(&self, input: &Option<T>) -> Result<(), ValidationError> {
-        if input.is_some() {
-            Ok(())
-        } else {
-            Err(ValidationError::new("required", "Value is required"))
-        }
+        input
+            .is_some()
+            .ok_or_else(|| ValidationError::new("required", "Value is required"))
     }
 }
 

@@ -10,7 +10,6 @@ keywords = ["nebula", "resilience", "retry", "workflow", "reliability"]
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 documentation.workspace = true
 
 [features]

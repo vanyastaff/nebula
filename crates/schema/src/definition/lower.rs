@@ -220,11 +220,9 @@ impl Lowerer<'_> {
         &self,
         intrinsic_rules: &[nebula_validator::Rule],
     ) -> Result<(), ValidationReport> {
-        if intrinsic_rules.is_empty() {
-            Ok(())
-        } else {
-            Err(LowerIssue::Rules.into_report())
-        }
+        intrinsic_rules
+            .is_empty()
+            .ok_or_else(|| LowerIssue::Rules.into_report())
     }
 
     fn definition_index(

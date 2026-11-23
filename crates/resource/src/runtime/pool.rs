@@ -240,7 +240,7 @@ impl PoolCapacity {
             let permit = Arc::clone(&self.permits).try_acquire_owned()?;
             let owed = self
                 .debt
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |debt| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |debt| {
                     debt.checked_sub(1)
                 })
                 .is_ok();
@@ -266,7 +266,7 @@ impl PoolCapacity {
             // that debt before adding new permits.
             let owed = self
                 .debt
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |debt| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |debt| {
                     Some(debt.saturating_sub(grow))
                 })
                 .unwrap_or_else(|debt| debt);

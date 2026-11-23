@@ -31,9 +31,7 @@ pub(crate) fn check(cwd: &Path) -> Result<(), crate::XtaskError> {
         .output()
         .map_err(DocLinksError::GitStart)?;
     if !output.status.success() {
-        return Err(
-            DocLinksError::GitFailed(String::from_utf8_lossy(&output.stderr).into_owned()).into(),
-        );
+        return Err(DocLinksError::GitFailed(String::from_utf8_lossy_owned(output.stderr)).into());
     }
     let mut broken = Vec::new();
     for file in output

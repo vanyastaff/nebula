@@ -219,11 +219,7 @@ async fn soft_delete_by_id(
         .execute(pool)
         .await
         .map_err(storage_error)?;
-    if res.rows_affected() > 0 {
-        Ok(())
-    } else {
-        Err(StorageError::not_found(entity, id))
-    }
+    (res.rows_affected() > 0).ok_or(StorageError::not_found(entity, id))
 }
 
 /// Soft-delete a workspace-scoped `id` row of a `TIMESTAMPTZ` table (active
@@ -246,9 +242,5 @@ async fn soft_delete_scoped(
         .execute(pool)
         .await
         .map_err(storage_error)?;
-    if res.rows_affected() > 0 {
-        Ok(())
-    } else {
-        Err(StorageError::not_found(entity, id))
-    }
+    (res.rows_affected() > 0).ok_or(StorageError::not_found(entity, id))
 }

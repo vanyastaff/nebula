@@ -7,7 +7,7 @@ use crate::manager::Manager;
 fn shutdown_debug_redacts_provider_error_but_preserves_source_chain() {
     let failure = ShutdownError::ResourceTeardownFailed {
         key: nebula_core::resource_key!("debug-safety"),
-        source: crate::Error::permanent("PRIVATE_PROVIDER_PAYLOAD"),
+        source: Box::new(crate::Error::permanent("PRIVATE_PROVIDER_PAYLOAD")),
     };
     for rendered in [
         format!("{failure:?}"),

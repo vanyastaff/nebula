@@ -231,7 +231,6 @@ impl EmailPort for SmtpEmailPort {
                     // context cannot regress us.
                     EmailError::Transport(format!("smtp send failed: {err}"))
                 })?;
-                Ok(())
             },
             #[cfg(test)]
             TransportImpl::Stub(transport) => {
@@ -239,9 +238,9 @@ impl EmailPort for SmtpEmailPort {
                     .send(letter)
                     .await
                     .map_err(|err| EmailError::Transport(format!("stub send failed: {err}")))?;
-                Ok(())
             },
         }
+        Ok(())
     }
 }
 

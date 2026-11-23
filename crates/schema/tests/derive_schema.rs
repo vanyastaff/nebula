@@ -688,6 +688,10 @@ fn builtin_fallible_schemas_preserve_empty_and_any_identity() {
 #[derive(Schema, serde::Deserialize)]
 #[expect(dead_code, reason = "exercised via HasSchema::schema")]
 struct DuplicateAlias {
+    #[expect(
+        clippy::duplicated_attributes,
+        reason = "the duplicate alias is the case under test"
+    )]
     #[serde(alias = "alt", alias = "alt")]
     name: String,
 }

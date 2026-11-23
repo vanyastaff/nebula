@@ -42,11 +42,7 @@ pub fn validate_execution_transition(
     from: ExecutionStatus,
     to: ExecutionStatus,
 ) -> Result<(), ExecutionError> {
-    if can_transition_execution(from, to) {
-        Ok(())
-    } else {
-        Err(ExecutionError::invalid_execution_transition(from, to))
-    }
+    can_transition_execution(from, to).ok_or(ExecutionError::invalid_execution_transition(from, to))
 }
 
 /// Returns `true` if the node-level transition from `from` to `to` is valid.

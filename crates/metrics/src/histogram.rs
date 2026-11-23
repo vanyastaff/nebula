@@ -150,7 +150,7 @@ impl Histogram {
 
     pub(crate) fn from_validated_boundaries(boundaries: Vec<f64>) -> Self {
         let bucket_count = boundaries.len() + 1; // +1 for +Inf
-        let counts: Vec<AtomicU64> = (0..bucket_count).map(|_| AtomicU64::new(0)).collect();
+        let counts = Vec::from_fn(bucket_count, |_| AtomicU64::new(0));
 
         tracing::debug!(buckets = boundaries.len(), "histogram created");
 

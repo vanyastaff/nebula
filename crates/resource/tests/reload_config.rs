@@ -216,11 +216,7 @@ impl ReloadConfig {
 
 impl ResourceConfig for ReloadConfig {
     fn validate(&self) -> Result<(), Error> {
-        if self.valid {
-            Ok(())
-        } else {
-            Err(Error::permanent("invalid config"))
-        }
+        self.valid.ok_or_else(|| Error::permanent("invalid config"))
     }
 
     fn fingerprint(&self) -> u64 {

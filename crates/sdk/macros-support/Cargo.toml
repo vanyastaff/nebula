@@ -8,7 +8,6 @@ authors.workspace = true
 description = "Shared support utilities for Nebula proc-macro crates"
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]

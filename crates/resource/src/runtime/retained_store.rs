@@ -252,7 +252,7 @@ impl LeaseCounter {
     fn try_reserve(&self) -> bool {
         match self
             .state
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
                 if state == Self::POISONED {
                     None
                 } else {
@@ -290,7 +290,7 @@ impl LeaseCounter {
     fn release(&self) {
         match self
             .state
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| match state {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| match state {
                 Self::POISONED => None,
                 0 => Some(Self::POISONED),
                 live => Some(live - 1),

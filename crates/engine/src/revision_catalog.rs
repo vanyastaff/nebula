@@ -116,8 +116,8 @@ impl PlanFlavorRevisionLoader {
 
         if stored.ids() != ids {
             return Err(PlanFlavorRevisionBridgeError::StoredPairMismatch {
-                requested: ids,
-                stored: stored.ids(),
+                requested: Box::new(ids),
+                stored: Box::new(stored.ids()),
             });
         }
         if stored.worker_flavor().format() != WorkerFlavorRecordFormat::V1Json {
@@ -337,10 +337,10 @@ pub enum PlanFlavorRevisionBridgeError {
     /// The catalog returned another pair than the one requested.
     #[error("catalog returned a different exact plan/flavor pair")]
     StoredPairMismatch {
-        /// Pair requested by runtime control.
-        requested: PlanFlavorRevisionIds,
+        /// Pair requested by runtime control (boxed: the error stays small).
+        requested: Box<PlanFlavorRevisionIds>,
         /// Pair returned by storage.
-        stored: PlanFlavorRevisionIds,
+        stored: Box<PlanFlavorRevisionIds>,
     },
 
     /// Decoded plan identity differs from the requested exact ID.

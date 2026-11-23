@@ -8,7 +8,6 @@ authors.workspace = true
 description = "Proc-macros for nebula-resource error classification"
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 documentation.workspace = true
 # Internal proc-macro crate for nebula-resource — never published standalone.
 # Guards against an accidental `cargo publish` leaking this adapter to

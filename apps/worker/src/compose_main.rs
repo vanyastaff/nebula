@@ -109,7 +109,7 @@ pub(crate) enum WorkerRunError {
 
     /// Plugin wiring or worker runtime assembly failed.
     #[error("composition failed — this is likely a build or config bug: {0}")]
-    Compose(#[from] ComposeError),
+    Compose(Box<ComposeError>),
 
     /// Read/project-only credential runtime startup failed.
     #[error("credential projection composition failed: {0}")]
@@ -122,6 +122,14 @@ pub(crate) enum WorkerRunError {
     /// Signal listener setup failed (OS-level error).
     #[error("signal handler setup failed: {0}")]
     Signal(#[from] std::io::Error),
+}
+
+impl From<ComposeError> for WorkerRunError {
+    fn from(error: ComposeError) -> Self {
+        // Boxed: `ComposeError` is large and every worker entry point returns
+        // `Result<_, WorkerRunError>`.
+        Self::Compose(Box::new(error))
+    }
 }
 
 /// The durable store bundle, plus the deployment pool the credential

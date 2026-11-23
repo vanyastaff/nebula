@@ -497,11 +497,7 @@ fn delete_drained_locked(
                     .get(&worker_flavor_id)
                     .is_some_and(|row| row.record.is_none()),
             };
-            return if payload_is_cleared {
-                Ok(())
-            } else {
-                Err(RevisionCatalogError::CorruptRecord { target })
-            };
+            return payload_is_cleared.ok_or(RevisionCatalogError::CorruptRecord { target });
         },
         ArtifactLifecycle::Draining => {},
     }

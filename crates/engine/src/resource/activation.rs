@@ -690,7 +690,7 @@ impl StoredResourceActivator {
                 .is_some_and(|active| active.activated == entry.stale.activated);
             if !serving {
                 if retire(context, &entry.stale.activated) {
-                    retired.push(entry.stale.activated.clone());
+                    retired.push(entry.stale.activated);
                 } else {
                     still_pending.push(entry);
                 }

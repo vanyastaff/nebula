@@ -8,7 +8,6 @@ authors.workspace = true
 description.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 documentation.workspace = true
 # Internal crate — only `nebula-sdk` is the public/publishable surface. Guard
 # against an accidental `cargo publish` leaking this adapter to crates.io.
@@ -19,8 +18,8 @@ default = []
 # Gates the credential-rotation fan-out module (`credential_fanout`) and the
 # `register_and_bind` method on `ResourceActivatorRegistry` (which stages
 # rotation fan-out reverse-index binds before the Manager row is published).
-# `scopeguard` is required only for the RAII rollback in `register_and_bind`.
-rotation = ["scopeguard", "smallvec"]
+# The RAII rollback in `register_and_bind` uses `std::mem::DropGuard`.
+rotation = ["smallvec"]
 
 [dependencies]
 # Nebula ecosystem
@@ -51,7 +50,6 @@ indexmap = { workspace = true }
 smallvec = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-scopeguard = { workspace = true, optional = true }
 # `Retry-After` given as an HTTP date.
 httpdate = { workspace = true }
 # Jitter for the implicit provider backoff.
