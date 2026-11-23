@@ -152,7 +152,7 @@ async fn reentrant_receipt_notification_releases_dispatch_capacity() {
             .poll(&mut Context::from_waker(&waker))
             .is_pending()
     );
-    ReleaseQueue::execute_reentrant(
+    ReleaseQueue::execute_scoped(
         QueuedTask {
             factory: Box::new(|| Box::pin(async { Ok(()) })),
             completion: TaskCompletion {

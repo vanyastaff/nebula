@@ -193,15 +193,7 @@ async fn panicking_idle_predicate_preserves_all_owned_entries_for_teardown() {
             .expect("author predicate panic must be isolated without unwinding the store drain"),
         3
     );
-    assert_eq!(
-        row.release_queue
-            .submit_release(|| Box::pin(async { Ok(()) }))
-            .expect("open queue must accept cleanup checkpoint")
-            .wait()
-            .await
-            .unwrap(),
-        SubmissionOutcome::Completed,
-    );
+    row.release_queue.settled().await;
     assert_eq!(
         resource.destroyed.load(Ordering::SeqCst),
         3,
@@ -249,15 +241,7 @@ async fn panicking_guard_metadata_keeps_created_entry_armed() {
         .await
         .is_err()
     );
-    assert_eq!(
-        row.release_queue
-            .submit_release(|| Box::pin(async { Ok(()) }))
-            .expect("open queue must accept cleanup checkpoint")
-            .wait()
-            .await
-            .unwrap(),
-        SubmissionOutcome::Completed,
-    );
+    row.release_queue.settled().await;
     assert_eq!(resource.created.load(Ordering::SeqCst), 1);
     assert_eq!(
         resource.destroyed.load(Ordering::SeqCst),

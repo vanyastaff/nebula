@@ -91,6 +91,30 @@ changes are expected between minor releases — call them out here.
 
 ### Fixed
 
+- **One resource's slow teardown no longer holds another resource's
+  capacity.** A manager's resources share one `ReleaseQueue`, whose workers
+  awaited each release to its end and were fed round-robin, each from its own
+  channel. A release carries its pool permit until it settles, so one `destroy`
+  waiting 20 s on a dead backend kept an unrelated healthy pool's permit queued
+  behind it for those 20 s (every acquire answered `Backpressure`), even with
+  the other worker idle. The workers of a lane now take from one shared channel
+  and each runs up to 64 jobs at once: a hung teardown holds a slot until its
+  own deadline and the jobs behind it still run. The bound stays — once every
+  slot of a lane is held, later jobs wait in the channel, then the fallback and
+  rescue windows, as before. `Provider::destroy` and `on_release` hooks of one
+  resource can therefore overlap more than `release_queue_workers` times; they
+  were already concurrent at two.
+
+- **`ManagerConfig::with_release_queue_workers(0)` no longer panics.**
+  `Manager::with_config` aborted the host on a zero from configuration; the
+  count is now raised to one, as is `ReleaseQueue::new(0)`.
+
+- **A panicking limit store no longer leaks rate-limit refund slots.**
+  `ResourceLimiter` bounds its background refunds with a counter that was
+  decremented after the refund call; a `LimitStore::cancel` that panicked
+  skipped the decrement, and enough of them stopped every later refund. The
+  slot is now returned by a drop guard however the refund task ends.
+
 - **HTTP replay defaults to PostgreSQL in a PostgreSQL deployment.** With
   `API_IDEMPOTENCY_BACKEND` unset, `ApiConfig::from_env` chose `memory` even
   under `API_EXECUTION_BACKEND=postgres`, so each replica kept its own
