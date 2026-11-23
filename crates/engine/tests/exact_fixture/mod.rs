@@ -134,7 +134,7 @@ pub(crate) async fn materialize_state(
     let workflow_id = state.workflow_id.to_string();
     let execution_id = state.execution_id.to_string();
     let command = ControlMsg {
-        id: ulid::Ulid::new().to_bytes(),
+        id: ulid::Ulid::generate().to_bytes(),
         execution_id: execution_id.clone(),
         command: ControlCommand::Start,
         scope: scope.clone(),

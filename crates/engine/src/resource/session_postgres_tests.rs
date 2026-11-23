@@ -375,7 +375,7 @@ async fn setup() -> Option<Pg> {
         .expect("the admin connects");
     let role = format!(
         "nebula_row_{}",
-        ulid::Ulid::new().to_string().to_lowercase()
+        ulid::Ulid::generate().to_string().to_lowercase()
     );
     for statement in [
         format!("CREATE ROLE {role} LOGIN PASSWORD '{PASSWORD_1}'"),
@@ -724,7 +724,7 @@ async fn a_failed_body_leaves_nothing_behind() {
 #[tokio::test]
 async fn a_backend_lost_during_commit_is_an_unknown_outcome() {
     let Some(pg) = setup().await else { return };
-    let lock = i64::try_from(ulid::Ulid::new().random() & 0x7fff_ffff).expect("fits");
+    let lock = i64::try_from(ulid::Ulid::generate().random() & 0x7fff_ffff).expect("fits");
     for statement in [
         format!(
             "CREATE FUNCTION {role}.gate() RETURNS trigger LANGUAGE plpgsql AS $$ \

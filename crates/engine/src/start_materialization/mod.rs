@@ -581,7 +581,7 @@ impl WorkflowStartService {
             initial_state: serde_json::to_value(state)
                 .map_err(|_| WorkflowStartError::InvalidInput)?,
             command: ControlMsg {
-                id: ulid::Ulid::new().to_bytes(),
+                id: ulid::Ulid::generate().to_bytes(),
                 execution_id: execution_id.to_string(),
                 command: ControlCommand::Start,
                 scope: scope.clone(),

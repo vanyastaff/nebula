@@ -333,7 +333,7 @@ pub(super) async fn admit(ports: Ports, count: &Arc<AtomicU32>, throttled: bool)
     )
     .unwrap();
     let command = ControlMsg {
-        id: ulid::Ulid::new().to_bytes(),
+        id: ulid::Ulid::generate().to_bytes(),
         execution_id: id.to_string(),
         command: ControlCommand::Start,
         scope: scope.clone(),

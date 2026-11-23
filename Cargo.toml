@@ -80,7 +80,7 @@ serde_json = { version = "1.0.149", features = ["raw_value"] }
 # Exact comparisons between JSON integers and floating-point numbers.
 num-cmp = "0.1.0"
 jsonschema = { version = "0.49.1", default-features = false }
-quick-xml = { version = "0.41.0", default-features = false }
+quick-xml = { version = "0.42.0", default-features = false }
 toml = "1"
 
 # Logging and tracing
@@ -91,8 +91,8 @@ tracing-subscriber = { version = "0.3.23", default-features = false }
 
 # Concurrency and synchronization
 dashmap = { version = "6.1.0", default-features = false }
-lru = { version = "0.18.2", default-features = false }
-parking_lot = { version = "0.12.5", default-features = false }
+lru = { version = "0.19.2", default-features = false }
+parking_lot = { version = "0.13.0", default-features = false }
 moka = { version = "0.12", default-features = false }
 arc-swap = "1.9"
 
@@ -103,7 +103,7 @@ unicode-width = "0.2"
 petgraph = "0.8"
 domain-key = { version = "0.6.0", features = ["serde", "ulid", "uuid"] }
 uuid = { version = "1.23", features = ["v4", "serde"] }
-ulid = "1.2.1"
+ulid = "3.0.0"
 chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
 chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
 smallvec = { version = "1.15", features = ["union", "const_generics", "serde"] }
@@ -112,7 +112,7 @@ indexmap = { version = "2", features = ["serde"] }
 # String and data processing
 regex = "1.12"
 url = { version = "2.5", features = ["serde"] }
-base64 = "0.22.1"
+base64 = "0.23.1"
 bytes = "1.11.1"
 lasso = { version = "0.7", features = ["multi-threaded"] }
 
@@ -190,9 +190,9 @@ criterion = { package = "codspeed-criterion-compat", version = "4" }
 # Test helpers — crates opt in via [dev-dependencies]
 assert_fs = "1.1.2"
 insta = { version = "1.47.2", features = ["json", "redactions"] }
-mockall = "0.13.1"
+mockall = "0.15.0"
 pretty_assertions = "1.4.1"
-rstest = "0.24.0"
+rstest = "0.29.0"
 wiremock = "0.6"
 rcgen = { version = "0.14.8", default-features = false, features = ["aws_lc_rs"] }
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["aws_lc_rs", "tls12"] }
@@ -203,7 +203,7 @@ semver = { version = "1", features = ["serde"] }
 # RAII guard — bind-before-register + rollback-on-failure pattern
 
 # Compact inline string (≤24 bytes heap-free; used in error ABI + future ID types)
-compact_str = { version = "0.9", features = ["serde"] }
+compact_str = { version = "0.10", features = ["serde"] }
 
 # Compile-time layout assertions
 static_assertions = "1"

@@ -9,7 +9,10 @@ pub(crate) async fn connect_with_private_schema(
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
     );
-    let schema = format!("{prefix}_{}", ulid::Ulid::new().to_string().to_lowercase());
+    let schema = format!(
+        "{prefix}_{}",
+        ulid::Ulid::generate().to_string().to_lowercase()
+    );
     let admin = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
         .connect(url)
