@@ -13,7 +13,7 @@ use std::{
 use nebula_resource::{
     AcquireOptions, Error, Manager, ManagerConfig, Pooled, RegistrationSpec, Resident,
     ResidentConfig, ResourceContext, ScopeLevel, ShutdownConfig, SlotIdentity, TeardownCx,
-    resource::{MetadataDraft, Provider, ResourceConfig},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::{
         pooled::{BrokenCheck, PoolProvider},
         resident::ResidentProvider,
@@ -61,8 +61,8 @@ impl<const ID: usize> Provider for ResidentNode<ID> {
         9 => "dependency-node-9",
         _ => panic!("declare a key for this node id"),
     };
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("ResidentNode"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("ResidentNode"), "")
     }
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<Instance, Error> {
         Ok(Instance {
@@ -103,8 +103,8 @@ impl Provider for PooledParent {
     type Instance = Instance;
     type Topology = Pooled<Self>;
     const KEY: &'static str = "dependency-pooled-parent";
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("dependency-pooled-parent"),
             "",
         )

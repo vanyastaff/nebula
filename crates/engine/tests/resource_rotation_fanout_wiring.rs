@@ -41,7 +41,7 @@ use nebula_resource::{
     AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
     ResourceContext, SlotIdentity,
     error::Error as ResourceError,
-    resource::{HasCredentialSlots, MetadataDraft},
+    resource::{HasCredentialSlots, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
 use nebula_resource::{ResourceFanoutDriver, ResourceFanoutIndex};
@@ -1578,8 +1578,8 @@ impl Provider for ReplacementResource {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("fanout-replacement-order"),
             "",
         )
@@ -1878,8 +1878,8 @@ impl Provider for Recording {
         drive(self.behaviour).await
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("fanout-wiring-rec"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("fanout-wiring-rec"), "")
     }
 }
 

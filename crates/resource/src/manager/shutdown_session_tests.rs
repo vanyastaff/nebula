@@ -17,7 +17,7 @@ use super::{
 use crate::{
     Error, ResourceContext, ResourceGuard, RetainStatus, RetainedStore, ScopeLevel, SlotIdentity,
     TeardownCx,
-    resource::{MetadataDraft, Provider, ResourceConfig},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::{CreatedEntry, Ticket, Topology, Unavailable, store::StoreView},
 };
 
@@ -84,8 +84,8 @@ impl Provider for LeasedResource {
     type Instance = AtomicUsize;
     type Topology = QuiescingTopology;
     const KEY: &'static str = "shutdown-session-lease";
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(crate::metadata_name!("shutdown-session-lease"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("shutdown-session-lease"), "")
     }
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<AtomicUsize, Error> {
         Ok(AtomicUsize::new(7))
@@ -600,8 +600,8 @@ impl Provider for ParentResource {
     type Instance = ResourceGuard<LeasedResource>;
     type Topology = crate::Resident<Self>;
     const KEY: &'static str = "shutdown-session-parent";
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(crate::metadata_name!("shutdown-session-parent"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("shutdown-session-parent"), "")
     }
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<Self::Instance, Error> {
         self.child

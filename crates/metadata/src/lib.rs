@@ -7,7 +7,7 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
-/// Draft, admitted, and recorded base metadata plus the [`Metadata`] trait.
+/// Authored, admitted, and recorded base metadata plus the [`Definition`] trait.
 pub mod base;
 mod bounded;
 mod catalog_error;
@@ -35,7 +35,7 @@ mod reference;
 mod removal;
 mod shared;
 
-pub use base::{BaseMetadata, Metadata, MetadataDraft, RecordedBaseMetadata};
+pub use base::{BaseDefinition, Definition, Metadata, RecordedBaseDefinition};
 pub use catalog_error::CatalogValueError;
 pub use category::CatalogCategoryKey;
 pub use compat::{BaseCompatError, validate_base_compat};

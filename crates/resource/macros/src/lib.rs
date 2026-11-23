@@ -31,8 +31,8 @@
 //!     type Topology = nebula_resource::Pooled<Self>;
 //!
 //!     const KEY: &'static str = "postgres";
-//!     fn metadata() -> nebula_resource::MetadataDraft {
-//!         nebula_resource::MetadataDraft::new(
+//!     fn metadata() -> nebula_resource::ResourceMetadata {
+//!         nebula_resource::ResourceMetadata::new(
 //!             nebula_resource::metadata_name!("Postgres"),
 //!             "Database pool",
 //!         )

@@ -29,8 +29,8 @@ impl Provider for NestedCleanupResource {
     type Instance = u64;
     type Topology = nebula_resource::Bounded<Self>;
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("NestedCleanupResource"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("NestedCleanupResource"), "")
     }
 
     const KEY: &'static str = "nested-cleanup";
@@ -232,7 +232,7 @@ use nebula_resource::{
     ResourceContext, ScopeLevel, ShutdownConfig, SlotIdentity,
     error::Error,
     guard::ResourceGuard,
-    resource::{HasCredentialSlots, MetadataDraft, Provider},
+    resource::{HasCredentialSlots, Provider, ResourceMetadata},
     topology::pooled::{PoolProvider, RecycleDecision},
 };
 
@@ -254,8 +254,8 @@ impl Provider for ResidentLifecycleResource {
     type Instance = UniqueResident;
     type Topology = Resident<Self>;
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("ResidentLifecycleResource"),
             "",
         )
@@ -637,8 +637,8 @@ impl Provider for SlowDestroyPoolResource {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("slow-destroy-pool"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("slow-destroy-pool"), "")
     }
 }
 
@@ -754,8 +754,8 @@ impl Provider for HangingDestroyPoolResource {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("hanging-destroy-pool"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("hanging-destroy-pool"), "")
     }
 }
 
@@ -797,8 +797,8 @@ impl Provider for PanickingDestroyPoolResource {
         panic!("author Provider::destroy panics on purpose");
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("panicking-destroy-pool"),
             "",
         )
@@ -921,8 +921,8 @@ impl Provider for PanickingCreatePoolResource {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("panicking-create-pool"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("panicking-create-pool"), "")
     }
 }
 
@@ -1260,8 +1260,8 @@ impl Provider for DropOnRecycleResource {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("drop-on-recycle"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("drop-on-recycle"), "")
     }
 }
 
@@ -1364,8 +1364,8 @@ impl Provider for CredentialedDefaultPoolResource {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("cred-pool-default"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("cred-pool-default"), "")
     }
 }
 
@@ -1418,8 +1418,8 @@ impl Provider for CredentialedKeepPoolResource {
         Ok(Arc::new(AtomicU64::new(id)))
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("cred-pool-keep"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("cred-pool-keep"), "")
     }
 }
 

@@ -44,7 +44,7 @@ const CRATES: &[(&str, &str)] = &[
     ("nebula_resilience", "crates/resilience/src"),
     // `CredentialGuard`, re-exported for credential slots.
     ("nebula_credential", "crates/credential/src"),
-    // `MetadataDraft`, what `Provider::metadata` returns.
+    // `Metadata`, which `Provider::metadata` returns under the alias `ResourceMetadata`.
     ("nebula_metadata", "crates/metadata/src"),
 ];
 

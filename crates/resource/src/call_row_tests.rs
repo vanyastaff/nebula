@@ -39,7 +39,7 @@ use crate::{
         },
     },
     rate_limit::{Rate, RowLimit},
-    resource::{MetadataDraft, ResourceConfig as _},
+    resource::{ResourceConfig as _, ResourceMetadata},
     runtime::managed::ManagedResource,
     topology::{
         PoolProvider,
@@ -318,8 +318,8 @@ impl Provider for PlainPool {
 
     const KEY: &'static str = "row-plain-pool";
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(crate::metadata_name!("row-plain-pool"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("row-plain-pool"), "")
     }
 
     async fn create(

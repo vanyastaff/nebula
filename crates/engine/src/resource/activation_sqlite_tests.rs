@@ -111,8 +111,8 @@ impl Provider for BearerRow {
         Ok(Arc::new(AtomicU64::new(1)))
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("activation.bearer"),
             String::new(),
         )

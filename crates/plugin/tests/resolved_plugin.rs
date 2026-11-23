@@ -12,10 +12,10 @@ use nebula_credential::{
     SecretToken, contract::plugin_capability_report, error::CredentialError,
     resolve::StaticResolveResult,
 };
-use nebula_metadata::{Metadata, PluginManifest};
+use nebula_metadata::{Definition, PluginManifest};
 use nebula_plugin::{ComponentKind, Plugin, PluginError, ResolvedPlugin};
 use nebula_resource::{
-    KindActivator, MetadataDraft, Provider, Resident, ResidentConfig, ResourceFactory,
+    KindActivator, Provider, Resident, ResidentConfig, ResourceFactory, ResourceMetadata,
 };
 
 #[derive(Clone)]
@@ -39,8 +39,8 @@ impl<const INDEX: usize> Provider for MetadataFixture<INDEX> {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("MetadataFixture"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("MetadataFixture"), "")
     }
 
     const KEY: &'static str = match INDEX {
@@ -68,7 +68,7 @@ impl<const INDEX: usize> nebula_resource::ResidentProvider for MetadataFixture<I
 
 fn resource_factory_at<const INDEX: usize>() -> Arc<dyn ResourceFactory> {
     let factory = KindActivator::<MetadataFixture<INDEX>, _, _>::with_metadata(
-        MetadataDraft::new(nebula_resource::metadata_name!("Metadata fixture"), ""),
+        ResourceMetadata::new(nebula_resource::metadata_name!("Metadata fixture"), ""),
         || MetadataFixture,
         nebula_resource::topology::fixed(|| Resident::new(ResidentConfig::default())),
     );
@@ -623,7 +623,7 @@ fn registry_resolve_resource_finds_across_plugins() {
         .resolve_resource(&ResourceKey::new("http.client").unwrap())
         .expect("client");
     assert_eq!(
-        res.metadata()
+        res.definition()
             .expect("fixture metadata is valid")
             .base()
             .key()

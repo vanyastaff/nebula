@@ -6,7 +6,7 @@ use nebula_core::ExecutionId;
 use super::*;
 use crate::topology::store::{InstanceStore, StoreView};
 use crate::{
-    resource::{MetadataDraft, ResourceConfig},
+    resource::{ResourceConfig, ResourceMetadata},
     topology::bounded::BoundedProvider,
 };
 
@@ -55,8 +55,8 @@ impl Provider for MockBounded {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(crate::metadata_name!("mock-bounded"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("mock-bounded"), "")
     }
 }
 
@@ -305,8 +305,8 @@ impl Provider for FingerprintResource {
     async fn destroy(&self, _: u32, _: crate::TeardownCx) -> Result<(), Error> {
         Ok(())
     }
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             crate::metadata_name!("fingerprint-ownership-regression"),
             "",
         )

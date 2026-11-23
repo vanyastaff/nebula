@@ -153,8 +153,8 @@ impl Provider for ManualProvider {
     type Instance = OwnedClient;
     type Topology = Pooled<Self>;
 
-    fn metadata() -> nebula_sdk::integration::resource::MetadataDraft {
-        nebula_sdk::integration::resource::MetadataDraft::new(
+    fn metadata() -> nebula_sdk::integration::resource::ResourceMetadata {
+        nebula_sdk::integration::resource::ResourceMetadata::new(
             nebula_sdk::prelude::metadata_name!("ManualProvider"),
             "",
         )
@@ -188,8 +188,8 @@ impl Provider for CatalogProvider {
     type Instance = ();
     type Topology = Pooled<Self>;
 
-    fn metadata() -> nebula_sdk::integration::resource::MetadataDraft {
-        nebula_sdk::integration::resource::MetadataDraft::new(
+    fn metadata() -> nebula_sdk::integration::resource::ResourceMetadata {
+        nebula_sdk::integration::resource::ResourceMetadata::new(
             nebula_sdk::prelude::metadata_name!("CatalogProvider"),
             "",
         )
@@ -374,7 +374,7 @@ fn catalog_constructor_parity() {
         MetadataVersion, RemovalDate, RemovalMilestone, RemovalSchedule, VersionReq,
     };
     use nebula_sdk::integration::{
-        action::ActionMetadataDraft, credential::CredentialMetadataDraft, resource::MetadataDraft,
+        action::ActionMetadataDraft, credential::CredentialMetadataDraft, resource::ResourceMetadata,
     };
     use nebula_sdk::prelude::{action_key, credential_key};
 
@@ -452,12 +452,12 @@ fn catalog_constructor_parity() {
             .add_link(link.clone())
             .with_deprecation(notice.clone());
     assert_eq!(credential, credential_dynamic);
-    let resource = MetadataDraft::new(metadata_name!("HTTP"), "")
+    let resource = ResourceMetadata::new(metadata_name!("HTTP"), "")
         .with_version(version.clone())
         .with_categories([category.clone()])
         .add_link(link.clone())
         .with_deprecation(notice.clone());
-    let resource_dynamic = MetadataDraft::try_new("HTTP", "")
+    let resource_dynamic = ResourceMetadata::try_new("HTTP", "")
         .expect("valid name")
         .with_version(version)
         .with_categories([category])
@@ -468,5 +468,5 @@ fn catalog_constructor_parity() {
     let _: nebula_sdk::prelude::MetadataField = MetadataField::Links;
     assert!(ActionMetadataDraft::try_new(action_key!("example.echo"), " ", "").is_err());
     assert!(CredentialMetadataDraft::try_new(credential_key!("example.token"), " ", "").is_err());
-    assert!(MetadataDraft::try_new(" ", "").is_err());
+    assert!(ResourceMetadata::try_new(" ", "").is_err());
 }

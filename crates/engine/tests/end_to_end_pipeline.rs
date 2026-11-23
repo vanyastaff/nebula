@@ -45,7 +45,7 @@ use nebula_resource::Resident;
 use nebula_resource::{
     Manager, RegistrationSpec, ResidentConfig, ResourceContext, SlotIdentity,
     error::Error as ResourceError,
-    resource::{MetadataDraft, Provider, ResourceConfig},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
 use nebula_workflow::{
@@ -202,8 +202,8 @@ impl Provider for WitnessResource {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("phase9-witness-resource"),
             "",
         )

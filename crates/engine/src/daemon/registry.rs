@@ -315,7 +315,7 @@ mod tests {
     use nebula_resource::{
         context::ResourceContext,
         error::Error as ResourceError,
-        resource::{MetadataDraft, Provider, ResourceConfig},
+        resource::{Provider, ResourceConfig, ResourceMetadata},
     };
     use tokio_util::sync::CancellationToken;
 
@@ -362,8 +362,8 @@ mod tests {
             Ok(())
         }
 
-        fn metadata() -> MetadataDraft {
-            MetadataDraft::new(nebula_resource::metadata_name!("registry-counted"), "")
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(nebula_resource::metadata_name!("registry-counted"), "")
         }
     }
 
@@ -470,8 +470,8 @@ mod tests {
         ) -> Result<(), ResourceError> {
             Ok(())
         }
-        fn metadata() -> MetadataDraft {
-            MetadataDraft::new(nebula_resource::metadata_name!("registry-counted-b"), "")
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(nebula_resource::metadata_name!("registry-counted-b"), "")
         }
     }
     nebula_resource::no_credential_slots!(CountedDaemonB);

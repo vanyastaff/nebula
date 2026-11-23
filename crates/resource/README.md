@@ -72,15 +72,15 @@ pub trait Provider: HasCredentialSlots + Send + Sync + Sized + 'static {
 
     /// Schema-free author intent. The factory derives and binds `Config`'s
     /// canonical schema exactly once.
-    fn metadata() -> MetadataDraft;
+    fn metadata() -> ResourceMetadata;
 }
 ```
 
 `HasSchema::schema()` and `schema_of::<T>()` admit definitions through
-`Result<ValidSchema, ValidationReport>`. `ResourceFactory::metadata()` performs
-the only resource metadata admission, caches the resulting immutable
-`ResourceMetadata`, and returns it by reference. The draft carries neither a key
-nor a schema: the factory stamps `Provider::KEY` and derives the schema from
+`Result<ValidSchema, ValidationReport>`. `ResourceFactory::definition()` performs
+the only resource admission, caches the resulting immutable
+`ResourceDefinition`, and returns it by reference. The author's `ResourceMetadata`
+carries neither a key nor a schema: the factory stamps `Provider::KEY` and derives the schema from
 `Config`, so an admitted definition cannot name another resource. Schema and
 catalog failures propagate as `MetadataBuildError`; registry insertion fails
 before mutation. Catalog enumeration must not drop a failing entry.
@@ -95,7 +95,7 @@ and invariant-bearing base fields are read through accessors.
 `Provider::KEY` is the one declaration of a resource's identity; `R::key()`
 (`ProviderKey`, implemented for every provider) is its typed `ResourceKey`, and
 an invalid literal fails the build. `Provider::metadata` is required and returns
-`MetadataDraft::new(metadata_name!("Display name"), description)` or the checked
+`ResourceMetadata::new(metadata_name!("Display name"), description)` or the checked
 `try_new(name, description)`; names are never inferred from keys. Typed
 icons use `with_icon`, `with_inline_icon`, or `with_url_icon`; there is no
 separate `icon_url` field. Typed categories and links use `with_categories` and
@@ -245,8 +245,8 @@ recovery gate. `ResourceEvent` publishes `RateLimitEngaged` / `Cleared` /
 `Penalized` / `StoreUnavailable` / `StoreRecovered` on transitions only, never
 per call.
 
-Admitted `ResourceMetadata` has private fields, getters, and `Serialize` only.
-Persisted catalog bytes deserialize as `RecordedResourceMetadata`; callers must
+Admitted `ResourceDefinition` has private fields, getters, and `Serialize` only.
+Persisted catalog bytes deserialize as `RecordedResourceDefinition`; callers must
 explicitly call `readmit_against` with a freshly admitted factory definition.
 The catalog record nests shared fields under `base` with required
 `metadata_wire_version: 2`. Flat/unversioned legacy records are rejected. Use
@@ -297,8 +297,8 @@ impl Provider for Postgres {
     type Topology  = Pooled<Self>;
 
     const KEY: &'static str = "postgres";
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(metadata_name!("Postgres"), "Database pool")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(metadata_name!("Postgres"), "Database pool")
     }
 
     async fn create(&self, config: &PostgresConfig, _ctx: &ResourceContext)
@@ -895,10 +895,10 @@ is not SDK-exported.
 - `SlotIdentity`, `DedupKey` — structural resolved-credential identity (`Unbound` / `Structural`) and the `(key, scope, slot_identity)` registry dedup key; neither is tenant authority.
 - `ManagerConfig`, `RegisterOptions` — configuration surface.
 - `Registry`, `LookupOutcome`, `ManagedResourceView` — type-erased storage with read-only diagnostic lookup; lifecycle authority remains inside `Manager`.
-- `MetadataDraft` — key-free and schema-free author intent returned by `Provider::metadata` (the shared `nebula-metadata` type).
+- `ResourceMetadata` — key-free and schema-free author intent returned by `Provider::metadata` (an alias of `nebula_metadata::Metadata`).
 - `ProviderKey` — `R::key()`, the typed `ResourceKey` derived from `Provider::KEY`; implemented for every provider.
-- `ResourceMetadata` — immutable factory-admitted descriptor with getter-only key, name, description, schema, version, and tags; serializable but not deserializable.
-- `RecordedResourceMetadata` — deserialized catalog evidence requiring explicit readmission against a fresh factory definition.
+- `ResourceDefinition` — immutable factory-admitted descriptor with getter-only key, name, description, schema, version, and tags; serializable but not deserializable.
+- `RecordedResourceDefinition` — deserialized catalog evidence requiring explicit readmission against a fresh factory definition.
 - `ResourceConfig` — operational config trait (no secrets); supertype `HasSchema`.
 - `SlotCell` — lock-free `ArcSwap`-based credential slot cell the framework populates/rotates.
 - `TeardownCx`, `TeardownReason` — deadline + cause handed to `Provider::destroy` (ADR-0093 teardown contract).

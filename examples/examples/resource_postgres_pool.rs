@@ -49,7 +49,7 @@ use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResourceContext,
     dedup::SlotIdentity,
     error::Error as ResourceError,
-    resource::{MetadataDraft, Provider, ResourceConfig},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::pooled::{BrokenCheck, RecycleDecision, config::Config as PoolConfig},
 };
 use serde::Deserialize;
@@ -228,8 +228,8 @@ impl Provider for Postgres {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("demo.postgres"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("demo.postgres"), "")
     }
 }
 

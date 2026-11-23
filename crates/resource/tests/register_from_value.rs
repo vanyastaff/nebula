@@ -19,7 +19,7 @@ use nebula_resource::{
     KindActivator, Manager, RegisterRequest, ResidentConfig, ResourceConfigInput, ResourceContext,
     ResourceFactory,
     error::Error,
-    resource::{HasCredentialSlots, MetadataDraft, Provider, ResourceConfig},
+    resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
 use serde::Deserialize;
@@ -140,8 +140,8 @@ impl Provider for Postgres {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("phase9-pg"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("phase9-pg"), "")
     }
 }
 
@@ -172,8 +172,8 @@ impl<const CREDENTIALS: bool> Provider for AdmissionResource<CREDENTIALS> {
     type Instance = ();
     type Topology = AdmissionTopology;
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("AdmissionResource"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("AdmissionResource"), "")
     }
 
     const KEY: &'static str = "test.revoke-admission";
@@ -493,8 +493,8 @@ impl Provider for DriftedSlotSignals {
         Ok(Arc::new(()))
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("phase9-drifted-slot-signals"),
             "",
         )
@@ -579,8 +579,8 @@ impl Provider for DriftedSlotNames {
         Ok(Arc::new(()))
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("phase9-drifted-slot-names"),
             "",
         )
@@ -750,8 +750,8 @@ impl Provider for CacheBackend {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("union-cache"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("union-cache"), "")
     }
 }
 
@@ -888,8 +888,8 @@ impl Provider for WarmPool {
         Ok(Arc::new(()))
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("warm-pool"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("warm-pool"), "")
     }
 }
 

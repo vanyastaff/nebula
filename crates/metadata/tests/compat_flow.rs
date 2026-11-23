@@ -1,12 +1,12 @@
 //! `validate_base_compat` against a *composed* entity, not bare
-//! `BaseMetadata`. All seven unit tests in `compat.rs` compose nothing but
-//! `BaseMetadata<TestKey>` directly; this file proves the same three
+//! `BaseDefinition`. All seven unit tests in `compat.rs` compose nothing but
+//! `BaseDefinition<TestKey>` directly; this file proves the same three
 //! `BaseCompatError` variants plus the ok paths through a locally composed
 //! metadata shape carrying an entity-specific field the compat check must
 //! ignore.
 
 use nebula_metadata::{
-    BaseCompatError, BaseMetadata, Metadata, MetadataDraft, validate_base_compat,
+    BaseCompatError, BaseDefinition, Definition, Metadata, validate_base_compat,
 };
 use nebula_schema::{PropertyCollector, Schema, ValidSchema, field_key};
 use pretty_assertions::assert_eq;
@@ -47,19 +47,19 @@ fn schema_with_field() -> ValidSchema {
 }
 
 /// Composed metadata carrying an entity-specific field (`retry_budget`)
-/// alongside the nested `BaseMetadata` prefix — the shape
+/// alongside the nested `BaseDefinition` prefix — the shape
 /// `validate_base_compat` is meant to be called against in production
-/// (through `Metadata::base()`), not the bare `BaseMetadata` every unit
+/// (through `Definition::base()`), not the bare `BaseDefinition` every unit
 /// test in `compat.rs` uses.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct ComposedMetadata {
-    base: BaseMetadata<LocalKey>,
+    base: BaseDefinition<LocalKey>,
     retry_budget: u32,
 }
 
-impl Metadata for ComposedMetadata {
+impl Definition for ComposedMetadata {
     type Key = LocalKey;
-    fn base(&self) -> &BaseMetadata<Self::Key> {
+    fn base(&self) -> &BaseDefinition<Self::Key> {
         &self.base
     }
 }
@@ -72,7 +72,7 @@ fn composed(
     retry_budget: u32,
 ) -> ComposedMetadata {
     ComposedMetadata {
-        base: MetadataDraft::try_new("n", "d")
+        base: Metadata::try_new("n", "d")
             .expect("nonblank name")
             .with_version(Version::new(major, minor, 0))
             .bind(key(k), schema)
@@ -83,7 +83,7 @@ fn composed(
 
 // Every case below gives `prev` and `curr` a *different* `retry_budget`
 // (1 vs 99). To be precise about what that does and does not demonstrate:
-// `validate_base_compat` takes `&BaseMetadata<K>`, and line ~115 passes
+// `validate_base_compat` takes `&BaseDefinition<K>`, and line ~115 passes
 // `curr.base()`/`prev.base()` — so `retry_budget` structurally cannot
 // reach the function at all; the type signature guarantees that on its
 // own, before any assertion runs. The varying value does not add proof of
@@ -130,12 +130,12 @@ fn compat_ignores_entity_specific_fields(
 
 #[test]
 fn build_metadata_does_not_change_revision_precedence() {
-    let previous = MetadataDraft::try_new("Name", "")
+    let previous = Metadata::try_new("Name", "")
         .expect("nonblank name")
         .with_version("1.2.3+z".parse().expect("valid version"))
         .bind(key("k"), empty_schema())
         .expect("valid bounded metadata");
-    let current = MetadataDraft::try_new("Name", "")
+    let current = Metadata::try_new("Name", "")
         .expect("nonblank name")
         .with_version("1.2.3+a".parse().expect("valid version"))
         .bind(key("k"), empty_schema())
@@ -146,12 +146,12 @@ fn build_metadata_does_not_change_revision_precedence() {
 
 #[test]
 fn prerelease_regression_is_still_a_revision_error() {
-    let previous = MetadataDraft::try_new("Name", "")
+    let previous = Metadata::try_new("Name", "")
         .expect("nonblank name")
         .with_version("1.2.3-beta.2".parse().expect("valid version"))
         .bind(key("k"), empty_schema())
         .expect("valid bounded metadata");
-    let current = MetadataDraft::try_new("Name", "")
+    let current = Metadata::try_new("Name", "")
         .expect("nonblank name")
         .with_version("1.2.3-beta.1+new-build".parse().expect("valid version"))
         .bind(key("k"), empty_schema())

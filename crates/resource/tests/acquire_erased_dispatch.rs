@@ -12,7 +12,7 @@ use nebula_resource::topology::resident::ResidentProvider;
 use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResourceContext, ScopeLevel, SlotIdentity,
     error::Error,
-    resource::{MetadataDraft, Provider, ResourceConfig},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
 };
 use nebula_resource::{Pooled, Resident, ResidentConfig};
 use tokio_util::sync::CancellationToken;
@@ -58,8 +58,8 @@ impl Provider for ProbeResource {
         Ok(counter)
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("test.acquire_erased.probe"),
             "",
         )
@@ -314,8 +314,8 @@ mod pool_parity {
             Ok(())
         }
 
-        fn metadata() -> MetadataDraft {
-            MetadataDraft::new(nebula_resource::metadata_name!("test.ae4.pool"), "")
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(nebula_resource::metadata_name!("test.ae4.pool"), "")
         }
     }
 
@@ -434,8 +434,8 @@ mod resident_erased_reuses_runtime {
             Ok(Arc::clone(&self.create_count))
         }
 
-        fn metadata() -> MetadataDraft {
-            MetadataDraft::new(
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(
                 nebula_resource::metadata_name!("test.ae4.resident_reuse"),
                 "",
             )
@@ -554,8 +554,8 @@ mod pool_erased_distinct_instances {
             Ok(self.create_count.fetch_add(1, Ordering::SeqCst))
         }
 
-        fn metadata() -> MetadataDraft {
-            MetadataDraft::new(nebula_resource::metadata_name!("test.ae4.pool_erased"), "")
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(nebula_resource::metadata_name!("test.ae4.pool_erased"), "")
         }
     }
 

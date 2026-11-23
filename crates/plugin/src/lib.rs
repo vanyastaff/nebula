@@ -15,7 +15,7 @@
 //! - `PluginManifest` — bundle descriptor with builder API (key, name, semver version, group,
 //!   `Icon`, maturity, deprecation, author/license/homepage/repository metadata). Canonical in
 //!   `nebula-metadata`; re-exported here for source compatibility. Does **not** compose
-//!   `BaseMetadata<K>` — a plugin is a container, not a schematized leaf.
+//!   `BaseDefinition<K>` — a plugin is a container, not a schematized leaf.
 //! - `ResolvedPlugin` — per-plugin wrapper with eager component caches; enforces namespace
 //!   invariant at construction.
 //! - `PluginRegistry` — in-memory `PluginKey → Arc<ResolvedPlugin>` registry.

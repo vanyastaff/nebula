@@ -45,8 +45,8 @@ impl Provider for ChatProvider {
     type Instance = ChatClient;
     type Topology = Resident<Self>;
 
-    fn metadata() -> nebula_sdk::integration::resource::MetadataDraft {
-        nebula_sdk::integration::resource::MetadataDraft::new(
+    fn metadata() -> nebula_sdk::integration::resource::ResourceMetadata {
+        nebula_sdk::integration::resource::ResourceMetadata::new(
             nebula_sdk::prelude::metadata_name!("ChatProvider"),
             "",
         )

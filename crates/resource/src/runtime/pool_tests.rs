@@ -5,7 +5,7 @@ use nebula_core::ExecutionId;
 use super::*;
 use crate::{
     context::ResourceContext,
-    resource::{MetadataDraft, ResourceConfig},
+    resource::{ResourceConfig, ResourceMetadata},
     topology::{pooled::BrokenCheck, store::ReturnOutcome},
 };
 
@@ -101,8 +101,8 @@ impl Provider for MockPool {
         }
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(crate::metadata_name!("mock-pool"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("mock-pool"), "")
     }
 }
 

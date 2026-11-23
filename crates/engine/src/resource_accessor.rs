@@ -241,7 +241,7 @@ mod tests {
         Manager, RegistrationSpec, Resident, ResidentConfig, ResourceContext, ScopeLevel,
         SlotIdentity,
         error::Error,
-        resource::{MetadataDraft, Provider, ResourceConfig},
+        resource::{Provider, ResourceConfig, ResourceMetadata},
         topology::resident::ResidentProvider,
     };
 
@@ -293,8 +293,8 @@ mod tests {
             Ok(Arc::new(AtomicU64::new(42)))
         }
 
-        fn metadata() -> MetadataDraft {
-            MetadataDraft::new(
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(
                 nebula_resource::metadata_name!("test.engine_accessor.acc"),
                 "",
             )

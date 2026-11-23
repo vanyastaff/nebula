@@ -20,7 +20,7 @@ use nebula_core::{ResourceKey, ScopeLevel, scope::Scope};
 use nebula_resource::{
     AcquireOptions, Bounded, Manager, RegistrationSpec, ResourceContext, SlotIdentity, TopologyTag,
     error::Error,
-    resource::{MetadataDraft, Provider, ResourceConfig},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::bounded::BoundedProvider,
 };
 use tokio_util::sync::CancellationToken;
@@ -93,8 +93,8 @@ impl Provider for Seats {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("bounded.seats"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("bounded.seats"), "")
     }
 }
 

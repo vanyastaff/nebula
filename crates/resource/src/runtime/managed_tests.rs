@@ -14,7 +14,7 @@ use crate::{
     error::Error,
     options::AcquireOptions,
     release_queue::ReleaseQueue,
-    resource::{MetadataDraft, ResourceConfig, TeardownCx, TeardownReason},
+    resource::{ResourceConfig, ResourceMetadata, TeardownCx, TeardownReason},
     runtime::teardown::{destroy_within, teardown_deadline},
     topology::{Pooled, pooled::config::Config as PoolConfig, store::InstanceStore},
 };
@@ -112,8 +112,8 @@ impl Provider for Mock {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(crate::metadata_name!("managed-loop-mock"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("managed-loop-mock"), "")
     }
 }
 
@@ -680,8 +680,8 @@ impl Provider for SlowTeardown {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(crate::metadata_name!("slow-teardown-mock"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("slow-teardown-mock"), "")
     }
 }
 

@@ -52,8 +52,11 @@ impl Provider for TerminalProvider {
     type Instance = OwnedInstance;
     type Topology = Resident<Self>;
 
-    fn metadata() -> nebula_resource::MetadataDraft {
-        nebula_resource::MetadataDraft::new(nebula_resource::metadata_name!("TerminalProvider"), "")
+    fn metadata() -> nebula_resource::ResourceMetadata {
+        nebula_resource::ResourceMetadata::new(
+            nebula_resource::metadata_name!("TerminalProvider"),
+            "",
+        )
     }
 
     const KEY: &'static str = "terminal-contract";
@@ -195,8 +198,8 @@ impl Provider for DefaultDropProvider {
     type Instance = OwnedInstance;
     type Topology = Resident<Self>;
 
-    fn metadata() -> nebula_resource::MetadataDraft {
-        nebula_resource::MetadataDraft::new(
+    fn metadata() -> nebula_resource::ResourceMetadata {
+        nebula_resource::ResourceMetadata::new(
             nebula_resource::metadata_name!("DefaultDropProvider"),
             "",
         )

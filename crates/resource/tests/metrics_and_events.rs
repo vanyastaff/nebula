@@ -42,8 +42,8 @@ impl<const ID: u8> Provider for FailingRetirementResource<ID> {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn metadata() -> nebula_resource::MetadataDraft {
-        nebula_resource::MetadataDraft::new(
+    fn metadata() -> nebula_resource::ResourceMetadata {
+        nebula_resource::ResourceMetadata::new(
             nebula_resource::metadata_name!("FailingRetirementResource"),
             "",
         )

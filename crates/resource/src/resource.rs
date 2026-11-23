@@ -32,9 +32,16 @@
 
 use async_trait::async_trait;
 use nebula_core::ResourceKey;
-pub use nebula_metadata::MetadataDraft;
+/// What a resource's author says about it for the catalog: name, description,
+/// version, icon, links, tags, maturity.
+///
+/// This is the shared [`nebula_metadata::Metadata`] under the name resource
+/// authors use. It holds neither a key nor a schema: the factory stamps
+/// [`Provider::KEY`] and derives the schema from [`Provider::Config`] when it
+/// admits the resource as a [`ResourceDefinition`].
+pub type ResourceMetadata = nebula_metadata::Metadata;
 use nebula_metadata::{
-    BaseCompatError, BaseMetadata, Metadata, RecordedBaseMetadata, validate_base_compat,
+    BaseCompatError, BaseDefinition, Definition, RecordedBaseDefinition, validate_base_compat,
 };
 use nebula_schema::ValidSchema;
 use serde::{Deserialize, Serialize};
@@ -133,42 +140,43 @@ impl ResourceConfig for () {
     }
 }
 
-/// Immutable resource metadata admitted by a resource factory.
+/// Immutable resource definition admitted by a resource factory.
 ///
 /// The schema is always derived from the resource's `R::Config` type. Fields
-/// are private and exposed through getters; rebuild a fresh draft to change a
-/// static definition. This admitted form serializes for catalogs but cannot be
-/// deserialized from wire or persistence data.
+/// are private and exposed through getters; to change a static definition,
+/// return different [`ResourceMetadata`] from the provider. This admitted form
+/// serializes for catalogs but cannot be deserialized from wire or persistence
+/// data.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ResourceMetadata {
-    base: BaseMetadata<ResourceKey>,
+pub struct ResourceDefinition {
+    base: BaseDefinition<ResourceKey>,
 }
 
-impl ResourceMetadata {
-    /// Admits a provider's catalog draft under the provider's own key and the
+impl ResourceDefinition {
+    /// Admits a provider's metadata under the provider's own key and the
     /// schema derived from its `Config`.
     ///
-    /// The draft carries neither: the key is [`Provider::KEY`] and the schema
-    /// comes from the config type, so an admitted definition cannot name a
-    /// resource other than the one it was built from.
+    /// The metadata carries neither: the key is [`Provider::KEY`] and the
+    /// schema comes from the config type, so an admitted definition cannot
+    /// name a resource other than the one it was built from.
     #[tracing::instrument(name = "resource.metadata.admit", skip_all, err)]
     pub(crate) fn admit(
         key: ResourceKey,
-        draft: MetadataDraft,
+        metadata: ResourceMetadata,
         schema: ValidSchema,
     ) -> Result<Self, MetadataBuildError> {
-        let metadata = Self {
-            base: draft.bind(key, schema)?,
+        let definition = Self {
+            base: metadata.bind(key, schema)?,
         };
-        nebula_metadata::check_json_record(&metadata)
+        nebula_metadata::check_json_record(&definition)
             .map_err(nebula_metadata::MetadataBuildError::from)?;
-        Ok(metadata)
+        Ok(definition)
     }
 
     /// Shared admitted catalog metadata.
     #[must_use]
-    pub const fn base(&self) -> &BaseMetadata<ResourceKey> {
+    pub const fn base(&self) -> &BaseDefinition<ResourceKey> {
         &self.base
     }
 
@@ -187,10 +195,10 @@ impl ResourceMetadata {
     }
 }
 
-impl Metadata for ResourceMetadata {
+impl Definition for ResourceDefinition {
     type Key = ResourceKey;
 
-    fn base(&self) -> &BaseMetadata<ResourceKey> {
+    fn base(&self) -> &BaseDefinition<ResourceKey> {
         &self.base
     }
 }
@@ -203,17 +211,17 @@ impl Metadata for ResourceMetadata {
 /// raw ingress must use the bounded constructors or an externally bounded transport.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct RecordedResourceMetadata {
-    base: RecordedBaseMetadata<ResourceKey>,
+pub struct RecordedResourceDefinition {
+    base: RecordedBaseDefinition<ResourceKey>,
 }
 
-impl<'de> Deserialize<'de> for RecordedResourceMetadata {
+impl<'de> Deserialize<'de> for RecordedResourceDefinition {
     #[tracing::instrument(name = "resource.metadata.decode_recorded", skip_all)]
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Fields {
-            base: RecordedBaseMetadata<ResourceKey>,
+            base: RecordedBaseDefinition<ResourceKey>,
         }
 
         let fields: Fields = nebula_metadata::deserialize_metadata_object(deserializer)
@@ -225,7 +233,7 @@ impl<'de> Deserialize<'de> for RecordedResourceMetadata {
     }
 }
 
-impl RecordedResourceMetadata {
+impl RecordedResourceDefinition {
     /// Decode recorded evidence within the selected whole-envelope byte limit.
     ///
     /// # Errors
@@ -252,7 +260,7 @@ impl RecordedResourceMetadata {
 
     /// Recorded shared metadata evidence.
     #[must_use]
-    pub const fn base(&self) -> &RecordedBaseMetadata<ResourceKey> {
+    pub const fn base(&self) -> &RecordedBaseDefinition<ResourceKey> {
         &self.base
     }
 
@@ -267,8 +275,8 @@ impl RecordedResourceMetadata {
     #[tracing::instrument(name = "resource.metadata.readmit_recorded", skip_all, err)]
     pub fn readmit_against(
         &self,
-        fresh_definition: &ResourceMetadata,
-    ) -> Result<ResourceMetadata, nebula_metadata::MetadataReadmissionError> {
+        fresh_definition: &ResourceDefinition,
+    ) -> Result<ResourceDefinition, nebula_metadata::MetadataReadmissionError> {
         self.base.readmit_against(fresh_definition.base())?;
         Ok(fresh_definition.clone())
     }
@@ -320,7 +328,7 @@ impl nebula_error::Classify for MetadataBuildError {
 /// Wraps [`BaseCompatError`] for parity with the action- and
 /// credential-side error shapes. Resource has no entity-specific compat
 /// rules today, so the enum currently has a single `Base` variant; new
-/// variants will be added here (alongside `Base`) if `ResourceMetadata`
+/// variants will be added here (alongside `Base`) if `ResourceDefinition`
 /// later gains entity-specific fields whose changes should break version
 /// compatibility.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -574,7 +582,7 @@ pub trait Provider: HasCredentialSlots + Send + Sync + Sized + 'static {
     /// This is the one place a resource's identity is declared. The typed
     /// [`ResourceKey`] every registry, error and event carries is
     /// [`ProviderKey::key`], derived from this constant; the admitted
-    /// [`ResourceMetadata`] is stamped with it, so the catalog cannot name a
+    /// [`ResourceDefinition`] is stamped with it, so the catalog cannot name a
     /// different resource. A literal that is not a valid resource key fails
     /// the build where the provider is first used, not at registration.
     const KEY: &'static str;
@@ -798,10 +806,10 @@ pub trait Provider: HasCredentialSlots + Send + Sync + Sized + 'static {
     /// Returns what the catalog shows for this resource: name, description,
     /// icon, tags, version.
     ///
-    /// The draft carries neither a key nor a schema. The resource factory
+    /// The metadata carries neither a key nor a schema. The resource factory
     /// stamps [`Self::KEY`] and derives the canonical configuration schema
     /// from [`Self::Config`]; authors cannot supply either.
-    fn metadata() -> MetadataDraft;
+    fn metadata() -> ResourceMetadata;
 
     /// The provider's limits and how stored rows may override them.
     ///
@@ -1039,17 +1047,18 @@ mod tests {
     use semver::Version;
 
     use super::{
-        MetadataCompatibilityError, MetadataDraft, RecordedResourceMetadata, ResourceMetadata,
+        MetadataCompatibilityError, RecordedResourceDefinition, ResourceDefinition,
+        ResourceMetadata,
     };
 
     fn empty_schema() -> ValidSchema {
         ValidSchema::empty()
     }
 
-    fn md(major: u64, minor: u64) -> ResourceMetadata {
-        ResourceMetadata::admit(
+    fn md(major: u64, minor: u64) -> ResourceDefinition {
+        ResourceDefinition::admit(
             crate::resource_key!("postgres"),
-            MetadataDraft::new(crate::metadata_name!("pg"), "d")
+            ResourceMetadata::new(crate::metadata_name!("pg"), "d")
                 .with_version(Version::new(major, minor, 0)),
             empty_schema(),
         )
@@ -1069,9 +1078,9 @@ mod tests {
     #[test]
     fn historical_schema_cannot_admit_resource_metadata() {
         let historical: ValidSchema = serde_json::from_str(r#"{"fields":[]}"#).unwrap();
-        let result = ResourceMetadata::admit(
+        let result = ResourceDefinition::admit(
             crate::resource_key!("postgres"),
-            MetadataDraft::new(crate::metadata_name!("pg"), "d"),
+            ResourceMetadata::new(crate::metadata_name!("pg"), "d"),
             historical,
         );
         std::assert_matches!(result, Err(super::MetadataBuildError::Definition(nebula_metadata::MetadataBuildError::Schema(report)))
@@ -1086,7 +1095,7 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("policy_version");
-        let recorded: RecordedResourceMetadata = serde_json::from_value(wire.clone()).unwrap();
+        let recorded: RecordedResourceDefinition = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(serde_json::to_value(&recorded).unwrap(), wire);
         assert!(recorded.readmit_against(&current).is_err());
     }
@@ -1111,7 +1120,7 @@ mod tests {
             Some("postgres")
         );
 
-        let recorded: RecordedResourceMetadata =
+        let recorded: RecordedResourceDefinition =
             serde_json::from_str(&json).expect("recorded evidence deserializes");
         let readmitted = recorded
             .readmit_against(&original)
@@ -1122,9 +1131,9 @@ mod tests {
     #[test]
     fn full_version_preserves_all_semver_components() {
         let version = Version::parse("2.1.3-alpha.1+build.7").expect("valid test version");
-        let metadata = ResourceMetadata::admit(
+        let metadata = ResourceDefinition::admit(
             crate::resource_key!("postgres"),
-            MetadataDraft::new(crate::metadata_name!("pg"), "d").with_version(version.clone()),
+            ResourceMetadata::new(crate::metadata_name!("pg"), "d").with_version(version.clone()),
             empty_schema(),
         )
         .expect("valid resource metadata");

@@ -26,7 +26,7 @@ use crate::{
     PoolConfig, Pooled, Provider, RateLimitProfile, RegistrationSpec, Resident, ResidentConfig,
     ResourceConfig, ResourceContext, ResourceEvent, ResourceGuard, SlotCell, SlotIdentity,
     rate_limit::{Rate, ResiliencePolicy, RowLimit},
-    resource::{HasCredentialSlots, MetadataDraft},
+    resource::{HasCredentialSlots, ResourceMetadata},
     runtime::managed::ManagedResource,
     topology::{
         PoolProvider, ResidentProvider,
@@ -80,8 +80,8 @@ macro_rules! facade_row {
 
             const KEY: &'static str = $key;
 
-            fn metadata() -> MetadataDraft {
-                MetadataDraft::new(crate::metadata_name!($key), "")
+            fn metadata() -> ResourceMetadata {
+                ResourceMetadata::new(crate::metadata_name!($key), "")
             }
 
             fn resilience() -> ResiliencePolicy {

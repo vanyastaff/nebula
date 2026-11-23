@@ -7,8 +7,9 @@ use std::{
 };
 
 use nebula_metadata::{
-    DeprecationNotice, MAX_METADATA_JSON_BYTES, MetadataDecodeError, MetadataDecodeLimits,
-    MetadataDraft, PluginManifest, RecordedBaseMetadata, decode_json_reader, decode_json_slice,
+    DeprecationNotice, MAX_METADATA_JSON_BYTES, Metadata, MetadataDecodeError,
+    MetadataDecodeLimits, PluginManifest, RecordedBaseDefinition, decode_json_reader,
+    decode_json_slice,
 };
 use nebula_schema::ValidSchema;
 use serde::de::DeserializeOwned;
@@ -18,7 +19,7 @@ const CANARY: &str = "private_parser_canary";
 
 fn wire() -> Value {
     json!(
-        MetadataDraft::try_new("Example", "")
+        Metadata::try_new("Example", "")
             .unwrap()
             .bind("example".to_owned(), ValidSchema::empty())
             .unwrap()
@@ -63,7 +64,7 @@ fn missing_old_and_future_wire_versions_are_not_supported() {
                 value["metadata_wire_version"] = version.clone();
             }
         }
-        assert_sanitized::<RecordedBaseMetadata<String>>(record);
+        assert_sanitized::<RecordedBaseDefinition<String>>(record);
         assert_sanitized::<PluginManifest>(manifest);
     }
 }
@@ -72,7 +73,7 @@ fn missing_old_and_future_wire_versions_are_not_supported() {
 fn legacy_fields_are_rejected_even_with_a_current_version() {
     let mut record = wire();
     record["documentation_url"] = json!("https://example.test/legacy");
-    assert_sanitized::<RecordedBaseMetadata<String>>(record);
+    assert_sanitized::<RecordedBaseDefinition<String>>(record);
     assert_sanitized::<DeprecationNotice>(json!({"since":"1.0.0", "sunset":"2028-01-01"}));
     assert_sanitized::<DeprecationNotice>(json!({"since":"1.0.0", "replacement":"old.action"}));
 }
@@ -99,7 +100,7 @@ fn unknown_fields_variants_and_wrong_scalars_never_echo_payloads() {
         } else {
             json!(CANARY)
         };
-        assert_sanitized::<RecordedBaseMetadata<String>>(value);
+        assert_sanitized::<RecordedBaseDefinition<String>>(value);
     }
     for notice in [
         json!({"since":"1.0.0", CANARY: CANARY}),
@@ -139,34 +140,34 @@ fn unknown_fields_variants_and_wrong_scalars_never_echo_payloads() {
 fn direct_serde_enforces_raw_counts_field_bounds_and_aggregate_budget() {
     let mut excessive_tags = wire();
     excessive_tags["tags"] = json!(vec!["same"; 65]);
-    assert_sanitized::<RecordedBaseMetadata<String>>(excessive_tags);
+    assert_sanitized::<RecordedBaseDefinition<String>>(excessive_tags);
     let mut excessive_description = wire();
     excessive_description["description"] = json!("d".repeat(8193));
-    assert_sanitized::<RecordedBaseMetadata<String>>(excessive_description);
+    assert_sanitized::<RecordedBaseDefinition<String>>(excessive_description);
     let mut aggregate = wire();
     aggregate["name"] = json!("n".repeat(20000));
     aggregate["icon"] = json!("i".repeat(20000));
-    assert_sanitized::<RecordedBaseMetadata<String>>(aggregate);
+    assert_sanitized::<RecordedBaseDefinition<String>>(aggregate);
     let mut categories = wire();
     categories["categories"] = json!((0..17).map(|i| format!("category{i}")).collect::<Vec<_>>());
-    assert_sanitized::<RecordedBaseMetadata<String>>(categories);
+    assert_sanitized::<RecordedBaseDefinition<String>>(categories);
     let mut links = wire();
     links["links"] = json!(
         (0..17)
             .map(|i| json!({"relation":"setup", "target":format!("/doc{i}")}))
             .collect::<Vec<_>>()
     );
-    assert_sanitized::<RecordedBaseMetadata<String>>(links);
+    assert_sanitized::<RecordedBaseDefinition<String>>(links);
 }
 
 #[test]
 fn raw_envelope_ceiling_counts_whitespace_and_accepts_the_exact_boundary() {
     let canonical = serde_json::to_vec(&wire()).unwrap();
     let limits = MetadataDecodeLimits::new(canonical.len()).unwrap();
-    let record: RecordedBaseMetadata<String> = decode_json_slice(&canonical, limits).unwrap();
+    let record: RecordedBaseDefinition<String> = decode_json_slice(&canonical, limits).unwrap();
     assert_eq!(serde_json::to_value(record).unwrap(), wire());
     assert_eq!(
-        decode_json_slice::<RecordedBaseMetadata<String>>(
+        decode_json_slice::<RecordedBaseDefinition<String>>(
             &canonical,
             MetadataDecodeLimits::new(canonical.len() - 1).unwrap()
         )
@@ -175,13 +176,16 @@ fn raw_envelope_ceiling_counts_whitespace_and_accepts_the_exact_boundary() {
     );
     let mut exact = canonical;
     exact.resize(MAX_METADATA_JSON_BYTES, b' ');
-    let record: RecordedBaseMetadata<String> =
+    let record: RecordedBaseDefinition<String> =
         decode_json_slice(&exact, MetadataDecodeLimits::default()).unwrap();
     assert_eq!(serde_json::to_value(record).unwrap(), wire());
     exact.push(b' ');
     assert_eq!(
-        decode_json_slice::<RecordedBaseMetadata<String>>(&exact, MetadataDecodeLimits::default())
-            .unwrap_err(),
+        decode_json_slice::<RecordedBaseDefinition<String>>(
+            &exact,
+            MetadataDecodeLimits::default()
+        )
+        .unwrap_err(),
         MetadataDecodeError::EnvelopeTooLarge
     );
     assert_eq!(
@@ -205,7 +209,7 @@ fn reader_consumes_only_max_plus_one_and_sanitizes_io_errors() {
         }
     }
     let consumed = Cell::new(0);
-    let error = decode_json_reader::<RecordedBaseMetadata<String>>(
+    let error = decode_json_reader::<RecordedBaseDefinition<String>>(
         Endless(&consumed),
         MetadataDecodeLimits::new(128).unwrap(),
     )
@@ -218,9 +222,11 @@ fn reader_consumes_only_max_plus_one_and_sanitizes_io_errors() {
             Err(io::Error::other(CANARY))
         }
     }
-    let error =
-        decode_json_reader::<RecordedBaseMetadata<String>>(Failed, MetadataDecodeLimits::default())
-            .unwrap_err();
+    let error = decode_json_reader::<RecordedBaseDefinition<String>>(
+        Failed,
+        MetadataDecodeLimits::default(),
+    )
+    .unwrap_err();
     assert_eq!(error, MetadataDecodeError::ReadFailed);
     assert!(error.source().is_none());
     assert!(!format!("{error}: {error:?}").contains(CANARY));
@@ -231,7 +237,7 @@ fn nested_leaf_decoder_caps_the_whole_outer_envelope() {
     #[derive(Debug, serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Leaf {
-        base: RecordedBaseMetadata<String>,
+        base: RecordedBaseDefinition<String>,
         extra: String,
     }
     let bytes = serde_json::to_vec(&json!({"base":wire(), "extra":"details"})).unwrap();

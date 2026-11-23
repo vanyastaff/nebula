@@ -35,7 +35,7 @@ use crate::{
     context::ResourceContext,
     error::ErrorKind,
     options::AcquireOptions,
-    resource::{MetadataDraft, ResourceConfig},
+    resource::{ResourceConfig, ResourceMetadata},
     topology::{Resident, resident::config::Config as ResidentConfig},
 };
 
@@ -64,8 +64,8 @@ impl Provider for ShutdownRaceResident {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             crate::metadata_name!("test.shutdown_post_count_race.resident"),
             "",
         )
@@ -159,8 +159,8 @@ impl Provider for ValidatingResident {
     type Topology = Resident<Self>;
 
     const KEY: &'static str = "test.registration_validation_race";
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             crate::metadata_name!("test.registration_validation_race"),
             "",
         )

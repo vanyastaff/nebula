@@ -23,7 +23,7 @@ use nebula_resource::{
     Manager, ManagerConfig, Provider, RegisterOptions, RegistrationSpec, ResidentConfig,
     ResourceConfig, ResourceContext, SlotCell,
     error::Error,
-    resource::{HasCredentialSlots, MetadataDraft},
+    resource::{HasCredentialSlots, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
 use zeroize::Zeroize;
@@ -167,8 +167,8 @@ mod counting {
             Ok(())
         }
 
-        fn metadata() -> MetadataDraft {
-            MetadataDraft::new(nebula_resource::metadata_name!("counting-resident"), "")
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(nebula_resource::metadata_name!("counting-resident"), "")
         }
     }
 
@@ -1403,7 +1403,7 @@ mod u9_gate {
         AcquireOptions, Manager, Provider, RegistrationSpec, Resident, ResidentConfig,
         ResourceConfig, ResourceContext, SlotCell, SlotIdentity,
         error::Error,
-        resource::{HasCredentialSlots, MetadataDraft},
+        resource::{HasCredentialSlots, ResourceMetadata},
         topology::resident::ResidentProvider,
     };
     use tokio_util::sync::CancellationToken;
@@ -1483,8 +1483,8 @@ mod u9_gate {
             Ok(())
         }
 
-        fn metadata() -> MetadataDraft {
-            MetadataDraft::new(nebula_resource::metadata_name!("u9-gate-resident"), "")
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(nebula_resource::metadata_name!("u9-gate-resident"), "")
         }
     }
 
@@ -1642,7 +1642,7 @@ mod reload_deferral {
         Manager, PoolConfig, Provider, RegistrationSpec, ReloadOutcome, ResidentConfig,
         ResourceConfig, ResourceContext, SlotIdentity,
         error::Error,
-        resource::MetadataDraft,
+        resource::ResourceMetadata,
         topology::{Pooled, Resident, pooled::PoolProvider, resident::ResidentProvider},
     };
 
@@ -1695,8 +1695,8 @@ mod reload_deferral {
                     Ok(())
                 }
 
-                fn metadata() -> MetadataDraft {
-                    MetadataDraft::new(nebula_resource::metadata_name!(stringify!($name)), "")
+                fn metadata() -> ResourceMetadata {
+                    ResourceMetadata::new(nebula_resource::metadata_name!(stringify!($name)), "")
                 }
             }
 

@@ -23,7 +23,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use nebula_resource::{
     AcquireOptions, Error, Manager, PoolConfig, Pooled, Provider, RegistrationSpec, Resident,
     ResidentConfig, ResourceConfig, ResourceContext, ScopeLevel, SlotIdentity,
-    resource::MetadataDraft,
+    resource::ResourceMetadata,
     topology::pooled::{PoolProvider, RecycleDecision},
     topology::resident::ResidentProvider,
 };
@@ -59,8 +59,8 @@ impl Provider for KeepPool {
         Ok(0xBEEF)
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("bench-pool-keep"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("bench-pool-keep"), "")
     }
 }
 
@@ -85,8 +85,8 @@ impl Provider for DiscardPool {
         Ok(0xDEAD)
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("bench-pool-discard"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("bench-pool-discard"), "")
     }
 }
 
@@ -118,8 +118,8 @@ impl Provider for SharedResident {
         Ok(0xF00D)
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("bench-resident"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("bench-resident"), "")
     }
 }
 
@@ -272,8 +272,8 @@ impl Provider for BoundResident {
         Ok(0xCAFE)
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("bench-bound-resident"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("bench-bound-resident"), "")
     }
 }
 

@@ -29,8 +29,8 @@ impl Provider for UnitResource {
 
     const KEY: &'static str = "positive.unit";
 
-    fn metadata() -> nebula_resource::MetadataDraft {
-        nebula_resource::MetadataDraft::new(nebula_resource::metadata_name!("UnitResource"), "")
+    fn metadata() -> nebula_resource::ResourceMetadata {
+        nebula_resource::ResourceMetadata::new(nebula_resource::metadata_name!("UnitResource"), "")
     }
 
     async fn create(&self, _config: &MyConfig, _ctx: &ResourceContext) -> Result<(), Error> {

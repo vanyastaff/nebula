@@ -37,7 +37,7 @@ use nebula_resource::{
     RegistrationSpec, Resident, ResidentConfig, ResourceConfig, ResourceContext, ResourceEvent,
     ScopeLevel, ShutdownConfig, SlotIdentity, TeardownCx,
     call::{Cost, Effect, Operation, OperationCx, OperationError, ResourceHandle, SentState},
-    resource::{MetadataDraft, Provider},
+    resource::{Provider, ResourceMetadata},
     topology::ResidentProvider,
 };
 use serde::{Deserialize, Serialize};
@@ -192,8 +192,8 @@ impl Provider for Logger {
 
     const KEY: &'static str = "fixture.logger";
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("Logger"),
             "An in-memory log sink",
         )

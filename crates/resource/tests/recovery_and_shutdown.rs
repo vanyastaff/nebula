@@ -24,7 +24,7 @@ use nebula_resource::{
     error::{Error, ErrorKind},
     guard::ResourceGuard,
     recovery::{GateState, RecoveryGate, RecoveryGateConfig},
-    resource::{MetadataDraft, Provider},
+    resource::{Provider, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
 
@@ -249,8 +249,8 @@ impl Provider for FailingResidentResource {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("test-failing-resident"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("test-failing-resident"), "")
     }
 }
 
@@ -306,8 +306,8 @@ impl Provider for BlockingResidentResource {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("test-blocking-resident"),
             "",
         )
@@ -362,8 +362,8 @@ impl Provider for PermanentFailResource {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("test-permanent-fail"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("test-permanent-fail"), "")
     }
 }
 

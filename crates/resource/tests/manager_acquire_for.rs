@@ -32,7 +32,7 @@ use nebula_resource::{
     AcquireOptions, Manager, Provider, RegisterOptions, RegistrationSpec, ResourceConfig,
     ResourceContext, SlotIdentity,
     error::Error,
-    resource::{HasCredentialSlots, MetadataDraft},
+    resource::{HasCredentialSlots, ResourceMetadata},
     topology::{Resident, pooled::BrokenCheck},
 };
 use tokio_util::sync::CancellationToken;
@@ -82,8 +82,8 @@ impl Provider for PoolRes {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("acquire-for-pool"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("acquire-for-pool"), "")
     }
 }
 
@@ -256,8 +256,8 @@ impl Provider for ResRes {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("acquire-for-resident"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("acquire-for-resident"), "")
     }
 }
 

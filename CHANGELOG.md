@@ -11,25 +11,43 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
-- **A resource declares its key once, as `Provider::KEY`.** A resource wrote
-  its key twice, in `Provider::key()` and again in the
-  `ResourceMetadataDraft` it returned, and the two were compared only when the
-  factory admitted the definition (`MetadataBuildError::KeyMismatch`).
-  `Provider` now has `const KEY: &'static str` instead of `fn key()`;
-  `R::key()` still returns the typed `ResourceKey` through the blanket
-  `ProviderKey` trait, and an invalid literal fails compilation, at the
-  declaration for a type that uses `#[derive(Resource)]` or
-  `no_credential_slots!`. `Provider::metadata` returns the shared
-  `nebula_metadata::MetadataDraft`, which no longer carries a key or a key type
-  parameter: `MetadataDraft::new(name, description)` and
-  `try_new(name, description)`, and admission is `draft.bind(key, schema)` in
-  place of `bind_schema(schema)` (span `metadata.bind`). The factory stamps
-  `Provider::KEY`, so an admitted definition cannot name another resource.
-  `ResourceMetadataDraft` and `MetadataBuildError::KeyMismatch` are removed.
-  Migrate a provider by replacing `fn key() -> ResourceKey { resource_key!("x") }`
-  with `const KEY: &'static str = "x";`, dropping the key argument of the draft
-  and importing `ProviderKey` where `R::key()` is called. Action and credential
-  drafts keep their public shape in this change and move to the same model next.
+- **A resource declares its key once, as `Provider::KEY`, and authored
+  metadata is no longer called a draft.** A resource wrote its key twice, in
+  `Provider::key()` and again in the `ResourceMetadataDraft` it returned, and
+  the two were compared only when the factory admitted the definition
+  (`MetadataBuildError::KeyMismatch`). `Provider` now has
+  `const KEY: &'static str` instead of `fn key()`; `R::key()` still returns the
+  typed `ResourceKey` through the blanket `ProviderKey` trait, and an invalid
+  literal fails compilation, at the declaration for a type that uses
+  `#[derive(Resource)]` or `no_credential_slots!`. `Provider::metadata` returns
+  `ResourceMetadata`, an alias of the shared `nebula_metadata::Metadata`
+  (formerly `MetadataDraft<K>`), which carries neither a key nor a key type
+  parameter: `ResourceMetadata::new(name, description)` and
+  `try_new(name, description)`. The factory stamps `Provider::KEY`, so an
+  admitted definition cannot name another resource.
+
+  Renames, with no behavior change beyond the key:
+
+  | Before | After |
+  |---|---|
+  | `nebula_metadata::MetadataDraft<K>` | `nebula_metadata::Metadata` |
+  | `MetadataDraft::bind_schema(schema)` | `Metadata::bind(key, schema)` (span `metadata.bind`) |
+  | `nebula_metadata::BaseMetadata<K>` | `BaseDefinition<K>` |
+  | `nebula_metadata::RecordedBaseMetadata<K>` | `RecordedBaseDefinition<K>` |
+  | trait `nebula_metadata::Metadata` | trait `Definition` |
+  | `ResourceMetadataDraft` | `ResourceMetadata` (keyless) |
+  | admitted `ResourceMetadata` | `ResourceDefinition` |
+  | `RecordedResourceMetadata` | `RecordedResourceDefinition` |
+  | `ResourceFactory::metadata()` | `ResourceFactory::definition()` |
+  | spans `metadata.construct_draft`, `metadata.try_construct_draft` | `metadata.construct`, `metadata.try_construct` |
+
+  `MetadataBuildError::KeyMismatch` is removed. Migrate a provider by replacing
+  `fn key() -> ResourceKey { resource_key!("x") }` with
+  `const KEY: &'static str = "x";`, `ResourceMetadataDraft::new(key, name, desc)`
+  with `ResourceMetadata::new(name, desc)`, and importing `ProviderKey` where
+  `R::key()` is called. `ActionMetadataDraft` and `CredentialMetadataDraft`
+  keep their public shape in this change and move to the same model and naming
+  next.
 
 - **The OAuth PKCE verifier is encrypted at rest.** `oauth_states` held each
   pending sign-in's `code_verifier` in plaintext, so anyone who could read the

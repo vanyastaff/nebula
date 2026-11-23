@@ -15,8 +15,8 @@ impl Provider for CustomProvider {
     type Instance = OwnedConnection;
     type Topology = CustomTopology;
 
-    fn metadata() -> nebula_sdk::integration::resource::MetadataDraft {
-        nebula_sdk::integration::resource::MetadataDraft::new(
+    fn metadata() -> nebula_sdk::integration::resource::ResourceMetadata {
+        nebula_sdk::integration::resource::ResourceMetadata::new(
             nebula_sdk::prelude::metadata_name!("CustomProvider"),
             "",
         )

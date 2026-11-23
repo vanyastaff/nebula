@@ -1,7 +1,7 @@
-use nebula_resource::ResourceMetadata;
+use nebula_resource::ResourceDefinition;
 
 fn requires_deserialize<T: serde::de::DeserializeOwned>() {}
 
 fn main() {
-    requires_deserialize::<ResourceMetadata>();
+    requires_deserialize::<ResourceDefinition>();
 }

@@ -30,7 +30,7 @@ use nebula_resource::{
     AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
     ResourceContext, SlotCell, SlotIdentity,
     error::Error,
-    resource::{HasCredentialSlots, MetadataDraft},
+    resource::{HasCredentialSlots, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
 use tokio::sync::Notify;
@@ -183,8 +183,8 @@ impl Provider for RaceResource {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("race-resident"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("race-resident"), "")
     }
 }
 

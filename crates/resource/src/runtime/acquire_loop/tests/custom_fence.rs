@@ -16,8 +16,8 @@ impl Provider for CustomResource {
     type Instance = u64;
     type Topology = CustomTopology;
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(crate::metadata_name!("CustomResource"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("CustomResource"), "")
     }
 
     const KEY: &'static str = "custom-checkout-fence";

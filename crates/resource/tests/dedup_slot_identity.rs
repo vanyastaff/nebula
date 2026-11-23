@@ -28,7 +28,7 @@ use nebula_core::{OrgId, ScopeLevel, scope::Scope};
 use nebula_resource::Resident;
 use nebula_resource::{
     AcquireOptions, Manager, Provider, RegisterOptions, RegistrationSpec, ResidentConfig,
-    ResourceConfig, ResourceContext, SlotIdentity, error::Error, resource::MetadataDraft,
+    ResourceConfig, ResourceContext, SlotIdentity, error::Error, resource::ResourceMetadata,
     topology::resident::ResidentProvider,
 };
 use tokio_util::sync::CancellationToken;
@@ -96,8 +96,8 @@ impl Provider for CountingResource {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("dedup-slot-ident"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("dedup-slot-ident"), "")
     }
 }
 
@@ -443,8 +443,8 @@ impl Provider for SiblingResidentResource {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("dedup-slot-ident"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("dedup-slot-ident"), "")
     }
 }
 

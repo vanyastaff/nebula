@@ -1049,7 +1049,7 @@ mod tests {
             ErrorKind, Manager, RegistrationSpec, Resident, ResidentConfig, ResourceConfig,
             ResourceContext, SlotIdentity,
             call::ResourceHandle,
-            resource::{MetadataDraft, Provider},
+            resource::{Provider, ResourceMetadata},
             topology::ResidentProvider,
         };
 
@@ -1077,8 +1077,8 @@ mod tests {
 
             const KEY: &'static str = "action.context.ledger";
 
-            fn metadata() -> MetadataDraft {
-                MetadataDraft::new(nebula_resource::metadata_name!("ledger"), "")
+            fn metadata() -> ResourceMetadata {
+                ResourceMetadata::new(nebula_resource::metadata_name!("ledger"), "")
             }
 
             async fn create(

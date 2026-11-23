@@ -39,8 +39,8 @@
 //!
 //!     const KEY: &'static str = "quickstart.http_client";
 //!
-//!     fn metadata() -> nebula_resource::MetadataDraft {
-//!         nebula_resource::MetadataDraft::new(
+//!     fn metadata() -> nebula_resource::ResourceMetadata {
+//!         nebula_resource::ResourceMetadata::new(
 //!             nebula_resource::metadata_name!("HTTP client"),
 //!             "Pooled HTTP client",
 //!         )
@@ -294,8 +294,8 @@ pub use nebula_core::{ExecutionId, ResourceKey, ScopeLevel, WorkflowId, resource
 /// direct `nebula-eventbus` dependency.
 pub use nebula_eventbus::{EventBusStats, Subscriber};
 pub use nebula_metadata::{
-    DeprecationNotice, Icon, MaturityLevel, MetadataDraft, MetadataError, MetadataName,
-    MetadataReadmissionError, metadata_name,
+    DeprecationNotice, Icon, MaturityLevel, MetadataError, MetadataName, MetadataReadmissionError,
+    metadata_name,
 };
 // Credential surface re-exported so resource consumers don't need a
 // direct nebula-credential dep for trait shape.
@@ -403,8 +403,8 @@ pub use release_queue::ReleaseQueue;
 pub use reload::ReloadOutcome;
 pub use resource::{
     CheckCost, HasCredentialSlots, MetadataBuildError, MetadataCompatibilityError, Provider,
-    ProviderKey, RecordedResourceMetadata, ResourceConfig, ResourceMetadata, TeardownCx,
-    TeardownReason,
+    ProviderKey, RecordedResourceDefinition, ResourceConfig, ResourceDefinition, ResourceMetadata,
+    TeardownCx, TeardownReason,
 };
 pub use slot::{CredentialSlot, SlotCell, SlotInstallError, SlotUpdate};
 // Runtime types — the framework topologies needed for `Manager::register()`.
@@ -455,8 +455,8 @@ pub use credential_fanout::{
 ///     type Instance = ();
 ///     type Topology = Pooled<Self>;
 ///     const KEY: &'static str = "my.resource";
-///     fn metadata() -> MetadataDraft {
-///         MetadataDraft::new(nebula_resource::metadata_name!("My resource"), "")
+///     fn metadata() -> ResourceMetadata {
+///         ResourceMetadata::new(nebula_resource::metadata_name!("My resource"), "")
 ///     }
 ///     async fn create(&self, _: &(), _: &ResourceContext) -> Result<(), Error> {
 ///         Ok(())
@@ -471,9 +471,10 @@ pub use credential_fanout::{
 /// ```
 pub mod prelude {
     pub use crate::{
-        AcquireOptions, Error, ErrorKind, HasCredentialSlots, Manager, MetadataDraft, PoolConfig,
-        Pooled, Provider, ProviderKey, RegistrationSpec, ReleaseOutcome, Resident, ResidentConfig,
-        ResourceConfig, ResourceContext, ResourceGuard, ResourceKey, ResourceMetadata, ScopeLevel,
-        ShutdownConfig, SlotCell, SlotIdentity, TopologyTag, resource_key,
+        AcquireOptions, Error, ErrorKind, HasCredentialSlots, Manager, PoolConfig, Pooled,
+        Provider, ProviderKey, RegistrationSpec, ReleaseOutcome, Resident, ResidentConfig,
+        ResourceConfig, ResourceContext, ResourceDefinition, ResourceGuard, ResourceKey,
+        ResourceMetadata, ScopeLevel, ShutdownConfig, SlotCell, SlotIdentity, TopologyTag,
+        resource_key,
     };
 }

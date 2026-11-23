@@ -16,7 +16,7 @@ use nebula_resource::{
     CredentialSlot, Error, Manager, PinSlots, RegistrationSpec, Resident, ResidentConfig, Resource,
     ResourceConfig, ResourceContext, ScopeLevel, SlotCell, SlotIdentity,
     call::{Cost, Effect, Operation, OperationCx, OperationError},
-    resource::{MetadataDraft, Provider},
+    resource::{Provider, ResourceMetadata},
     topology::ResidentProvider,
 };
 use tokio_util::sync::CancellationToken;
@@ -50,8 +50,8 @@ impl Provider for Mailer {
 
     const KEY: &'static str = "derived.mailer";
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("Mailer"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("Mailer"), "")
     }
 
     async fn create(&self, _: &MailerConfig, _: &ResourceContext) -> Result<(), Error> {

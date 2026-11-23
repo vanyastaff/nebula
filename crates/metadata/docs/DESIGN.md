@@ -13,26 +13,26 @@ The public construction states encode authority:
 
 ```text
 authored fields                    admitted technical definition
-MetadataDraft + K + ValidSchema -> BaseMetadata<K>
+Metadata + K + ValidSchema -> BaseDefinition<K>
                            bind
 
 untrusted persistence/wire         current static definition
-RecordedBaseMetadata<K> + BaseMetadata<K> -> BaseMetadata<K>
+RecordedBaseDefinition<K> + BaseDefinition<K> -> BaseDefinition<K>
                                   exact readmission
 ```
 
-`MetadataDraft` contains checked name, description, version, icon, typed
+`Metadata` contains checked name, description, version, icon, typed
 categories and links, tags, and lifecycle. It never contains a key or a schema:
 the key is the component's identity, declared once on its type, and whoever
-admits the component passes it in, so an authored draft cannot disagree with it.
-`bind(K, ValidSchema) -> Result<BaseMetadata<K>, MetadataBuildError>` is the
+admits the component passes it in, so authored metadata cannot disagree with it.
+`bind(K, ValidSchema) -> Result<BaseDefinition<K>, MetadataBuildError>` is the
 sole admission transition, metering canonical authored fields and the full record.
 
-`BaseMetadata<K>` is private-field and getter-only. It serializes in the
+`BaseDefinition<K>` is private-field and getter-only. It serializes in the
 nested shared `base` record shape but cannot be deserialized. This prevents wire or authored
 data from manufacturing an admitted definition.
 
-`RecordedBaseMetadata<K>` is the only lower-metadata deserialization target.
+`RecordedBaseDefinition<K>` is the only lower-metadata deserialization target.
 Its deserializer requires `K: FromStr + Serialize`, validates all canonical shared
 fields, chronology, and byte budgets. `readmit_against` compares every field and schema with a
 fresh definition. On success it returns a clone of the fresh definition; on
@@ -56,7 +56,7 @@ Active maturity methods do not remove an attached notice.
 
 ## Wire contract
 
-`BaseMetadata<K>` and `RecordedBaseMetadata<K>` serialize the same versioned
+`BaseDefinition<K>` and `RecordedBaseDefinition<K>` serialize the same versioned
 shared object, nested under `base` by leaf records:
 
 ```text
@@ -110,7 +110,7 @@ deprecation reasons.
 ## Non-goals
 
 - No final-metadata mutators or key replacement.
-- No `Deserialize` for `MetadataDraft` or `BaseMetadata<K>`.
+- No `Deserialize` for `Metadata` or `BaseDefinition<K>`.
 - No compatibility constructors, aliases, or deprecated shims.
 - No leaf-specific admission logic.
 - No runtime credential, resource, action, or plugin behavior.

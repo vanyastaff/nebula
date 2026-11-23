@@ -24,7 +24,7 @@ use crate::{
     Provider, Resident, ResidentConfig, ResourceConfig, ResourceContext, ResourceEvent,
     ResourceGuard, SlotCell, SlotIdentity, SlotInstallError, SlotUpdate,
     recovery::{GateState, RecoveryGate, RecoveryGateConfig},
-    resource::{HasCredentialSlots, MetadataDraft},
+    resource::{HasCredentialSlots, ResourceMetadata},
     runtime::managed::ManagedResource,
     topology::{
         BoundedProvider, PoolProvider, ResidentProvider,
@@ -104,8 +104,8 @@ macro_rules! credential_bound_provider {
 
             const KEY: &'static str = $key;
 
-            fn metadata() -> MetadataDraft {
-                MetadataDraft::new(crate::metadata_name!($key), "")
+            fn metadata() -> ResourceMetadata {
+                ResourceMetadata::new(crate::metadata_name!($key), "")
             }
 
             async fn create(&self, _: &Config, _: &ResourceContext) -> Result<u64, Error> {
@@ -210,8 +210,8 @@ impl Provider for Unbound {
 
     const KEY: &'static str = "suspension-unbound";
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(crate::metadata_name!("suspension-unbound"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("suspension-unbound"), "")
     }
 
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<(), Error> {

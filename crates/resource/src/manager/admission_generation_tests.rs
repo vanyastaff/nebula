@@ -21,7 +21,7 @@ use super::{
 use crate::{
     AcquireOptions, Error, Provider, Resident, ResidentConfig, ResourceConfig, ResourceContext,
     ResourceGuard, SlotCell, SlotIdentity, SlotInstallError, SlotUpdate,
-    resource::{HasCredentialSlots, MetadataDraft},
+    resource::{HasCredentialSlots, ResourceMetadata},
     runtime::managed::ManagedResource,
     topology::resident::ResidentProvider,
 };
@@ -71,8 +71,8 @@ impl Provider for Tenant {
 
     const KEY: &'static str = "admission-generation";
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(crate::metadata_name!("admission-generation"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("admission-generation"), "")
     }
 
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<(), Error> {

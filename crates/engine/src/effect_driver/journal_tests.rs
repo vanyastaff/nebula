@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, Resident, ResidentConfig, ResourceContext,
     call::{Cost, Operation, OperationCx, OperationError, ResourceHandle, SentState},
-    resource::{MetadataDraft, Provider},
+    resource::{Provider, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
 use nebula_storage_port::{
@@ -933,8 +933,8 @@ impl Provider for Gateway {
 
     const KEY: &'static str = "billing.gateway";
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("JournalGateway"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("JournalGateway"), "")
     }
 
     async fn create(

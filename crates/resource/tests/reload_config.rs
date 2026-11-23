@@ -22,7 +22,7 @@ use nebula_resource::{
     ResourceContext, ScopeLevel, ShutdownConfig, SlotIdentity,
     error::{Error, ErrorKind},
     guard::ResourceGuard,
-    resource::{MetadataDraft, Provider, ResourceConfig},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::{
         bounded::BoundedProvider,
         pooled::{BrokenCheck, PoolProvider},
@@ -291,8 +291,8 @@ impl Provider for ReloadPoolResource {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("test-reload-pool"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("test-reload-pool"), "")
     }
 }
 
@@ -337,8 +337,8 @@ impl Provider for ReloadExclusiveResource {
         Ok(Arc::new(AtomicU64::new(id)))
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("test-reload-exclusive"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("test-reload-exclusive"), "")
     }
 }
 

@@ -172,7 +172,7 @@ impl Manager {
     /// use async_trait::async_trait;
     /// use nebula_core::ScopeLevel;
     /// use nebula_resource::{
-    ///     AcquireOptions, Error, Manager, MetadataDraft, PoolConfig, PoolProvider, Pooled,
+    ///     AcquireOptions, Error, Manager, ResourceMetadata, PoolConfig, PoolProvider, Pooled,
     ///     Provider, RegistrationSpec, Resource, ResourceContext, SlotIdentity, metadata_name,
     /// };
     ///
@@ -189,8 +189,8 @@ impl Manager {
     ///
     ///     const KEY: &'static str = "doctest.http_client";
     ///
-    ///     fn metadata() -> MetadataDraft {
-    ///         MetadataDraft::new(metadata_name!("HTTP client"), "")
+    ///     fn metadata() -> ResourceMetadata {
+    ///         ResourceMetadata::new(metadata_name!("HTTP client"), "")
     ///     }
     ///
     ///     async fn create(&self, _config: &(), _ctx: &ResourceContext) -> Result<(), Error> {

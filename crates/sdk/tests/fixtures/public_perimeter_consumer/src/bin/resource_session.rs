@@ -3,7 +3,7 @@
 //! resource handle, all through `nebula_sdk::integration::resource`.
 
 use nebula_sdk::integration::resource::{
-    Cost, Effect, Error, MetadataDraft, OperationError, PoolProvider, Pooled, Provider,
+    Cost, Effect, Error, ResourceMetadata, OperationError, PoolProvider, Pooled, Provider,
     ProviderKey, ResourceContext, ResourceHandle, SessionBinding, SessionClosed, SessionEnd,
     SessionProvider, SessionSpec, no_credential_slots,
 };
@@ -39,8 +39,8 @@ impl Provider for Ledger {
 
     const KEY: &'static str = "example.ledger";
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_sdk::prelude::metadata_name!("Ledger"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_sdk::prelude::metadata_name!("Ledger"), "")
     }
 
     async fn create(&self, _: &(), _: &ResourceContext) -> Result<Conn, Error> {

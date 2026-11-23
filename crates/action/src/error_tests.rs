@@ -298,7 +298,7 @@ mod managed_unit {
         CredentialUnavailableReason, ErrorKind, Manager, RegistrationSpec, Resident,
         ResidentConfig, ResourceConfig, ResourceContext, SlotIdentity,
         call::{Cost, Operation, OperationCx, OperationError},
-        resource::{MetadataDraft, Provider},
+        resource::{Provider, ResourceMetadata},
         topology::ResidentProvider,
     };
 
@@ -326,8 +326,8 @@ mod managed_unit {
 
         const KEY: &'static str = "action.ledger";
 
-        fn metadata() -> MetadataDraft {
-            MetadataDraft::new(nebula_resource::metadata_name!("ledger"), "")
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(nebula_resource::metadata_name!("ledger"), "")
         }
 
         async fn create(

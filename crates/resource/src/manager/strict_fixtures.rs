@@ -26,7 +26,7 @@ use crate::{
     Bounded, Error, ErrorKind, PinSlots, PoolConfig, Pooled, Provider, Resident, ResidentConfig,
     ResourceConfig, ResourceContext, SlotCell, SlotIdentity, SlotInstallError, SlotUpdate,
     call::{OperationError, SessionBinding, SessionClosed, SessionEnd, SessionProvider},
-    resource::{HasCredentialSlots, MetadataDraft},
+    resource::{HasCredentialSlots, ResourceMetadata},
     runtime::managed::ManagedResource,
     topology::{
         BoundedProvider, PoolProvider, ResidentProvider,
@@ -230,8 +230,8 @@ macro_rules! strict_provider {
 
             const KEY: &'static str = $key;
 
-            fn metadata() -> MetadataDraft {
-                MetadataDraft::new(crate::metadata_name!($key), "")
+            fn metadata() -> ResourceMetadata {
+                ResourceMetadata::new(crate::metadata_name!($key), "")
             }
 
             async fn create(&self, _: &Config, _: &ResourceContext) -> Result<u64, Error> {
@@ -421,8 +421,8 @@ impl Provider for ProjectionlessRow {
 
     const KEY: &'static str = "strict-projectionless";
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(crate::metadata_name!("strict-projectionless"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("strict-projectionless"), "")
     }
 
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<u64, Error> {
@@ -458,8 +458,8 @@ impl Provider for UnboundRow {
 
     const KEY: &'static str = "strict-unbound";
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(crate::metadata_name!("strict-unbound"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("strict-unbound"), "")
     }
 
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<u64, Error> {

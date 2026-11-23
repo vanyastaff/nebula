@@ -15,7 +15,7 @@ use crate::{
     error::Error,
     recovery::gate::{RecoveryGate, RecoveryGateConfig},
     release_queue::ReleaseQueue,
-    resource::{MetadataDraft, Provider, ResourceConfig, TeardownCx},
+    resource::{Provider, ResourceConfig, ResourceMetadata, TeardownCx},
     runtime::managed::ManagedResource,
     state::ResourceStatus,
     topology::{
@@ -435,8 +435,8 @@ impl Provider for Mock {
         }
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(crate::metadata_name!("acquire-loop-guard-mock"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("acquire-loop-guard-mock"), "")
     }
 }
 
@@ -477,8 +477,8 @@ impl Provider for RetainedHookMock {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(crate::metadata_name!("retained-hook-settlement-mock"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("retained-hook-settlement-mock"), "")
     }
 }
 

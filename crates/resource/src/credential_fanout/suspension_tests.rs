@@ -29,7 +29,7 @@ use crate::{
     AcquireOptions, CredentialUnavailableReason, Error, ErrorKind, Manager, Provider,
     RegistrationSpec, Resident, ResidentConfig, ResourceConfig, ResourceContext, ResourceEvent,
     ResourceGuard, SlotCell, SlotIdentity, SlotInstallError, SlotUpdate,
-    resource::{HasCredentialSlots, MetadataDraft},
+    resource::{HasCredentialSlots, ResourceMetadata},
     topology::ResidentProvider,
 };
 
@@ -69,8 +69,8 @@ impl Provider for Bound {
 
     const KEY: &'static str = "fanout-suspension";
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(crate::metadata_name!("fanout-suspension"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("fanout-suspension"), "")
     }
 
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<(), Error> {
@@ -616,8 +616,8 @@ impl Provider for Slotless {
 
     const KEY: &'static str = "fanout-slotless";
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(crate::metadata_name!("fanout-slotless"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("fanout-slotless"), "")
     }
 
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<(), Error> {

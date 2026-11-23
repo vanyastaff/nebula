@@ -33,7 +33,7 @@ use nebula_resource::{
     AcquireOptions, Manager, Pooled, RegistrationSpec, Resident, ResourceContext, ScopeLevel,
     ShutdownConfig, SlotIdentity, TopologyTag,
     error::{Error, ErrorKind},
-    resource::{MetadataDraft, Provider, ResourceConfig},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::{
         pooled::{BrokenCheck, PoolProvider},
         resident::ResidentProvider,
@@ -92,8 +92,8 @@ impl Provider for SlowCreateResource {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("test.shutdown_race.slow"),
             "",
         )
@@ -338,8 +338,8 @@ impl Provider for PausableEvictResource {
         Err(Error::cancelled())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("test.shutdown_race.pausable_evict"),
             "",
         )

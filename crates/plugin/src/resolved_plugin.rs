@@ -15,7 +15,7 @@ use nebula_action::{ActionFactory, ActionMetadata};
 use nebula_core::{ActionKey, CredentialKey, Dependencies, PluginKey, ResourceKey};
 use nebula_credential::{AnyCredential, Capabilities, CredentialMetadata};
 use nebula_metadata::PluginManifest;
-use nebula_resource::{ResourceFactory, ResourceMetadata};
+use nebula_resource::{ResourceDefinition, ResourceFactory};
 use semver::Version;
 
 use crate::{ComponentKind, PluginError, plugin::Plugin};
@@ -80,13 +80,13 @@ struct ProjectedCredential {
 }
 
 pub(crate) struct ResourceContractSnapshot {
-    metadata: ResourceMetadata,
+    metadata: ResourceDefinition,
     dependencies: Dependencies,
     type_id: TypeId,
 }
 
 impl ResourceContractSnapshot {
-    pub(crate) const fn metadata(&self) -> &ResourceMetadata {
+    pub(crate) const fn metadata(&self) -> &ResourceDefinition {
         &self.metadata
     }
 
@@ -407,7 +407,7 @@ impl ResolvedPlugin {
             .into_iter()
             .map(|factory| {
                 let key = factory.key();
-                let metadata = factory.metadata()?.clone();
+                let metadata = factory.definition()?.clone();
                 let dependencies = factory.dependencies().clone();
                 let type_id = factory.resource_type_id();
                 Ok::<_, PluginError>((

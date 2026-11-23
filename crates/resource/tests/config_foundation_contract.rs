@@ -114,8 +114,8 @@ impl<C: ResourceConfig> Provider for ConfigProbe<C> {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn metadata() -> nebula_resource::MetadataDraft {
-        nebula_resource::MetadataDraft::new(nebula_resource::metadata_name!("ConfigProbe"), "")
+    fn metadata() -> nebula_resource::ResourceMetadata {
+        nebula_resource::ResourceMetadata::new(nebula_resource::metadata_name!("ConfigProbe"), "")
     }
 
     const KEY: &'static str = "test.config-foundation";
@@ -275,7 +275,7 @@ impl ResourceConfig for RejectedConfig {
 #[test]
 fn invalid_config_schema_retains_typed_catalog_failure() {
     let error = factory::<RejectedConfig>()
-        .metadata()
+        .definition()
         .expect_err("invalid static schema must fail factory admission");
     let nebula_resource::MetadataBuildError::Definition(shared_error) = &error else {
         panic!("schema construction must produce the typed definition variant");
@@ -506,12 +506,12 @@ async fn equal_schema_factory_rechecks_its_typed_config_contract() {
     let factory_a = factory::<FactoryAConfig>();
     let factory_b = factory::<EqualSchemaFactoryBConfig>();
     let schema_a = factory_a
-        .metadata()
+        .definition()
         .expect("factory A metadata admits")
         .base()
         .schema();
     let schema_b = factory_b
-        .metadata()
+        .definition()
         .expect("factory B metadata admits")
         .base()
         .schema();
@@ -571,12 +571,12 @@ async fn different_schema_factory_rechecks_its_own_schema() {
     let factory_a = factory::<FactoryAConfig>();
     let factory_b = factory::<DifferentSchemaFactoryBConfig>();
     let schema_a = factory_a
-        .metadata()
+        .definition()
         .expect("factory A metadata admits")
         .base()
         .schema();
     let schema_b = factory_b
-        .metadata()
+        .definition()
         .expect("factory B metadata admits")
         .base()
         .schema();

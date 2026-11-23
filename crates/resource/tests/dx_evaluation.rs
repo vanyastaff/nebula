@@ -79,8 +79,8 @@ impl Provider for HttpResource {
     type Instance = HttpClient;
     type Topology = Pooled<Self>;
 
-    fn metadata() -> nebula_resource::MetadataDraft {
-        nebula_resource::MetadataDraft::new(nebula_resource::metadata_name!("HttpResource"), "")
+    fn metadata() -> nebula_resource::ResourceMetadata {
+        nebula_resource::ResourceMetadata::new(nebula_resource::metadata_name!("HttpResource"), "")
     }
 
     const KEY: &'static str = "http.client";
@@ -227,8 +227,8 @@ impl Provider for ConfigStoreResource {
     type Instance = ConfigStore;
     type Topology = Resident<Self>;
 
-    fn metadata() -> nebula_resource::MetadataDraft {
-        nebula_resource::MetadataDraft::new(
+    fn metadata() -> nebula_resource::ResourceMetadata {
+        nebula_resource::ResourceMetadata::new(
             nebula_resource::metadata_name!("ConfigStoreResource"),
             "",
         )
@@ -369,8 +369,8 @@ impl Provider for DbResource {
     type Instance = DbConnection;
     type Topology = Pooled<Self>;
 
-    fn metadata() -> nebula_resource::MetadataDraft {
-        nebula_resource::MetadataDraft::new(nebula_resource::metadata_name!("DbResource"), "")
+    fn metadata() -> nebula_resource::ResourceMetadata {
+        nebula_resource::ResourceMetadata::new(nebula_resource::metadata_name!("DbResource"), "")
     }
 
     const KEY: &'static str = "db.connection";

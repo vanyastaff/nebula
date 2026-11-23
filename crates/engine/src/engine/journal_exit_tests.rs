@@ -12,7 +12,7 @@ use serde_json::json;
 use nebula_credential::default_credential_accessor;
 use nebula_resource::{
     Manager, RegistrationSpec, Resident, ResidentConfig, ResourceContext, SlotIdentity,
-    resource::{MetadataDraft, Provider},
+    resource::{Provider, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
 use nebula_storage_port::{
@@ -450,8 +450,8 @@ impl Provider for Payments {
 
     const KEY: &'static str = "test.payments";
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("ScopedPayments"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("ScopedPayments"), "")
     }
 
     async fn create(

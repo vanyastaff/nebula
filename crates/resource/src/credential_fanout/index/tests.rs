@@ -843,7 +843,7 @@ mod fanout_dispatch {
         ResourceContext, ResourceEvent,
         error::Error as ResourceError,
         release_queue::{ReleaseQueue, SubmissionOutcome},
-        resource::{HasCredentialSlots, MetadataDraft},
+        resource::{HasCredentialSlots, ResourceMetadata},
         topology::resident::ResidentProvider,
     };
     use futures::FutureExt;
@@ -1019,8 +1019,8 @@ mod fanout_dispatch {
             }
         }
 
-        fn metadata() -> MetadataDraft {
-            MetadataDraft::new(crate::metadata_name!("fanout-ctl"), "")
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(crate::metadata_name!("fanout-ctl"), "")
         }
     }
 

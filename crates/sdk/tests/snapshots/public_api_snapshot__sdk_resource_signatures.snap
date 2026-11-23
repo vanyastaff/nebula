@@ -395,15 +395,15 @@ impl<S: Zeroize + Send + Sync + 'static> fmt::Debug for CredentialGuard<S>
 impl<S: Zeroize> Deref for CredentialGuard<S>
 impl<S: Zeroize> Drop for CredentialGuard<S>
 
-## struct nebula_metadata::base::MetadataDraft
-exported as nebula_sdk::integration::resource::MetadataDraft
-exported as nebula_sdk::prelude::MetadataDraft
+## struct nebula_metadata::base::ResourceMetadata
+exported as nebula_sdk::integration::resource::ResourceMetadata
+exported as nebula_sdk::prelude::ResourceMetadata
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MetadataDraft {
+pub struct ResourceMetadata {
     /* private fields */
 }
-impl MetadataDraft {
+impl ResourceMetadata {
     pub fn new(name: MetadataName, description: impl Into<String>) -> Self;
     pub fn try_new(name: impl Into<String>, description: impl Into<String>) -> Result<Self, MetadataError>;
     pub fn with_version(mut self, version: Version) -> Self;
@@ -422,7 +422,7 @@ impl MetadataDraft {
     pub fn mark_beta(mut self) -> Self;
     pub fn mark_stable(mut self) -> Self;
     pub fn with_deprecation(mut self, notice: DeprecationNotice) -> Self;
-    pub fn bind<K>(mut self, key: K, schema: ValidSchema) -> Result<BaseMetadata<K>, MetadataBuildError> where K: Serialize;
+    pub fn bind<K>(mut self, key: K, schema: ValidSchema) -> Result<BaseDefinition<K>, MetadataBuildError> where K: Serialize;
 }
 
 ## struct nebula_resilience::rate_limiter::gcra::Rate
@@ -1195,7 +1195,7 @@ pub trait Provider: HasCredentialSlots + Send + Sync + Sized + 'static {
     fn teardown_budget(&self) -> std::time::Duration { .. }
     fn max_hold_duration() -> Option<std::time::Duration> { .. }
     async fn destroy(&self, instance: Self::Instance, cx: TeardownCx) -> Result<(), crate::Error> { .. }
-    fn metadata() -> MetadataDraft;
+    fn metadata() -> ResourceMetadata;
     fn resilience() -> crate::rate_limit::ResiliencePolicy { .. }
 }
 

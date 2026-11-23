@@ -33,7 +33,7 @@ use nebula_resource::{
     AcquireOptions, HasCredentialSlots, Manager, RegistrationSpec, ResourceContext, ShutdownConfig,
     SlotIdentity,
     error::{Error, ErrorKind},
-    resource::{MetadataDraft, Provider, ResourceConfig},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::{StoreView, Ticket, Topology, Unavailable},
 };
 use tokio::sync::Semaphore;
@@ -102,8 +102,8 @@ impl Provider for Ffmpeg {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("custom.ffmpeg"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("custom.ffmpeg"), "")
     }
 }
 

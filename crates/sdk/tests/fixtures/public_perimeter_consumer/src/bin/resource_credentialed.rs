@@ -7,7 +7,7 @@ use std::sync::Arc;
 use nebula_sdk::integration::credential::BearerTokenCredential;
 use nebula_sdk::integration::resource::{
     Cost, CredentialGuard, CredentialSlot, CredentialUnavailableReason, Effect, Error, ErrorKind,
-    MetadataDraft, Operation, OperationCx, OperationError, PinSlots, Provider, Resident,
+    ResourceMetadata, Operation, OperationCx, OperationError, PinSlots, Provider, Resident,
     ResidentProvider, Resource, ResourceContext, ResourceHandle,
 };
 use nebula_sdk::prelude::{Deserialize, SecretString, SecretToken, Serialize};
@@ -28,8 +28,8 @@ impl Provider for GitHub {
 
     const KEY: &'static str = "example.github";
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_sdk::prelude::metadata_name!("GitHub"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_sdk::prelude::metadata_name!("GitHub"), "")
     }
 
     async fn create(&self, _: &(), _: &ResourceContext) -> Result<(), Error> {

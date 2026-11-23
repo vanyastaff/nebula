@@ -1,5 +1,5 @@
 use nebula_resource::{
-    Error, MetadataDraft, Provider, Resident, ResidentProvider, ResourceContext, metadata_name,
+    Error, ResourceMetadata, Provider, Resident, ResidentProvider, ResourceContext, metadata_name,
 };
 
 struct Misnamed;
@@ -13,8 +13,8 @@ impl Provider for Misnamed {
 
     const KEY: &'static str = "not a key";
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(metadata_name!("Misnamed"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(metadata_name!("Misnamed"), "")
     }
 
     async fn create(&self, _config: &(), _ctx: &ResourceContext) -> Result<(), Error> {

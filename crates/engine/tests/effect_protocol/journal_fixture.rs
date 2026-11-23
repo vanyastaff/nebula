@@ -20,7 +20,7 @@ use nebula_resource::{
     Manager, RegistrationSpec, Resident, ResidentConfig, ResourceContext, SlotIdentity,
     call::{Cost, Effect, Operation, OperationCx, OperationError},
     error::Error as ResourceError,
-    resource::{MetadataDraft, Provider as ResourceProvider},
+    resource::{Provider as ResourceProvider, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
 use nebula_storage_port::dto::EffectOccurrenceRecord;
@@ -389,8 +389,8 @@ impl ResourceProvider for Payments {
 
     const KEY: &'static str = "test.journal.payments";
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("JournalPayments"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("JournalPayments"), "")
     }
 
     async fn create(&self, (): &(), _: &ResourceContext) -> Result<Arc<Gateway>, ResourceError> {

@@ -30,8 +30,8 @@ impl Provider for LegacyProvider {
         Ok(())
     }
 
-    fn metadata() -> nebula_resource::MetadataDraft {
-        nebula_resource::MetadataDraft::new(nebula_resource::metadata_name!("LegacyProvider"), "")
+    fn metadata() -> nebula_resource::ResourceMetadata {
+        nebula_resource::ResourceMetadata::new(nebula_resource::metadata_name!("LegacyProvider"), "")
     }
 }
 

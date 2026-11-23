@@ -32,7 +32,7 @@ use nebula_resource::{
     AcquireOptions, Manager, PoolConfig, RegistrationSpec, ResidentConfig, ResourceContext,
     ResourceGuard, ScopeLevel, ShutdownConfig, SlotIdentity,
     error::{Error, ErrorKind},
-    resource::{MetadataDraft, Provider, ResourceConfig},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::{Resident, pooled::BrokenCheck},
 };
 
@@ -124,8 +124,8 @@ impl Provider for HttpClientResource {
         Ok(FakeHttpClient { connection_id: id })
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("http.client"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("http.client"), "")
     }
 }
 
@@ -258,8 +258,8 @@ impl Provider for ConfigStoreResource {
     type Instance = ConfigStore;
     type Topology = Resident<Self>;
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("ConfigStoreResource"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("ConfigStoreResource"), "")
     }
 
     const KEY: &'static str = "config.store";
@@ -413,8 +413,8 @@ impl Provider for DbResource {
         Ok(FakeDbConnection { id })
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("db.connection"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("db.connection"), "")
     }
 }
 

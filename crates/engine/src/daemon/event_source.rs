@@ -463,7 +463,7 @@ mod tests {
     use nebula_resource::{
         ResourceContext,
         error::Error as ResourceError,
-        resource::{MetadataDraft, Provider, ResourceConfig},
+        resource::{Provider, ResourceConfig, ResourceMetadata},
     };
 
     use super::*;
@@ -509,8 +509,8 @@ mod tests {
             Ok(())
         }
 
-        fn metadata() -> MetadataDraft {
-            MetadataDraft::new(nebula_resource::metadata_name!("event-three"), "")
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(nebula_resource::metadata_name!("event-three"), "")
         }
     }
 
@@ -635,8 +635,8 @@ mod tests {
             Ok(())
         }
 
-        fn metadata() -> MetadataDraft {
-            MetadataDraft::new(
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(
                 nebula_resource::metadata_name!("event-permanently-broken"),
                 "",
             )

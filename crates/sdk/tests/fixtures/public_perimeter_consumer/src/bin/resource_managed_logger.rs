@@ -8,7 +8,7 @@ use std::{
 };
 
 use nebula_sdk::integration::resource::{
-    Cost, Effect, Error, ErrorKind, MetadataDraft, Operation, OperationCx, OperationError,
+    Cost, Effect, Error, ErrorKind, ResourceMetadata, Operation, OperationCx, OperationError,
     PinSlots, Provider, Resident, ResidentProvider, ResourceContext, ResourceHandle, SentState,
     TeardownCx, no_credential_slots,
 };
@@ -49,8 +49,8 @@ impl Provider for Logger {
 
     const KEY: &'static str = "example.managed-logger";
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_sdk::prelude::metadata_name!("Logger"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_sdk::prelude::metadata_name!("Logger"), "")
     }
 
     async fn create(&self, _: &(), _: &ResourceContext) -> Result<LogSink, Error> {

@@ -287,7 +287,7 @@ mod tests {
     use nebula_resource::{
         context::ResourceContext,
         error::Error as ResourceError,
-        resource::{MetadataDraft, Provider, ResourceConfig},
+        resource::{Provider, ResourceConfig, ResourceMetadata},
     };
 
     use super::*;
@@ -333,8 +333,8 @@ mod tests {
             Ok(())
         }
 
-        fn metadata() -> MetadataDraft {
-            MetadataDraft::new(nebula_resource::metadata_name!("daemon-flaky"), "")
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(nebula_resource::metadata_name!("daemon-flaky"), "")
         }
     }
 
@@ -371,8 +371,8 @@ mod tests {
             Ok(())
         }
 
-        fn metadata() -> MetadataDraft {
-            MetadataDraft::new(nebula_resource::metadata_name!("daemon-oneshot"), "")
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(nebula_resource::metadata_name!("daemon-oneshot"), "")
         }
     }
 
@@ -408,8 +408,8 @@ mod tests {
             Ok(())
         }
 
-        fn metadata() -> MetadataDraft {
-            MetadataDraft::new(nebula_resource::metadata_name!("daemon-panicking"), "")
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(nebula_resource::metadata_name!("daemon-panicking"), "")
         }
     }
 

@@ -81,7 +81,7 @@ pub type SessionFuture<'s, T> =
 /// use async_trait::async_trait;
 /// use nebula_core::ScopeLevel;
 /// use nebula_resource::{
-///     Error, Manager, MetadataDraft, PoolConfig, PoolProvider, Pooled, Provider, RegistrationSpec,
+///     Error, Manager, ResourceMetadata, PoolConfig, PoolProvider, Pooled, Provider, RegistrationSpec,
 ///     Resource, ResourceContext, SlotIdentity, metadata_name,
 ///     call::{Cost, OperationError, SessionClosed, SessionEnd, SessionProvider, SessionSpec},
 /// };
@@ -116,8 +116,8 @@ pub type SessionFuture<'s, T> =
 ///
 ///     const KEY: &'static str = "doctest.ledger";
 ///
-///     fn metadata() -> MetadataDraft {
-///         MetadataDraft::new(metadata_name!("Ledger"), "")
+///     fn metadata() -> ResourceMetadata {
+///         ResourceMetadata::new(metadata_name!("Ledger"), "")
 ///     }
 ///
 ///     async fn create(&self, _: &(), _: &ResourceContext) -> Result<Conn, Error> {

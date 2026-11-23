@@ -20,7 +20,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nebula_core::ScopeLevel;
 use nebula_resource::error::Error;
-use nebula_resource::resource::{MetadataDraft, Provider, ResourceConfig};
+use nebula_resource::resource::{Provider, ResourceConfig, ResourceMetadata};
 use nebula_resource::topology::{
     AdmissionPhase, InstanceStore, ReturnOutcome, StoreView, Ticket, Topology, Unavailable,
 };
@@ -58,8 +58,8 @@ impl Provider for PermitRes {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("custom.standalone.permit"),
             "",
         )

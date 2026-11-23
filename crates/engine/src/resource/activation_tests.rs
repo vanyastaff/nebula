@@ -16,7 +16,7 @@ use nebula_core::{
 use nebula_resource::{
     KindActivator, Resident, ResourceContext, ResourceEvent,
     error::Error as ResourceError,
-    resource::{MetadataDraft, Provider, ResourceConfig},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::resident,
 };
 use nebula_storage::inmem::InMemoryResourceStore;
@@ -67,8 +67,8 @@ impl Provider for Plain {
         Ok(Arc::new(AtomicU64::new(1)))
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("activation.plain"),
             String::new(),
         )
@@ -109,8 +109,8 @@ impl Provider for Misnamed {
         Ok(Arc::new(AtomicU64::new(1)))
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("activation.misnamed"),
             String::new(),
         )
@@ -168,8 +168,8 @@ impl Provider for Slotted {
         Ok(Arc::new(AtomicU64::new(1)))
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("activation.slotted"),
             String::new(),
         )

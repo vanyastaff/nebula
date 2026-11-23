@@ -44,7 +44,7 @@ those leases return.
 
 ```rust,ignore
 use nebula_resource::{
-    Provider, ResourceContext, MetadataDraft, TeardownCx,
+    Provider, ResourceContext, ResourceMetadata, TeardownCx,
     error::Error, resource::ResourceConfig,
     topology::{Pooled, PoolProvider, BrokenCheck, InstanceMetrics, RecycleDecision},
 };
@@ -63,7 +63,7 @@ impl Provider for Postgres {
     async fn destroy(&self, instance: Self::Instance, cx: TeardownCx)
         -> Result<(), Error> { /* flush/close before drop; cx.deadline bounds it */ }
 
-    fn metadata() -> MetadataDraft { MetadataDraft::new(nebula_resource::metadata_name!("Postgres"), "") }
+    fn metadata() -> ResourceMetadata { ResourceMetadata::new(nebula_resource::metadata_name!("Postgres"), "") }
 }
 
 impl PoolProvider for Postgres {
@@ -142,7 +142,7 @@ impl Provider for GoogleSheets {
     async fn destroy(&self, instance: Self::Instance, cx: TeardownCx)
         -> Result<(), Error> { Ok(()) }
 
-    fn metadata() -> MetadataDraft { MetadataDraft::new(nebula_resource::metadata_name!("GoogleSheets"), "") }
+    fn metadata() -> ResourceMetadata { ResourceMetadata::new(nebula_resource::metadata_name!("GoogleSheets"), "") }
 }
 
 impl ResidentProvider for GoogleSheets {
@@ -239,7 +239,7 @@ impl Provider for SerialPort {
     async fn destroy(&self, instance: Self::Instance, cx: TeardownCx)
         -> Result<(), Error> { /* close */ }
 
-    fn metadata() -> MetadataDraft { MetadataDraft::new(nebula_resource::metadata_name!("SerialPort"), "") }
+    fn metadata() -> ResourceMetadata { ResourceMetadata::new(nebula_resource::metadata_name!("SerialPort"), "") }
 }
 
 // Only Exclusive reuses its instance and therefore resets; Capped / Unbounded

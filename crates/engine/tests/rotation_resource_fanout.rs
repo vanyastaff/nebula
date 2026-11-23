@@ -25,7 +25,7 @@ use nebula_resource::{
     AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
     ResourceContext, SlotIdentity,
     error::Error as ResourceError,
-    resource::{HasCredentialSlots, MetadataDraft},
+    resource::{HasCredentialSlots, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
 use nebula_resource::{ResourceFanoutIndex, RotationOutcome};
@@ -109,8 +109,8 @@ impl Provider for Ctl {
         }
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("it-fanout-ctl"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("it-fanout-ctl"), "")
     }
 }
 

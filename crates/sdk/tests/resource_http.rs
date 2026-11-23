@@ -29,8 +29,8 @@ use nebula_resource::{
 };
 use nebula_sdk::integration::resource::{
     CredentialGuard, CredentialUnavailableReason, Effect, Error, ErrorKind, HasCredentialSlots,
-    MetadataDraft, OperationError, PinSlots, Provider, Rate, Resident, ResidentProvider,
-    ResourceConfig, ResourceContext, ResourceHandle, SentState, SlotCell,
+    OperationError, PinSlots, Provider, Rate, Resident, ResidentProvider, ResourceConfig,
+    ResourceContext, ResourceHandle, ResourceMetadata, SentState, SlotCell,
     http::{
         Authorize, HttpApi, HttpConfig, HttpTransport, Request, open_stream, open_stream_until,
     },
@@ -101,8 +101,8 @@ impl Provider for Api {
 
     const KEY: &'static str = "test.http-api";
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_sdk::prelude::metadata_name!("HTTP API"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_sdk::prelude::metadata_name!("HTTP API"), "")
     }
 
     async fn create(

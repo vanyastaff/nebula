@@ -6,7 +6,7 @@
 use std::{num::NonZeroU32, time::Duration};
 
 use nebula_sdk::integration::resource::{
-    Cost, Effect, Error, ErrorKind, MetadataDraft, Operation, OperationCx, OperationError,
+    Cost, Effect, Error, ErrorKind, ResourceMetadata, Operation, OperationCx, OperationError,
     Provider, Resident, ResidentProvider, ResourceContext, ResourceHandle, no_credential_slots,
 };
 use nebula_sdk::prelude::{Deserialize, Serialize, metadata_name};
@@ -61,8 +61,8 @@ impl Provider for Inventory {
 
     const KEY: &'static str = "example.inventory";
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(metadata_name!("Inventory"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(metadata_name!("Inventory"), "")
     }
 
     async fn create(&self, (): &(), _: &ResourceContext) -> Result<InventoryClient, Error> {

@@ -140,8 +140,8 @@ impl Provider for PgRow {
         }
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("activation.pg"),
             String::new(),
         )

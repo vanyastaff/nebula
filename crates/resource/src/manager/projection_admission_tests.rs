@@ -1,7 +1,7 @@
 //! Queue rejection must not consume the installed epoch's hook admission.
 use super::{EpochRefreshOutcome, Manager, ManagerConfig, RegistrationSpec};
 use crate::resource::ProviderKey;
-use crate::resource::{HasCredentialSlots, MetadataDraft};
+use crate::resource::{HasCredentialSlots, ResourceMetadata};
 use crate::topology::resident::ResidentProvider;
 use crate::{
     AcquireOptions, Error, Provider, Resident, ResidentConfig, ResourceConfig, ResourceContext,
@@ -43,8 +43,8 @@ impl Provider for ProjectionResource {
     type Instance = ();
     type Topology = Resident<Self>;
     const KEY: &'static str = "projection-admission";
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(crate::metadata_name!("projection-admission"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("projection-admission"), "")
     }
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<(), Error> {
         Ok(())

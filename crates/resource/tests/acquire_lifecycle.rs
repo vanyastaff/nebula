@@ -24,7 +24,7 @@ use nebula_resource::{
     ResourceContext, ScopeLevel, ShutdownConfig, SlotIdentity, TopologyTag,
     error::{Error, ErrorKind},
     guard::ResourceGuard,
-    resource::{MetadataDraft, Provider, ResourceConfig},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::pooled::{BrokenCheck, PoolProvider},
 };
 
@@ -648,8 +648,8 @@ impl Provider for SlowCreatePoolResource {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("slow-create-pool"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("slow-create-pool"), "")
     }
 }
 

@@ -22,7 +22,7 @@ use crate::{
     Error, ErrorKind, Manager, Provider, RegistrationSpec, Resident, ResidentConfig,
     ResourceConfig, ResourceContext, SlotIdentity,
     call::{Cost, Effect, OperationCx, OperationError, ResourceHandle, SentState},
-    resource::MetadataDraft,
+    resource::ResourceMetadata,
     runtime::managed::ManagedResource,
     topology::ResidentProvider,
 };
@@ -52,8 +52,8 @@ impl Provider for Feed {
 
     const KEY: &'static str = "call-stream";
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(crate::metadata_name!("call-stream"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("call-stream"), "")
     }
 
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<(), Error> {

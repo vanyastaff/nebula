@@ -64,8 +64,8 @@ note: required by a bound in `nebula_resource::Operation`
             nebula_resource::rate_limit::RateLimitSettings
             nebula_resource::rate_limit::ResilienceOverride
             nebula_resource::rate_limit::KeyedOverride
-            nebula_resource::ResourceMetadata
-            nebula_resource::RecordedResourceMetadata
+            nebula_resource::ResourceDefinition
+            nebula_resource::RecordedResourceDefinition
             nebula_resource::topology::PoolStrategySetting
             nebula_resource::topology::WarmupSetting
             nebula_resource::topology::PoolSettings

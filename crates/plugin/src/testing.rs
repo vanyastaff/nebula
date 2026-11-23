@@ -409,8 +409,8 @@ impl nebula_resource::Provider for FixtureResource {
 
     const KEY: &'static str = "provider.resident";
 
-    fn metadata() -> nebula_resource::MetadataDraft {
-        nebula_resource::MetadataDraft::new(
+    fn metadata() -> nebula_resource::ResourceMetadata {
+        nebula_resource::ResourceMetadata::new(
             nebula_resource::metadata_name!("Resident"),
             "Admission-only resource",
         )

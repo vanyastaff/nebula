@@ -31,7 +31,7 @@ use nebula_resource::Resident;
 use nebula_resource::{
     Manager, RegistrationSpec, ResidentConfig, ResourceContext, SlotIdentity,
     error::Error as ResourceError,
-    resource::{MetadataDraft, Provider, ResourceConfig},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
 use nebula_workflow::{
@@ -325,8 +325,8 @@ impl Provider for IntegrationProbeResource {
         Ok(Arc::new(AtomicU64::new(7)))
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("test.engine_integration.probe"),
             "",
         )
@@ -752,7 +752,7 @@ mod shared_resource {
         AcquireOptions, Manager, RegistrationSpec, Resident, ResidentConfig, ResourceContext,
         SlotIdentity,
         error::Error,
-        resource::{MetadataDraft, Provider, ResourceConfig},
+        resource::{Provider, ResourceConfig, ResourceMetadata},
         topology::resident::ResidentProvider,
     };
     use tokio_util::sync::CancellationToken;
@@ -866,8 +866,8 @@ mod shared_resource {
             Ok(())
         }
 
-        fn metadata() -> MetadataDraft {
-            MetadataDraft::new(nebula_resource::metadata_name!("telegram-bot"), "")
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(nebula_resource::metadata_name!("telegram-bot"), "")
         }
     }
 
@@ -926,8 +926,8 @@ mod shared_resource {
             Ok(())
         }
 
-        fn metadata() -> MetadataDraft {
-            MetadataDraft::new(nebula_resource::metadata_name!("telegram-bot-alt"), "")
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(nebula_resource::metadata_name!("telegram-bot-alt"), "")
         }
     }
 
@@ -1350,8 +1350,8 @@ mod resource_handle {
 
         const KEY: &'static str = "test.resource_handle.svc";
 
-        fn metadata() -> MetadataDraft {
-            MetadataDraft::new(nebula_resource::metadata_name!("ResourceHandleSvc"), "")
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(nebula_resource::metadata_name!("ResourceHandleSvc"), "")
         }
 
         async fn create(&self, (): &(), _: &ResourceContext) -> Result<Arc<Calls>, ResourceError> {
@@ -1432,8 +1432,8 @@ mod resource_handle {
 
         const KEY: &'static str = "test.resource_handle.ledger";
 
-        fn metadata() -> MetadataDraft {
-            MetadataDraft::new(nebula_resource::metadata_name!("ResourceHandleLedger"), "")
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(nebula_resource::metadata_name!("ResourceHandleLedger"), "")
         }
 
         async fn create(&self, (): &(), _: &ResourceContext) -> Result<Conn, ResourceError> {

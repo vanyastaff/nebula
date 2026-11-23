@@ -27,7 +27,7 @@ use nebula_resource::{
     KindActivator, Manager, RegisterRequest, ResidentConfig, ResourceConfigInput, ResourceContext,
     ResourceFactory,
     error::Error,
-    resource::{MetadataDraft, Provider, ResourceConfig},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
 use nebula_schema::{HasSchema, Property, Schema, ValidSchema, field_key};
@@ -104,8 +104,8 @@ impl Provider for Db {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("secret-config-guard-db"),
             "",
         )

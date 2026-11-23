@@ -118,8 +118,11 @@ impl Provider for TwoSlotDerived {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn metadata() -> nebula_resource::MetadataDraft {
-        nebula_resource::MetadataDraft::new(nebula_resource::metadata_name!("TwoSlotDerived"), "")
+    fn metadata() -> nebula_resource::ResourceMetadata {
+        nebula_resource::ResourceMetadata::new(
+            nebula_resource::metadata_name!("TwoSlotDerived"),
+            "",
+        )
     }
 
     const KEY: &'static str = "epochfold-derived";
@@ -261,8 +264,11 @@ impl Provider for TwoSlotResident {
     type Instance = TwoSlotRuntime;
     type Topology = Resident<Self>;
 
-    fn metadata() -> nebula_resource::MetadataDraft {
-        nebula_resource::MetadataDraft::new(nebula_resource::metadata_name!("TwoSlotResident"), "")
+    fn metadata() -> nebula_resource::ResourceMetadata {
+        nebula_resource::ResourceMetadata::new(
+            nebula_resource::metadata_name!("TwoSlotResident"),
+            "",
+        )
     }
 
     const KEY: &'static str = "epochfold-resident";
@@ -526,8 +532,8 @@ impl Provider for NoSlotDerived {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn metadata() -> nebula_resource::MetadataDraft {
-        nebula_resource::MetadataDraft::new(nebula_resource::metadata_name!("NoSlotDerived"), "")
+    fn metadata() -> nebula_resource::ResourceMetadata {
+        nebula_resource::ResourceMetadata::new(nebula_resource::metadata_name!("NoSlotDerived"), "")
     }
 
     const KEY: &'static str = "epochfold-noslot";
@@ -585,8 +591,8 @@ impl Provider for PooledCredResource {
     type Instance = ();
     type Topology = nebula_resource::Pooled<Self>;
 
-    fn metadata() -> nebula_resource::MetadataDraft {
-        nebula_resource::MetadataDraft::new(
+    fn metadata() -> nebula_resource::ResourceMetadata {
+        nebula_resource::ResourceMetadata::new(
             nebula_resource::metadata_name!("PooledCredResource"),
             "",
         )

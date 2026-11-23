@@ -44,8 +44,8 @@ impl Provider for DummyResource {
     type Instance = Payload;
     type Topology = Pooled<Self>;
 
-    fn metadata() -> crate::MetadataDraft {
-        crate::MetadataDraft::new(crate::metadata_name!("DummyResource"), "")
+    fn metadata() -> crate::ResourceMetadata {
+        crate::ResourceMetadata::new(crate::metadata_name!("DummyResource"), "")
     }
 
     const KEY: &'static str = "guard-test";

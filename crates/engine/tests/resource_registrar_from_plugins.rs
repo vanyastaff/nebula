@@ -45,7 +45,7 @@ use nebula_resource::Resident;
 use nebula_resource::{
     ScopeLevel,
     error::Error as ResourceError,
-    resource::{MetadataDraft, Provider, ResourceConfig},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::resident,
 };
 
@@ -121,8 +121,8 @@ impl Provider for DemoResource {
         Ok(Arc::new(AtomicU64::new(id)))
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("demo.widget"),
             String::new(),
         )

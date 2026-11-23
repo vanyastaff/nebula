@@ -4,8 +4,8 @@ use core::num::NonZeroU32;
 
 use nebula_core::ActionKey;
 use nebula_metadata::{
-    BaseMetadata, Metadata, MetadataBuildError, MetadataDraft, MetadataReadmissionError,
-    RecordedBaseMetadata,
+    BaseDefinition, Definition, Metadata, MetadataBuildError, MetadataReadmissionError,
+    RecordedBaseDefinition,
 };
 use nebula_schema::ValidSchema;
 use serde::{Deserialize, Serialize};
@@ -119,7 +119,7 @@ pub enum ActionMetadataReadmissionError {
 #[must_use = "an action metadata draft must be admitted by a factory"]
 pub struct ActionMetadataDraft {
     key: ActionKey,
-    base: MetadataDraft,
+    base: Metadata,
     inputs: Vec<InputPort>,
     outputs: Vec<OutputPort>,
     isolation_level: IsolationLevel,
@@ -153,7 +153,7 @@ impl ActionMetadataDraft {
     ) -> Self {
         Self {
             key,
-            base: MetadataDraft::new(name, description),
+            base: Metadata::new(name, description),
             inputs: port::default_input_ports(),
             outputs: port::default_output_ports(),
             isolation_level: IsolationLevel::None,
@@ -354,7 +354,7 @@ impl ActionMetadataDraft {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ActionMetadata {
-    base: BaseMetadata<ActionKey>,
+    base: BaseDefinition<ActionKey>,
     inputs: Box<[InputPort]>,
     outputs: Box<[OutputPort]>,
     isolation_level: IsolationLevel,
@@ -366,10 +366,10 @@ pub struct ActionMetadata {
     output_schema: ValidSchema,
 }
 
-impl Metadata for ActionMetadata {
+impl Definition for ActionMetadata {
     type Key = ActionKey;
 
-    fn base(&self) -> &BaseMetadata<ActionKey> {
+    fn base(&self) -> &BaseDefinition<ActionKey> {
         &self.base
     }
 }
@@ -377,7 +377,7 @@ impl Metadata for ActionMetadata {
 impl ActionMetadata {
     /// Shared admitted metadata and canonical input schema.
     #[must_use]
-    pub fn base(&self) -> &BaseMetadata<ActionKey> {
+    pub fn base(&self) -> &BaseDefinition<ActionKey> {
         &self.base
     }
 
@@ -464,7 +464,7 @@ impl ActionMetadata {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RecordedActionMetadata {
-    base: RecordedBaseMetadata<ActionKey>,
+    base: RecordedBaseDefinition<ActionKey>,
     inputs: Box<[InputPort]>,
     outputs: Box<[OutputPort]>,
     isolation_level: IsolationLevel,
@@ -482,7 +482,7 @@ impl<'de> Deserialize<'de> for RecordedActionMetadata {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Fields {
-            base: RecordedBaseMetadata<ActionKey>,
+            base: RecordedBaseDefinition<ActionKey>,
             inputs: Box<[InputPort]>,
             outputs: Box<[OutputPort]>,
             isolation_level: IsolationLevel,

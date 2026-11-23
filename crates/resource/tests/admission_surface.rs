@@ -16,7 +16,7 @@ use nebula_resource::topology::{pooled::PoolProvider, resident::ResidentProvider
 use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResourceContext, ScopeLevel, SlotIdentity,
     error::{Error, ErrorKind},
-    resource::{MetadataDraft, Provider, ResourceConfig},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::{AdmissionPhase, Load, Pooled, Resident, Unavailable},
 };
 use tokio_util::sync::CancellationToken;
@@ -59,8 +59,8 @@ impl Provider for TinyPool {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("test.admission.tiny_pool"),
             "",
         )
@@ -88,8 +88,8 @@ impl Provider for SimpleResident {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("test.admission.simple_resident"),
             "",
         )

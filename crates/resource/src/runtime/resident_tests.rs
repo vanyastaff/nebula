@@ -8,7 +8,7 @@ use nebula_core::ExecutionId;
 use super::*;
 use crate::{
     context::ResourceContext,
-    resource::{MetadataDraft, ResourceConfig},
+    resource::{ResourceConfig, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
 
@@ -58,8 +58,8 @@ impl Provider for MockResident {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(crate::metadata_name!("mock-resident"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("mock-resident"), "")
     }
 }
 
@@ -237,8 +237,8 @@ impl Provider for HangingResident {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(crate::metadata_name!("hanging-resident"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("hanging-resident"), "")
     }
 }
 
@@ -323,8 +323,8 @@ impl Provider for SlotReadResident {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(crate::metadata_name!("slot-read-resident"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("slot-read-resident"), "")
     }
 }
 

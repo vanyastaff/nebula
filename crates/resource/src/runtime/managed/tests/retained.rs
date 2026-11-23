@@ -10,7 +10,7 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    AcquireOptions, Error, ErrorKind, MetadataDraft, Provider, ReplaceStatus, ResourceContext,
+    AcquireOptions, Error, ErrorKind, Provider, ReplaceStatus, ResourceContext, ResourceMetadata,
     ResourceStatus, RetainStatus, RetainedId, RetainedStore, TeardownCx,
     release_queue::{ReleaseQueue, ReleaseQueueHandle, SubmissionOutcome},
     resource::ResourceConfig,
@@ -110,8 +110,8 @@ impl Provider for RetainedResource {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(crate::metadata_name!("managed-retained-regression"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("managed-retained-regression"), "")
     }
 }
 

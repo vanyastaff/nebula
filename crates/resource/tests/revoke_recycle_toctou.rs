@@ -47,7 +47,7 @@ use nebula_resource::{
     AcquireOptions, Manager, PoolConfig, Pooled, Provider, RegistrationSpec, ResourceConfig,
     ResourceContext, SlotIdentity,
     error::{Error, ErrorKind},
-    resource::{HasCredentialSlots, MetadataDraft},
+    resource::{HasCredentialSlots, ResourceMetadata},
     topology::pooled::{PoolProvider, RecycleDecision, config::WarmupStrategy},
 };
 use tokio::sync::Notify;
@@ -156,8 +156,8 @@ impl Provider for PoolResource {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("r16-pool"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("r16-pool"), "")
     }
 }
 

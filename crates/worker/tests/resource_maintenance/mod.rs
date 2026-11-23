@@ -9,7 +9,7 @@ use nebula_engine::resource::{
 };
 use nebula_resource::{
     AcquireOptions, Manager, Provider, Resident, ResourceContext,
-    resource::{MetadataDraft, TeardownCx},
+    resource::{ResourceMetadata, TeardownCx},
 };
 use nebula_storage::inmem::InMemoryResourceStore;
 use nebula_storage_port::{
@@ -39,8 +39,8 @@ impl Provider for RetiredResource {
 
     const KEY: &'static str = "test.worker.retirement";
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("Retirement probe"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("Retirement probe"), "")
     }
 
     async fn create(&self, (): &(), _: &ResourceContext) -> Result<(), nebula_resource::Error> {

@@ -64,7 +64,7 @@ use nebula_resource::{
     ResourceConfig, ResourceContext, SlotCell, SlotIdentity,
     error::Error as ResourceError,
     events::ResourceEvent,
-    resource::{HasCredentialSlots, MetadataDraft},
+    resource::{HasCredentialSlots, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
 use nebula_resource::{ResourceFanoutIndex, RotationOutcome};
@@ -269,8 +269,8 @@ impl Provider for SecretBearingResource {
         }
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("rotation-redaction-res"),
             "",
         )

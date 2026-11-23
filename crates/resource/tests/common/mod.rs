@@ -17,7 +17,7 @@ use nebula_resource::{
     Manager, ManagerConfig, Pooled, RegistrationSpec, Resident, ResourceContext, ScopeLevel,
     SlotIdentity,
     error::Error,
-    resource::{HasCredentialSlots, MetadataDraft, Provider, ResourceConfig},
+    resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
     topology::{
         pooled::{BrokenCheck, PoolProvider},
         resident::ResidentProvider,
@@ -105,8 +105,8 @@ impl Provider for PoolTestResource {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("test-pool"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("test-pool"), "")
     }
 }
 
@@ -166,8 +166,8 @@ impl Provider for ResidentTestResource {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("test-resident"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("test-resident"), "")
     }
 }
 

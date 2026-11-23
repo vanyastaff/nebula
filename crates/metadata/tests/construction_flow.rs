@@ -2,8 +2,8 @@
 
 use nebula_core::ActionKey;
 use nebula_metadata::{
-    BaseMetadata, DeprecationNotice, MaturityLevel, MetadataDraft, MetadataError, PluginManifest,
-    RecordedBaseMetadata,
+    BaseDefinition, DeprecationNotice, MaturityLevel, Metadata, MetadataError, PluginManifest,
+    RecordedBaseDefinition,
 };
 use nebula_schema::ValidSchema;
 use semver::Version;
@@ -29,7 +29,7 @@ fn leaf_deserialization_rejects_blank_names() {
     for name in ["", " \t\n", "\u{2003}"] {
         let mut value = leaf_json();
         value["name"] = json!(name);
-        let error = decode::<RecordedBaseMetadata<ActionKey>>(value)
+        let error = decode::<RecordedBaseDefinition<ActionKey>>(value)
             .expect_err("a catalog display name must contain non-whitespace text");
         assert!(error.to_string().contains("name"), "{error}");
     }
@@ -73,7 +73,7 @@ fn deserialization_rejects_invalid_typed_identity_and_version() {
     for (field, invalid) in [("key", "bad!key"), ("key", "a_"), ("version", "01.0.0")] {
         let mut leaf = leaf_json();
         leaf[field] = json!(invalid);
-        decode::<RecordedBaseMetadata<ActionKey>>(leaf)
+        decode::<RecordedBaseDefinition<ActionKey>>(leaf)
             .expect_err("leaf identity and version must retain their typed validation");
 
         let mut manifest =
@@ -117,8 +117,8 @@ fn notice_takes_precedence_over_every_wire_maturity() {
             }
         }
 
-        let recorded: RecordedBaseMetadata<ActionKey> = decode(leaf).expect("valid notice");
-        let fresh = MetadataDraft::try_new("Example", "")
+        let recorded: RecordedBaseDefinition<ActionKey> = decode(leaf).expect("valid notice");
+        let fresh = Metadata::try_new("Example", "")
             .expect("valid metadata")
             .with_version(Version::new(2, 0, 0))
             .with_deprecation(notice.clone())
@@ -142,7 +142,7 @@ fn notice_takes_precedence_over_every_wire_maturity() {
 fn leaf_deserialization_rejects_deprecated_without_notice() {
     let mut value = leaf_json();
     value["maturity"] = json!("deprecated");
-    let error = decode::<RecordedBaseMetadata<ActionKey>>(value)
+    let error = decode::<RecordedBaseDefinition<ActionKey>>(value)
         .expect_err("Deprecated requires a deprecation notice");
     assert!(error.to_string().contains("deprecation"), "{error}");
 }
@@ -169,11 +169,11 @@ fn manifest_build_and_deserialization_reject_deprecated_without_notice() {
 #[test]
 fn recorded_leaf_accepts_valid_keys_from_owned_json_and_readers() {
     let value = leaf_json();
-    let expected: RecordedBaseMetadata<ActionKey> = decode(value.clone()).expect("borrowed JSON");
-    let owned: RecordedBaseMetadata<ActionKey> =
+    let expected: RecordedBaseDefinition<ActionKey> = decode(value.clone()).expect("borrowed JSON");
+    let owned: RecordedBaseDefinition<ActionKey> =
         serde_json::from_value(value.clone()).expect("owned JSON");
     assert_eq!(owned, expected);
-    let reader: RecordedBaseMetadata<ActionKey> =
+    let reader: RecordedBaseDefinition<ActionKey> =
         serde_json::from_reader(value.to_string().as_bytes()).expect("JSON reader");
     assert_eq!(reader, expected);
 }
@@ -195,20 +195,20 @@ fn manifest_accepts_valid_dependency_keys_from_owned_json_and_readers() {
 }
 
 #[test]
-fn draft_constructor_rejects_blank_names_with_a_typed_error() {
+fn authored_constructor_rejects_blank_names_with_a_typed_error() {
     for name in ["", " \t\n", "\u{2003}"] {
-        let error = MetadataDraft::try_new(name, "")
+        let error = Metadata::try_new(name, "")
             .expect_err("a catalog display name must contain non-whitespace text");
         assert_eq!(error, MetadataError::BlankName);
     }
 }
 
 #[test]
-fn draft_lifecycle_setters_preserve_notice_precedence() {
-    let draft = MetadataDraft::try_new("Example", "").expect("valid metadata");
+fn authored_lifecycle_setters_preserve_notice_precedence() {
+    let authored = Metadata::try_new("Example", "").expect("valid metadata");
 
     let notice = DeprecationNotice::new(Version::new(2, 0, 0)).with_reason("Superseded");
-    let deprecated = draft
+    let deprecated = authored
         .with_version(Version::new(2, 0, 0))
         .with_deprecation(notice.clone());
     for updated in [
@@ -229,7 +229,7 @@ fn draft_lifecycle_setters_preserve_notice_precedence() {
 
 #[test]
 fn active_maturity_can_change_before_schema_binding() {
-    let metadata = MetadataDraft::try_new("Example", "")
+    let metadata = Metadata::try_new("Example", "")
         .expect("valid metadata")
         .mark_beta()
         .mark_experimental()
@@ -238,7 +238,7 @@ fn active_maturity_can_change_before_schema_binding() {
         .expect("valid bounded metadata");
     assert_eq!(metadata.maturity(), MaturityLevel::Stable);
     assert_eq!(metadata.deprecation(), None);
-    let recorded: RecordedBaseMetadata<String> =
+    let recorded: RecordedBaseDefinition<String> =
         serde_json::from_value(json!(metadata)).expect("active lifecycle is recorded");
     let restored = recorded
         .readmit_against(&metadata)
@@ -254,7 +254,7 @@ fn intrinsic_construction_accepts_semver_boundaries_and_unicode_names() {
         Version::new(u64::MAX, u64::MAX, u64::MAX),
         "1.2.3-beta.1+build.2".parse().expect("valid semver"),
     ] {
-        let metadata = MetadataDraft::try_new(name, "")
+        let metadata = Metadata::try_new(name, "")
             .expect("Unicode display name and empty description are valid")
             .with_version(version.clone())
             .bind("example".to_owned(), ValidSchema::empty())
@@ -262,7 +262,7 @@ fn intrinsic_construction_accepts_semver_boundaries_and_unicode_names() {
         assert_eq!(metadata.name(), name);
         assert_eq!(metadata.description(), "");
         assert_eq!(metadata.version(), &version);
-        let recorded: RecordedBaseMetadata<String> =
+        let recorded: RecordedBaseDefinition<String> =
             serde_json::from_value(json!(metadata)).expect("valid semver is recorded");
         let restored = recorded
             .readmit_against(&metadata)
@@ -275,18 +275,18 @@ fn intrinsic_construction_accepts_semver_boundaries_and_unicode_names() {
 fn nested_typed_metadata_validates_and_preserves_outer_fields() {
     #[derive(Debug, PartialEq, serde::Serialize)]
     struct Entity {
-        base: BaseMetadata<ActionKey>,
+        base: BaseDefinition<ActionKey>,
         category: String,
     }
 
     #[derive(Debug, serde::Deserialize)]
     struct RecordedEntity {
-        base: RecordedBaseMetadata<ActionKey>,
+        base: RecordedBaseDefinition<ActionKey>,
         category: String,
     }
 
     let original = Entity {
-        base: MetadataDraft::try_new("Example", "")
+        base: Metadata::try_new("Example", "")
             .expect("valid metadata")
             .with_deprecation(DeprecationNotice::new(Version::new(1, 0, 0)))
             .bind("example".parse().expect("valid key"), ValidSchema::empty())
@@ -325,7 +325,7 @@ fn key_parser_errors_do_not_expose_submitted_text() {
 
     let mut value = leaf_json();
     value["key"] = json!("private_key_payload");
-    let error = serde_json::from_value::<RecordedBaseMetadata<RejectedKey>>(value)
+    let error = serde_json::from_value::<RecordedBaseDefinition<RejectedKey>>(value)
         .expect_err("custom key parser rejects the identity");
     assert_eq!(error.to_string(), MetadataError::InvalidKey.to_string());
     assert!(!format!("{error:?}").contains("private_key_payload"));

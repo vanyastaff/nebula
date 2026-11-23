@@ -1,5 +1,5 @@
 use nebula_core::CredentialKey;
-use nebula_metadata::{BaseMetadata, Metadata, MetadataDraft, RecordedBaseMetadata};
+use nebula_metadata::{BaseDefinition, Definition, Metadata, RecordedBaseDefinition};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
@@ -13,7 +13,7 @@ use crate::AuthPattern;
 #[must_use = "credential metadata drafts are admitted by a credential registry"]
 pub struct CredentialMetadataDraft {
     key: CredentialKey,
-    base: MetadataDraft,
+    base: Metadata,
 }
 
 impl CredentialMetadataDraft {
@@ -25,7 +25,7 @@ impl CredentialMetadataDraft {
     ) -> Self {
         Self {
             key,
-            base: MetadataDraft::new(name, description),
+            base: Metadata::new(name, description),
         }
     }
 
@@ -42,7 +42,7 @@ impl CredentialMetadataDraft {
     ) -> Result<Self, nebula_metadata::MetadataError> {
         Ok(Self {
             key,
-            base: MetadataDraft::try_new(name, description)?,
+            base: Metadata::try_new(name, description)?,
         })
     }
 
@@ -209,14 +209,14 @@ pub enum CredentialMetadataAdmissionError {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CredentialMetadata {
-    base: BaseMetadata<CredentialKey>,
+    base: BaseDefinition<CredentialKey>,
     pattern: AuthPattern,
 }
 
-impl Metadata for CredentialMetadata {
+impl Definition for CredentialMetadata {
     type Key = CredentialKey;
 
-    fn base(&self) -> &BaseMetadata<CredentialKey> {
+    fn base(&self) -> &BaseDefinition<CredentialKey> {
         &self.base
     }
 }
@@ -328,7 +328,7 @@ impl CredentialMetadata {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RecordedCredentialMetadata {
-    base: RecordedBaseMetadata<CredentialKey>,
+    base: RecordedBaseDefinition<CredentialKey>,
     pattern: AuthPattern,
 }
 
@@ -338,7 +338,7 @@ impl<'de> Deserialize<'de> for RecordedCredentialMetadata {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Fields {
-            base: RecordedBaseMetadata<CredentialKey>,
+            base: RecordedBaseDefinition<CredentialKey>,
             pattern: AuthPattern,
         }
 

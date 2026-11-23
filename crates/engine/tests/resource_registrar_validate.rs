@@ -34,7 +34,7 @@ use nebula_resource::{
     HasCredentialSlots, Manager, ScopeLevel,
     error::Error as ResourceError,
     rate_limit::{Rate, ResiliencePolicy},
-    resource::{MetadataDraft, Provider, ResourceConfig},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::resident,
     topology::resident::ResidentProvider,
 };
@@ -104,8 +104,8 @@ impl Provider for HttpPool {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("http_pool"), String::new())
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("http_pool"), String::new())
     }
 
     /// The provider allows 30 requests per second, 30 back to back.
@@ -168,8 +168,8 @@ impl Provider for TokenPool {
         Ok(())
     }
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(nebula_resource::metadata_name!("token_pool"), String::new())
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("token_pool"), String::new())
     }
 }
 

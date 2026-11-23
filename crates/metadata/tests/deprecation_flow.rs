@@ -1,7 +1,7 @@
 //! A deprecation notice implies Deprecated maturity through setters and serde.
 
 use nebula_metadata::{
-    DeprecationNotice, MaturityLevel, MetadataDraft, PluginManifest, RecordedBaseMetadata,
+    DeprecationNotice, MaturityLevel, Metadata, PluginManifest, RecordedBaseDefinition,
 };
 use nebula_schema::ValidSchema;
 use pretty_assertions::assert_eq;
@@ -28,8 +28,8 @@ fn empty_schema() -> ValidSchema {
 }
 
 #[test]
-fn base_metadata_deprecation_forces_deprecated_through_serde_round_trip() {
-    let original = MetadataDraft::try_new("n", "d")
+fn base_definition_deprecation_forces_deprecated_through_serde_round_trip() {
+    let original = Metadata::try_new("n", "d")
         .expect("nonblank name")
         .with_deprecation(DeprecationNotice::new(Version::new(1, 0, 0)).with_reason("superseded"))
         .bind(key(), empty_schema())
@@ -37,7 +37,7 @@ fn base_metadata_deprecation_forces_deprecated_through_serde_round_trip() {
     assert_eq!(original.maturity(), MaturityLevel::Deprecated);
 
     let json = serde_json::to_string(&original).expect("serializes");
-    let recorded: RecordedBaseMetadata<LocalKey> =
+    let recorded: RecordedBaseDefinition<LocalKey> =
         serde_json::from_str(&json).expect("recorded metadata deserializes");
     let decoded = recorded
         .readmit_against(&original)
@@ -78,8 +78,8 @@ fn plugin_manifest_builder_stays_order_independent() {
 
 /// A later maturity setter must preserve both the notice and its meaning.
 #[test]
-fn metadata_draft_order_preserves_the_deprecation_invariant() {
-    let metadata = MetadataDraft::try_new("n", "d")
+fn metadata_authoring_order_preserves_the_deprecation_invariant() {
+    let metadata = Metadata::try_new("n", "d")
         .expect("nonblank name")
         .with_deprecation(DeprecationNotice::new(Version::new(1, 0, 0)))
         .mark_stable()
@@ -111,9 +111,9 @@ fn adversarial_json_deprecation_with_explicit_stable_maturity_stays_deprecated()
         "deprecation": { "since": "1.0.0" },
     });
 
-    let recorded: RecordedBaseMetadata<LocalKey> =
+    let recorded: RecordedBaseDefinition<LocalKey> =
         serde_json::from_value(adversarial).expect("deprecation determines maturity");
-    let fresh_definition = MetadataDraft::try_new("n", "d")
+    let fresh_definition = Metadata::try_new("n", "d")
         .expect("nonblank name")
         .with_deprecation(DeprecationNotice::new(Version::new(1, 0, 0)))
         .bind(key(), empty_schema())

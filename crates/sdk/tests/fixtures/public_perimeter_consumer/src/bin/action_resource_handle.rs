@@ -4,7 +4,7 @@
 //! unit's `OperationError` into `ActionError` — all through `nebula_sdk`.
 
 use nebula_sdk::integration::resource::{
-    Cost, Effect, Error, MetadataDraft, Operation, OperationCx, OperationError, PoolProvider,
+    Cost, Effect, Error, ResourceMetadata, Operation, OperationCx, OperationError, PoolProvider,
     Pooled, Provider, Resident, ResidentProvider, ResourceContext, ResourceHandle,
     no_credential_slots,
 };
@@ -26,8 +26,8 @@ impl Provider for Directory {
 
     const KEY: &'static str = "example.directory";
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(metadata_name!("Directory"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(metadata_name!("Directory"), "")
     }
 
     async fn create(&self, (): &(), _: &ResourceContext) -> Result<u64, Error> {
@@ -67,8 +67,8 @@ impl Provider for Ledger {
 
     const KEY: &'static str = "example.ledger";
 
-    fn metadata() -> MetadataDraft {
-        MetadataDraft::new(metadata_name!("Ledger"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(metadata_name!("Ledger"), "")
     }
 
     async fn create(&self, (): &(), _: &ResourceContext) -> Result<Conn, Error> {

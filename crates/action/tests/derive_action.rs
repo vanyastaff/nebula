@@ -217,7 +217,7 @@ mod resource_handle_fields {
         AcquireOptions, ErrorKind, Manager, PinSlots, RegistrationSpec, Resident, ResidentConfig,
         ResourceConfig, ResourceContext, SlotIdentity,
         call::{Cost, Effect, Operation, OperationCx, OperationError, ResourceHandle},
-        resource::{MetadataDraft, Provider},
+        resource::{Provider, ResourceMetadata},
         topology::ResidentProvider,
     };
     use nebula_workflow::NodeDefinition;
@@ -247,8 +247,8 @@ mod resource_handle_fields {
 
                 const KEY: &'static str = $key;
 
-                fn metadata() -> MetadataDraft {
-                    MetadataDraft::new(nebula_resource::metadata_name!($key), "")
+                fn metadata() -> ResourceMetadata {
+                    ResourceMetadata::new(nebula_resource::metadata_name!($key), "")
                 }
 
                 async fn create(

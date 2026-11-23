@@ -2,7 +2,7 @@
 
 use nebula_core::ActionKey;
 use nebula_metadata::{
-    DeprecationNotice, MaturityLevel, MetadataDraft, PluginManifest, RecordedBaseMetadata,
+    DeprecationNotice, MaturityLevel, Metadata, PluginManifest, RecordedBaseDefinition,
 };
 use nebula_schema::ValidSchema;
 use proptest::prelude::*;
@@ -20,7 +20,7 @@ proptest! {
     ) {
         let name = format!("Name {name_suffix}");
         let version = Version::new(version.0, version.1, version.2);
-        let mut draft = MetadataDraft::try_new(&name,
+        let mut authored = Metadata::try_new(&name,
             &description,
         )
         .expect("generated nonblank name")
@@ -31,13 +31,13 @@ proptest! {
             .nebula_version(version.clone());
         if deprecated {
             let notice = DeprecationNotice::new(version).with_reason(&description);
-            draft = draft.with_deprecation(notice.clone());
+            authored = authored.with_deprecation(notice.clone());
             manifest = manifest.deprecation(notice);
         }
-        let leaf = draft.bind(key.parse::<ActionKey>().expect("generated valid key"), ValidSchema::empty()).expect("valid bounded metadata");
+        let leaf = authored.bind(key.parse::<ActionKey>().expect("generated valid key"), ValidSchema::empty()).expect("valid bounded metadata");
         let manifest = manifest.build().expect("generated valid manifest");
 
-        let recorded_leaf: RecordedBaseMetadata<ActionKey> = serde_json::from_value(json!(leaf))?;
+        let recorded_leaf: RecordedBaseDefinition<ActionKey> = serde_json::from_value(json!(leaf))?;
         let restored_leaf = recorded_leaf.readmit_against(&leaf)?;
         prop_assert_eq!(restored_leaf, leaf);
         let decoded_manifest: PluginManifest = serde_json::from_value(json!(manifest))?;
@@ -46,11 +46,11 @@ proptest! {
 
     #[test]
     fn name_checks_agree_with_the_nonblank_contract(name in any::<String>()) {
-        let leaf = MetadataDraft::try_new(&name,
+        let leaf = Metadata::try_new(&name,
             "",
-        ).map(|draft| draft.bind("example".parse::<ActionKey>().expect("valid key"), ValidSchema::empty()).expect("valid bounded metadata"));
+        ).map(|authored| authored.bind("example".parse::<ActionKey>().expect("valid key"), ValidSchema::empty()).expect("valid bounded metadata"));
         let manifest = PluginManifest::builder("example", &name).build();
-        let leaf_wire = serde_json::from_value::<RecordedBaseMetadata<ActionKey>>(json!({
+        let leaf_wire = serde_json::from_value::<RecordedBaseDefinition<ActionKey>>(json!({
             "metadata_wire_version": 2,
             "key": "example", "name": name, "description": "",
             "schema": ValidSchema::empty(),
@@ -80,22 +80,22 @@ proptest! {
         maturities in prop::collection::vec(0_u8..3, 0..32),
     ) {
         let notice = DeprecationNotice::new(Version::new(1, 0, 0));
-        let mut draft = MetadataDraft::try_new("Example", "")?
+        let mut authored = Metadata::try_new("Example", "")?
             .with_deprecation(notice.clone());
         let mut manifest = PluginManifest::builder("example", "Example")
             .deprecation(notice.clone());
         for maturity in maturities {
-            draft = match maturity {
-                0 => draft.mark_experimental(),
-                1 => draft.mark_beta(),
-                _ => draft.mark_stable(),
+            authored = match maturity {
+                0 => authored.mark_experimental(),
+                1 => authored.mark_beta(),
+                _ => authored.mark_stable(),
             };
             manifest = manifest.maturity(match maturity {
                 0 => MaturityLevel::Experimental,
                 1 => MaturityLevel::Beta,
                 _ => MaturityLevel::Stable,
             });
-            let leaf = draft.clone().bind("example", ValidSchema::empty()).expect("valid bounded metadata");
+            let leaf = authored.clone().bind("example", ValidSchema::empty()).expect("valid bounded metadata");
             prop_assert_eq!(leaf.maturity(), MaturityLevel::Deprecated);
             prop_assert_eq!(leaf.deprecation(), Some(&notice));
         }
