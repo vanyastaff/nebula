@@ -33,7 +33,7 @@ use crate::runtime::refresh::transport::{
     RefreshTransport, RefreshTransportError, TokenPostRequest, TokenPostResponse,
 };
 use crate::runtime::{AcquisitionTransport, AcquisitionTransportError};
-use crate::{CredentialMetadataDraft, CredentialPolicy, RefreshStrategy, RevokeStrategy};
+use crate::{CredentialMetadata, CredentialPolicy, RefreshStrategy, RevokeStrategy};
 
 // ── Test doubles of the crate's own ports ──────────────────────────
 
@@ -1065,9 +1065,8 @@ impl Credential for TestCred {
 
     const KEY: &'static str = "test.refreshable";
 
-    fn metadata() -> CredentialMetadataDraft {
-        CredentialMetadataDraft::new(
-            nebula_core::credential_key!("test.refreshable"),
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::new(
             crate::metadata_name!("TestCred"),
             "refreshable test credential for resolver regressions",
         )
@@ -1167,9 +1166,8 @@ impl Credential for LocalRefreshCred {
 
     const KEY: &'static str = "test.local_refreshable";
 
-    fn metadata() -> CredentialMetadataDraft {
-        CredentialMetadataDraft::new(
-            nebula_core::credential_key!("test.local_refreshable"),
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::new(
             crate::metadata_name!("LocalRefreshCred"),
             "providerless refresh credential for finalization regressions",
         )
@@ -1230,9 +1228,8 @@ impl Credential for VersionTwoCred {
 
     const KEY: &'static str = "test.refreshable.v2";
 
-    fn metadata() -> CredentialMetadataDraft {
-        CredentialMetadataDraft::new(
-            nebula_core::credential_key!("test.refreshable.v2"),
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::new(
             crate::metadata_name!("VersionTwoCred"),
             "version-bumped refreshable test credential for migration regressions",
         )
@@ -1287,7 +1284,7 @@ impl Credential for ProviderModeLocalCompletionCred {
 
     const KEY: &'static str = TestCred::KEY;
 
-    fn metadata() -> CredentialMetadataDraft {
+    fn metadata() -> CredentialMetadata {
         TestCred::metadata()
     }
 
@@ -1333,9 +1330,8 @@ impl Credential for SameKeyNonOAuthCred {
 
     const KEY: &'static str = "oauth2";
 
-    fn metadata() -> CredentialMetadataDraft {
-        CredentialMetadataDraft::new(
-            nebula_core::credential_key!("oauth2"),
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::new(
             crate::metadata_name!("Same-key typed test credential"),
             "proves refresh dispatch follows the Rust type rather than its registry key",
         )
@@ -1398,9 +1394,8 @@ impl Credential for CancellationAwareCred {
 
     const KEY: &'static str = "test.cancellation_aware";
 
-    fn metadata() -> CredentialMetadataDraft {
-        CredentialMetadataDraft::new(
-            nebula_core::credential_key!("test.cancellation_aware"),
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::new(
             crate::metadata_name!("Cancellation-aware test credential"),
             "proves K2 refresh is detached from request cancellation",
         )
@@ -1499,9 +1494,8 @@ impl Credential for PostProviderEncodingCred {
 
     const KEY: &'static str = "test.post_provider_encoding";
 
-    fn metadata() -> CredentialMetadataDraft {
-        CredentialMetadataDraft::new(
-            nebula_core::credential_key!("test.post_provider_encoding"),
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::new(
             crate::metadata_name!("Post-provider encoding test"),
             "proves state encoding failures retain replay-unsafe disposition",
         )
@@ -3833,9 +3827,8 @@ impl Credential for MismatchedPolicyCred {
 
     const KEY: &'static str = "test.mismatched_policy";
 
-    fn metadata() -> CredentialMetadataDraft {
-        CredentialMetadataDraft::new(
-            nebula_core::credential_key!("test.mismatched_policy"),
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::new(
             crate::metadata_name!("MismatchedPolicyCred"),
             "credential whose policy drifts from its family",
         )

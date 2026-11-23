@@ -97,7 +97,7 @@ mod credential_ref;
 mod display;
 /// Typed credential handle — CredentialHandle (ArcSwap-backed).
 mod handle;
-/// Credential metadata draft, admitted definition, recorded evidence, and compatibility.
+/// Authored credential metadata, admitted definition, recorded evidence, and compatibility.
 mod metadata;
 pub use nebula_metadata::{MetadataError, MetadataName, metadata_name};
 /// `NoCredential` opt-out type — for resources without an authenticated binding (credential isolation).
@@ -145,6 +145,7 @@ pub use contract::{
     CredentialRegistry, CredentialState, Dynamic, Interactive, NoPendingState, PendingState,
     PendingToken, RefreshAttempt, RefreshDispatchError, RefreshExecutionMode, RefreshReport,
     Refreshable, RegisterError, Revocable, StateWireFingerprint, Testable, compute_capabilities,
+    key_of,
 };
 // Resolve types
 pub use contract::{
@@ -250,8 +251,9 @@ pub use crate::{
     },
     event::CredentialEvent,
     metadata::{
-        CredentialMetadata, CredentialMetadataAdmissionError, CredentialMetadataDraft,
-        CredentialMetadataReadmissionError, MetadataCompatibilityError, RecordedCredentialMetadata,
+        CredentialDefinition, CredentialMetadata, CredentialMetadataAdmissionError,
+        CredentialMetadataReadmissionError, MetadataCompatibilityError,
+        RecordedCredentialDefinition,
     },
     record::CredentialRecord,
     snapshot::{CredentialSnapshot, SnapshotError},
@@ -301,12 +303,12 @@ pub use scope::{
 pub mod prelude {
     pub use crate::{
         AuthPattern, AuthScheme, Credential, CredentialContext, CredentialContextBuilder,
-        CredentialError, CredentialGuard, CredentialHandle, CredentialId, CredentialKey,
-        CredentialMetadata, CredentialMetadataDraft, CredentialPolicy, CredentialRecord,
-        CredentialRegistry, CredentialService, CredentialState, DeprecationNotice, Dynamic,
-        ExternalScheme, Icon, Interactive, MaturityLevel, PublicScheme, RefreshAttempt,
-        RefreshExecutionMode, RefreshReport, Refreshable, Revocable, SecretString, SensitiveScheme,
-        StateWireFingerprint, Testable, credential, credential_key, schema_of,
+        CredentialDefinition, CredentialError, CredentialGuard, CredentialHandle, CredentialId,
+        CredentialKey, CredentialMetadata, CredentialPolicy, CredentialRecord, CredentialRegistry,
+        CredentialService, CredentialState, DeprecationNotice, Dynamic, ExternalScheme, Icon,
+        Interactive, MaturityLevel, PublicScheme, RefreshAttempt, RefreshExecutionMode,
+        RefreshReport, Refreshable, Revocable, SecretString, SensitiveScheme, StateWireFingerprint,
+        Testable, credential, credential_key, schema_of,
     };
 }
 

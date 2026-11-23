@@ -187,17 +187,18 @@ empty braced records; they never publish an empty contract for a populated struc
 `HasSchema::schema()` and `schema_of::<T>()` remain fallible authoring contracts.
 `Action::metadata`, `Credential::metadata`, and `Provider::metadata` return schema-free
 authored metadata. Runtime factories derive schemas from the associated companion types
-and own the only admission into terminal definitions. `ActionMetadata`, `CredentialMetadata`,
+and own the only admission into terminal definitions. `ActionMetadata`, `CredentialDefinition`,
 `ResourceDefinition`, `BaseDefinition`, and admission errors are therefore not supported
 SDK persona types.
 
 ### Catalog construction migration
 
 Use the author types from `integration::{action, credential, resource}` or `prelude`.
-`ActionMetadataDraft` and `CredentialMetadataDraft` have `new(key, MetadataName, description)`
-and fallible `try_new(key, name, description)`. `ResourceMetadata` takes no key
-(`new(MetadataName, description)` / `try_new(name, description)`): a resource's identity is
-`Provider::KEY`. Credential constructors no longer take an auth
+`ResourceMetadata` and `CredentialMetadata` take no key
+(`new(MetadataName, description)` / `try_new(name, description)`): the identity is
+`Provider::KEY` or `Credential::KEY`, declared once on the type. `ActionMetadataDraft` still has
+`new(key, MetadataName, description)` and fallible `try_new(key, name, description)`.
+Credential constructors take no auth
 pattern; the registry derives it from the associated scheme. Resource authors
 implement `Provider::metadata` explicitly; `from_key` is removed. Action macros
 preserve full SemVer, including prerelease and build metadata.

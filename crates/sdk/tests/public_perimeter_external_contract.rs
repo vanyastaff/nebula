@@ -60,7 +60,7 @@ const FIXTURE_FILES: &[&str] = &[
     "src/bin/removed_checkpoint_policy_prelude.rs",
     "src/bin/removed_checkpoint_policy_setter.rs",
     "src/bin/removed_credential_pattern.rs",
-    "src/bin/removed_credential_fourth_argument.rs",
+    "src/bin/removed_credential_extra_argument.rs",
     "src/bin/private_notice_since.rs",
     "src/bin/resource_manager.rs",
     "src/bin/resource_registry.rs",
@@ -84,7 +84,7 @@ const FIXTURE_FILES: &[&str] = &[
     "src/bin/prepared_action_input.rs",
     "src/bin/base_definition.rs",
     "src/bin/action_metadata.rs",
-    "src/bin/credential_metadata.rs",
+    "src/bin/credential_definition.rs",
     "src/bin/resource_definition.rs",
     "src/bin/definition_trait.rs",
     "src/bin/metadata_build_error.rs",
@@ -138,7 +138,7 @@ const FORBIDDEN: &[(&str, &str)] = &[
     ("prepared_action_input", "PreparedActionInput"),
     ("base_definition", "BaseDefinition"),
     ("action_metadata", "ActionMetadata"),
-    ("credential_metadata", "CredentialMetadata"),
+    ("credential_definition", "CredentialDefinition"),
     ("resource_definition", "ResourceDefinition"),
     ("definition_trait", "Definition"),
     ("metadata_build_error", "MetadataBuildError"),
@@ -181,10 +181,11 @@ const REMOVED_CATALOG_API: &[(&str, &str, &str)] = &[
         "from_key",
         "nebula_metadata::base::Metadata",
     ),
+    // `CredentialMetadata` is an alias too.
     (
         "removed_credential_pattern",
         "pattern",
-        "CredentialMetadataDraft",
+        "nebula_metadata::base::Metadata",
     ),
     ("removed_limited_wrap", "wrap", "ResourceLimiter"),
 ];
@@ -306,10 +307,10 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
         );
     }
 
-    let arity = cargo_probe(temp.path(), "check", "removed_credential_fourth_argument");
+    let arity = cargo_probe(temp.path(), "check", "removed_credential_extra_argument");
     assert!(
         !arity.status.success(),
-        "removed credential fourth argument unexpectedly compiled"
+        "removed credential key or pattern argument unexpectedly compiled"
     );
     let diagnostics = compiler_errors(&arity);
     std::assert_matches!(
@@ -317,8 +318,8 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
         [error] if error.code.as_deref() == Some("E0061")
             && error.message.split_whitespace()
                 .filter_map(|word| word.parse::<usize>().ok())
-                .eq([3, 4]),
-        "credential constructor must reject four arguments when it takes three: {}",
+                .eq([2, 3]),
+        "credential constructor must reject three arguments when it takes two: {}",
         render_output(&arity)
     );
 
@@ -493,10 +494,10 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
             pub mod credential {
                 pub use nebula_credential::{
                     AuthScheme, Credential, CredentialGuard, CredentialGuardMetadata, CredentialLifecycle,
-                    CredentialMetadataDraft, CredentialPolicy, CredentialState, Dynamic,
+                    CredentialMetadata, CredentialPolicy, CredentialState, Dynamic,
                     ErasedCredentialGuard, Interactive, RefreshPolicy, RefreshStrategy,
                     Refreshable, Revocable, RevokeStrategy, Testable,
-                    credential_key, metadata_name, schema_of,
+                    key_of, metadata_name, schema_of,
                 };
                 pub mod contract {
                     pub mod plugin_capability_report {

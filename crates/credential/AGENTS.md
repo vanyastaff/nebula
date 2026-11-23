@@ -53,7 +53,7 @@
   Keep decoder causes and public reports redacted, and never repeat transforms on
   prepared values.
 - **Catalog construction is checked.** `Credential::metadata` returns a
-  schema-free `CredentialMetadataDraft`; registry admission derives the one
+  schema-free `CredentialMetadata`; registry admission derives the one
   canonical schema from `C::Properties` through fallible `schema_of`. Propagate
   admission failures before registration or dispatch; do not panic or
   substitute an empty schema.

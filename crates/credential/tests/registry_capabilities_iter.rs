@@ -17,7 +17,7 @@ use nebula_core::auth::{
     AuthPattern, AuthScheme, EgressShape, RefreshStrategyKind, SchemeFamily, SensitiveScheme,
 };
 use nebula_credential::{
-    Capabilities, Credential, CredentialContext, CredentialMetadataDraft, CredentialRegistry,
+    Capabilities, Credential, CredentialContext, CredentialMetadata, CredentialRegistry,
     CredentialState, RefreshAttempt, RefreshReport, Refreshable, Revocable, SecretString,
     contract::plugin_capability_report, error::CredentialError, resolve::StaticResolveResult,
     scheme::SecretToken,
@@ -35,9 +35,8 @@ impl Credential for StaticProbe {
 
     const KEY: &'static str = "probe.static";
 
-    fn metadata() -> CredentialMetadataDraft {
-        CredentialMetadataDraft::new(
-            nebula_core::credential_key!("probe.static"),
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::new(
             nebula_credential::metadata_name!("StaticProbe"),
             "zero-capability probe credential",
         )
@@ -120,9 +119,8 @@ impl Credential for RefreshableProbe {
 
     const KEY: &'static str = "probe.refreshable";
 
-    fn metadata() -> CredentialMetadataDraft {
-        CredentialMetadataDraft::new(
-            nebula_core::credential_key!("probe.refreshable"),
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::new(
             nebula_credential::metadata_name!("RefreshableProbe"),
             "refreshable + revocable probe credential",
         )
@@ -190,9 +188,8 @@ impl Credential for UnreportedRefreshPolicyProbe {
 
     const KEY: &'static str = "probe.unreported_refresh_policy";
 
-    fn metadata() -> CredentialMetadataDraft {
-        CredentialMetadataDraft::new(
-            nebula_core::credential_key!("probe.unreported_refresh_policy"),
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::new(
             nebula_credential::metadata_name!("UnreportedRefreshPolicyProbe"),
             "hand-written refresh policy report probe",
         )

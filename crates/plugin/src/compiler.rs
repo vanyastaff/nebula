@@ -489,7 +489,7 @@ fn project_credential_snapshot(
 ) -> Result<RecordedCredentialV1, ContractProjectionError> {
     let metadata = snapshot.metadata();
     Ok(RecordedCredentialV1 {
-        key: snapshot.projected_key().to_string(),
+        key: snapshot.metadata().key().to_string(),
         plugin_key: plugin_key.to_string(),
         version: record_semver(metadata.version()),
         pattern: project_auth_pattern(metadata.pattern())?,

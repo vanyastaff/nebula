@@ -40,7 +40,7 @@ use nebula_action::{
     StatelessAction,
 };
 use nebula_credential::{
-    AuthPattern, AuthScheme, Credential, CredentialContext, CredentialMetadataDraft,
+    AuthPattern, AuthScheme, Credential, CredentialContext, CredentialMetadata,
     error::CredentialError, resolve::StaticResolveResult,
 };
 use serde::{Deserialize, Serialize};
@@ -102,9 +102,8 @@ impl Credential for LocalCredential {
 
     const KEY: &'static str = "local";
 
-    fn metadata() -> CredentialMetadataDraft {
-        CredentialMetadataDraft::new(
-            nebula_core::credential_key!("local"),
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::new(
             nebula_action::metadata_name!("Local credential"),
             "Local bearer capability fixture",
         )

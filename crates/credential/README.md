@@ -92,20 +92,22 @@ acquire a management service or refresh/lease collaborators.
 Capabilities originate in trait membership. Registry bitflags are a derived discovery projection,
 not a caller-supplied assertion.
 
-`Credential::metadata()` returns a schema-free `CredentialMetadataDraft`.
-Both `new(key, MetadataName, description)` and `try_new(key, name, description)`
-take exactly three arguments. There is no draft auth-pattern argument or getter:
+`Credential::metadata()` returns a key-free, schema-free `CredentialMetadata` (an alias of
+`nebula_metadata::Metadata`): `new(MetadataName, description)` or
+`try_new(name, description)`. The credential's identity is `Credential::KEY`, declared once;
+the registry stamps it at admission, so a catalog entry cannot name another credential.
+There is no auth-pattern argument or getter either:
 admission derives the pattern from `<C::Scheme as AuthScheme>::pattern()`.
-The draft uses the shared catalog vocabulary: `Icon` for inline, URL-backed, or absent icons;
+`CredentialMetadata` uses the shared catalog vocabulary: `Icon` for inline, URL-backed, or absent icons;
 `with_icon`, `with_inline_icon`, and `with_url_icon` as the only icon setters;
 `mark_experimental`, `mark_beta`, `mark_stable`, and `with_deprecation` for lifecycle; and
 `with_tags`/`add_tag`, typed `with_categories`, and `add_link` for discovery.
 `with_documentation_url` authors the Overview link. Tags are trimmed, sorted, and
 deduplicated; categories and links also have canonical ordering.
 `schema_of::<C::Properties>()` is fallible, returning a checked schema or a lint report;
-registry admission is the only path that combines it with the draft into immutable
-`CredentialMetadata` before installing dispatch. Persisted metadata is
-`RecordedCredentialMetadata` evidence and must be re-admitted against the fresh definition.
+registry admission is the only path that combines it with the metadata into immutable
+`CredentialDefinition` before installing dispatch. Persisted metadata is
+`RecordedCredentialDefinition` evidence and must be re-admitted against the fresh definition.
 Catalog wire v2 uses nested `base` with required `metadata_wire_version: 2` and
 rejects legacy flat/unversioned records. Recorded serde errors discard submitted
 keys, values, and raw causes; admission errors never retain a schema report.

@@ -54,9 +54,6 @@ pub enum RegisterError {
     /// The type could not produce a valid catalog definition.
     #[error("credential catalog admission failed")]
     Metadata(#[from] crate::CredentialMetadataAdmissionError),
-    /// The metadata key disagrees with the credential's static identity.
-    #[error("credential metadata identity mismatch")]
-    MetadataKeyMismatch,
     /// A hand-written refreshable capability report omitted the credential's
     /// actual timing policy. Admission fails instead of substituting defaults
     /// that may shorten the implementation's retry floor.
@@ -141,7 +138,7 @@ pub struct CredentialRegistry {
 /// Internal storage row — one per registered credential KEY.
 struct RegistryEntry {
     instance: Box<dyn AnyCredential>,
-    metadata: crate::CredentialMetadata,
+    metadata: crate::CredentialDefinition,
     capabilities: Capabilities,
     refresh_policy: Option<crate::RefreshPolicy>,
     registering_crate: &'static str,
@@ -257,10 +254,7 @@ impl CredentialRegistry {
             });
         }
 
-        let metadata = C::metadata().admit_for::<C>()?;
-        if metadata.key().as_str() != key {
-            return Err(RegisterError::MetadataKeyMismatch);
-        }
+        let metadata = crate::CredentialDefinition::admit_for::<C>(C::metadata())?;
         let arc_key: Arc<str> = key.into();
         self.entries.insert(
             arc_key,
@@ -288,14 +282,14 @@ impl CredentialRegistry {
         self.entries.get(key).map(|e| &*e.instance)
     }
 
-    /// Metadata captured only after successful catalog admission.
+    /// The definition captured only after successful catalog admission.
     #[must_use]
-    pub fn metadata(&self, key: &str) -> Option<&crate::CredentialMetadata> {
+    pub fn definition(&self, key: &str) -> Option<&crate::CredentialDefinition> {
         self.entries.get(key).map(|entry| &entry.metadata)
     }
 
     /// Iterate every admitted definition with its structurally computed capabilities.
-    pub fn catalog(&self) -> impl Iterator<Item = (&crate::CredentialMetadata, Capabilities)> {
+    pub fn catalog(&self) -> impl Iterator<Item = (&crate::CredentialDefinition, Capabilities)> {
         self.entries
             .values()
             .map(|entry| (&entry.metadata, entry.capabilities))

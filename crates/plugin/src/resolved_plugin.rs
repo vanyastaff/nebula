@@ -13,7 +13,7 @@ use std::{any::TypeId, collections::HashMap, sync::Arc};
 
 use nebula_action::{ActionFactory, ActionMetadata};
 use nebula_core::{ActionKey, CredentialKey, Dependencies, PluginKey, ResourceKey};
-use nebula_credential::{AnyCredential, Capabilities, CredentialMetadata};
+use nebula_credential::{AnyCredential, Capabilities, CredentialDefinition};
 use nebula_metadata::PluginManifest;
 use nebula_resource::{ResourceDefinition, ResourceFactory};
 use semver::Version;
@@ -41,18 +41,13 @@ struct ResolvedAction {
 }
 
 pub(crate) struct CredentialContractSnapshot {
-    projected_key: CredentialKey,
-    metadata: CredentialMetadata,
+    metadata: CredentialDefinition,
     capabilities: Capabilities,
     type_id: TypeId,
 }
 
 impl CredentialContractSnapshot {
-    pub(crate) const fn projected_key(&self) -> &CredentialKey {
-        &self.projected_key
-    }
-
-    pub(crate) const fn metadata(&self) -> &CredentialMetadata {
+    pub(crate) const fn metadata(&self) -> &CredentialDefinition {
         &self.metadata
     }
 
@@ -72,8 +67,7 @@ struct ResolvedCredential {
 
 struct ProjectedCredential {
     credential: Arc<dyn AnyCredential>,
-    raw_projected_key: String,
-    metadata: CredentialMetadata,
+    metadata: CredentialDefinition,
     capabilities: Capabilities,
     erased_type_id: TypeId,
     downcast_type_id: TypeId,
@@ -138,10 +132,6 @@ impl ResolvedPlugin {
     ///
     /// Returns:
     ///
-    /// - [`PluginError::InvalidComponentKey`] when a credential's captured raw
-    ///   key projection is not a valid [`CredentialKey`].
-    /// - [`PluginError::ComponentKeyMismatch`] when a credential or resource
-    ///   key projection disagrees with its metadata key.
     /// - [`PluginError::ComponentTypeMismatch`] when a credential's inherited
     ///   erased type identity disagrees with its `as_any()` projection.
     /// - [`PluginError::NamespaceMismatch`] when a component key is outside
@@ -319,14 +309,12 @@ impl ResolvedPlugin {
         let mut projected = contributions
             .into_iter()
             .map(|credential| {
-                let raw_projected_key = credential.credential_key().to_owned();
-                let metadata = credential.metadata()?;
+                let metadata = credential.definition()?;
                 let capabilities = credential.capabilities();
                 let erased_type_id = std::any::Any::type_id(credential.as_ref());
                 let downcast_type_id = credential.as_any().type_id();
                 Ok::<_, PluginError>(ProjectedCredential {
                     credential,
-                    raw_projected_key,
                     metadata,
                     capabilities,
                     erased_type_id,
@@ -334,32 +322,13 @@ impl ResolvedPlugin {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        projected.sort_by(|left, right| {
-            left.metadata
-                .key()
-                .cmp(right.metadata.key())
-                .then_with(|| left.raw_projected_key.cmp(&right.raw_projected_key))
-        });
+        projected.sort_by(|left, right| left.metadata.key().cmp(right.metadata.key()));
 
         let mut index = HashMap::with_capacity(projected.len());
         for projected in projected {
-            let typed_projected_key =
-                CredentialKey::new(&projected.raw_projected_key).map_err(|_| {
-                    PluginError::InvalidComponentKey {
-                        plugin: plugin_key.clone(),
-                        kind: ComponentKind::Credential,
-                        projected_key: projected.raw_projected_key.clone(),
-                    }
-                })?;
+            // The definition is stamped with `Credential::KEY` at admission, and
+            // `AnyCredential` is sealed, so this is the credential's only key.
             let metadata_key = projected.metadata.key();
-            if typed_projected_key != *metadata_key {
-                return Err(PluginError::ComponentKeyMismatch {
-                    plugin: plugin_key.clone(),
-                    kind: ComponentKind::Credential,
-                    projected_key: projected.raw_projected_key,
-                    metadata_key: metadata_key.as_str().to_owned(),
-                });
-            }
             if projected.erased_type_id != projected.downcast_type_id {
                 return Err(PluginError::ComponentTypeMismatch {
                     plugin: plugin_key.clone(),
@@ -387,7 +356,6 @@ impl ResolvedPlugin {
                 ResolvedCredential {
                     credential: projected.credential,
                     contract: CredentialContractSnapshot {
-                        projected_key: typed_projected_key,
                         metadata: projected.metadata,
                         capabilities: projected.capabilities,
                         type_id: projected.erased_type_id,
@@ -423,27 +391,10 @@ impl ResolvedPlugin {
                 ))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        projected.sort_by(|(left_key, left), (right_key, right)| {
-            left_key.cmp(right_key).then_with(|| {
-                left.contract
-                    .metadata
-                    .base()
-                    .key()
-                    .cmp(right.contract.metadata.base().key())
-            })
-        });
+        projected.sort_by(|(left_key, _), (right_key, _)| left_key.cmp(right_key));
 
         let mut index = HashMap::with_capacity(projected.len());
         for (key, resource) in projected {
-            let metadata_key = resource.contract.metadata.base().key();
-            if &key != metadata_key {
-                return Err(PluginError::ComponentKeyMismatch {
-                    plugin: plugin_key.clone(),
-                    kind: ComponentKind::Resource,
-                    projected_key: key.as_str().to_owned(),
-                    metadata_key: metadata_key.as_str().to_owned(),
-                });
-            }
             if !key.as_str().starts_with(prefix) {
                 return Err(PluginError::NamespaceMismatch {
                     plugin: plugin_key.clone(),

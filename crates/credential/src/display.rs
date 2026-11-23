@@ -3,7 +3,7 @@
 //! [`CredentialDisplay`] is the human-facing, **non-secret** metadata a user
 //! attaches to a credential *instance* (a created credential like
 //! "Prod GitHub PAT") — distinct from the type-level
-//! [`CredentialMetadata`], which describes the
+//! [`CredentialDefinition`], which describes the
 //! credential *kind*.
 //!
 //! It is carried on [`CredentialSnapshot`] and

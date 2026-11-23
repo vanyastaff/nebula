@@ -125,7 +125,7 @@ fn main() {
         Some("{{ literal }}")
     );
     assert!(schema.find_property(&field_key!("name")).is_some());
-    let _: CredentialMetadataDraft = ContractCredential::metadata();
+    let _: CredentialMetadata = ContractCredential::metadata();
     let _: ActionMetadataDraft = <ContractAction as Action>::metadata();
     let _ = ContractPlugin.manifest();
     let _ = ContractConfig { enabled: true }.fingerprint();

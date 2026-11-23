@@ -31,7 +31,7 @@ fn metadata_schema_is_schema_of_properties() {
     registry
         .register(ApiKeyCredential, "properties-pipeline-test")
         .unwrap();
-    let metadata = registry.metadata(ApiKeyCredential::KEY).unwrap();
+    let metadata = registry.definition(ApiKeyCredential::KEY).unwrap();
     let schema = schema_of::<<ApiKeyCredential as Credential>::Properties>().unwrap();
     assert_eq!(metadata.schema(), &schema);
     assert_eq!(

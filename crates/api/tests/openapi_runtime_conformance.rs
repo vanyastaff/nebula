@@ -1037,7 +1037,7 @@ async fn workspace_grant_upsert_and_revocation_round_trip() {
 /// capability routes reach their success branch.
 mod probe_credential {
     use nebula_credential::{
-        CredentialContext, CredentialMetadataDraft, SecretString,
+        CredentialContext, CredentialMetadata, SecretString,
         error::CredentialError,
         resolve::{StaticResolveResult, TestResult},
         scheme::SecretToken,
@@ -1062,9 +1062,8 @@ mod probe_credential {
         type Scheme = SecretToken;
         type State = SecretToken;
 
-        fn metadata() -> CredentialMetadataDraft {
-            CredentialMetadataDraft::new(
-                nebula_core::credential_key!("conformance_probe"),
+        fn metadata() -> CredentialMetadata {
+            CredentialMetadata::new(
                 nebula_credential::metadata_name!("Conformance Probe"),
                 "testable and revocable credential for the OpenAPI conformance suite",
             )

@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{
-    Credential, CredentialContext, CredentialError, CredentialMetadataDraft, CredentialState,
+    Credential, CredentialContext, CredentialError, CredentialMetadata, CredentialState,
     StateWireFingerprint, StaticResolveResult,
 };
 
@@ -67,9 +67,8 @@ impl Credential for NoCredential {
 
     const KEY: &'static str = "no_credential";
 
-    fn metadata() -> CredentialMetadataDraft {
-        CredentialMetadataDraft::new(
-            nebula_core::credential_key!("no_credential"),
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::new(
             crate::metadata_name!("No credential"),
             "Opt-out marker for resources without an authenticated binding.",
         )

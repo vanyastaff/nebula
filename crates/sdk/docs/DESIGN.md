@@ -21,11 +21,11 @@ for direct use.
 ## Supported surface
 
 - `prelude` — curated authoring types and traits.
-- Authors write metadata; they never build an admitted definition. `ActionMetadataDraft`,
-  `CredentialMetadataDraft`, and the key-free `ResourceMetadata` a resource returns share
+- Authors write metadata; they never build an admitted definition. `ActionMetadataDraft` and
+  the key-free `CredentialMetadata` and `ResourceMetadata` share
   curated author vocabulary (`MetadataName`, `MetadataVersion`, `Icon`, `DeprecationNotice`)
-  without exposing any admitted/recorded form. A resource's identity is `Provider::KEY`, not
-  a metadata field. Runtime factories alone bind schemas and create terminal definitions.
+  without exposing any admitted/recorded form. A resource's identity is `Provider::KEY` and a
+  credential's is `Credential::KEY`, not a metadata field. Runtime factories alone bind schemas and create terminal definitions.
 - `integration` — narrow integration contracts; credential integrations expose
   `ResolveResult`, `StaticResolveResult`, `TestFailureCode`, and `TestResult` here.
 - `action::ActionMetadataDraft` and `workflow::WorkflowBuilder` — programmatic authoring.

@@ -9,9 +9,9 @@ use std::{
 
 use nebula_core::credential_key;
 use nebula_credential::{
-    Credential, CredentialContext, CredentialMetadata, CredentialMetadataAdmissionError,
-    CredentialMetadataDraft, CredentialRegistry, RecordedCredentialMetadata, RegisterError,
-    error::CredentialError, resolve::StaticResolveResult, scheme::SecretToken,
+    Credential, CredentialContext, CredentialDefinition, CredentialMetadata,
+    CredentialMetadataAdmissionError, CredentialRegistry, RecordedCredentialDefinition,
+    RegisterError, error::CredentialError, resolve::StaticResolveResult, scheme::SecretToken,
 };
 use nebula_metadata::{
     CatalogLink, CatalogLinkRelation, CatalogReference, DeprecationNotice, MetadataDecodeError,
@@ -20,7 +20,7 @@ use nebula_metadata::{
 use semver::Version;
 
 thread_local! {
-    static AUTHORED: RefCell<Option<CredentialMetadataDraft>> = const { RefCell::new(None) };
+    static AUTHORED: RefCell<Option<CredentialMetadata>> = const { RefCell::new(None) };
 }
 
 struct CatalogCredential;
@@ -69,7 +69,7 @@ impl CatalogCredential {
     type Scheme = SecretToken;
     type State = SecretToken;
 
-    fn metadata() -> CredentialMetadataDraft {
+    fn metadata() -> CredentialMetadata {
         AUTHORED.with_borrow_mut(|draft| {
             draft
                 .take()
@@ -89,28 +89,23 @@ impl CatalogCredential {
     }
 }
 
-fn draft() -> CredentialMetadataDraft {
-    CredentialMetadataDraft::try_new(
-        credential_key!("test.catalog-foundation"),
-        "Catalog credential",
-        "",
-    )
-    .expect("valid dynamic display name")
+fn draft() -> CredentialMetadata {
+    CredentialMetadata::try_new("Catalog credential", "").expect("valid dynamic display name")
 }
 
 fn register(
     registry: &mut CredentialRegistry,
-    draft: CredentialMetadataDraft,
+    draft: CredentialMetadata,
 ) -> Result<(), RegisterError> {
     AUTHORED.set(Some(draft));
     registry.register(CatalogCredential, "catalog-foundation")
 }
 
-fn admit(draft: CredentialMetadataDraft) -> CredentialMetadata {
+fn admit(draft: CredentialMetadata) -> CredentialDefinition {
     let mut registry = CredentialRegistry::new();
     register(&mut registry, draft).expect("valid catalog definition");
     registry
-        .metadata(CatalogCredential::KEY)
+        .definition(CatalogCredential::KEY)
         .expect("registered metadata")
         .clone()
 }
@@ -146,8 +141,7 @@ fn shared_admission_rejects_before_insertion_without_error_or_trace_payloads() {
         let mut registry = CredentialRegistry::new();
         for invalid in [
             draft().with_tags([" "]),
-            CredentialMetadataDraft::new(
-                credential_key!("test.catalog-foundation"),
+            CredentialMetadata::new(
                 nebula_credential::metadata_name!("Catalog credential"),
                 CANARY.repeat(300),
             ),
@@ -155,12 +149,7 @@ fn shared_admission_rejects_before_insertion_without_error_or_trace_payloads() {
             draft().with_deprecation(
                 DeprecationNotice::new(Version::new(2, 0, 0)).with_reason(CANARY),
             ),
-            CredentialMetadataDraft::try_new(
-                credential_key!("test.catalog-foundation"),
-                "\"".repeat(20_000),
-                "",
-            )
-            .expect("nonblank name"),
+            CredentialMetadata::try_new("\"".repeat(20_000), "").expect("nonblank name"),
         ] {
             for _ in 0..2 {
                 let error = register(&mut registry, invalid.clone())
@@ -177,7 +166,7 @@ fn shared_admission_rejects_before_insertion_without_error_or_trace_payloads() {
                 );
                 assert!(!format!("{cause:?} {cause}").contains(CANARY));
                 assert!(registry.is_empty());
-                assert!(registry.metadata(CatalogCredential::KEY).is_none());
+                assert!(registry.definition(CatalogCredential::KEY).is_none());
             }
         }
         register(&mut registry, draft()).expect("failed admission leaves key available");
@@ -194,11 +183,11 @@ fn shared_admission_rejects_before_insertion_without_error_or_trace_payloads() {
             "schema reports must be discarded at the credential boundary"
         );
         assert!(!format!("{error:?} {error} {cause:?} {cause}").contains(SCHEMA_CANARY));
-        assert!(registry.metadata(RejectedSchemaCredential::KEY).is_none());
+        assert!(registry.definition(RejectedSchemaCredential::KEY).is_none());
         assert_eq!(registry.len(), 1);
         assert_eq!(
             registry
-                .metadata(CatalogCredential::KEY)
+                .definition(CatalogCredential::KEY)
                 .expect("admitted")
                 .pattern(),
             <<CatalogCredential as Credential>::Scheme as nebula_core::AuthScheme>::pattern()
@@ -218,7 +207,7 @@ fn shared_admission_rejects_before_insertion_without_error_or_trace_payloads() {
 #[test]
 fn same_semver_catalog_changes_and_pattern_require_exact_fresh_evidence() {
     let original = admit(draft());
-    let recorded = RecordedCredentialMetadata::from_slice(
+    let recorded = RecordedCredentialDefinition::from_slice(
         &serde_json::to_vec(&original).expect("serializable"),
         MetadataDecodeLimits::default(),
     )
@@ -241,7 +230,7 @@ fn same_semver_catalog_changes_and_pattern_require_exact_fresh_evidence() {
         let changed = admit(changed);
         assert_eq!(original.version(), changed.version());
         assert!(recorded.readmit_against(&changed).is_err());
-        let current = RecordedCredentialMetadata::from_slice(
+        let current = RecordedCredentialDefinition::from_slice(
             &serde_json::to_vec(&changed).expect("serializable"),
             MetadataDecodeLimits::default(),
         )
@@ -254,7 +243,7 @@ fn same_semver_catalog_changes_and_pattern_require_exact_fresh_evidence() {
     let mut forged = serde_json::to_value(&original).expect("serializable");
     forged["pattern"] =
         serde_json::to_value(nebula_credential::AuthPattern::NoAuth).expect("pattern serializes");
-    let forged: RecordedCredentialMetadata =
+    let forged: RecordedCredentialDefinition =
         serde_json::from_value(forged).expect("recognized pattern records as evidence");
     assert!(forged.readmit_against(&original).is_err());
 }
@@ -292,29 +281,29 @@ fn leaf_wire_rejects_legacy_and_redacts_unknown_keys_and_wrong_types() {
         positional,
     ] {
         let bytes = serde_json::to_vec(&rejected).expect("serializable");
-        let error =
-            serde_json::from_slice::<RecordedCredentialMetadata>(&bytes).expect_err("invalid wire");
+        let error = serde_json::from_slice::<RecordedCredentialDefinition>(&bytes)
+            .expect_err("invalid wire");
         assert!(!format!("{error:?} {error}").contains(CANARY));
         assert_eq!(
-            RecordedCredentialMetadata::from_slice(&bytes, MetadataDecodeLimits::default()),
+            RecordedCredentialDefinition::from_slice(&bytes, MetadataDecodeLimits::default()),
             Err(MetadataDecodeError::InvalidRecord)
         );
     }
     let bytes = serde_json::to_vec(&wire).expect("serializable");
     let exact = MetadataDecodeLimits::new(bytes.len()).expect("valid limit");
     let shorter = MetadataDecodeLimits::new(bytes.len() - 1).expect("valid lower limit");
-    let recorded = RecordedCredentialMetadata::from_reader(bytes.as_slice(), exact)
+    let recorded = RecordedCredentialDefinition::from_reader(bytes.as_slice(), exact)
         .expect("exact limit accepts");
     assert_eq!(
         recorded.readmit_against(&admitted).expect("fresh evidence"),
         admitted
     );
     assert_eq!(
-        RecordedCredentialMetadata::from_slice(&bytes, shorter),
+        RecordedCredentialDefinition::from_slice(&bytes, shorter),
         Err(MetadataDecodeError::EnvelopeTooLarge)
     );
     assert_eq!(
-        RecordedCredentialMetadata::from_reader(bytes.as_slice(), shorter),
+        RecordedCredentialDefinition::from_reader(bytes.as_slice(), shorter),
         Err(MetadataDecodeError::EnvelopeTooLarge)
     );
 }

@@ -198,11 +198,10 @@ mod tests {
     use super::*;
     use crate::{
         BearerTokenCredential, BearerTokenProperties, Credential, CredentialContext,
-        CredentialError, CredentialMetadataDraft, Dynamic, OAuth2Credential, SecretToken,
+        CredentialError, CredentialMetadata, Dynamic, OAuth2Credential, SecretToken,
         contract::plugin_capability_report, metadata_name, register_refreshable_ops,
         register_runtime_ops, resolve::StaticResolveResult,
     };
-    use nebula_core::credential_key;
 
     struct DynamicFixtureCredential;
 
@@ -213,9 +212,8 @@ mod tests {
 
         const KEY: &'static str = "projection_dynamic_fixture";
 
-        fn metadata() -> CredentialMetadataDraft {
-            CredentialMetadataDraft::new(
-                credential_key!("projection_dynamic_fixture"),
+        fn metadata() -> CredentialMetadata {
+            CredentialMetadata::new(
                 metadata_name!("Projection Dynamic Fixture"),
                 "Projection-only runtime dynamic rejection fixture.",
             )

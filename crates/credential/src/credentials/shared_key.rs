@@ -8,7 +8,7 @@ use nebula_schema::Schema;
 use serde::Deserialize;
 
 use crate::{
-    Credential, CredentialContext, CredentialError, CredentialMetadataDraft, SecretString,
+    Credential, CredentialContext, CredentialError, CredentialMetadata, SecretString,
     contract::plugin_capability_report, contract::resolve::StaticResolveResult, scheme::SharedKey,
 };
 
@@ -31,9 +31,8 @@ impl Credential for SharedKeyCredential {
 
     const KEY: &'static str = "shared_key";
 
-    fn metadata() -> CredentialMetadataDraft {
-        CredentialMetadataDraft::new(
-            nebula_core::credential_key!("shared_key"),
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::new(
             crate::metadata_name!("Pre-shared Key"),
             "Pre-shared symmetric key (TLS-PSK, WireGuard, IoT).",
         )

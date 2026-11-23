@@ -229,7 +229,7 @@ covers the AAD used, so removing or changing `aad` on a version-2 row cannot dow
 
 ## Validation boundary
 
-Runtime registration admits the schema-free `Credential::metadata()` draft with the
+Runtime registration admits the schema-free `Credential::metadata()` value with the
 fallible schema derived from `C::Properties` before it installs the credential's
 operation closures. `Properties` describes authored data; it is not a runtime proof.
 Untyped mocks may use `serde_json::Value`, while concrete credentials declare the
@@ -328,7 +328,7 @@ construct refresh coordination, lease lifecycle, reclaim tasks, pending acquisit
 management command authority; those remain in the server management runtime.
 
 `nebula-sdk` is the sole supported Rust surface. Its credential authoring contract exposes
-`Credential`, `CredentialMetadataDraft`, typed `Properties`, the `#[credential]` impl
+`Credential`, `CredentialMetadata`, typed `Properties`, the `#[credential]` impl
 macro and `AuthScheme` derive, the shared `Icon`/maturity/deprecation vocabulary, built-in credential types, typed
 snapshots/context, and universal OAuth types through the SDK prelude. `integration::credential`
 exposes resolve and credential-test outcomes. SDK-only external fixtures compile and execute

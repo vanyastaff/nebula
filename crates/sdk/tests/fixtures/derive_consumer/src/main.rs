@@ -165,7 +165,7 @@ fn main() {
         .unwrap();
     assert_eq!(properties.token.expose_secret(), "sdk-property-secret");
     assert!(!format!("{properties:?}").contains("sdk-property-secret"));
-    let _: CredentialMetadataDraft = ContractCredential::metadata();
+    let _: CredentialMetadata = ContractCredential::metadata();
     let _: ActionMetadataDraft = <ContractAction as Action>::metadata();
     let _ = ContractPlugin.manifest();
     let _ = ContractConfig { enabled: true }.fingerprint();

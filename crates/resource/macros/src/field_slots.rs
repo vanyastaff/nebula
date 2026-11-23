@@ -334,13 +334,8 @@ pub(crate) fn emit_slot_field_registrations_with_purpose(
                     kind: ::nebula_core::SlotKind::Credential {
                         type_id: ::std::any::TypeId::of::<#inner_ty>(),
                         type_name: ::std::any::type_name::<#inner_ty>(),
-                        // The key literal was validated at expansion time —
-                        // `is_valid_credential_key` guarantees this `.expect` is unreachable.
-                        key: ::nebula_core::CredentialKey::new(
-                            <#inner_ty as ::nebula_credential::Credential>::KEY,
-                        )
-                        .expect("Credential::KEY must satisfy CredentialKey rules; \
-                                 fix the KEY constant on this Credential impl"),
+                        // `key_of` checks `Credential::KEY` at compile time.
+                        key: ::nebula_credential::key_of::<#inner_ty>(),
                     },
                     required: #required,
                     lazy: #lazy,

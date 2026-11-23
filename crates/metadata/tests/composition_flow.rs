@@ -4,7 +4,7 @@
 //! Three locally-defined composed metadata shapes stand in for the
 //! production consumers: zero extra fields (mirrors
 //! `nebula-resource::ResourceDefinition`), one scalar extra field (mirrors
-//! `nebula-credential::CredentialMetadata::pattern`), and a
+//! `nebula-credential::CredentialDefinition::pattern`), and a
 //! multi-field-with-collection shape (mirrors
 //! `nebula-action::ActionMetadata`'s `category`/`isolation_level`/`inputs`).
 //!

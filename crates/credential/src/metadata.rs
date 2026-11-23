@@ -1,187 +1,19 @@
 use nebula_core::CredentialKey;
-use nebula_metadata::{BaseDefinition, Definition, Metadata, RecordedBaseDefinition};
+use nebula_metadata::{BaseDefinition, Definition, RecordedBaseDefinition};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
 use crate::AuthPattern;
 
-/// Leaf authoring state returned by [`crate::Credential::metadata`].
+/// What a credential's author says about it for the catalog: name,
+/// description, version, icon, links, tags, maturity.
 ///
-/// A draft deliberately carries no schema. Registry admission derives the
-/// only canonical schema from `C::Properties` and consumes the draft.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[must_use = "credential metadata drafts are admitted by a credential registry"]
-pub struct CredentialMetadataDraft {
-    key: CredentialKey,
-    base: Metadata,
-}
-
-impl CredentialMetadataDraft {
-    /// Construct a credential metadata draft from validated static literals.
-    pub fn new(
-        key: CredentialKey,
-        name: nebula_metadata::MetadataName,
-        description: impl Into<String>,
-    ) -> Self {
-        Self {
-            key,
-            base: Metadata::new(name, description),
-        }
-    }
-
-    /// Construct a draft from a dynamic display name.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`nebula_metadata::MetadataError::BlankName`] when `name` is
-    /// empty or whitespace-only.
-    pub fn try_new(
-        key: CredentialKey,
-        name: impl Into<String>,
-        description: impl Into<String>,
-    ) -> Result<Self, nebula_metadata::MetadataError> {
-        Ok(Self {
-            key,
-            base: Metadata::try_new(name, description)?,
-        })
-    }
-
-    /// Set the complete interface version.
-    #[must_use = "draft methods must be chained"]
-    pub fn with_version(mut self, version: Version) -> Self {
-        self.base = self.base.with_version(version);
-        self
-    }
-
-    /// Set the catalog icon.
-    #[must_use = "draft methods must be chained"]
-    pub fn with_icon(mut self, icon: nebula_metadata::Icon) -> Self {
-        self.base = self.base.with_icon(icon);
-        self
-    }
-
-    /// Set an inline-identifier icon.
-    #[must_use = "draft methods must be chained"]
-    pub fn with_inline_icon(mut self, name: impl Into<String>) -> Self {
-        self.base = self.base.with_inline_icon(name);
-        self
-    }
-
-    /// Set a URL-backed icon.
-    #[must_use = "draft methods must be chained"]
-    pub fn with_url_icon(mut self, url: impl Into<String>) -> Self {
-        self.base = self.base.with_url_icon(url);
-        self
-    }
-
-    /// Attach a documentation URL.
-    #[must_use = "draft methods must be chained"]
-    pub fn with_documentation_url(mut self, url: impl Into<String>) -> Self {
-        self.base = self.base.with_documentation_url(url);
-        self
-    }
-
-    /// Replace the catalog categories.
-    pub fn with_categories(
-        mut self,
-        categories: impl IntoIterator<Item = nebula_metadata::CatalogCategoryKey>,
-    ) -> Self {
-        self.base = self.base.with_categories(categories);
-        self
-    }
-
-    /// Append a typed catalog link.
-    pub fn add_link(mut self, link: nebula_metadata::CatalogLink) -> Self {
-        self.base = self.base.add_link(link);
-        self
-    }
-
-    /// Replace all catalog tags.
-    #[must_use = "draft methods must be chained"]
-    pub fn with_tags<I, S>(mut self, tags: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        self.base = self.base.with_tags(tags);
-        self
-    }
-
-    /// Append one catalog tag.
-    #[must_use = "draft methods must be chained"]
-    pub fn add_tag(mut self, tag: impl Into<String>) -> Self {
-        self.base = self.base.add_tag(tag);
-        self
-    }
-
-    /// Mark the credential experimental.
-    #[must_use = "draft methods must be chained"]
-    pub fn mark_experimental(mut self) -> Self {
-        self.base = self.base.mark_experimental();
-        self
-    }
-
-    /// Mark the credential beta.
-    #[must_use = "draft methods must be chained"]
-    pub fn mark_beta(mut self) -> Self {
-        self.base = self.base.mark_beta();
-        self
-    }
-
-    /// Mark the credential stable.
-    #[must_use = "draft methods must be chained"]
-    pub fn mark_stable(mut self) -> Self {
-        self.base = self.base.mark_stable();
-        self
-    }
-
-    /// Attach a deprecation notice and mark the credential deprecated.
-    #[must_use = "draft methods must be chained"]
-    pub fn with_deprecation(mut self, notice: nebula_metadata::DeprecationNotice) -> Self {
-        self.base = self.base.with_deprecation(notice);
-        self
-    }
-
-    #[tracing::instrument(name = "credential.metadata.admit", skip_all, fields(credential_key = C::KEY), err)]
-    pub(crate) fn admit_for<C>(self) -> Result<CredentialMetadata, CredentialMetadataAdmissionError>
-    where
-        C: crate::Credential,
-    {
-        let schema = nebula_schema::schema_of::<C::Properties>().map_err(|report| {
-            tracing::error!(
-                credential.key = C::KEY,
-                issue_count = report.errors().count(),
-                error_code = "CREDENTIAL:PROPERTIES_SCHEMA_INVALID",
-                "credential properties schema admission failed"
-            );
-            CredentialMetadataAdmissionError::PropertiesSchema
-        })?;
-        self.admit_with_schema(schema, <C::Scheme as nebula_core::AuthScheme>::pattern())
-    }
-
-    fn admit_with_schema(
-        self,
-        schema: nebula_schema::ValidSchema,
-        pattern: AuthPattern,
-    ) -> Result<CredentialMetadata, CredentialMetadataAdmissionError> {
-        let base = self.base.bind(self.key, schema).map_err(|_| {
-            tracing::error!(
-                error_code = "CREDENTIAL:CATALOG_METADATA_INVALID",
-                "credential catalog metadata admission failed"
-            );
-            CredentialMetadataAdmissionError::CatalogMetadata
-        })?;
-        let metadata = CredentialMetadata { base, pattern };
-        nebula_metadata::check_json_record(&metadata).map_err(|_| {
-            tracing::error!(
-                error_code = "CREDENTIAL:CATALOG_RECORD_INVALID",
-                "credential catalog record admission failed"
-            );
-            CredentialMetadataAdmissionError::CatalogMetadata
-        })?;
-        Ok(metadata)
-    }
-}
+/// This is the shared [`nebula_metadata::Metadata`] under the name credential
+/// authors use. It holds neither a key nor a schema nor an auth pattern: the
+/// registry stamps [`Credential::KEY`](crate::Credential::KEY), derives the
+/// schema from `Properties` and the pattern from `Scheme` when it admits the
+/// credential as a [`CredentialDefinition`].
+pub type CredentialMetadata = nebula_metadata::Metadata;
 
 /// Payload-free failure to admit a credential definition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -195,25 +27,25 @@ pub enum CredentialMetadataAdmissionError {
     PropertiesSchema,
 }
 
-/// Admitted credential metadata bound to the canonical `C::Properties` schema.
+/// Admitted credential definition bound to the canonical `C::Properties` schema.
 ///
 /// Fields are immutable and available only through getters. Wire data cannot
-/// deserialize into this type; deserialize [`RecordedCredentialMetadata`] and
+/// deserialize into this type; deserialize [`RecordedCredentialDefinition`] and
 /// readmit it against a freshly registered definition instead.
 ///
 /// ```compile_fail
-/// use nebula_credential::CredentialMetadata;
+/// use nebula_credential::CredentialDefinition;
 /// fn requires_deserialize<T: serde::de::DeserializeOwned>() {}
-/// requires_deserialize::<CredentialMetadata>();
+/// requires_deserialize::<CredentialDefinition>();
 /// ```
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CredentialMetadata {
+pub struct CredentialDefinition {
     base: BaseDefinition<CredentialKey>,
     pattern: AuthPattern,
 }
 
-impl Definition for CredentialMetadata {
+impl Definition for CredentialDefinition {
     type Key = CredentialKey;
 
     fn base(&self) -> &BaseDefinition<CredentialKey> {
@@ -221,7 +53,58 @@ impl Definition for CredentialMetadata {
     }
 }
 
-impl CredentialMetadata {
+impl CredentialDefinition {
+    /// Admit `C`'s catalog definition: its author's metadata, under
+    /// [`Credential::KEY`](crate::Credential::KEY) and the canonical
+    /// `C::Properties` schema.
+    #[tracing::instrument(name = "credential.metadata.admit", skip_all, fields(credential_key = C::KEY), err)]
+    pub(crate) fn admit_for<C>(
+        metadata: CredentialMetadata,
+    ) -> Result<Self, CredentialMetadataAdmissionError>
+    where
+        C: crate::Credential,
+    {
+        let schema = nebula_schema::schema_of::<C::Properties>().map_err(|report| {
+            tracing::error!(
+                credential.key = C::KEY,
+                issue_count = report.errors().count(),
+                error_code = "CREDENTIAL:PROPERTIES_SCHEMA_INVALID",
+                "credential properties schema admission failed"
+            );
+            CredentialMetadataAdmissionError::PropertiesSchema
+        })?;
+        Self::admit_with_schema(
+            crate::key_of::<C>(),
+            metadata,
+            schema,
+            <C::Scheme as nebula_core::AuthScheme>::pattern(),
+        )
+    }
+
+    fn admit_with_schema(
+        key: CredentialKey,
+        metadata: CredentialMetadata,
+        schema: nebula_schema::ValidSchema,
+        pattern: AuthPattern,
+    ) -> Result<Self, CredentialMetadataAdmissionError> {
+        let base = metadata.bind(key, schema).map_err(|_| {
+            tracing::error!(
+                error_code = "CREDENTIAL:CATALOG_METADATA_INVALID",
+                "credential catalog metadata admission failed"
+            );
+            CredentialMetadataAdmissionError::CatalogMetadata
+        })?;
+        let definition = Self { base, pattern };
+        nebula_metadata::check_json_record(&definition).map_err(|_| {
+            tracing::error!(
+                error_code = "CREDENTIAL:CATALOG_RECORD_INVALID",
+                "credential catalog record admission failed"
+            );
+            CredentialMetadataAdmissionError::CatalogMetadata
+        })?;
+        Ok(definition)
+    }
+
     /// Typed credential key.
     #[must_use]
     pub fn key(&self) -> &CredentialKey {
@@ -327,12 +210,12 @@ impl CredentialMetadata {
 /// transport.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct RecordedCredentialMetadata {
+pub struct RecordedCredentialDefinition {
     base: RecordedBaseDefinition<CredentialKey>,
     pattern: AuthPattern,
 }
 
-impl<'de> Deserialize<'de> for RecordedCredentialMetadata {
+impl<'de> Deserialize<'de> for RecordedCredentialDefinition {
     #[tracing::instrument(name = "credential.metadata.decode_recorded", skip_all)]
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
@@ -354,7 +237,7 @@ impl<'de> Deserialize<'de> for RecordedCredentialMetadata {
     }
 }
 
-impl RecordedCredentialMetadata {
+impl RecordedCredentialDefinition {
     /// Decode recorded evidence within the selected whole-envelope byte limit.
     ///
     /// # Errors
@@ -391,8 +274,8 @@ impl RecordedCredentialMetadata {
     #[tracing::instrument(name = "credential.metadata.readmit", skip_all, err)]
     pub fn readmit_against(
         &self,
-        fresh_definition: &CredentialMetadata,
-    ) -> Result<CredentialMetadata, CredentialMetadataReadmissionError> {
+        fresh_definition: &CredentialDefinition,
+    ) -> Result<CredentialDefinition, CredentialMetadataReadmissionError> {
         self.base
             .readmit_against(&fresh_definition.base)
             .map_err(|_| CredentialMetadataReadmissionError::DefinitionMismatch)?;

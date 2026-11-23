@@ -1,20 +1,20 @@
 //! Probe 8 fixture — Tech Spec §15.8 capability-from-type.
 //!
-//! `CredentialMetadata::capabilities_enabled` was removed when §15.8
+//! `CredentialDefinition::capabilities_enabled` was removed when §15.8
 //! moved capability discovery from the self-attested metadata field to
 //! the registration-time fold over `plugin_capability_report::IsX::VALUE`
 //! constants. Reading the absent field is E0609 — surfaces the
 //! regression at compile time if anything ever reintroduces the knob.
 
-use nebula_credential::{AuthPattern, CredentialMetadata};
+use nebula_credential::{AuthPattern, CredentialDefinition};
 
-fn read_capabilities_field(meta: &CredentialMetadata) {
+fn read_capabilities_field(meta: &CredentialDefinition) {
     // Pattern is intentionally legitimate (`pattern` is a real `pub` field
-    // on `CredentialMetadata`) so the only compile error this probe surfaces
+    // on `CredentialDefinition`) so the only compile error this probe surfaces
     // is the absent `capabilities_enabled` — proving §15.8 removed the field
     // without masking the diagnostic via an unrelated `private field` error.
     //
-    // If `CredentialMetadata::pattern` ever loses its `pub` visibility, this
+    // If `CredentialDefinition::pattern` ever loses its `pub` visibility, this
     // probe will fail with TWO errors (private + missing) instead of the
     // one we're targeting. Reviewers should keep `pattern` `pub` or update
     // this fixture to exercise a different `pub` field.

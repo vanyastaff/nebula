@@ -170,11 +170,11 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
 4. **Обрубленные doc-комментарии — закрыто.** Оборванные заголовки `src/plugin_toml.rs:1` и
    `src/manifest.rs:1` восстановлены; `src/plugin.rs` и `src/resolved_plugin.rs` уже были
    исправлены ранее.
-5. **Двойная поверхность ключа credential — принято, схлопнется с credential-rewrite.**
-   `ResolvedPlugin::from` теперь читает обе поверхности (`credential_key()` и типизированный
-   `metadata().base.key()`) и **сверяет** их: расхождение — `PluginError::ComponentKeyMismatch`.
-   Дрейф между поверхностями невозможен молча; сама двойная поверхность живёт в
-   `nebula-credential` и уходит вместе с единым каноническим ключом (см. §7, §8.3).
+5. **Двойная поверхность ключа credential — закрыто.** Ключ компонента объявляется один раз
+   (`Credential::KEY`, `Provider::KEY`), а допущенное определение получает его при admission,
+   поэтому `credential_key()` и ключ определения не могут разойтись. Сверка в
+   `ResolvedPlugin::from` и ошибки `ComponentKeyMismatch` / `InvalidComponentKey` удалены:
+   невалидный литерал ключа теперь ошибка компиляции.
 6. **`lib.rs` и `PluginManifest` — закрыто.** Модульная документация теперь говорит, что тип
    канонически живёт в `nebula-metadata` и лишь re-export'ится здесь.
 7. **Глобальная уникальность ключей компонентов — закрыто.** Пересекающиеся неймспейсы
@@ -196,10 +196,10 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
   индексируемым trait-объектом. Если rewrite двинет dyn-поверхность (scheme-enum /
   Protocol-модель, судьба `credential_key()`), правки локализованы в
   `plugin.rs` / `resolved_plugin.rs` / `registry.rs` (`all_credentials`/`resolve_credential`).
-- **Key-поверхность.** Ключ индекса берётся из типизированного metadata-ключа.
-  Admission отдельно читает `credential_key()`, проверяет его синтаксис и точное равенство
-  metadata-ключу; расхождение возвращает `ComponentKeyMismatch`. Это проверка существующего
-  erased-контракта, а не обещание уже выполненного схлопывания API в `nebula-credential`.
+- **Key-поверхность.** Ключ индекса берётся из допущенного определения
+  (`CredentialDefinition::key()`), которое registry штампует значением `Credential::KEY`.
+  Отдельной сверки с `credential_key()` нет: `AnyCredential` запечатан, и обе поверхности
+  читают одну константу.
 - **Resource seam.** `Plugin::resources()` отдаёт `Vec<Arc<dyn ResourceFactory>>`
   (`src/plugin.rs:61`). Plugin сохраняет factory и её проверенный metadata/dependency/type
   snapshot; он не активирует ресурсы и не участвует в bind-population. Физический lifecycle

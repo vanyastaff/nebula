@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use nebula_core::scope::Scope;
 use nebula_credential::{
-    Credential, CredentialContext, CredentialError, CredentialGuard, CredentialMetadataDraft,
+    Credential, CredentialContext, CredentialError, CredentialGuard, CredentialMetadata,
     SecretString, SecretToken, StaticResolveResult,
 };
 use nebula_resource::{
@@ -78,9 +78,8 @@ impl Credential for ApiToken {
 
     const KEY: &'static str = "derived.api_token";
 
-    fn metadata() -> CredentialMetadataDraft {
-        CredentialMetadataDraft::new(
-            nebula_core::credential_key!("derived.api_token"),
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::new(
             nebula_credential::metadata_name!("ApiToken"),
             "managed facade derive fixture",
         )

@@ -5,7 +5,7 @@
 //! the material past the unit.
 
 use nebula_credential::{
-    Credential, CredentialContext, CredentialError, CredentialGuard, CredentialMetadataDraft,
+    Credential, CredentialContext, CredentialError, CredentialGuard, CredentialMetadata,
     SecretString, SecretToken, StaticResolveResult,
 };
 use nebula_resource::{PinSlots, SlotCell};
@@ -35,10 +35,8 @@ impl Credential for FakeCred {
 
     const KEY: &'static str = "probe.fake";
 
-    fn metadata() -> CredentialMetadataDraft {
-        CredentialMetadataDraft::new(
-            nebula_core::credential_key!("probe.fake"),
-            nebula_credential::metadata_name!("FakeCred"),
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::new(nebula_credential::metadata_name!("FakeCred"),
             "pinned-slot privacy probe",
         )
     }

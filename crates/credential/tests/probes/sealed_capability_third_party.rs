@@ -27,7 +27,7 @@
 use std::future::Future;
 
 use nebula_credential::{
-    Credential, CredentialContext, CredentialMetadataDraft, CredentialState, Refreshable,
+    Credential, CredentialContext, CredentialMetadata, CredentialState, Refreshable,
     SecretString, contract::plugin_capability_report, error::CredentialError,
     resolve::StaticResolveResult,
     scheme::SecretToken,
@@ -61,7 +61,7 @@ impl Credential for ThirdPartyLiar {
 
     const KEY: &'static str = "third_party_liar";
 
-    fn metadata() -> CredentialMetadataDraft
+    fn metadata() -> CredentialMetadata
     where
         Self: Sized,
     {

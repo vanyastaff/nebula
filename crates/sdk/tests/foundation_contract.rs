@@ -211,7 +211,7 @@ impl TypedCredential {
 
 #[tokio::test]
 async fn credential_author_receives_typed_properties_and_returns_draft_metadata() {
-    let draft: CredentialMetadataDraft = TypedCredential::metadata();
+    let draft: CredentialMetadata = TypedCredential::metadata();
     let _ = draft;
     let result = TypedCredential::resolve(
         &TokenProperties {

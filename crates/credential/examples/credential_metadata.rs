@@ -6,14 +6,14 @@
 )]
 
 use nebula_credential::{
-    ApiKeyCredential, Credential, CredentialRegistry, RecordedCredentialMetadata,
+    ApiKeyCredential, Credential, CredentialRegistry, RecordedCredentialDefinition,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut registry = CredentialRegistry::new();
     registry.register(ApiKeyCredential, "credential-metadata-example")?;
     let admitted = registry
-        .metadata(ApiKeyCredential::KEY)
+        .definition(ApiKeyCredential::KEY)
         .expect("the successfully registered credential must have metadata");
 
     println!("Admitted key: {}", admitted.key().as_str());
@@ -25,7 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     );
 
     let wire = serde_json::to_vec(admitted)?;
-    let recorded = RecordedCredentialMetadata::from_slice(&wire, Default::default())?;
+    let recorded = RecordedCredentialDefinition::from_slice(&wire, Default::default())?;
     let readmitted = recorded.readmit_against(admitted)?;
     println!("Readmitted version: {}", readmitted.version());
 

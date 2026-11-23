@@ -10,7 +10,7 @@
 use std::future::Future;
 
 use nebula_credential::{
-    AuthPattern, AuthScheme, Credential, CredentialContext, CredentialMetadataDraft,
+    AuthPattern, AuthScheme, Credential, CredentialContext, CredentialMetadata,
     error::CredentialError, resolve::StaticResolveResult,
 };
 use serde::{Deserialize, Serialize};
@@ -72,7 +72,7 @@ impl Credential for WrongCredential {
 
     const KEY: &'static str = "wrong";
 
-    fn metadata() -> CredentialMetadataDraft {
+    fn metadata() -> CredentialMetadata {
         unimplemented!()
     }
 

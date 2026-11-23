@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use nebula_credential::{
-    Credential, CredentialContext, CredentialMetadataDraft, Interactive, PendingState,
+    Credential, CredentialContext, CredentialMetadata, Interactive, PendingState,
     PendingStateStore, PendingStoreError, PendingToken, SecretString,
     credentials::OAuth2Pending,
     error::CredentialError,
@@ -93,9 +93,8 @@ impl Credential for InteractiveTestCredential {
 
     const KEY: &'static str = "interactive_test";
 
-    fn metadata() -> CredentialMetadataDraft {
-        CredentialMetadataDraft::new(
-            nebula_core::credential_key!("interactive_test"),
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::new(
             nebula_credential::metadata_name!("Interactive Test"),
             "Test credential for pending lifecycle",
         )
@@ -155,9 +154,8 @@ impl Credential for RetryAwareCredential {
 
     const KEY: &'static str = "retry_aware";
 
-    fn metadata() -> CredentialMetadataDraft {
-        CredentialMetadataDraft::new(
-            nebula_core::credential_key!("retry_aware"),
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::new(
             nebula_credential::metadata_name!("Retry Aware"),
             "Test credential for retry-poll pending lifecycle",
         )

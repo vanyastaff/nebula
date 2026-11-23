@@ -38,7 +38,7 @@ pub enum PluginError {
     /// A credential could not produce a checked catalog definition.
     #[classify(category = "validation", code = "PLUGIN:INVALID_CREDENTIAL_METADATA")]
     #[error("plugin credential metadata admission failed")]
-    CredentialMetadata(#[from] nebula_credential::CredentialMetadataAdmissionError),
+    CredentialDefinition(#[from] nebula_credential::CredentialMetadataAdmissionError),
     /// Static effect metadata disagrees with the retained factory capability.
     #[classify(category = "validation", code = "PLUGIN:INVALID_EFFECT_CONTRACT")]
     #[error("action '{action}' has an incoherent effect contract")]
@@ -74,36 +74,6 @@ pub enum PluginError {
         offending_key: String,
         /// Which kind of component triggered the violation.
         kind: ComponentKind,
-    },
-
-    /// A contribution's erased key projection disagrees with the key carried
-    /// by its metadata snapshot.
-    #[classify(category = "validation", code = "PLUGIN:COMPONENT_KEY_MISMATCH")]
-    #[error(
-        "plugin '{plugin}' declared {kind} key '{projected_key}' but its metadata key is '{metadata_key}'"
-    )]
-    ComponentKeyMismatch {
-        /// The plugin that declared the incoherent component.
-        plugin: PluginKey,
-        /// Which kind of component triggered the violation.
-        kind: ComponentKind,
-        /// Key returned by the erased credential or resource factory.
-        projected_key: String,
-        /// Key captured from the component metadata.
-        metadata_key: String,
-    },
-
-    /// A contribution returned a key projection that is not valid for its
-    /// component kind.
-    #[classify(category = "validation", code = "PLUGIN:INVALID_COMPONENT_KEY")]
-    #[error("plugin '{plugin}' declared invalid {kind} key '{projected_key}'")]
-    InvalidComponentKey {
-        /// The plugin that declared the invalid component key.
-        plugin: PluginKey,
-        /// Which kind of component triggered the violation.
-        kind: ComponentKind,
-        /// Invalid key returned by the erased contribution.
-        projected_key: String,
     },
 
     /// A contribution's erased concrete type differs from the type returned

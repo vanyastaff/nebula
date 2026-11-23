@@ -216,8 +216,7 @@ impl CredentialService {
         C::Scheme: Zeroize,
     {
         let credential_id = binding.credential_id();
-        let expected_key =
-            CredentialKey::new(C::KEY).map_err(|_| CredentialServiceError::InvalidSlotState)?;
+        let expected_key = crate::key_of::<C>();
         let erased = self
             .resolve_slot_erased(
                 scope,
