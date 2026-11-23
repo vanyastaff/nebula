@@ -78,6 +78,19 @@ pub enum CoreError {
         action_id: String,
     },
 
+    /// No resource is registered under the key in the caller's scope
+    /// (surfaced through the shared accessor seam).
+    ///
+    /// A wiring fault, never retryable: the key is not declared, or its
+    /// registration failed. Distinct from
+    /// [`CredentialNotFound`](Self::CredentialNotFound) — an operator who
+    /// sees this checks the node's resource bindings, not its credentials.
+    #[error("resource not found: {key}")]
+    ResourceNotFound {
+        /// Resource key label for observability.
+        key: String,
+    },
+
     /// Resource handle lookup or a unit's checkout failed (surfaced through
     /// the shared accessor seam).
     ///
@@ -143,6 +156,12 @@ impl CoreError {
         Self::CredentialNotFound { key }
     }
 
+    /// Create a resource-not-registered error surfaced through the accessor
+    /// seam.
+    pub fn resource_not_found(key: impl Into<String>) -> Self {
+        Self::ResourceNotFound { key: key.into() }
+    }
+
     /// Create a resource-acquire failure surfaced through the accessor seam.
     pub fn resource_unavailable(
         key: impl Into<String>,
@@ -172,9 +191,9 @@ impl nebula_error::Classify for CoreError {
             Self::DependencyCycle { .. } | Self::DependencyMissing { .. } => {
                 nebula_error::ErrorCategory::Validation
             },
-            Self::CredentialNotConfigured(_) | Self::CredentialNotFound { .. } => {
-                nebula_error::ErrorCategory::NotFound
-            },
+            Self::CredentialNotConfigured(_)
+            | Self::CredentialNotFound { .. }
+            | Self::ResourceNotFound { .. } => nebula_error::ErrorCategory::NotFound,
             Self::CredentialAccessDenied { .. } => nebula_error::ErrorCategory::Authorization,
             Self::ResourceUnavailable { .. } => nebula_error::ErrorCategory::Unavailable,
             Self::RegistryInvariant(_) => nebula_error::ErrorCategory::Internal,
@@ -191,6 +210,7 @@ impl nebula_error::Classify for CoreError {
             Self::CredentialNotConfigured(_) => "CORE:CREDENTIAL_NOT_CONFIGURED",
             Self::CredentialNotFound { .. } => "CORE:CREDENTIAL_NOT_FOUND",
             Self::CredentialAccessDenied { .. } => "CORE:CREDENTIAL_ACCESS_DENIED",
+            Self::ResourceNotFound { .. } => "CORE:RESOURCE_NOT_FOUND",
             Self::ResourceUnavailable { .. } => "CORE:RESOURCE_UNAVAILABLE",
             Self::RegistryInvariant(_) => "CORE:REGISTRY_INVARIANT",
         })
@@ -274,6 +294,18 @@ mod tests {
         assert_eq!(core_err.code().as_str(), "CORE:REGISTRY_INVARIANT");
         assert_eq!(core_err.category(), nebula_error::ErrorCategory::Internal);
         assert!(!core_err.is_retryable());
+    }
+
+    #[test]
+    fn resource_not_found_is_a_not_found_that_never_retries() {
+        use nebula_error::Classify;
+
+        let missing = CoreError::resource_not_found("postgres");
+        assert_eq!(missing.to_string(), "resource not found: postgres");
+        assert_eq!(missing.code().as_str(), "CORE:RESOURCE_NOT_FOUND");
+        assert_eq!(missing.category(), nebula_error::ErrorCategory::NotFound);
+        assert!(!missing.is_retryable());
+        assert!(missing.retry_hint().is_none());
     }
 
     #[test]

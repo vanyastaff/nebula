@@ -91,6 +91,21 @@ changes are expected between minor releases — call them out here.
 
 ### Fixed
 
+- **An unregistered resource is no longer reported as a missing
+  credential.** `nebula_resource::Error::to_core_error` projected
+  `ErrorKind::NotFound` ("resource key not in registry") onto
+  `CoreError::CredentialNotFound`, so an action asking for a resource nobody
+  registered failed with `CORE:CREDENTIAL_NOT_FOUND` and the resource key in
+  the credential field — pointing the operator at the wrong binding. It is now
+  `CoreError::ResourceNotFound` (new variant and `resource_not_found`
+  constructor, code `CORE:RESOURCE_NOT_FOUND`, category `NotFound`, never
+  retryable), and the inverse `From<CoreError>` maps it back to `NotFound`
+  with its key. In that inverse, `CoreError::CredentialNotFound` now becomes
+  `ErrorKind::Permanent` instead of `NotFound`: an optional resource lookup
+  reads `NotFound` as "absent", which would have hidden a missing credential.
+  Code matching `CoreError::CredentialNotFound` on a resource accessor's
+  result must match `ResourceNotFound`.
+
 - **HTTP replay defaults to PostgreSQL in a PostgreSQL deployment.** With
   `API_IDEMPOTENCY_BACKEND` unset, `ApiConfig::from_env` chose `memory` even
   under `API_EXECUTION_BACKEND=postgres`, so each replica kept its own

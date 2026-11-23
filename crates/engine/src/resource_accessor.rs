@@ -331,8 +331,8 @@ mod tests {
         let accessor = make_accessor(Arc::new(Manager::new()));
         let result = accessor.resource_handle_any(&rk("postgres"));
         assert!(
-            matches!(result, Err(CoreError::CredentialNotFound { .. })),
-            "expected CredentialNotFound, got {result:?}"
+            matches!(result, Err(CoreError::ResourceNotFound { .. })),
+            "expected ResourceNotFound, got {result:?}"
         );
     }
 
@@ -515,7 +515,7 @@ mod tests {
             .resource_handle_any(&key)
             .expect_err("another identity's row is not served");
         assert!(
-            matches!(error, CoreError::CredentialNotFound { .. }),
+            matches!(error, CoreError::ResourceNotFound { .. }),
             "not found, got {error:?}"
         );
     }

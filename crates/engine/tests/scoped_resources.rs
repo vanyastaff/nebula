@@ -30,7 +30,7 @@ use std::{
 
 use dashmap::DashMap;
 use nebula_core::{
-    CoreError, CredentialKey, NodeKey, ResourceKey,
+    CoreError, NodeKey, ResourceKey,
     accessor::ResourceAccessor,
     id::{ExecutionId, WorkflowId},
 };
@@ -88,12 +88,7 @@ impl ResourceAccessor for FakeGlobalAccessor {
         self.table
             .get(key)
             .map(|v| Box::new(*v.value()) as Box<dyn std::any::Any + Send + Sync>)
-            .ok_or_else(|| {
-                CoreError::credential_not_found(
-                    CredentialKey::new(key.as_str())
-                        .expect("ResourceKey format is CredentialKey-compatible"),
-                )
-            })
+            .ok_or_else(|| CoreError::resource_not_found(key.as_str()))
     }
 
     fn try_resource_handle_any(
@@ -735,7 +730,7 @@ async fn layered_accessor_with_dash_storage_walks_ancestors() {
 
     // unknown key: error from global layer; the optional lookup is absent.
     let result = layered.resource_handle_any(&rk("kafka"));
-    assert!(matches!(result, Err(CoreError::CredentialNotFound { .. })));
+    assert!(matches!(result, Err(CoreError::ResourceNotFound { .. })));
     assert!(
         layered
             .try_resource_handle_any(&rk("kafka"))
