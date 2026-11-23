@@ -1110,11 +1110,12 @@ async fn serves(context: &ActivationContext<'_>, activated: &ActivatedResource) 
     ) else {
         return false;
     };
-    if row.phase().is_accepting() {
-        return true;
-    }
+    let accepting = row.phase().is_accepting();
     #[cfg(feature = "rotation")]
-    if context.fanout.is_some() && row.phase() == nebula_resource::ResourcePhase::Initializing {
+    if !accepting
+        && context.fanout.is_some()
+        && row.phase() == nebula_resource::ResourcePhase::Initializing
+    {
         return context
             .manager
             .until_accepting(
@@ -1126,7 +1127,7 @@ async fn serves(context: &ActivationContext<'_>, activated: &ActivatedResource) 
             .await
             .is_ok();
     }
-    false
+    accepting
 }
 
 /// Whether the credentials a registration was built with are still the
