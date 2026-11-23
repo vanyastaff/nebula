@@ -40,7 +40,7 @@ use std::{
     collections::VecDeque,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
 };
 
@@ -102,6 +102,13 @@ pub(crate) struct StoreEntry<S> {
 
 struct StoreInner<S> {
     idle: Mutex<VecDeque<StoreEntry<S>>>,
+    /// The idle queue's length as of the last release of its lock.
+    ///
+    /// Every hold of `idle` is an [`IdleGuard`], which publishes the length
+    /// when it ends, so a zero here means the queue was empty the last time
+    /// anyone could have changed it. [`InstanceStore::checkout`] reads it to
+    /// answer "nothing idle" without queueing for the lock.
+    idle_len: AtomicUsize,
     revoke_epoch: AtomicU64,
     closed: AtomicBool,
     abandonment: Option<AbandonmentTracker>,
@@ -119,6 +126,38 @@ impl<S> Drop for StoreInner<S> {
             // survived to receive these entries.
             drop(tracker.track_entries(remaining));
         }
+    }
+}
+
+/// Exclusive hold on a store's idle queue.
+///
+/// Publishes the queue's length when it ends, whatever the holder did to the
+/// queue, so [`InstanceStore::checkout`] can tell an empty queue without
+/// taking the lock. The length is written before the lock is released: a
+/// reader never sees a count older than the last completed hold.
+pub(crate) struct IdleGuard<'a, S> {
+    idle: MutexGuard<'a, VecDeque<StoreEntry<S>>>,
+    len: &'a AtomicUsize,
+}
+
+impl<S> std::ops::Deref for IdleGuard<'_, S> {
+    type Target = VecDeque<StoreEntry<S>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.idle
+    }
+}
+
+impl<S> std::ops::DerefMut for IdleGuard<'_, S> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.idle
+    }
+}
+
+impl<S> Drop for IdleGuard<'_, S> {
+    fn drop(&mut self) {
+        // Runs before the `idle` field unlocks the queue.
+        self.len.store(self.idle.len(), Ordering::Release);
     }
 }
 
@@ -235,6 +274,7 @@ impl<S: Send + 'static> InstanceStore<S> {
         Self {
             inner: Arc::new(StoreInner {
                 idle: Mutex::new(VecDeque::new()),
+                idle_len: AtomicUsize::new(0),
                 revoke_epoch: AtomicU64::new(0),
                 closed: AtomicBool::new(false),
                 abandonment,
@@ -309,7 +349,7 @@ impl<S: Send + 'static> InstanceStore<S> {
     #[tracing::instrument(skip_all)]
     pub(crate) async fn close_and_drain(&self) -> Vec<S> {
         self.begin_close();
-        let mut idle = self.inner.idle.lock().await;
+        let mut idle = self.lock_idle().await;
         debug!(
             idle_count = idle.len(),
             "draining terminal resource instance store"
@@ -355,7 +395,19 @@ impl<S: Send + 'static> InstanceStore<S> {
     ///
     /// [`Provider::destroy`]: crate::resource::Provider::destroy
     pub async fn checkout(&self) -> Checkout<S> {
-        let mut idle = self.inner.idle.lock().await;
+        // Nothing idle: every acquire of a non-pooling topology, and a pool's
+        // idle miss. The answer needs no fence (there is no entry to fence),
+        // and queueing for the lock to learn it would park each caller behind
+        // the previous one. A deposit or a return that holds the lock right
+        // now has not released it, so this checkout orders before it — the
+        // same outcome as winning the lock first.
+        if self.inner.idle_len.load(Ordering::Acquire) == 0 {
+            return Checkout {
+                fresh: None,
+                stale: Vec::new(),
+            };
+        }
+        let mut idle = self.lock_idle().await;
         // Revoke-epoch fence: read under the idle lock (same lock the
         // credential-revoke idle-walk holds) so the epoch snapshot is
         // atomic against a concurrent `bump_revoke_epoch`. Without this,
@@ -416,7 +468,7 @@ impl<S: Send + 'static> InstanceStore<S> {
     /// guard (the framework acquire loop's `EntryCreateGuard` pattern) rather
     /// than rely on this method to place it.
     pub async fn return_entry(&self, entry: S, checkout_epoch: u64) -> ReturnOutcome<S> {
-        let mut idle = self.inner.idle.lock().await;
+        let mut idle = self.lock_idle().await;
         self.return_entry_locked(&mut idle, entry, checkout_epoch)
     }
 
@@ -462,12 +514,12 @@ impl<S: Send + 'static> InstanceStore<S> {
 
     /// Number of idle entries currently in the queue.
     pub async fn len(&self) -> usize {
-        self.inner.idle.lock().await.len()
+        self.lock_idle().await.len()
     }
 
     /// Returns `true` if the idle queue is empty.
     pub async fn is_empty(&self) -> bool {
-        self.inner.idle.lock().await.is_empty()
+        self.lock_idle().await.is_empty()
     }
 
     /// The configured capacity cap, or `None` if unbounded.
@@ -480,13 +532,7 @@ impl<S: Send + 'static> InstanceStore<S> {
     /// Returns all entries collected without closing the store; subsequent
     /// deposits remain possible. Terminal shutdown uses a separate fenced drain.
     pub async fn drain_all(&self) -> Vec<S> {
-        self.inner
-            .idle
-            .lock()
-            .await
-            .drain(..)
-            .map(|e| e.entry)
-            .collect()
+        self.lock_idle().await.drain(..).map(|e| e.entry).collect()
     }
 
     /// Evicts all idle entries whose checkout epoch is behind the live counter.
@@ -498,7 +544,7 @@ impl<S: Send + 'static> InstanceStore<S> {
     /// reaper sweep — so a stale entry can never be served regardless of which
     /// path observes it first.
     pub async fn evict_stale(&self) -> Vec<S> {
-        let mut idle = self.inner.idle.lock().await;
+        let mut idle = self.lock_idle().await;
         // Epoch read under the idle lock — the same discipline as `checkout` /
         // `return_entry` — so a revoke racing this sweep is either fully
         // observed (its entries evicted now) or fully deferred to the next
@@ -542,8 +588,11 @@ impl<S: Send + 'static> InstanceStore<S> {
     /// entries) reopens the window for an entry to be checked out mid-rotation
     /// and miss its hook (a credential-isolation violation). Do not widen the
     /// unlocked window.
-    pub(crate) async fn lock_idle(&self) -> MutexGuard<'_, VecDeque<StoreEntry<S>>> {
-        self.inner.idle.lock().await
+    pub(crate) async fn lock_idle(&self) -> IdleGuard<'_, S> {
+        IdleGuard {
+            idle: self.inner.idle.lock().await,
+            len: &self.inner.idle_len,
+        }
     }
 
     /// Removes and returns every idle entry for which `should_evict` is `true`,
@@ -560,7 +609,7 @@ impl<S: Send + 'static> InstanceStore<S> {
     where
         F: FnMut(&S, u64) -> bool,
     {
-        let mut idle = self.inner.idle.lock().await;
+        let mut idle = self.lock_idle().await;
         let mut evicted = Vec::new();
         let mut keep = VecDeque::with_capacity(idle.len());
         for item in idle.drain(..) {
@@ -602,7 +651,7 @@ impl<S: Send + 'static> InstanceStore<S> {
     /// guard stays armed across the lock acquisition — the warmup loop does
     /// exactly this.
     pub async fn deposit_fresh(&self, entry: S, created_epoch: u64) -> ReturnOutcome<S> {
-        let mut idle = self.inner.idle.lock().await;
+        let mut idle = self.lock_idle().await;
         self.deposit_fresh_locked(&mut idle, entry, created_epoch)
     }
 
@@ -812,7 +861,7 @@ impl<'a, S: Send + 'static> StoreView<'a, S> {
 
 /// Read-only lock on the idle queue; see [`StoreView::read_idle`].
 pub struct IdleRead<'a, S> {
-    idle: MutexGuard<'a, VecDeque<StoreEntry<S>>>,
+    idle: IdleGuard<'a, S>,
 }
 
 impl<S> IdleRead<'_, S> {

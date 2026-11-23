@@ -106,6 +106,21 @@ changes are expected between minor releases — call them out here.
   Code matching `CoreError::CredentialNotFound` on a resource accessor's
   result must match `ResourceNotFound`.
 
+- **Concurrent acquires of one resident resource no longer queue behind each
+  other.** Every acquire of a live resident master took two fair async locks
+  for a few hundred nanoseconds of reads: the topology's state lock, held
+  exclusively, and the framework idle queue's lock, although a non-pooling
+  topology's queue is always empty. A fair lock hands itself from waiter to
+  waiter, so once two acquires met, every following one parked behind the
+  previous. On four threads sharing one resident row an acquire went from 6 µs
+  to 68 µs and the row topped out at 60 000 acquires per second. `Resident`
+  now holds its state shared on the hit path and exclusively to build, rotate
+  or close, and `InstanceStore::checkout` answers an empty queue from a length
+  published at the end of every hold of the lock. The same four threads now
+  take 9–10 µs per acquire, about 400 000 per second; a pool's idle miss skips
+  the lock the same way. A rotation hook, a build or a close in progress still
+  holds back every acquire of the row.
+
 - **HTTP replay defaults to PostgreSQL in a PostgreSQL deployment.** With
   `API_IDEMPOTENCY_BACKEND` unset, `ApiConfig::from_env` chose `memory` even
   under `API_EXECUTION_BACKEND=postgres`, so each replica kept its own
