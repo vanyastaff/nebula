@@ -1,11 +1,12 @@
 //! Resource config admission must retain schema preparation and reject secrets.
 
+use nebula_resource::ProviderKey;
 use std::{
     hash::{DefaultHasher, Hash, Hasher},
     marker::PhantomData,
 };
 
-use nebula_core::{DeclaresDependencies, Dependencies, ResourceKey, resource_key};
+use nebula_core::{DeclaresDependencies, Dependencies};
 use nebula_resource::{
     Error, HasCredentialSlots, KindActivator, Manager, Provider, RegisterRequest, Resident,
     ResourceConfig, ResourceConfigInput, ResourceContext, ResourceFactory,
@@ -113,17 +114,11 @@ impl<C: ResourceConfig> Provider for ConfigProbe<C> {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn metadata() -> nebula_resource::ResourceMetadataDraft {
-        nebula_resource::ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("ConfigProbe"),
-            "",
-        )
+    fn metadata() -> nebula_resource::MetadataDraft {
+        nebula_resource::MetadataDraft::new(nebula_resource::metadata_name!("ConfigProbe"), "")
     }
 
-    fn key() -> ResourceKey {
-        resource_key!("test.config-foundation")
-    }
+    const KEY: &'static str = "test.config-foundation";
 
     async fn create(&self, _config: &C, _ctx: &ResourceContext) -> Result<(), Error> {
         Ok(())

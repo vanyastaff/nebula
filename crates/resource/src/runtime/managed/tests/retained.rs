@@ -1,16 +1,17 @@
+use crate::resource::ProviderKey;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
 use arc_swap::ArcSwap;
-use nebula_core::{ExecutionId, ResourceKey, resource_key, scope::Scope};
+use nebula_core::{ExecutionId, scope::Scope};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    AcquireOptions, Error, ErrorKind, Provider, ReplaceStatus, ResourceContext,
-    ResourceMetadataDraft, ResourceStatus, RetainStatus, RetainedId, RetainedStore, TeardownCx,
+    AcquireOptions, Error, ErrorKind, MetadataDraft, Provider, ReplaceStatus, ResourceContext,
+    ResourceStatus, RetainStatus, RetainedId, RetainedStore, TeardownCx,
     release_queue::{ReleaseQueue, ReleaseQueueHandle, SubmissionOutcome},
     resource::ResourceConfig,
     runtime::{
@@ -92,9 +93,7 @@ impl Provider for RetainedResource {
     type Instance = Root;
     type Topology = RetainedTopology;
 
-    fn key() -> ResourceKey {
-        resource_key!("managed-retained-regression")
-    }
+    const KEY: &'static str = "managed-retained-regression";
 
     async fn create(
         &self,
@@ -111,12 +110,8 @@ impl Provider for RetainedResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            crate::metadata_name!("managed-retained-regression"),
-            "",
-        )
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(crate::metadata_name!("managed-retained-regression"), "")
     }
 }
 

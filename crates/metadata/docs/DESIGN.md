@@ -13,17 +13,19 @@ The public construction states encode authority:
 
 ```text
 authored fields                    admitted technical definition
-MetadataDraft<K> + ValidSchema  -> BaseMetadata<K>
-                         bind_schema
+MetadataDraft + K + ValidSchema -> BaseMetadata<K>
+                           bind
 
 untrusted persistence/wire         current static definition
 RecordedBaseMetadata<K> + BaseMetadata<K> -> BaseMetadata<K>
                                   exact readmission
 ```
 
-`MetadataDraft<K>` contains key, checked name, description, version, icon,
-typed categories and links, tags, and lifecycle. It never contains a schema.
-`bind_schema(ValidSchema) -> Result<BaseMetadata<K>, MetadataBuildError>` is the
+`MetadataDraft` contains checked name, description, version, icon, typed
+categories and links, tags, and lifecycle. It never contains a key or a schema:
+the key is the component's identity, declared once on its type, and whoever
+admits the component passes it in, so an authored draft cannot disagree with it.
+`bind(K, ValidSchema) -> Result<BaseMetadata<K>, MetadataBuildError>` is the
 sole admission transition, metering canonical authored fields and the full record.
 
 `BaseMetadata<K>` is private-field and getter-only. It serializes in the
@@ -108,7 +110,7 @@ deprecation reasons.
 ## Non-goals
 
 - No final-metadata mutators or key replacement.
-- No `Deserialize` for `MetadataDraft<K>` or `BaseMetadata<K>`.
+- No `Deserialize` for `MetadataDraft` or `BaseMetadata<K>`.
 - No compatibility constructors, aliases, or deprecated shims.
 - No leaf-specific admission logic.
 - No runtime credential, resource, action, or plugin behavior.

@@ -1,5 +1,6 @@
 //! Admission generations: which lifecycle changes close a row's generations
 //! and which publish a benign successor.
+use crate::resource::ProviderKey;
 use std::{
     sync::{
         Arc,
@@ -8,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-use nebula_core::{CredentialId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
+use nebula_core::{CredentialId, ScopeLevel, scope::Scope};
 use nebula_credential::{CredentialGuard, CredentialGuardMetadata, ErasedCredentialGuard};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -20,7 +21,7 @@ use super::{
 use crate::{
     AcquireOptions, Error, Provider, Resident, ResidentConfig, ResourceConfig, ResourceContext,
     ResourceGuard, SlotCell, SlotIdentity, SlotInstallError, SlotUpdate,
-    resource::{HasCredentialSlots, ResourceMetadataDraft},
+    resource::{HasCredentialSlots, MetadataDraft},
     runtime::managed::ManagedResource,
     topology::resident::ResidentProvider,
 };
@@ -68,16 +69,10 @@ impl Provider for Tenant {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("admission-generation")
-    }
+    const KEY: &'static str = "admission-generation";
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            crate::metadata_name!("admission-generation"),
-            "",
-        )
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(crate::metadata_name!("admission-generation"), "")
     }
 
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<(), Error> {

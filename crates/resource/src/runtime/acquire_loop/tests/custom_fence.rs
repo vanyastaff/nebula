@@ -16,13 +16,11 @@ impl Provider for CustomResource {
     type Instance = u64;
     type Topology = CustomTopology;
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("CustomResource"), "")
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(crate::metadata_name!("CustomResource"), "")
     }
 
-    fn key() -> ResourceKey {
-        resource_key!("custom-checkout-fence")
-    }
+    const KEY: &'static str = "custom-checkout-fence";
 
     async fn create(&self, _: &PoolCfg, _: &ResourceContext) -> Result<u64, Error> {
         Ok(self.created.fetch_add(1, Ordering::SeqCst))

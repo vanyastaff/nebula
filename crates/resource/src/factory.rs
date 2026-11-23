@@ -43,7 +43,7 @@
 //!    use.
 //! 2. **Removal-funnel** — raw `Manager` mutation is the caller's concern;
 //!    teardown must route through a `PluginHandle` (engine-side).
-//! 3. **Key-coherence** — `factory.key() == <R as Provider>::key()`.
+//! 3. **Key-coherence** — `factory.key() == <R as ProviderKey>::key()`.
 //! 4. **Factory provenance** — downstream code cannot implement
 //!    `ResourceFactory`; metadata, `TypeId`, and registration identity are
 //!    projections of one crate-issued typed activator.
@@ -65,10 +65,11 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use crate::resource::{ResourceMetadata, ResourceMetadataDraft};
+use crate::resource::{ProviderKey, ResourceMetadata};
 use crate::topology::{ConfigurableTopology, Topology};
 use crate::{Manager, ScopeLevel, SlotIdentity, recovery::RecoveryGate, resource::Provider};
 use nebula_core::{CredentialId, Dependencies, SlotKind};
+use nebula_metadata::MetadataDraft;
 
 mod private {
     pub trait Sealed {}
@@ -669,7 +670,7 @@ where
     topology_factory: FTopo,
     topology_schema: Option<TopologySchemaFn>,
     dependencies: Dependencies,
-    metadata_draft: Option<ResourceMetadataDraft>,
+    metadata_draft: Option<MetadataDraft>,
     metadata: OnceLock<Result<ResourceMetadata, crate::MetadataBuildError>>,
     // Zero-sized marker — `R` is not stored but bounds the `impl`.
     _marker: std::marker::PhantomData<fn() -> R>,
@@ -687,7 +688,7 @@ where
         // `Debug` and neither should be invoked just to print it. Identify
         // the activator by the resource key it constructs instead.
         f.debug_struct("KindActivator")
-            .field("key", &<R as Provider>::key())
+            .field("key", &<R as ProviderKey>::key())
             .finish_non_exhaustive()
     }
 }
@@ -725,7 +726,7 @@ where
     /// The supplied draft cannot carry a schema. Admission still derives the
     /// canonical schema from `R::Config` at this factory boundary.
     pub fn with_metadata(
-        metadata_draft: ResourceMetadataDraft,
+        metadata_draft: MetadataDraft,
         resource_factory: FRes,
         topology_factory: FTopo,
     ) -> Self {
@@ -743,19 +744,7 @@ where
     fn admit_metadata(&self) -> Result<ResourceMetadata, crate::MetadataBuildError> {
         let schema = nebula_schema::schema_of::<R::Config>()?;
         let draft = self.metadata_draft.clone().unwrap_or_else(R::metadata);
-        let metadata = draft.admit(schema)?;
-        let expected = R::key();
-        if metadata.base().key() != &expected {
-            let actual = metadata.base().key().clone();
-            tracing::warn!(
-                error_code = "RESOURCE:METADATA_KEY_MISMATCH",
-                expected_key = %expected,
-                actual_key = %actual,
-                "resource metadata admission rejected"
-            );
-            return Err(crate::MetadataBuildError::KeyMismatch { expected, actual });
-        }
-        Ok(metadata)
+        ResourceMetadata::admit(R::key(), draft, schema)
     }
 }
 
@@ -791,7 +780,7 @@ where
     /// [`configurable`](Self::configurable) with explicit schema-free resource
     /// author intent (see [`with_metadata`](Self::with_metadata)).
     pub fn configurable_with_metadata(
-        metadata_draft: ResourceMetadataDraft,
+        metadata_draft: MetadataDraft,
         resource_factory: FRes,
     ) -> Self {
         Self::with_metadata(
@@ -830,7 +819,7 @@ where
         Fn(Option<&serde_json::Value>) -> Result<R::Topology, crate::Error> + Send + Sync + 'static,
 {
     fn key(&self) -> nebula_core::ResourceKey {
-        <R as Provider>::key()
+        <R as ProviderKey>::key()
     }
 
     fn dependencies(&self) -> &Dependencies {

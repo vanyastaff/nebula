@@ -11,6 +11,26 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **A resource declares its key once, as `Provider::KEY`.** A resource wrote
+  its key twice, in `Provider::key()` and again in the
+  `ResourceMetadataDraft` it returned, and the two were compared only when the
+  factory admitted the definition (`MetadataBuildError::KeyMismatch`).
+  `Provider` now has `const KEY: &'static str` instead of `fn key()`;
+  `R::key()` still returns the typed `ResourceKey` through the blanket
+  `ProviderKey` trait, and an invalid literal fails compilation, at the
+  declaration for a type that uses `#[derive(Resource)]` or
+  `no_credential_slots!`. `Provider::metadata` returns the shared
+  `nebula_metadata::MetadataDraft`, which no longer carries a key or a key type
+  parameter: `MetadataDraft::new(name, description)` and
+  `try_new(name, description)`, and admission is `draft.bind(key, schema)` in
+  place of `bind_schema(schema)` (span `metadata.bind`). The factory stamps
+  `Provider::KEY`, so an admitted definition cannot name another resource.
+  `ResourceMetadataDraft` and `MetadataBuildError::KeyMismatch` are removed.
+  Migrate a provider by replacing `fn key() -> ResourceKey { resource_key!("x") }`
+  with `const KEY: &'static str = "x";`, dropping the key argument of the draft
+  and importing `ProviderKey` where `R::key()` is called. Action and credential
+  drafts keep their public shape in this change and move to the same model next.
+
 - **The OAuth PKCE verifier is encrypted at rest.** `oauth_states` held each
   pending sign-in's `code_verifier` in plaintext, so anyone who could read the
   table held the PKCE half of every in-flight authorization-code exchange.

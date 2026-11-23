@@ -9,18 +9,17 @@
 //!      surface diverged from the workflow JSON).
 //!   5. Dispatch into the typed `Manager::register<R>(...)`.
 
+use nebula_resource::ProviderKey;
 use std::{collections::HashMap, sync::Arc};
 
-use nebula_core::{
-    CredentialKey, DeclaresDependencies, Dependencies, ResourceKey, ScopeLevel, resource_key,
-};
+use nebula_core::{CredentialKey, DeclaresDependencies, Dependencies, ScopeLevel};
 use nebula_expression::ExpressionEngine;
 use nebula_resource::Resident;
 use nebula_resource::{
     KindActivator, Manager, RegisterRequest, ResidentConfig, ResourceConfigInput, ResourceContext,
     ResourceFactory,
     error::Error,
-    resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadataDraft},
+    resource::{HasCredentialSlots, MetadataDraft, Provider, ResourceConfig},
     topology::resident::ResidentProvider,
 };
 use serde::Deserialize;
@@ -127,9 +126,7 @@ impl Provider for Postgres {
     type Instance = Arc<()>;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("phase9-pg")
-    }
+    const KEY: &'static str = "phase9-pg";
 
     async fn create(&self, _config: &PgConfig, _ctx: &ResourceContext) -> Result<Arc<()>, Error> {
         Ok(Arc::new(()))
@@ -143,12 +140,8 @@ impl Provider for Postgres {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("phase9-pg"),
-            "",
-        )
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(nebula_resource::metadata_name!("phase9-pg"), "")
     }
 }
 
@@ -179,17 +172,11 @@ impl<const CREDENTIALS: bool> Provider for AdmissionResource<CREDENTIALS> {
     type Instance = ();
     type Topology = AdmissionTopology;
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("AdmissionResource"),
-            "",
-        )
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(nebula_resource::metadata_name!("AdmissionResource"), "")
     }
 
-    fn key() -> ResourceKey {
-        resource_key!("test.revoke-admission")
-    }
+    const KEY: &'static str = "test.revoke-admission";
 
     async fn create(&self, _config: &PgConfig, _ctx: &ResourceContext) -> Result<(), Error> {
         Ok(())
@@ -500,17 +487,14 @@ impl Provider for DriftedSlotSignals {
     type Instance = Arc<()>;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("phase9-drifted-slot-signals")
-    }
+    const KEY: &'static str = "phase9-drifted-slot-signals";
 
     async fn create(&self, _config: &PgConfig, _ctx: &ResourceContext) -> Result<Arc<()>, Error> {
         Ok(Arc::new(()))
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(
             nebula_resource::metadata_name!("phase9-drifted-slot-signals"),
             "",
         )
@@ -589,17 +573,14 @@ impl Provider for DriftedSlotNames {
     type Instance = Arc<()>;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("phase9-drifted-slot-names")
-    }
+    const KEY: &'static str = "phase9-drifted-slot-names";
 
     async fn create(&self, _config: &PgConfig, _ctx: &ResourceContext) -> Result<Arc<()>, Error> {
         Ok(Arc::new(()))
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(
             nebula_resource::metadata_name!("phase9-drifted-slot-names"),
             "",
         )
@@ -751,9 +732,7 @@ impl Provider for CacheBackend {
     type Instance = Arc<()>;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("union-cache")
-    }
+    const KEY: &'static str = "union-cache";
 
     async fn create(
         &self,
@@ -771,12 +750,8 @@ impl Provider for CacheBackend {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("union-cache"),
-            "",
-        )
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(nebula_resource::metadata_name!("union-cache"), "")
     }
 }
 
@@ -905,9 +880,7 @@ impl Provider for WarmPool {
     type Instance = Arc<()>;
     type Topology = nebula_resource::Pooled<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("warm-pool")
-    }
+    const KEY: &'static str = "warm-pool";
 
     async fn create(&self, _config: &PgConfig, _ctx: &ResourceContext) -> Result<Arc<()>, Error> {
         self.creates
@@ -915,12 +888,8 @@ impl Provider for WarmPool {
         Ok(Arc::new(()))
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("warm-pool"),
-            "",
-        )
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(nebula_resource::metadata_name!("warm-pool"), "")
     }
 }
 

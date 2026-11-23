@@ -10,6 +10,7 @@
 //! released. Such live generations are counted and bounded by
 //! [`MAX_LIVE_GENERATIONS`].
 
+use crate::resource::ProviderKey;
 use std::{marker::PhantomData, sync::Arc};
 
 use tokio::sync::Mutex;

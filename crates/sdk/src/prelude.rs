@@ -35,12 +35,10 @@
 //!     type Instance = HttpClient;
 //!     type Topology = Pooled<Self>;
 //!
-//!     fn key() -> ResourceKey {
-//!         resource_key!("http.client.sdk_prelude")
-//!     }
+//!     const KEY: &'static str = "http.client.sdk_prelude";
 //!
-//!     fn metadata() -> ResourceMetadataDraft {
-//!         ResourceMetadataDraft::new(Self::key(), metadata_name!("HTTP client"), "Pooled HTTP client")
+//!     fn metadata() -> MetadataDraft {
+//!         MetadataDraft::new(metadata_name!("HTTP client"), "Pooled HTTP client")
 //!     }
 //!
 //!     async fn create(&self, _config: &(), _ctx: &ResourceContext) -> Result<HttpClient, Error> {
@@ -157,9 +155,9 @@ pub use nebula_plugin::{
 // `ReleaseOutcome`, `Lease`) are deliberately absent from the supported SDK.
 pub use nebula_resource::{
     Bounded, BoundedMode, BoundedProvider, ClassifyError, Error, ErrorKind, HasCredentialSlots,
-    PoolConfig, PoolProvider, Pooled, Provider, ReloadOutcome, Resident, ResidentConfig,
-    ResidentProvider, Resource, ResourceConfig, ResourceContext, ResourceMetadataDraft, SlotCell,
-    TeardownCx, TeardownReason, TopologyTag, no_credential_slots,
+    MetadataDraft, PoolConfig, PoolProvider, Pooled, Provider, ProviderKey, ReloadOutcome,
+    Resident, ResidentConfig, ResidentProvider, Resource, ResourceConfig, ResourceContext,
+    SlotCell, TeardownCx, TeardownReason, TopologyTag, no_credential_slots,
 };
 // Derive names are re-exported from their respective domain crates. Generated
 // paths prefer a direct (including renamed) leaf dependency, then the SDK's

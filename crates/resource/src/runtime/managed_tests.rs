@@ -4,7 +4,7 @@ use std::{
 };
 
 use arc_swap::ArcSwap;
-use nebula_core::{ExecutionId, ResourceKey, resource_key};
+use nebula_core::ExecutionId;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
@@ -14,7 +14,7 @@ use crate::{
     error::Error,
     options::AcquireOptions,
     release_queue::ReleaseQueue,
-    resource::{ResourceConfig, ResourceMetadataDraft, TeardownCx, TeardownReason},
+    resource::{MetadataDraft, ResourceConfig, TeardownCx, TeardownReason},
     runtime::teardown::{destroy_within, teardown_deadline},
     topology::{Pooled, pooled::config::Config as PoolConfig, store::InstanceStore},
 };
@@ -75,9 +75,7 @@ impl Provider for Mock {
     type Instance = u64;
     type Topology = Pooled<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("managed-loop-mock")
-    }
+    const KEY: &'static str = "managed-loop-mock";
 
     async fn create(&self, _config: &PoolCfg, _ctx: &ResourceContext) -> Result<u64, Error> {
         let id = self.created.fetch_add(1, Ordering::SeqCst);
@@ -114,8 +112,8 @@ impl Provider for Mock {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("managed-loop-mock"), "")
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(crate::metadata_name!("managed-loop-mock"), "")
     }
 }
 
@@ -662,9 +660,7 @@ impl Provider for SlowTeardown {
     type Instance = u64;
     type Topology = Pooled<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("slow-teardown-mock")
-    }
+    const KEY: &'static str = "slow-teardown-mock";
 
     async fn create(&self, _config: &PoolCfg, _ctx: &ResourceContext) -> Result<u64, Error> {
         Ok(0)
@@ -684,8 +680,8 @@ impl Provider for SlowTeardown {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("slow-teardown-mock"), "")
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(crate::metadata_name!("slow-teardown-mock"), "")
     }
 }
 

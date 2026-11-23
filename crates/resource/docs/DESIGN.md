@@ -48,7 +48,7 @@
 ## 4. Внутренняя архитектура
 
 - `lib.rs` — фасад, реэкспорты, `prelude`.
-- `resource.rs` — `Provider`, `ResourceConfig`, `HasCredentialSlots`, schema-free `ResourceMetadataDraft`, immutable `ResourceMetadata`, recorded readmission evidence, `TeardownCx/Reason`, `CheckCost`.
+- `resource.rs` — `Provider`, `ResourceConfig`, `HasCredentialSlots`, `Provider::KEY` + derived `ProviderKey::key()`, immutable `ResourceMetadata` (admitted from the shared key-free `MetadataDraft`), recorded readmission evidence, `TeardownCx/Reason`, `CheckCost`.
 - `manager/` — `mod` (`Manager`, каноническая doc двухфазного revoke-инварианта), `acquire`, `gate`, `options`, `registration`, `rotation`, `shutdown`.
 - `topology/` — `contract` (открытый `Topology<R>`), `store` (`InstanceStore`), `pooled`/`resident`/`bounded` (hook-трейты + конфиги).
 - `runtime/` — `pool`/`resident`/`bounded` (сами структуры топологий), `managed` (`ManagedResource` — framework acquire loop).
@@ -149,6 +149,6 @@ This completes deployment wiring, not a catalog of first-party resource integrat
   описывает зависимости на resource вне `HasSchema` и persisted config values.
   Handwritten `impl Provider`, `create(&self, config, ...)`, `Instance`, topology и
   `ResourceConfig: Clone` сохраняются; текущие `#[credential]` поля — implementation baseline.
-  Schema-free `ResourceMetadataDraft` и factory-only schema binding следуют
+  Общий `MetadataDraft` без ключа и схемы и factory-only привязка ключа и схемы следуют
   [общему metadata-контракту](../../../docs/INTEGRATION_MODEL.md#shared-metadata-authoring-current-foundation-target-parity).
 - ~~**Гигиена feature/тест-команд.**~~ **Closed by Batch D (2026-07-02)** — see §6, items 6-7 above.

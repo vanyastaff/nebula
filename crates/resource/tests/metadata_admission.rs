@@ -1,22 +1,21 @@
 //! Resource metadata is authored without a schema and admitted once by its factory.
 
+use nebula_resource::ProviderKey;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
 
-use nebula_core::{Dependencies, ResourceKey, resource_key};
-use nebula_error::Classify as _;
+use nebula_core::{Dependencies, resource_key};
 use nebula_resource::{
-    Error, HasCredentialSlots, KindActivator, MetadataBuildError, Provider,
+    Error, HasCredentialSlots, KindActivator, MetadataBuildError, MetadataDraft, Provider,
     RecordedResourceMetadata, Resident, ResourceActivatorRegistry, ResourceConfig, ResourceContext,
-    ResourceFactory, ResourceMetadataDraft,
+    ResourceFactory,
 };
 use nebula_schema::{HasSchema, SchemaKind, ValidSchema, ValidationReport};
 use semver::Version;
 
 static SCHEMA_CALLS: AtomicUsize = AtomicUsize::new(0);
-static DEFAULT_DRAFT_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Debug, serde::Deserialize)]
 #[expect(
@@ -63,13 +62,10 @@ impl Provider for MetadataProbe {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("test.metadata-probe")
-    }
+    const KEY: &'static str = "test.metadata-probe";
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(
             nebula_resource::metadata_name!("Metadata probe"),
             "Factory admission probe",
         )
@@ -90,9 +86,9 @@ impl Provider for MetadataProbe {
 impl nebula_resource::ResidentProvider for MetadataProbe {}
 
 #[derive(Clone)]
-struct DefaultMismatchProbe;
+struct ExplicitDraftProbe;
 
-impl HasCredentialSlots for DefaultMismatchProbe {
+impl HasCredentialSlots for ExplicitDraftProbe {
     fn credential_slot_epoch(&self) -> u64 {
         0
     }
@@ -102,26 +98,19 @@ impl HasCredentialSlots for DefaultMismatchProbe {
     }
 }
 
-impl nebula_core::DeclaresDependencies for DefaultMismatchProbe {}
+impl nebula_core::DeclaresDependencies for ExplicitDraftProbe {}
 
 #[async_trait::async_trait]
-impl Provider for DefaultMismatchProbe {
+impl Provider for ExplicitDraftProbe {
     type Config = ();
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("test.default-metadata-key")
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(nebula_resource::metadata_name!("ExplicitDraftProbe"), "")
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        DEFAULT_DRAFT_CALLS.fetch_add(1, Ordering::SeqCst);
-        ResourceMetadataDraft::new(
-            resource_key!("test.wrong-default-metadata-key"),
-            nebula_resource::metadata_name!("test.wrong-default-metadata-key"),
-            "",
-        )
-    }
+    const KEY: &'static str = "test.explicit-metadata-key";
 
     async fn create(
         &self,
@@ -133,52 +122,7 @@ impl Provider for DefaultMismatchProbe {
 }
 
 #[async_trait::async_trait]
-impl nebula_resource::ResidentProvider for DefaultMismatchProbe {}
-
-#[derive(Clone)]
-struct ExplicitMismatchProbe;
-
-impl HasCredentialSlots for ExplicitMismatchProbe {
-    fn credential_slot_epoch(&self) -> u64 {
-        0
-    }
-
-    fn declares_credential_slots() -> bool {
-        false
-    }
-}
-
-impl nebula_core::DeclaresDependencies for ExplicitMismatchProbe {}
-
-#[async_trait::async_trait]
-impl Provider for ExplicitMismatchProbe {
-    type Config = ();
-    type Instance = ();
-    type Topology = Resident<Self>;
-
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("ExplicitMismatchProbe"),
-            "",
-        )
-    }
-
-    fn key() -> ResourceKey {
-        resource_key!("test.explicit-metadata-key")
-    }
-
-    async fn create(
-        &self,
-        _config: &Self::Config,
-        _context: &ResourceContext,
-    ) -> Result<Self::Instance, Error> {
-        Ok(())
-    }
-}
-
-#[async_trait::async_trait]
-impl nebula_resource::ResidentProvider for ExplicitMismatchProbe {}
+impl nebula_resource::ResidentProvider for ExplicitDraftProbe {}
 
 fn factory() -> impl ResourceFactory {
     KindActivator::<MetadataProbe, _, _>::new(
@@ -223,22 +167,18 @@ fn draft_shared_authoring_surface_survives_factory_admission() {
             .parse()
             .expect("valid documentation link"),
     );
-    let draft = ResourceMetadataDraft::try_new(
-        MetadataProbe::key(),
-        "Metadata probe",
-        "Factory admission probe",
-    )
-    .expect("dynamic name is valid")
-    .with_version(version.clone())
-    .with_icon(nebula_metadata::Icon::None)
-    .with_inline_icon("metadata-probe")
-    .with_documentation_url("https://example.test/resources/metadata-probe")
-    .with_categories([category.clone()])
-    .add_link(link.clone())
-    .with_tags(["resource"])
-    .add_tag("catalog")
-    .mark_experimental()
-    .mark_beta();
+    let draft = MetadataDraft::try_new("Metadata probe", "Factory admission probe")
+        .expect("dynamic name is valid")
+        .with_version(version.clone())
+        .with_icon(nebula_metadata::Icon::None)
+        .with_inline_icon("metadata-probe")
+        .with_documentation_url("https://example.test/resources/metadata-probe")
+        .with_categories([category.clone()])
+        .add_link(link.clone())
+        .with_tags(["resource"])
+        .add_tag("catalog")
+        .mark_experimental()
+        .mark_beta();
     let factory = KindActivator::<MetadataProbe, _, _>::with_metadata(
         draft,
         || MetadataProbe,
@@ -280,8 +220,7 @@ fn recorded_metadata_only_readmits_against_an_exact_fresh_definition() {
         .expect("exact evidence readmits");
     assert_eq!(readmitted, fresh.clone());
 
-    let changed = ResourceMetadataDraft::new(
-        MetadataProbe::key(),
+    let changed = MetadataDraft::new(
         nebula_resource::metadata_name!("Metadata probe"),
         "Factory admission probe",
     )
@@ -325,77 +264,28 @@ fn forged_recorded_metadata_cannot_become_an_admitted_definition() {
 }
 
 #[test]
-fn provider_default_draft_key_mismatch_is_cached_and_rejected() {
-    DEFAULT_DRAFT_CALLS.store(0, Ordering::SeqCst);
-    let factory = KindActivator::<DefaultMismatchProbe, _, _>::new(
-        || DefaultMismatchProbe,
+fn an_explicit_draft_is_admitted_under_the_providers_key() {
+    let factory = KindActivator::<ExplicitDraftProbe, _, _>::with_metadata(
+        MetadataDraft::new(nebula_resource::metadata_name!("Another name"), ""),
+        || ExplicitDraftProbe,
         nebula_resource::topology::fixed(|| {
             Resident::new(nebula_resource::ResidentConfig::default())
         }),
     );
 
-    for _ in 0..2 {
-        let error = factory
-            .metadata()
-            .expect_err("default metadata key mismatch must fail admission");
-        assert_eq!(error.code().as_str(), "RESOURCE:METADATA_KEY_MISMATCH");
-        assert!(
-            matches!(
-                error,
-                MetadataBuildError::KeyMismatch { expected, actual }
-                    if expected == resource_key!("test.default-metadata-key")
-                        && actual == resource_key!("test.wrong-default-metadata-key")
-            ),
-            "default metadata mismatch must retain both typed keys"
-        );
-    }
+    let metadata = factory.metadata().expect("a keyless draft is admitted");
     assert_eq!(
-        DEFAULT_DRAFT_CALLS.load(Ordering::SeqCst),
-        1,
-        "failed metadata admission must be cached"
+        metadata.base().key(),
+        &ExplicitDraftProbe::key(),
+        "a draft names no key, so the admitted definition carries the provider's"
     );
+    assert_eq!(metadata.base().name(), "Another name");
 }
 
-#[test]
-fn explicit_draft_key_mismatch_fails_before_registry_mutation() {
-    let factory = KindActivator::<ExplicitMismatchProbe, _, _>::with_metadata(
-        ResourceMetadataDraft::new(
-            resource_key!("test.wrong-explicit-metadata-key"),
-            nebula_resource::metadata_name!("test.wrong-explicit-metadata-key"),
-            "",
-        ),
-        || ExplicitMismatchProbe,
-        nebula_resource::topology::fixed(|| {
-            Resident::new(nebula_resource::ResidentConfig::default())
-        }),
-    );
-    let mut registry = ResourceActivatorRegistry::new();
-
-    let error = match registry.insert("test.explicit-metadata-key", Arc::new(factory)) {
-        Ok(_) => panic!("mismatched explicit draft must fail admission"),
-        Err(error) => error,
-    };
-
-    assert_eq!(error.code().as_str(), "RESOURCE:METADATA_KEY_MISMATCH");
-    assert!(
-        matches!(
-            error,
-            MetadataBuildError::KeyMismatch { expected, actual }
-                if expected == resource_key!("test.explicit-metadata-key")
-                    && actual == resource_key!("test.wrong-explicit-metadata-key")
-        ),
-        "explicit metadata mismatch must retain both typed keys"
-    );
-    assert!(
-        registry.is_empty(),
-        "failed admission must not mutate the registry"
-    );
-}
-
-fn catalog_factory(draft: ResourceMetadataDraft) -> impl ResourceFactory {
-    KindActivator::<ExplicitMismatchProbe, _, _>::with_metadata(
+fn catalog_factory(draft: MetadataDraft) -> impl ResourceFactory {
+    KindActivator::<ExplicitDraftProbe, _, _>::with_metadata(
         draft,
-        || ExplicitMismatchProbe,
+        || ExplicitDraftProbe,
         nebula_resource::topology::fixed(|| {
             Resident::new(nebula_resource::ResidentConfig::default())
         }),
@@ -407,20 +297,15 @@ fn shared_catalog_failures_are_cached_before_registry_mutation() {
     use nebula_metadata::{MetadataError, MetadataField};
     for (draft, expected) in [
         (
-            ExplicitMismatchProbe::metadata().with_tags([" "]),
+            ExplicitDraftProbe::metadata().with_tags([" "]),
             MetadataError::BlankTag,
         ),
         (
-            ResourceMetadataDraft::new(
-                ExplicitMismatchProbe::key(),
-                nebula_resource::metadata_name!("Probe"),
-                "x".repeat(8193),
-            ),
+            MetadataDraft::new(nebula_resource::metadata_name!("Probe"), "x".repeat(8193)),
             MetadataError::FieldTooLarge(MetadataField::Description),
         ),
         (
-            ResourceMetadataDraft::try_new(ExplicitMismatchProbe::key(), "\"".repeat(20_000), "")
-                .expect("nonblank name"),
+            MetadataDraft::try_new("\"".repeat(20_000), "").expect("nonblank name"),
             MetadataError::SharedBudgetExceeded,
         ),
     ] {
@@ -429,7 +314,7 @@ fn shared_catalog_failures_are_cached_before_registry_mutation() {
         for _ in 0..2 {
             std::assert_matches!(factory.metadata(),
                 Err(MetadataBuildError::Definition(nebula_metadata::MetadataBuildError::Metadata(actual))) if actual == expected);
-            std::assert_matches!(registry.insert(ExplicitMismatchProbe::key().as_str(), factory.clone()).map(|_| ()),
+            std::assert_matches!(registry.insert(ExplicitDraftProbe::key().as_str(), factory.clone()).map(|_| ()),
                 Err(MetadataBuildError::Definition(nebula_metadata::MetadataBuildError::Metadata(actual))) if actual == expected);
             assert!(registry.is_empty());
         }
@@ -442,7 +327,7 @@ fn same_semver_catalog_changes_require_exact_fresh_evidence() {
         CatalogLink, CatalogLinkRelation, CatalogReference, DeprecationNotice,
         MetadataDecodeLimits, RemovalSchedule,
     };
-    let original = catalog_factory(ExplicitMismatchProbe::metadata());
+    let original = catalog_factory(ExplicitDraftProbe::metadata());
     let original = original.metadata().expect("valid definition");
     let recorded = RecordedResourceMetadata::from_slice(
         &serde_json::to_vec(original).expect("serializable"),
@@ -450,13 +335,12 @@ fn same_semver_catalog_changes_require_exact_fresh_evidence() {
     )
     .expect("default decoder");
     for draft in [
-        ExplicitMismatchProbe::metadata()
-            .with_categories(["network.http".parse().expect("category")]),
-        ExplicitMismatchProbe::metadata().add_link(CatalogLink::new(
+        ExplicitDraftProbe::metadata().with_categories(["network.http".parse().expect("category")]),
+        ExplicitDraftProbe::metadata().add_link(CatalogLink::new(
             CatalogLinkRelation::Reference,
             "/reference".parse().expect("link"),
         )),
-        ExplicitMismatchProbe::metadata().with_deprecation(
+        ExplicitDraftProbe::metadata().with_deprecation(
             DeprecationNotice::new(Version::new(1, 0, 0))
                 .with_removal(RemovalSchedule::AtVersion(Version::new(2, 0, 0)))
                 .with_replacement(CatalogReference::resource(resource_key!(
@@ -488,7 +372,7 @@ fn same_semver_catalog_changes_require_exact_fresh_evidence() {
 fn leaf_wire_is_closed_redacted_and_transport_bounded() {
     use nebula_metadata::{MetadataDecodeError, MetadataDecodeLimits};
     const CANARY: &str = "PRIVATE_RESOURCE_WIRE_CANARY";
-    let factory = catalog_factory(ExplicitMismatchProbe::metadata());
+    let factory = catalog_factory(ExplicitDraftProbe::metadata());
     let admitted = factory.metadata().expect("valid definition");
     let wire = serde_json::to_value(admitted).expect("serializable");
     assert_eq!(wire["base"]["metadata_wire_version"], 2);

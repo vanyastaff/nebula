@@ -11,9 +11,9 @@ use serde::{Serialize, Serializer, ser::SerializeSeq as _};
 
 #[test]
 fn admission_rejects_numeric_key_serialization() {
-    let admitted = MetadataDraft::try_new(42_u64, "Example", "")
+    let admitted = MetadataDraft::try_new("Example", "")
         .unwrap()
-        .bind_schema(ValidSchema::empty());
+        .bind(42_u64, ValidSchema::empty());
     assert_matches!(
         admitted,
         Err(MetadataBuildError::Metadata(MetadataError::InvalidKey))
@@ -49,9 +49,9 @@ fn assert_key_roundtrip<K>(key: K)
 where
     K: Serialize + FromStr + Clone + PartialEq + Debug,
 {
-    let admitted = MetadataDraft::try_new(key, "Example", "")
+    let admitted = MetadataDraft::try_new("Example", "")
         .unwrap()
-        .bind_schema(ValidSchema::empty())
+        .bind(key, ValidSchema::empty())
         .unwrap();
     let wire = serde_json::to_value(&admitted).unwrap();
     assert!(wire["key"].is_string());
@@ -112,9 +112,9 @@ fn key_capture_enforces_its_own_limit_when_serializer_output_changes() {
         calls: Cell::new(0),
         entries: &entries,
     };
-    let admitted = MetadataDraft::try_new(key, "Example", "")
+    let admitted = MetadataDraft::try_new("Example", "")
         .unwrap()
-        .bind_schema(ValidSchema::empty());
+        .bind(key, ValidSchema::empty());
     assert_matches!(
         admitted,
         Err(MetadataBuildError::Metadata(MetadataError::InvalidKey))

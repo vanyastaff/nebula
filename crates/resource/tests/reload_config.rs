@@ -7,6 +7,7 @@
 //! Split out of the former monolithic `basic_integration.rs` (pure move, no
 //! test-body changes) — shared mocks/helpers live in `tests/common/mod.rs`.
 
+use nebula_resource::ProviderKey;
 mod common;
 
 use std::sync::{
@@ -15,13 +16,13 @@ use std::sync::{
 };
 
 use common::{ResidentTestResource, TestConfig, test_config, test_ctx};
-use nebula_core::{ResourceKey, resource_key};
+use nebula_core::resource_key;
 use nebula_resource::{
     AcquireOptions, Bounded, Manager, Pooled, RegistrationSpec, Resident, ResidentConfig,
     ResourceContext, ScopeLevel, ShutdownConfig, SlotIdentity,
     error::{Error, ErrorKind},
     guard::ResourceGuard,
-    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
+    resource::{MetadataDraft, Provider, ResourceConfig},
     topology::{
         bounded::BoundedProvider,
         pooled::{BrokenCheck, PoolProvider},
@@ -265,9 +266,7 @@ impl Provider for ReloadPoolResource {
     type Instance = Arc<AtomicU64>;
     type Topology = Pooled<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("test-reload-pool")
-    }
+    const KEY: &'static str = "test-reload-pool";
 
     async fn create(
         &self,
@@ -292,12 +291,8 @@ impl Provider for ReloadPoolResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("test-reload-pool"),
-            "",
-        )
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(nebula_resource::metadata_name!("test-reload-pool"), "")
     }
 }
 
@@ -331,9 +326,7 @@ impl Provider for ReloadExclusiveResource {
     type Instance = Arc<AtomicU64>;
     type Topology = Bounded<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("test-reload-exclusive")
-    }
+    const KEY: &'static str = "test-reload-exclusive";
 
     async fn create(
         &self,
@@ -344,12 +337,8 @@ impl Provider for ReloadExclusiveResource {
         Ok(Arc::new(AtomicU64::new(id)))
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("test-reload-exclusive"),
-            "",
-        )
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(nebula_resource::metadata_name!("test-reload-exclusive"), "")
     }
 }
 

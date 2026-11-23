@@ -54,6 +54,7 @@
 //! repeats every step and may land on another instance; its pin is not
 //! retaken.
 
+use crate::resource::ProviderKey;
 use std::{fmt, sync::Arc};
 
 use nebula_core::ResourceKey;

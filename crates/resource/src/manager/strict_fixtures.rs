@@ -3,12 +3,13 @@
 //! slots implement the projection port and pin their material epochs, a
 //! counting probe, and material installed with owner-qualified metadata.
 
+use crate::resource::ProviderKey;
 use std::sync::{
     Arc, OnceLock,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-use nebula_core::{CredentialId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
+use nebula_core::{CredentialId, ScopeLevel, scope::Scope};
 use nebula_credential::{
     CredentialAvailabilityObserver, CredentialGuard, CredentialGuardMetadata, CredentialKey,
     ErasedCredentialGuard, TenantScope,
@@ -25,7 +26,7 @@ use crate::{
     Bounded, Error, ErrorKind, PinSlots, PoolConfig, Pooled, Provider, Resident, ResidentConfig,
     ResourceConfig, ResourceContext, SlotCell, SlotIdentity, SlotInstallError, SlotUpdate,
     call::{OperationError, SessionBinding, SessionClosed, SessionEnd, SessionProvider},
-    resource::{HasCredentialSlots, ResourceMetadataDraft},
+    resource::{HasCredentialSlots, MetadataDraft},
     runtime::managed::ManagedResource,
     topology::{
         BoundedProvider, PoolProvider, ResidentProvider,
@@ -227,12 +228,10 @@ macro_rules! strict_provider {
             type Instance = u64;
             type Topology = $topology;
 
-            fn key() -> ResourceKey {
-                resource_key!($key)
-            }
+            const KEY: &'static str = $key;
 
-            fn metadata() -> ResourceMetadataDraft {
-                ResourceMetadataDraft::new(Self::key(), crate::metadata_name!($key), "")
+            fn metadata() -> MetadataDraft {
+                MetadataDraft::new(crate::metadata_name!($key), "")
             }
 
             async fn create(&self, _: &Config, _: &ResourceContext) -> Result<u64, Error> {
@@ -420,16 +419,10 @@ impl Provider for ProjectionlessRow {
     type Instance = u64;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("strict-projectionless")
-    }
+    const KEY: &'static str = "strict-projectionless";
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            crate::metadata_name!("strict-projectionless"),
-            "",
-        )
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(crate::metadata_name!("strict-projectionless"), "")
     }
 
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<u64, Error> {
@@ -463,12 +456,10 @@ impl Provider for UnboundRow {
     type Instance = u64;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("strict-unbound")
-    }
+    const KEY: &'static str = "strict-unbound";
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("strict-unbound"), "")
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(crate::metadata_name!("strict-unbound"), "")
     }
 
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<u64, Error> {

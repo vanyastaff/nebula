@@ -20,9 +20,7 @@ proptest! {
     ) {
         let name = format!("Name {name_suffix}");
         let version = Version::new(version.0, version.1, version.2);
-        let mut draft = MetadataDraft::try_new(
-            key.parse::<ActionKey>().expect("generated valid key"),
-            &name,
+        let mut draft = MetadataDraft::try_new(&name,
             &description,
         )
         .expect("generated nonblank name")
@@ -36,7 +34,7 @@ proptest! {
             draft = draft.with_deprecation(notice.clone());
             manifest = manifest.deprecation(notice);
         }
-        let leaf = draft.bind_schema(ValidSchema::empty()).expect("valid bounded metadata");
+        let leaf = draft.bind(key.parse::<ActionKey>().expect("generated valid key"), ValidSchema::empty()).expect("valid bounded metadata");
         let manifest = manifest.build().expect("generated valid manifest");
 
         let recorded_leaf: RecordedBaseMetadata<ActionKey> = serde_json::from_value(json!(leaf))?;
@@ -48,11 +46,9 @@ proptest! {
 
     #[test]
     fn name_checks_agree_with_the_nonblank_contract(name in any::<String>()) {
-        let leaf = MetadataDraft::try_new(
-            "example".parse::<ActionKey>().expect("valid key"),
-            &name,
+        let leaf = MetadataDraft::try_new(&name,
             "",
-        ).map(|draft| draft.bind_schema(ValidSchema::empty()).expect("valid bounded metadata"));
+        ).map(|draft| draft.bind("example".parse::<ActionKey>().expect("valid key"), ValidSchema::empty()).expect("valid bounded metadata"));
         let manifest = PluginManifest::builder("example", &name).build();
         let leaf_wire = serde_json::from_value::<RecordedBaseMetadata<ActionKey>>(json!({
             "metadata_wire_version": 2,
@@ -84,7 +80,7 @@ proptest! {
         maturities in prop::collection::vec(0_u8..3, 0..32),
     ) {
         let notice = DeprecationNotice::new(Version::new(1, 0, 0));
-        let mut draft = MetadataDraft::try_new("example", "Example", "")?
+        let mut draft = MetadataDraft::try_new("Example", "")?
             .with_deprecation(notice.clone());
         let mut manifest = PluginManifest::builder("example", "Example")
             .deprecation(notice.clone());
@@ -99,7 +95,7 @@ proptest! {
                 1 => MaturityLevel::Beta,
                 _ => MaturityLevel::Stable,
             });
-            let leaf = draft.clone().bind_schema(ValidSchema::empty()).expect("valid bounded metadata");
+            let leaf = draft.clone().bind("example", ValidSchema::empty()).expect("valid bounded metadata");
             prop_assert_eq!(leaf.maturity(), MaturityLevel::Deprecated);
             prop_assert_eq!(leaf.deprecation(), Some(&notice));
         }

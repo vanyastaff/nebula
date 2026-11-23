@@ -14,7 +14,7 @@ use super::*;
 use crate::{
     Manager, Resident, ScopeLevel,
     error::Error as ResourceError,
-    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
+    resource::{MetadataDraft, Provider, ResourceConfig},
     topology::resident::{self, ResidentProvider},
 };
 
@@ -79,9 +79,7 @@ impl Provider for TestRes {
     type Instance = Arc<AtomicU64>;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("test-factory-res")
-    }
+    const KEY: &'static str = "test-factory-res";
 
     async fn create(
         &self,
@@ -92,12 +90,8 @@ impl Provider for TestRes {
         Ok(Arc::new(AtomicU64::new(id)))
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            crate::metadata_name!("test-factory-res"),
-            String::new(),
-        )
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(crate::metadata_name!("test-factory-res"), String::new())
     }
 }
 
@@ -158,13 +152,11 @@ impl Provider for BoundTestRes {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("BoundTestRes"), "")
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(crate::metadata_name!("BoundTestRes"), "")
     }
 
-    fn key() -> ResourceKey {
-        resource_key!("test-factory-bound-res")
-    }
+    const KEY: &'static str = "test-factory-bound-res";
 
     async fn create(
         &self,
@@ -414,7 +406,7 @@ fn key_coherence_law() {
     assert_eq!(
         factory.key(),
         TestRes::key(),
-        "factory.key() must equal <R as Provider>::key() (key-coherence law)"
+        "factory.key() must equal <R as ProviderKey>::key() (key-coherence law)"
     );
 }
 

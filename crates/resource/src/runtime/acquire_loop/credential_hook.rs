@@ -4,6 +4,7 @@
 //! caller may stop observing its receipt. Retained cleanup settles separately
 //! so framework cleanup faults cannot overwrite the provider hook outcome.
 
+use crate::resource::ProviderKey;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},

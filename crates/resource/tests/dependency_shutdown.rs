@@ -1,5 +1,6 @@
 //! Retiring framework roots must release dependencies before global guard drain.
 
+use nebula_resource::ProviderKey;
 use std::{
     any::Any,
     sync::{
@@ -9,11 +10,10 @@ use std::{
     time::Duration,
 };
 
-use nebula_core::ResourceKey;
 use nebula_resource::{
     AcquireOptions, Error, Manager, ManagerConfig, Pooled, RegistrationSpec, Resident,
     ResidentConfig, ResourceContext, ScopeLevel, ShutdownConfig, SlotIdentity, TeardownCx,
-    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
+    resource::{MetadataDraft, Provider, ResourceConfig},
     topology::{
         pooled::{BrokenCheck, PoolProvider},
         resident::ResidentProvider,
@@ -48,15 +48,21 @@ impl<const ID: usize> Provider for ResidentNode<ID> {
     type Config = Config;
     type Instance = Instance;
     type Topology = Resident<Self>;
-    fn key() -> ResourceKey {
-        ResourceKey::try_from(format!("dependency-node-{ID}")).unwrap()
-    }
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("ResidentNode"),
-            "",
-        )
+    const KEY: &'static str = match ID {
+        0 => "dependency-node-0",
+        1 => "dependency-node-1",
+        2 => "dependency-node-2",
+        3 => "dependency-node-3",
+        4 => "dependency-node-4",
+        5 => "dependency-node-5",
+        6 => "dependency-node-6",
+        7 => "dependency-node-7",
+        8 => "dependency-node-8",
+        9 => "dependency-node-9",
+        _ => panic!("declare a key for this node id"),
+    };
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(nebula_resource::metadata_name!("ResidentNode"), "")
     }
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<Instance, Error> {
         Ok(Instance {
@@ -96,12 +102,9 @@ impl Provider for PooledParent {
     type Config = Config;
     type Instance = Instance;
     type Topology = Pooled<Self>;
-    fn key() -> ResourceKey {
-        nebula_core::resource_key!("dependency-pooled-parent")
-    }
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
+    const KEY: &'static str = "dependency-pooled-parent";
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(
             nebula_resource::metadata_name!("dependency-pooled-parent"),
             "",
         )

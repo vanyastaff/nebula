@@ -175,11 +175,7 @@ const REMOVED_CATALOG_API: &[(&str, &str, &str)] = &[
         "with_checkpoint_policy",
         "ActionMetadataDraft",
     ),
-    (
-        "removed_resource_from_key",
-        "from_key",
-        "ResourceMetadataDraft",
-    ),
+    ("removed_resource_from_key", "from_key", "MetadataDraft"),
     (
         "removed_credential_pattern",
         "pattern",
@@ -510,8 +506,8 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
             }
             pub mod resource {
                 pub use nebula_resource::{
-                    ConfigFingerprint, Error, HasCredentialSlots, PinSlots, ResourceConfig,
-                    SlotInstallError, SlotUpdate,
+                    __assert_provider_key, ConfigFingerprint, Error, HasCredentialSlots, PinSlots,
+                    ResourceConfig, SlotInstallError, SlotUpdate,
                 };
                 pub mod contribution {
                     pub use crate::resource_contribution::{
@@ -523,7 +519,7 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
                     reason = "the hidden macro ABI mirrors nebula_resource::resource paths emitted by existing derives"
                 )]
                 pub mod resource {
-                    pub use nebula_resource::resource::Provider;
+                    pub use nebula_resource::resource::{Provider, ProviderKey};
                 }
                 pub mod topology {
                     pub use nebula_resource::topology::{Pooled, Resident, Topology};

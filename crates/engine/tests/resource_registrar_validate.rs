@@ -26,17 +26,15 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use nebula_core::{
-    CredentialId, Dependencies, ResourceKey, SlotField, credential_key, dependencies::SlotKind,
-    resource_key,
-};
+use nebula_core::{CredentialId, Dependencies, SlotField, credential_key, dependencies::SlotKind};
 use nebula_engine::{KindActivator, RegistrarError, ResourceActivatorRegistry};
+use nebula_resource::ProviderKey;
 use nebula_resource::Resident;
 use nebula_resource::{
     HasCredentialSlots, Manager, ScopeLevel,
     error::Error as ResourceError,
     rate_limit::{Rate, ResiliencePolicy},
-    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
+    resource::{MetadataDraft, Provider, ResourceConfig},
     topology::resident,
     topology::resident::ResidentProvider,
 };
@@ -96,9 +94,7 @@ impl Provider for HttpPool {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("http_pool")
-    }
+    const KEY: &'static str = "http_pool";
 
     async fn create(
         &self,
@@ -108,12 +104,8 @@ impl Provider for HttpPool {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            <Self as Provider>::key(),
-            nebula_resource::metadata_name!("http_pool"),
-            String::new(),
-        )
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(nebula_resource::metadata_name!("http_pool"), String::new())
     }
 
     /// The provider allows 30 requests per second, 30 back to back.
@@ -166,9 +158,7 @@ impl Provider for TokenPool {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("token_pool")
-    }
+    const KEY: &'static str = "token_pool";
 
     async fn create(
         &self,
@@ -178,12 +168,8 @@ impl Provider for TokenPool {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            <Self as Provider>::key(),
-            nebula_resource::metadata_name!("token_pool"),
-            String::new(),
-        )
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(nebula_resource::metadata_name!("token_pool"), String::new())
     }
 }
 
@@ -273,7 +259,7 @@ async fn known_kind_schema_valid_config_is_ok_and_no_manager_mutation() {
     let manager = Manager::new();
     assert!(
         manager
-            .get_any(&<HttpPool as Provider>::key(), &ScopeLevel::Global)
+            .get_any(&<HttpPool as ProviderKey>::key(), &ScopeLevel::Global)
             .is_none(),
         "validating a config must NEVER live-register the resource \
          (config CRUD is separate from engine activation — §13.1)"

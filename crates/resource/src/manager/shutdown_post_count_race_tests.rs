@@ -26,7 +26,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use nebula_core::{ExecutionId, ResourceKey, WorkspaceId, resource_key, scope::Scope};
+use nebula_core::{ExecutionId, WorkspaceId, resource_key, scope::Scope};
 use tokio_util::sync::CancellationToken;
 
 use super::*;
@@ -35,7 +35,7 @@ use crate::{
     context::ResourceContext,
     error::ErrorKind,
     options::AcquireOptions,
-    resource::{ResourceConfig, ResourceMetadataDraft},
+    resource::{MetadataDraft, ResourceConfig},
     topology::{Resident, resident::config::Config as ResidentConfig},
 };
 
@@ -58,17 +58,14 @@ impl Provider for ShutdownRaceResident {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("test.shutdown_post_count_race.resident")
-    }
+    const KEY: &'static str = "test.shutdown_post_count_race.resident";
 
     async fn create(&self, _config: &RaceCfg, _ctx: &ResourceContext) -> Result<(), Error> {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(
             crate::metadata_name!("test.shutdown_post_count_race.resident"),
             "",
         )
@@ -161,12 +158,9 @@ impl Provider for ValidatingResident {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("test.registration_validation_race")
-    }
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
+    const KEY: &'static str = "test.registration_validation_race";
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(
             crate::metadata_name!("test.registration_validation_race"),
             "",
         )

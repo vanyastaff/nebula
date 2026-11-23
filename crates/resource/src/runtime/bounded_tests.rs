@@ -1,12 +1,12 @@
 use std::sync::atomic::AtomicBool;
 
 use async_trait::async_trait;
-use nebula_core::{ExecutionId, ResourceKey, resource_key};
+use nebula_core::ExecutionId;
 
 use super::*;
 use crate::topology::store::{InstanceStore, StoreView};
 use crate::{
-    resource::{ResourceConfig, ResourceMetadataDraft},
+    resource::{MetadataDraft, ResourceConfig},
     topology::bounded::BoundedProvider,
 };
 
@@ -45,9 +45,7 @@ impl Provider for MockBounded {
     type Instance = u32;
     type Topology = Bounded<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("mock-bounded")
-    }
+    const KEY: &'static str = "mock-bounded";
 
     async fn create(&self, _config: &BoundedCfg, _ctx: &ResourceContext) -> Result<u32, Error> {
         Ok(7)
@@ -57,8 +55,8 @@ impl Provider for MockBounded {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("mock-bounded"), "")
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(crate::metadata_name!("mock-bounded"), "")
     }
 }
 
@@ -299,9 +297,7 @@ impl Provider for FingerprintResource {
     type Instance = u32;
     type Topology = Bounded<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("fingerprint-ownership-regression")
-    }
+    const KEY: &'static str = "fingerprint-ownership-regression";
     async fn create(&self, _: &Self::Config, _: &ResourceContext) -> Result<u32, Error> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Ok(1)
@@ -309,9 +305,8 @@ impl Provider for FingerprintResource {
     async fn destroy(&self, _: u32, _: crate::TeardownCx) -> Result<(), Error> {
         Ok(())
     }
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(
             crate::metadata_name!("fingerprint-ownership-regression"),
             "",
         )

@@ -45,10 +45,12 @@ and uses its own checked builder; it is not a catalog-leaf admission bypass.
 
 #### Catalog construction and wire migration
 
-The three concrete drafts each provide `new(key, MetadataName, description)` and
-`try_new(key, name, description)`. Resource authors must implement
-`Provider::metadata`; `ResourceMetadataDraft::from_key` and inferred display names
-are removed. Credential drafts no longer take or expose an auth pattern:
+The action and credential drafts each provide `new(key, MetadataName, description)`
+and `try_new(key, name, description)`. A resource declares its identity once, as
+`Provider::KEY`, and `Provider::metadata` returns the shared key-free
+`MetadataDraft::new(MetadataName, description)`; the factory stamps the key at
+admission, so a resource's catalog entry cannot name another resource. Action
+and credential move to the same shape next. Inferred display names are removed. Credential drafts no longer take or expose an auth pattern:
 admission derives it from `<C::Scheme as AuthScheme>::pattern()`. Action macros
 preserve the full SemVer, including prerelease and build metadata.
 
@@ -196,9 +198,9 @@ presentation identity or rewrite existing schema or plan bytes.
 entity-specific admission. Property display hints belong to schema authoring,
 not to a new catalog-leaf metadata type. SDK personas curate these contracts.
 
-| Shared concern | `ActionMetadataDraft` | `CredentialMetadataDraft` | `ResourceMetadataDraft` |
+| Shared concern | `ActionMetadataDraft` | `CredentialMetadataDraft` | `MetadataDraft` (resource) |
 |---|---|---|---|
-| Identity and text | `new(ActionKey, MetadataName, description)` / `try_new` | `new(CredentialKey, MetadataName, description)` / `try_new` | `new(ResourceKey, MetadataName, description)` / `try_new` |
+| Identity and text | `new(ActionKey, MetadataName, description)` / `try_new` | `new(CredentialKey, MetadataName, description)` / `try_new` | `new(MetadataName, description)` / `try_new`; identity is `Provider::KEY` |
 | Revision | `with_version(MetadataVersion)` | `with_version(MetadataVersion)` | `with_version(MetadataVersion)` |
 | Icon | `with_icon`, `with_inline_icon`, `with_url_icon` | `with_icon`, `with_inline_icon`, `with_url_icon` | `with_icon`, `with_inline_icon`, `with_url_icon` |
 | Documentation and discovery | `with_documentation_url`, `with_categories`, `add_link`, `with_tags`, `add_tag` | `with_documentation_url`, `with_categories`, `add_link`, `with_tags`, `add_tag` | `with_documentation_url`, `with_categories`, `add_link`, `with_tags`, `add_tag` |
@@ -243,7 +245,7 @@ catalog protocol. Leaf facts are projected from existing factories/registries,
 not authored capability flags. Plugin packaging retains package/SDK constraints;
 tenant availability and future locale overlays remain separate host projections.
 These additions require their own checked admission, exact evidence and revision
-compatibility cases. The shared lower draft's `bind_schema` becomes fallible to
+compatibility cases. The shared lower draft's `bind` is fallible to
 enforce those bounds; leaf factories propagate its error without exposing a leaf
 `build()` method. These changes are not implemented by this documentation change.
 
@@ -388,7 +390,7 @@ These are **schema-level** links: metadata and parameter types declare a closed 
 
 **Resource** — `[ ResourceMetadata + Schema ]` — **may depend on Credential and/or other Resource types.**
 
-Long-lived managed object: connection pool, SDK client, file handle. Resource lifecycle owns init, health-check, hot-reload via **ReloadOutcome**, bindings, per-slot credential-rotation fan-out, and scope-aware teardown. Authors return `ResourceMetadataDraft`; the selected `ResourceFactory` derives and caches the exact `R::Config` schema, and validation/registration consume that one definition before typed manager admission. A Resource may declare typed Credential slots and may build on other Resource types, but the resource dependency subgraph must remain acyclic and activation-validated. The author declares what the Resource **is**; the runtime provides it **healthy** or fails loudly. **Concrete shape:** see §3.6 (`nebula-resource`).
+Long-lived managed object: connection pool, SDK client, file handle. Resource lifecycle owns init, health-check, hot-reload via **ReloadOutcome**, bindings, per-slot credential-rotation fan-out, and scope-aware teardown. Authors declare `Provider::KEY` and return the shared key-free `MetadataDraft`; the selected `ResourceFactory` derives and caches the exact `R::Config` schema, and validation/registration consume that one definition before typed manager admission. A Resource may declare typed Credential slots and may build on other Resource types, but the resource dependency subgraph must remain acyclic and activation-validated. The author declares what the Resource **is**; the runtime provides it **healthy** or fails loudly. **Concrete shape:** see §3.6 (`nebula-resource`).
 
 **Action** — `[ ActionMetadata + Schema ]` — **declares zero or more Resource and/or Credential kinds it needs** (by stable id / type reference in the **integration schema**, not ad hoc runtime lookup).
 

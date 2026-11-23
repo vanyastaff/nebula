@@ -41,12 +41,12 @@ fn empty_schema() -> ValidSchema {
 
 fn base(name: &str) -> BaseMetadata<LocalKey> {
     draft(name)
-        .bind_schema(empty_schema())
+        .bind(key(name), empty_schema())
         .expect("valid bounded metadata")
 }
 
-fn draft(name: &str) -> MetadataDraft<LocalKey> {
-    MetadataDraft::try_new(key(name), name, "desc").expect("nonblank name")
+fn draft(name: &str) -> MetadataDraft {
+    MetadataDraft::try_new(name, "desc").expect("nonblank name")
 }
 
 // --- Shape 1: zero extra fields ---
@@ -179,7 +179,7 @@ fn multi_field_with_collection_nests_alongside_base() {
     let original = MultiFieldMetadata {
         base: draft("http.request")
             .with_tags(["network"])
-            .bind_schema(empty_schema())
+            .bind(key("http.request"), empty_schema())
             .expect("valid bounded metadata"),
         category: "integration".to_owned(),
         priority: 3,
@@ -231,7 +231,7 @@ fn metadata_trait_delegates_through_a_composed_shape() {
     let metadata = ScalarExtraMetadata {
         base: draft("token_auth")
             .mark_beta()
-            .bind_schema(empty_schema())
+            .bind(key("token_auth"), empty_schema())
             .expect("valid bounded metadata"),
         pattern: "secret_token".to_owned(),
     };
@@ -250,7 +250,7 @@ fn default_version_is_omitted_and_explicit_version_is_present() {
 
     let explicit = draft("k")
         .with_version(Version::new(2, 0, 0))
-        .bind_schema(empty_schema())
+        .bind(key("k"), empty_schema())
         .expect("valid bounded metadata");
     let explicit_value = serde_json::to_value(&explicit).expect("serializes");
     assert_eq!(
@@ -268,7 +268,7 @@ fn icon_none_is_omitted_and_set_icon_is_present() {
 
     let with_icon = draft("k")
         .with_inline_icon("github")
-        .bind_schema(empty_schema())
+        .bind(key("k"), empty_schema())
         .expect("valid bounded metadata");
     let value = serde_json::to_value(&with_icon).expect("serializes");
     assert_eq!(
@@ -284,7 +284,7 @@ fn empty_tags_is_omitted_and_nonempty_tags_is_present() {
 
     let with_tags = draft("k")
         .with_tags(["a", "b"])
-        .bind_schema(empty_schema())
+        .bind(key("k"), empty_schema())
         .expect("valid bounded metadata");
     let value = serde_json::to_value(&with_tags).expect("serializes");
     assert_eq!(
@@ -303,7 +303,7 @@ fn default_maturity_is_omitted_and_nondefault_maturity_is_present() {
 
     let experimental = draft("k")
         .mark_experimental()
-        .bind_schema(empty_schema())
+        .bind(key("k"), empty_schema())
         .expect("valid bounded metadata");
     let value = serde_json::to_value(&experimental).expect("serializes");
     assert_eq!(
@@ -319,7 +319,7 @@ fn documentation_url_none_is_omitted_and_set_url_is_present() {
 
     let with_url = draft("k")
         .with_documentation_url("https://example.com/docs")
-        .bind_schema(empty_schema())
+        .bind(key("k"), empty_schema())
         .expect("valid bounded metadata");
     let value = serde_json::to_value(&with_url).expect("serializes");
     assert_eq!(
@@ -337,7 +337,7 @@ fn deprecation_none_is_omitted_and_set_notice_is_present() {
 
     let deprecated = draft("k")
         .with_deprecation(DeprecationNotice::new(Version::new(1, 0, 0)))
-        .bind_schema(empty_schema())
+        .bind(key("k"), empty_schema())
         .expect("valid bounded metadata");
     let value = serde_json::to_value(&deprecated).expect("serializes");
     assert_eq!(

@@ -10,16 +10,17 @@
 //!
 //! [`Bounded`]: nebula_resource::Bounded
 
+use nebula_resource::ProviderKey;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
-use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
+use nebula_core::{ResourceKey, ScopeLevel, scope::Scope};
 use nebula_resource::{
     AcquireOptions, Bounded, Manager, RegistrationSpec, ResourceContext, SlotIdentity, TopologyTag,
     error::Error,
-    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
+    resource::{MetadataDraft, Provider, ResourceConfig},
     topology::bounded::BoundedProvider,
 };
 use tokio_util::sync::CancellationToken;
@@ -76,9 +77,7 @@ impl Provider for Seats {
     type Instance = Seat;
     type Topology = Bounded<Seats>;
 
-    fn key() -> ResourceKey {
-        resource_key!("bounded.seats")
-    }
+    const KEY: &'static str = "bounded.seats";
 
     async fn create(&self, _config: &SeatCfg, _ctx: &ResourceContext) -> Result<Seat, Error> {
         let id = self.create_count.fetch_add(1, Ordering::SeqCst);
@@ -94,12 +93,8 @@ impl Provider for Seats {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("bounded.seats"),
-            "",
-        )
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(nebula_resource::metadata_name!("bounded.seats"), "")
     }
 }
 

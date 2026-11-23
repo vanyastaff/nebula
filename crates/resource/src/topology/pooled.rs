@@ -84,7 +84,7 @@ impl InstanceMetrics {
 ///
 /// `PoolProvider` is **not** object-safe: [`recycle`](Self::recycle) and
 /// [`prepare`](Self::prepare) return `impl Future` (RPITIT), and it inherits
-/// [`Provider`]'s receiver-less `key()`. The framework reaches these hooks
+/// [`Provider`]'s associated `KEY` constant. The framework reaches these hooks
 /// monomorphically inside [`Pooled<R>`](crate::topology::Pooled), never through
 /// a trait object — do not attempt `Box<dyn PoolProvider<…>>`.
 pub trait PoolProvider: Provider {

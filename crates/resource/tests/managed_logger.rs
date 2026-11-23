@@ -10,6 +10,7 @@
 //! flushes the buffer within the teardown deadline. It deliberately uses no
 //! `tracing-appender`: the sink is the resource's own instance.
 
+use nebula_resource::ProviderKey;
 use std::{
     any::Any,
     future::Future,
@@ -25,7 +26,6 @@ use nebula_core::{
     CoreError, CredentialId, CredentialKey, ResourceKey,
     accessor::{CredentialAccessor, ResourceAccessor},
     context::BaseContext,
-    resource_key,
     scope::{Principal, Scope},
 };
 use nebula_credential::{
@@ -37,7 +37,7 @@ use nebula_resource::{
     RegistrationSpec, Resident, ResidentConfig, ResourceConfig, ResourceContext, ResourceEvent,
     ScopeLevel, ShutdownConfig, SlotIdentity, TeardownCx,
     call::{Cost, Effect, Operation, OperationCx, OperationError, ResourceHandle, SentState},
-    resource::{Provider, ResourceMetadataDraft},
+    resource::{MetadataDraft, Provider},
     topology::ResidentProvider,
 };
 use serde::{Deserialize, Serialize};
@@ -190,13 +190,10 @@ impl Provider for Logger {
     type Instance = LogSink;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("fixture.logger")
-    }
+    const KEY: &'static str = "fixture.logger";
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(
             nebula_resource::metadata_name!("Logger"),
             "An in-memory log sink",
         )

@@ -23,6 +23,7 @@
 //! [`DaemonError::DuplicateKey`] rather than overwriting. Operators resolve
 //! the collision by renaming the daemon's `Resource::key`.
 
+use nebula_resource::ProviderKey;
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use dashmap::DashMap;
@@ -310,11 +311,11 @@ mod tests {
         time::Duration,
     };
 
-    use nebula_core::{ExecutionId, ResourceKey};
+    use nebula_core::ExecutionId;
     use nebula_resource::{
         context::ResourceContext,
         error::Error as ResourceError,
-        resource::{Provider, ResourceConfig, ResourceMetadataDraft},
+        resource::{MetadataDraft, Provider, ResourceConfig},
     };
     use tokio_util::sync::CancellationToken;
 
@@ -351,9 +352,7 @@ mod tests {
         type Instance = ();
         type Topology = nebula_resource::NoTopology;
 
-        fn key() -> ResourceKey {
-            ResourceKey::new("registry-counted").unwrap()
-        }
+        const KEY: &'static str = "registry-counted";
 
         async fn create(
             &self,
@@ -363,12 +362,8 @@ mod tests {
             Ok(())
         }
 
-        fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::new(
-                Self::key(),
-                nebula_resource::metadata_name!("registry-counted"),
-                "",
-            )
+        fn metadata() -> MetadataDraft {
+            MetadataDraft::new(nebula_resource::metadata_name!("registry-counted"), "")
         }
     }
 
@@ -467,9 +462,7 @@ mod tests {
         type Config = EmptyCfg;
         type Instance = ();
         type Topology = nebula_resource::NoTopology;
-        fn key() -> ResourceKey {
-            ResourceKey::new("registry-counted-b").unwrap()
-        }
+        const KEY: &'static str = "registry-counted-b";
         async fn create(
             &self,
             _config: &Self::Config,
@@ -477,12 +470,8 @@ mod tests {
         ) -> Result<(), ResourceError> {
             Ok(())
         }
-        fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::new(
-                Self::key(),
-                nebula_resource::metadata_name!("registry-counted-b"),
-                "",
-            )
+        fn metadata() -> MetadataDraft {
+            MetadataDraft::new(nebula_resource::metadata_name!("registry-counted-b"), "")
         }
     }
     nebula_resource::no_credential_slots!(CountedDaemonB);

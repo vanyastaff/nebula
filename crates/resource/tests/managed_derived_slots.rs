@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use nebula_core::{ResourceKey, resource_key, scope::Scope};
+use nebula_core::scope::Scope;
 use nebula_credential::{
     Credential, CredentialContext, CredentialError, CredentialGuard, CredentialMetadataDraft,
     SecretString, SecretToken, StaticResolveResult,
@@ -16,7 +16,7 @@ use nebula_resource::{
     CredentialSlot, Error, Manager, PinSlots, RegistrationSpec, Resident, ResidentConfig, Resource,
     ResourceConfig, ResourceContext, ScopeLevel, SlotCell, SlotIdentity,
     call::{Cost, Effect, Operation, OperationCx, OperationError},
-    resource::{Provider, ResourceMetadataDraft},
+    resource::{MetadataDraft, Provider},
     topology::ResidentProvider,
 };
 use tokio_util::sync::CancellationToken;
@@ -48,12 +48,10 @@ impl Provider for Mailer {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("derived.mailer")
-    }
+    const KEY: &'static str = "derived.mailer";
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(Self::key(), nebula_resource::metadata_name!("Mailer"), "")
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(nebula_resource::metadata_name!("Mailer"), "")
     }
 
     async fn create(&self, _: &MailerConfig, _: &ResourceContext) -> Result<(), Error> {

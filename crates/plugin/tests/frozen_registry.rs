@@ -23,7 +23,7 @@ use nebula_plugin::{
     RuntimeContractVersion, WorkerFlavorContext,
 };
 use nebula_resource::{
-    KindActivator, Provider, Resident, ResidentConfig, ResourceFactory, ResourceMetadataDraft,
+    KindActivator, MetadataDraft, Provider, Resident, ResidentConfig, ResourceFactory,
 };
 use nebula_workflow::{NodeDefinition, WorkflowBuilder};
 use semver::{Version, VersionReq};
@@ -49,23 +49,16 @@ impl<const INDEX: usize> Provider for MetadataFixture<INDEX> {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("MetadataFixture"),
-            "",
-        )
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(nebula_resource::metadata_name!("MetadataFixture"), "")
     }
 
-    fn key() -> ResourceKey {
-        let key = match INDEX {
-            0 => "alpha.db",
-            1 => "alpha.internal_resource",
-            2 => "acme.storage.db",
-            _ => panic!("resource metadata fixture index {INDEX} is not declared"),
-        };
-        ResourceKey::new(key).expect("valid fixture resource key")
-    }
+    const KEY: &'static str = match INDEX {
+        0 => "alpha.db",
+        1 => "alpha.internal_resource",
+        2 => "acme.storage.db",
+        _ => panic!("resource metadata fixture index is not declared"),
+    };
 
     async fn create(
         &self,
@@ -81,11 +74,7 @@ impl<const INDEX: usize> nebula_resource::ResidentProvider for MetadataFixture<I
 
 fn resource_factory_at<const INDEX: usize>() -> Arc<dyn ResourceFactory> {
     let factory = KindActivator::<MetadataFixture<INDEX>, _, _>::with_metadata(
-        ResourceMetadataDraft::new(
-            MetadataFixture::<INDEX>::key(),
-            nebula_resource::metadata_name!("Metadata fixture"),
-            "",
-        ),
+        MetadataDraft::new(nebula_resource::metadata_name!("Metadata fixture"), ""),
         || MetadataFixture,
         nebula_resource::topology::fixed(|| Resident::new(ResidentConfig::default())),
     );

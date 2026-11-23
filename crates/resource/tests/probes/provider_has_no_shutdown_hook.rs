@@ -1,6 +1,5 @@
-use nebula_core::ResourceKey;
 use nebula_resource::{
-    Error, Provider, Resident, ResidentProvider, ResourceConfig, ResourceContext, resource_key,
+    Error, Provider, Resident, ResidentProvider, ResourceConfig, ResourceContext,
 };
 
 struct LegacyProvider;
@@ -21,9 +20,7 @@ impl Provider for LegacyProvider {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("legacy.provider")
-    }
+    const KEY: &'static str = "legacy.provider";
 
     async fn create(&self, _config: &Config, _ctx: &ResourceContext) -> Result<(), Error> {
         Ok(())
@@ -33,12 +30,8 @@ impl Provider for LegacyProvider {
         Ok(())
     }
 
-    fn metadata() -> nebula_resource::ResourceMetadataDraft {
-        nebula_resource::ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("LegacyProvider"),
-            "",
-        )
+    fn metadata() -> nebula_resource::MetadataDraft {
+        nebula_resource::MetadataDraft::new(nebula_resource::metadata_name!("LegacyProvider"), "")
     }
 }
 

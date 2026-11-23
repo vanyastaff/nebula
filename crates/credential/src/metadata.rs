@@ -12,7 +12,8 @@ use crate::AuthPattern;
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use = "credential metadata drafts are admitted by a credential registry"]
 pub struct CredentialMetadataDraft {
-    base: MetadataDraft<CredentialKey>,
+    key: CredentialKey,
+    base: MetadataDraft,
 }
 
 impl CredentialMetadataDraft {
@@ -23,7 +24,8 @@ impl CredentialMetadataDraft {
         description: impl Into<String>,
     ) -> Self {
         Self {
-            base: MetadataDraft::new(key, name, description),
+            key,
+            base: MetadataDraft::new(name, description),
         }
     }
 
@@ -39,7 +41,8 @@ impl CredentialMetadataDraft {
         description: impl Into<String>,
     ) -> Result<Self, nebula_metadata::MetadataError> {
         Ok(Self {
-            base: MetadataDraft::try_new(key, name, description)?,
+            key,
+            base: MetadataDraft::try_new(name, description)?,
         })
     }
 
@@ -161,7 +164,7 @@ impl CredentialMetadataDraft {
         schema: nebula_schema::ValidSchema,
         pattern: AuthPattern,
     ) -> Result<CredentialMetadata, CredentialMetadataAdmissionError> {
-        let base = self.base.bind_schema(schema).map_err(|_| {
+        let base = self.base.bind(self.key, schema).map_err(|_| {
             tracing::error!(
                 error_code = "CREDENTIAL:CATALOG_METADATA_INVALID",
                 "credential catalog metadata admission failed"

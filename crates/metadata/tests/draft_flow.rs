@@ -18,7 +18,7 @@ fn checked_name() -> MetadataName {
 fn draft_binds_schema_after_all_shared_fields_are_authored() {
     let version: MetadataVersion = Version::new(2, 1, 0);
     let notice = DeprecationNotice::new(Version::new(2, 0, 0)).with_reason("superseded");
-    let metadata = MetadataDraft::new("example", checked_name(), "description")
+    let metadata = MetadataDraft::new(checked_name(), "description")
         .with_version(version.clone())
         .with_icon(Icon::inline("initial"))
         .with_url_icon("https://example.test/icon.svg")
@@ -30,7 +30,7 @@ fn draft_binds_schema_after_all_shared_fields_are_authored() {
         .mark_beta()
         .mark_stable()
         .with_deprecation(notice.clone())
-        .bind_schema(ValidSchema::empty())
+        .bind("example", ValidSchema::empty())
         .expect("valid bounded metadata");
 
     assert_eq!(metadata.key(), &"example");
@@ -51,7 +51,7 @@ fn draft_binds_schema_after_all_shared_fields_are_authored() {
 #[test]
 fn draft_try_new_validates_dynamic_names_without_exposing_them() {
     const SUBMITTED: &str = " \t\u{2003}";
-    let error = MetadataDraft::try_new("example", SUBMITTED, "private-description")
+    let error = MetadataDraft::try_new(SUBMITTED, "private-description")
         .expect_err("whitespace-only dynamic name is rejected");
 
     assert_eq!(error, MetadataError::BlankName);
@@ -62,13 +62,13 @@ fn draft_try_new_validates_dynamic_names_without_exposing_them() {
 
 #[test]
 fn bound_metadata_emits_the_versioned_shared_wire_shape() {
-    let metadata = MetadataDraft::new("example", checked_name(), "description")
+    let metadata = MetadataDraft::new(checked_name(), "description")
         .with_version(Version::new(2, 1, 0))
         .with_inline_icon("catalog")
         .with_documentation_url("https://example.test/docs")
         .with_tags(["network"])
         .mark_beta()
-        .bind_schema(ValidSchema::empty())
+        .bind("example", ValidSchema::empty())
         .expect("valid bounded metadata");
 
     assert_eq!(
@@ -90,10 +90,10 @@ fn bound_metadata_emits_the_versioned_shared_wire_shape() {
 
 #[test]
 fn recorded_wire_requires_an_exact_fresh_definition_for_readmission() {
-    let fresh = MetadataDraft::new("example".to_owned(), checked_name(), "description")
+    let fresh = MetadataDraft::new(checked_name(), "description")
         .with_version(Version::new(2, 1, 0))
         .mark_beta()
-        .bind_schema(ValidSchema::empty())
+        .bind("example".to_owned(), ValidSchema::empty())
         .expect("valid bounded metadata");
     let wire = serde_json::to_value(&fresh).expect("fresh definition serializes");
     let recorded: RecordedBaseMetadata<String> =
@@ -108,16 +108,16 @@ fn recorded_wire_requires_an_exact_fresh_definition_for_readmission() {
 #[test]
 fn readmission_mismatch_is_typed_and_redacted() {
     const SUBMITTED: &str = "private-recorded-description";
-    let recorded_definition = MetadataDraft::new("example".to_owned(), checked_name(), SUBMITTED)
+    let recorded_definition = MetadataDraft::new(checked_name(), SUBMITTED)
         .with_version(Version::new(1, 0, 0))
-        .bind_schema(ValidSchema::empty())
+        .bind("example".to_owned(), ValidSchema::empty())
         .expect("valid bounded metadata");
     let wire = serde_json::to_value(recorded_definition).expect("definition serializes");
     let recorded: RecordedBaseMetadata<String> =
         serde_json::from_value(wire).expect("recorded evidence validates");
-    let fresh = MetadataDraft::new("example".to_owned(), checked_name(), "new description")
+    let fresh = MetadataDraft::new(checked_name(), "new description")
         .with_version(Version::new(2, 0, 0))
-        .bind_schema(ValidSchema::empty())
+        .bind("example".to_owned(), ValidSchema::empty())
         .expect("valid bounded metadata");
 
     let error = recorded
@@ -133,7 +133,7 @@ proptest! {
         choices in prop::collection::vec(0_u8..3, 0..32),
     ) {
         let notice = DeprecationNotice::new(Version::new(1, 0, 0));
-        let mut draft = MetadataDraft::new("example", checked_name(), "")
+        let mut draft = MetadataDraft::new(checked_name(), "")
             .with_deprecation(notice.clone());
 
         for choice in choices {
@@ -144,7 +144,7 @@ proptest! {
             };
         }
 
-        let metadata = draft.bind_schema(ValidSchema::empty()).expect("valid bounded metadata");
+        let metadata = draft.bind("example", ValidSchema::empty()).expect("valid bounded metadata");
         prop_assert_eq!(metadata.maturity(), MaturityLevel::Deprecated);
         prop_assert_eq!(metadata.deprecation(), Some(&notice));
     }

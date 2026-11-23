@@ -35,7 +35,7 @@ fallbacks.
 
 | Previous use | Required migration |
 |---|---|
-| `let base = draft.bind_schema(schema);` | Use `let base = draft.bind_schema(schema)?;`. The return type is `Result<BaseMetadata<K>, MetadataBuildError>`, and binding now requires `K: serde::Serialize`. |
+| `let base = draft.bind_schema(schema);` | Use `let base = draft.bind(key, schema)?;`. The return type is `Result<BaseMetadata<K>, MetadataBuildError>`, and binding now requires `K: serde::Serialize`. |
 | Recorded decoding with only `K: FromStr` | `RecordedBaseMetadata<K>: Deserialize` now requires `K: FromStr + Serialize` for exact canonical accounting. Key parser diagnostics are not exposed. |
 | Generic keys serializing as numbers, arrays, or objects | Use a key whose deterministic `Serialize` representation is a JSON string and whose `FromStr` recovers that same key from the string contents. Non-string key representations fail with `MetadataError::InvalidKey`. |
 | Deserializing `PluginManifestBuilder` | Deserialize `PluginManifest` instead; its private wire DTO passes through the final build gate. The public builder no longer implements `Deserialize`. |
@@ -105,13 +105,18 @@ versioned integration-catalog export prerequisite.
 Static definitions move in one direction:
 
 ```text
-MetadataDraft<K> --bind_schema(ValidSchema)--> Result<BaseMetadata<K>, MetadataBuildError>
+MetadataDraft --bind(K, ValidSchema)--> Result<BaseMetadata<K>, MetadataBuildError>
 ```
 
-`MetadataDraft<K>` owns every lower metadata field except `schema`. Use
+`MetadataDraft` owns what an author says about a component for the catalog:
+every lower metadata field except the `key` and the `schema`. The key is the
+component's identity, declared once on its type (`const KEY`); the schema is
+derived from its associated types. Neither can be written into a draft, so a
+draft cannot name a component other than the one it is admitted for. Use
 `MetadataDraft::new` with a validated `MetadataName`, or
 `MetadataDraft::try_new` for dynamic text. All fluent authoring happens on the
-draft. `bind_schema` is the only transition to `BaseMetadata<K>` and checks every
+draft. `bind(key, schema)` is the only transition to `BaseMetadata<K>`, called
+by whoever admits the component (a factory or a registry), and checks every
 shared field, chronology, and byte budget. It requires `K: Serialize` for exact
 canonical JSON accounting, including generic keys.
 
@@ -144,14 +149,10 @@ impl Metadata for ActionMetadata {
 }
 
 let metadata = ActionMetadata {
-    base: MetadataDraft::new(
-        "http.request".to_owned(),
-        metadata_name!("HTTP Request"),
-        "Send an HTTP request",
-    )
-    .mark_beta()
-    .with_tags(["network", "http"])
-    .bind_schema(ValidSchema::empty())?,
+    base: MetadataDraft::new(metadata_name!("HTTP Request"), "Send an HTTP request")
+        .mark_beta()
+        .with_tags(["network", "http"])
+        .bind("http.request".to_owned(), ValidSchema::empty())?,
 };
 
 assert_eq!(metadata.name(), "HTTP Request");
@@ -167,7 +168,7 @@ The draft vocabulary is intentionally singular:
 - `with_links`, `add_link`, `with_documentation_url`
 - `mark_experimental`, `mark_beta`, `mark_stable`
 - `with_deprecation(DeprecationNotice)`
-- `bind_schema(ValidSchema)`
+- `bind(key, ValidSchema)`
 
 There is no key replacement or final-metadata mutation API. Rebuild a fresh
 static definition when any authored field changes.
@@ -186,12 +187,8 @@ use nebula_metadata::{MetadataDraft, RecordedBaseMetadata, metadata_name};
 use nebula_schema::ValidSchema;
 
 # fn restore() -> Result<(), Box<dyn std::error::Error>> {
-let fresh = MetadataDraft::new(
-    "http.request".to_owned(),
-    metadata_name!("HTTP Request"),
-    "Send an HTTP request",
-)
-.bind_schema(ValidSchema::empty())?;
+let fresh = MetadataDraft::new(metadata_name!("HTTP Request"), "Send an HTTP request")
+    .bind("http.request".to_owned(), ValidSchema::empty())?;
 
 let wire = serde_json::to_string(&fresh)?;
 let recorded: RecordedBaseMetadata<String> = serde_json::from_str(&wire)?;
@@ -218,7 +215,7 @@ intentionally impossible.
 
 ## Public API
 
-- `MetadataDraft<K>` - schema-free authoring state.
+- `MetadataDraft` - key-free and schema-free authoring state.
 - `BaseMetadata<K>` - getter-only admitted technical definition.
 - `RecordedBaseMetadata<K>` - validated wire or persistence evidence.
 - `MetadataName` and `metadata_name!` - checked dynamic and literal names.
@@ -328,9 +325,9 @@ does not prove publisher trust or tenant availability.
 
 ## Leaf migration checklist
 
-1. Build a `MetadataDraft<K>` with `new` or `try_new`.
-2. Apply version, ornament, and lifecycle methods before schema binding.
-3. Propagate the `Result` from `bind_schema`.
+1. Build a `MetadataDraft` with `new` or `try_new`; it takes no key.
+2. Apply version, ornament, and lifecycle methods before binding.
+3. Bind the component's own key and derived schema with `bind`, and propagate its `Result`.
 4. Rebuild instead of mutating a bound key or any other bound field.
 5. Remove `Deserialize` from admitted leaf metadata containing `BaseMetadata<K>`.
 6. Add a recorded leaf DTO containing `RecordedBaseMetadata<K>` where persisted

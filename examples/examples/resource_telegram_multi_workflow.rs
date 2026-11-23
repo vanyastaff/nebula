@@ -38,13 +38,13 @@ use std::{
     time::Duration,
 };
 
-use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
+use nebula_core::{OrgId, ScopeLevel, scope::Scope};
 use nebula_resource::Resident;
 use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResidentConfig, ResourceContext,
     dedup::SlotIdentity,
     error::Error as ResourceError,
-    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
+    resource::{MetadataDraft, Provider, ResourceConfig},
     topology::resident::ResidentProvider,
 };
 use tokio::sync::broadcast;
@@ -138,9 +138,7 @@ impl Provider for TelegramBot {
     type Instance = Arc<TelegramBotInner>;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("demo.telegram.bot")
-    }
+    const KEY: &'static str = "demo.telegram.bot";
 
     async fn create(
         &self,
@@ -171,12 +169,8 @@ impl Provider for TelegramBot {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("demo.telegram.bot"),
-            "",
-        )
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(nebula_resource::metadata_name!("demo.telegram.bot"), "")
     }
 }
 

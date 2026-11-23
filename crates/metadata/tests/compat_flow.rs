@@ -72,10 +72,10 @@ fn composed(
     retry_budget: u32,
 ) -> ComposedMetadata {
     ComposedMetadata {
-        base: MetadataDraft::try_new(key(k), "n", "d")
+        base: MetadataDraft::try_new("n", "d")
             .expect("nonblank name")
             .with_version(Version::new(major, minor, 0))
-            .bind_schema(schema)
+            .bind(key(k), schema)
             .expect("valid bounded metadata"),
         retry_budget,
     }
@@ -130,15 +130,15 @@ fn compat_ignores_entity_specific_fields(
 
 #[test]
 fn build_metadata_does_not_change_revision_precedence() {
-    let previous = MetadataDraft::try_new(key("k"), "Name", "")
+    let previous = MetadataDraft::try_new("Name", "")
         .expect("nonblank name")
         .with_version("1.2.3+z".parse().expect("valid version"))
-        .bind_schema(empty_schema())
+        .bind(key("k"), empty_schema())
         .expect("valid bounded metadata");
-    let current = MetadataDraft::try_new(key("k"), "Name", "")
+    let current = MetadataDraft::try_new("Name", "")
         .expect("nonblank name")
         .with_version("1.2.3+a".parse().expect("valid version"))
-        .bind_schema(empty_schema())
+        .bind(key("k"), empty_schema())
         .expect("valid bounded metadata");
     assert_eq!(validate_base_compat(&current, &previous), Ok(()));
     assert_eq!(validate_base_compat(&previous, &current), Ok(()));
@@ -146,15 +146,15 @@ fn build_metadata_does_not_change_revision_precedence() {
 
 #[test]
 fn prerelease_regression_is_still_a_revision_error() {
-    let previous = MetadataDraft::try_new(key("k"), "Name", "")
+    let previous = MetadataDraft::try_new("Name", "")
         .expect("nonblank name")
         .with_version("1.2.3-beta.2".parse().expect("valid version"))
-        .bind_schema(empty_schema())
+        .bind(key("k"), empty_schema())
         .expect("valid bounded metadata");
-    let current = MetadataDraft::try_new(key("k"), "Name", "")
+    let current = MetadataDraft::try_new("Name", "")
         .expect("nonblank name")
         .with_version("1.2.3-beta.1+new-build".parse().expect("valid version"))
-        .bind_schema(empty_schema())
+        .bind(key("k"), empty_schema())
         .expect("valid bounded metadata");
     assert_eq!(
         validate_base_compat(&current, &previous),

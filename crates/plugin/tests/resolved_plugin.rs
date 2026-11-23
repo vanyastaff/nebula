@@ -15,7 +15,7 @@ use nebula_credential::{
 use nebula_metadata::{Metadata, PluginManifest};
 use nebula_plugin::{ComponentKind, Plugin, PluginError, ResolvedPlugin};
 use nebula_resource::{
-    KindActivator, Provider, Resident, ResidentConfig, ResourceFactory, ResourceMetadataDraft,
+    KindActivator, MetadataDraft, Provider, Resident, ResidentConfig, ResourceFactory,
 };
 
 #[derive(Clone)]
@@ -39,27 +39,20 @@ impl<const INDEX: usize> Provider for MetadataFixture<INDEX> {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("MetadataFixture"),
-            "",
-        )
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(nebula_resource::metadata_name!("MetadataFixture"), "")
     }
 
-    fn key() -> ResourceKey {
-        let key = match INDEX {
-            0 => "slack.http_client",
-            1 => "slack.audit_client",
-            2 => "slack.aaa",
-            3 => "slack.zzz",
-            4 => "api.http_client",
-            5 => "http.client",
-            6 => "http.pool",
-            _ => panic!("resource metadata fixture index {INDEX} is not declared"),
-        };
-        ResourceKey::new(key).expect("valid fixture resource key")
-    }
+    const KEY: &'static str = match INDEX {
+        0 => "slack.http_client",
+        1 => "slack.audit_client",
+        2 => "slack.aaa",
+        3 => "slack.zzz",
+        4 => "api.http_client",
+        5 => "http.client",
+        6 => "http.pool",
+        _ => panic!("resource metadata fixture index is not declared"),
+    };
 
     async fn create(
         &self,
@@ -75,11 +68,7 @@ impl<const INDEX: usize> nebula_resource::ResidentProvider for MetadataFixture<I
 
 fn resource_factory_at<const INDEX: usize>() -> Arc<dyn ResourceFactory> {
     let factory = KindActivator::<MetadataFixture<INDEX>, _, _>::with_metadata(
-        ResourceMetadataDraft::new(
-            MetadataFixture::<INDEX>::key(),
-            nebula_resource::metadata_name!("Metadata fixture"),
-            "",
-        ),
+        MetadataDraft::new(nebula_resource::metadata_name!("Metadata fixture"), ""),
         || MetadataFixture,
         nebula_resource::topology::fixed(|| Resident::new(ResidentConfig::default())),
     );

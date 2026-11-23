@@ -21,9 +21,10 @@ for direct use.
 ## Supported surface
 
 - `prelude` — curated authoring types and traits.
-- Metadata authoring is draft-only. `ActionMetadataDraft`, `CredentialMetadataDraft`, and
-  `ResourceMetadataDraft` share curated author vocabulary (`MetadataName`, `MetadataVersion`,
-  `Icon`, `DeprecationNotice`) without exposing `MetadataDraft` or any admitted/recorded form.
+- Metadata authoring is draft-only. `ActionMetadataDraft`, `CredentialMetadataDraft`, and the
+  shared key-free `MetadataDraft` a resource returns share curated author vocabulary
+  (`MetadataName`, `MetadataVersion`, `Icon`, `DeprecationNotice`) without exposing any
+  admitted/recorded form. A resource's identity is `Provider::KEY`, not a draft field.
   Runtime factories alone bind schemas and create terminal metadata.
 - `integration` — narrow integration contracts; credential integrations expose
   `ResolveResult`, `StaticResolveResult`, `TestFailureCode`, and `TestResult` here.

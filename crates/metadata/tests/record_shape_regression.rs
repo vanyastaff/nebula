@@ -78,9 +78,9 @@ fn schema_with_64_nested_objects_cannot_admit_undecodable_json() {
     let schema = Schema::builder().property(field).build().unwrap();
     let wire = serde_json::to_vec(&json!({"schema": schema})).unwrap();
     assert!(serde_json::from_slice::<serde_json::Value>(&wire).is_err());
-    let admitted = MetadataDraft::try_new("example".to_owned(), "Example", "")
+    let admitted = MetadataDraft::try_new("Example", "")
         .unwrap()
-        .bind_schema(schema);
+        .bind("example".to_owned(), schema);
     assert!(
         admitted.is_err(),
         "admission must reject JSON exceeding decoder depth"
@@ -104,12 +104,12 @@ fn replacement_with_33_comparators_cannot_admit_undecodable_json() {
         key: "replacement".parse().unwrap(),
         version_requirement: Some(requirement),
     };
-    let admitted = MetadataDraft::try_new("example".to_owned(), "Example", "")
+    let admitted = MetadataDraft::try_new("Example", "")
         .unwrap()
         .with_deprecation(
             DeprecationNotice::new(Version::new(1, 0, 0)).with_replacement(replacement),
         )
-        .bind_schema(ValidSchema::empty());
+        .bind("example".to_owned(), ValidSchema::empty());
     assert!(
         admitted.is_err(),
         "admission must reject unparseable replacement requirements"
@@ -126,18 +126,18 @@ fn nested_value(depth: usize) -> serde_json::Value {
 
 fn verify_schema_roundtrip(schema: ValidSchema) -> bool {
     let mut wire = serde_json::to_value(
-        MetadataDraft::try_new("example".to_owned(), "Example", "")
+        MetadataDraft::try_new("Example", "")
             .unwrap()
-            .bind_schema(ValidSchema::empty())
+            .bind("example".to_owned(), ValidSchema::empty())
             .unwrap(),
     )
     .unwrap();
     wire["schema"] = serde_json::to_value(&schema).unwrap();
     let bytes = serde_json::to_vec(&wire).unwrap();
     let parser_accepts = serde_json::from_slice::<serde_json::Value>(&bytes).is_ok();
-    let admitted = MetadataDraft::try_new("example".to_owned(), "Example", "")
+    let admitted = MetadataDraft::try_new("Example", "")
         .unwrap()
-        .bind_schema(schema);
+        .bind("example".to_owned(), schema);
     if parser_accepts {
         let admitted = admitted.unwrap();
         let recorded: RecordedBaseMetadata<String> =

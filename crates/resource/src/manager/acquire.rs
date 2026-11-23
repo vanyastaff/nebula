@@ -2,6 +2,7 @@
 //! lookup + taint helpers, the generic topology dispatch, the shared
 //! `run_acquire` pipeline, and pool diagnostics/warmup.
 
+use crate::resource::ProviderKey;
 use std::{any::Any, future::Future, sync::Arc, time::Instant};
 
 use nebula_core::{Context, ResourceKey, ScopeLevel};

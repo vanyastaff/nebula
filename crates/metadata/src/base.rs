@@ -81,15 +81,20 @@ impl MetadataLifecycle {
 
 /// Authored catalog metadata before its canonical input schema is bound.
 ///
-/// A draft owns every shared field except the schema. Its fluent methods are
-/// the authoring surface; [`Self::bind_schema`] is the only transition to the
-/// getter-only [`BaseMetadata`]. Dynamic names use [`Self::try_new`], while a
-/// pre-validated [`MetadataName`] makes [`Self::new`] infallible.
+/// A draft owns what an author says about a component for the catalog: every
+/// shared field except the two an author must not supply. The **key** is the
+/// component's identity, declared once on its type; the **schema** is derived
+/// from its associated types. Whoever admits the component supplies both to
+/// [`Self::bind`], the only transition to the getter-only [`BaseMetadata`], so
+/// a draft cannot name a key that differs from its component's.
+///
+/// Its fluent methods are the authoring surface. Dynamic names use
+/// [`Self::try_new`], while a pre-validated [`MetadataName`] makes
+/// [`Self::new`] infallible.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[must_use = "a metadata draft must be bound to a schema"]
-pub struct MetadataDraft<K> {
-    key: K,
+#[must_use = "a metadata draft must be bound to its key and schema"]
+pub struct MetadataDraft {
     name: MetadataName,
     description: String,
     version: Version,
@@ -99,12 +104,11 @@ pub struct MetadataDraft<K> {
     lifecycle: MetadataLifecycle,
 }
 
-impl<K> MetadataDraft<K> {
+impl MetadataDraft {
     /// Create a draft from an already validated display name.
     #[tracing::instrument(name = "metadata.construct_draft", skip_all)]
-    pub fn new(key: K, name: MetadataName, description: impl Into<String>) -> Self {
+    pub fn new(name: MetadataName, description: impl Into<String>) -> Self {
         Self {
-            key,
             name,
             description: description.into(),
             version: default_version(),
@@ -122,15 +126,10 @@ impl<K> MetadataDraft<K> {
     /// Returns [`MetadataError::BlankName`] for empty or whitespace-only text.
     #[tracing::instrument(name = "metadata.try_construct_draft", skip_all, err)]
     pub fn try_new(
-        key: K,
         name: impl Into<String>,
         description: impl Into<String>,
     ) -> Result<Self, MetadataError> {
-        Ok(Self::new(
-            key,
-            MetadataName::try_from(name.into())?,
-            description,
-        ))
+        Ok(Self::new(MetadataName::try_from(name.into())?, description))
     }
 
     /// Set the interface version without checking revision compatibility.
@@ -257,7 +256,12 @@ impl<K> MetadataDraft<K> {
         self
     }
 
-    /// Bind the canonical input schema and finish technical metadata construction.
+    /// Bind the component's key and canonical input schema, finishing
+    /// technical metadata construction.
+    ///
+    /// The caller is whoever admits the component (a factory or a registry),
+    /// never its author: `key` is the identity the component's type declares
+    /// and `schema` the one derived from its associated types.
     ///
     /// Persisted or wire data deserializes as [`RecordedBaseMetadata`] and must
     /// be re-admitted against a freshly built definition.
@@ -267,12 +271,16 @@ impl<K> MetadataDraft<K> {
     /// # Errors
     /// Returns a payload-free error for collection, field, chronology, schema
     /// or exact JSON budget violations. `K: Serialize` permits exact accounting.
-    #[tracing::instrument(name = "metadata.bind_schema", skip_all, err)]
-    pub fn bind_schema(mut self, schema: ValidSchema) -> Result<BaseMetadata<K>, MetadataBuildError>
+    #[tracing::instrument(name = "metadata.bind", skip_all, err)]
+    pub fn bind<K>(
+        mut self,
+        key: K,
+        schema: ValidSchema,
+    ) -> Result<BaseMetadata<K>, MetadataBuildError>
     where
         K: Serialize,
     {
-        self.validate()?;
+        self.validate(&key)?;
         schema.ensure_current_semantics()?;
         bounded::check_serialized(
             &schema,
@@ -280,6 +288,7 @@ impl<K> MetadataDraft<K> {
             MetadataError::SchemaBudgetExceeded,
         )?;
         let metadata = BaseMetadata {
+            key,
             draft: self,
             schema,
         };
@@ -287,7 +296,7 @@ impl<K> MetadataDraft<K> {
         Ok(metadata)
     }
 
-    fn validate(&mut self) -> Result<(), MetadataError>
+    fn validate<K>(&mut self, key: &K) -> Result<(), MetadataError>
     where
         K: Serialize,
     {
@@ -295,7 +304,7 @@ impl<K> MetadataDraft<K> {
             return Err(error);
         }
         self.discovery.canonicalize()?;
-        shared_fields(self, None).validate()
+        shared_fields(key, self, None).validate()
     }
 
     fn with_wire_lifecycle(
@@ -330,8 +339,8 @@ impl<K> MetadataDraft<K> {
 /// ```compile_fail
 /// use nebula_metadata::MetadataDraft;
 /// use nebula_schema::ValidSchema;
-/// let mut metadata = MetadataDraft::try_new("example", "Example", "").unwrap()
-///     .bind_schema(ValidSchema::empty()).expect("valid bounded metadata");
+/// let mut metadata = MetadataDraft::try_new("Example", "").unwrap()
+///     .bind("example", ValidSchema::empty()).expect("valid bounded metadata");
 /// metadata.name.clear();
 /// ```
 ///
@@ -353,17 +362,19 @@ impl<K> MetadataDraft<K> {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BaseMetadata<K> {
-    draft: MetadataDraft<K>,
+    key: K,
+    draft: MetadataDraft,
     schema: ValidSchema,
 }
 
 fn shared_fields<'a, K>(
-    draft: &'a MetadataDraft<K>,
+    key: &'a K,
+    draft: &'a MetadataDraft,
     schema: Option<&'a ValidSchema>,
 ) -> SharedFields<'a, K> {
     SharedFields {
         metadata_wire_version: METADATA_WIRE_VERSION,
-        key: &draft.key,
+        key,
         name: draft.name.as_str(),
         description: &draft.description,
         schema,
@@ -379,7 +390,7 @@ fn shared_fields<'a, K>(
 
 impl<K: Serialize> Serialize for BaseMetadata<K> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        shared_fields(&self.draft, Some(&self.schema)).serialize(serializer)
+        shared_fields(&self.key, &self.draft, Some(&self.schema)).serialize(serializer)
     }
 }
 
@@ -392,13 +403,14 @@ impl<K: Serialize> Serialize for BaseMetadata<K> {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordedBaseMetadata<K> {
-    draft: MetadataDraft<K>,
+    key: K,
+    draft: MetadataDraft,
     schema: ValidSchema,
 }
 
 impl<K: Serialize> Serialize for RecordedBaseMetadata<K> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        shared_fields(&self.draft, Some(&self.schema)).serialize(serializer)
+        shared_fields(&self.key, &self.draft, Some(&self.schema)).serialize(serializer)
     }
 }
 
@@ -440,11 +452,11 @@ impl<'de, K: FromStr + Serialize> Deserialize<'de> for RecordedBaseMetadata<K> {
         if fields.metadata_wire_version != METADATA_WIRE_VERSION {
             return Err(D::Error::custom(MetadataError::UnsupportedWireVersion));
         }
-        let key = fields
+        let key: K = fields
             .key
             .parse()
             .map_err(|_| D::Error::custom(MetadataError::InvalidKey))?;
-        let mut draft = MetadataDraft::try_new(key, fields.name, fields.description)
+        let mut draft = MetadataDraft::try_new(fields.name, fields.description)
             .map_err(D::Error::custom)?
             .with_version(fields.version)
             .with_icon(fields.icon)
@@ -453,7 +465,7 @@ impl<'de, K: FromStr + Serialize> Deserialize<'de> for RecordedBaseMetadata<K> {
             .with_links(fields.links)
             .with_wire_lifecycle(fields.maturity, fields.deprecation)
             .map_err(D::Error::custom)?;
-        draft.validate().map_err(D::Error::custom)?;
+        draft.validate(&key).map_err(D::Error::custom)?;
         bounded::check_serialized(
             &fields.schema,
             bounded::SCHEMA_BYTES,
@@ -461,6 +473,7 @@ impl<'de, K: FromStr + Serialize> Deserialize<'de> for RecordedBaseMetadata<K> {
         )
         .map_err(D::Error::custom)?;
         let recorded = Self {
+            key,
             draft,
             schema: fields.schema,
         };
@@ -484,7 +497,10 @@ impl<K: Clone + PartialEq> RecordedBaseMetadata<K> {
         &self,
         fresh_definition: &BaseMetadata<K>,
     ) -> Result<BaseMetadata<K>, MetadataReadmissionError> {
-        if self.draft == fresh_definition.draft && self.schema == fresh_definition.schema {
+        if self.key == fresh_definition.key
+            && self.draft == fresh_definition.draft
+            && self.schema == fresh_definition.schema
+        {
             Ok(fresh_definition.clone())
         } else {
             tracing::warn!(
@@ -500,7 +516,7 @@ impl<K> BaseMetadata<K> {
     /// Typed entity key.
     #[must_use]
     pub fn key(&self) -> &K {
-        &self.draft.key
+        &self.key
     }
 
     /// Human-readable, nonblank display name.
@@ -679,9 +695,9 @@ mod tests {
     #[test]
     fn defaults_delegate_through_base() {
         let md = DummyMetadata {
-            base: MetadataDraft::try_new(DummyKey("k"), "Name", "Desc")
+            base: MetadataDraft::try_new("Name", "Desc")
                 .expect("nonblank name")
-                .bind_schema(empty_schema())
+                .bind(DummyKey("k"), empty_schema())
                 .expect("valid bounded metadata"),
         };
         assert_eq!(md.key().0, "k");
@@ -696,20 +712,20 @@ mod tests {
 
     #[test]
     fn with_tags_accepts_strings_and_literals() {
-        let base = MetadataDraft::try_new(DummyKey("k"), "n", "d")
+        let base = MetadataDraft::try_new("n", "d")
             .expect("nonblank name")
             .with_tags(["http", "io"])
-            .bind_schema(empty_schema())
+            .bind(DummyKey("k"), empty_schema())
             .expect("valid bounded metadata");
         assert_eq!(base.tags(), &["http".to_owned(), "io".to_owned()]);
     }
 
     #[test]
     fn deprecation_forces_maturity() {
-        let base = MetadataDraft::try_new(DummyKey("k"), "n", "d")
+        let base = MetadataDraft::try_new("n", "d")
             .expect("nonblank name")
             .with_deprecation(DeprecationNotice::new(Version::new(1, 0, 0)))
-            .bind_schema(empty_schema())
+            .bind(DummyKey("k"), empty_schema())
             .expect("valid bounded metadata");
         assert_eq!(base.maturity(), MaturityLevel::Deprecated);
     }

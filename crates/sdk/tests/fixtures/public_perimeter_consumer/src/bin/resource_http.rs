@@ -4,13 +4,12 @@
 
 use nebula_sdk::integration::credential::BearerTokenCredential;
 use nebula_sdk::integration::resource::{
-    CredentialSlot, Effect, Error, Operation, OperationError, Provider, Resident, ResidentProvider,
-    Resource, ResourceContext, ResourceHandle, ResourceKey, ResourceMetadataDraft,
+    CredentialSlot, Effect, Error, MetadataDraft, Operation, OperationError, Provider, Resident,
+    ResidentProvider, Resource, ResourceContext, ResourceHandle,
     http::{
         AsWrite, Authorize, Delete, Get, HttpApi, HttpConfig, HttpTransport, Keyed, Patch, Post,
         Put, Request, open_stream,
     },
-    resource_key,
 };
 use nebula_sdk::prelude::Value;
 
@@ -26,16 +25,10 @@ impl Provider for GitHub {
     type Instance = HttpTransport;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("example.github")
-    }
+    const KEY: &'static str = "example.github";
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_sdk::prelude::metadata_name!("GitHub"),
-            "",
-        )
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(nebula_sdk::prelude::metadata_name!("GitHub"), "")
     }
 
     async fn create(

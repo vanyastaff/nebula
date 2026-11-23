@@ -18,9 +18,9 @@ const CANARY: &str = "private_parser_canary";
 
 fn wire() -> Value {
     json!(
-        MetadataDraft::try_new("example".to_owned(), "Example", "")
+        MetadataDraft::try_new("Example", "")
             .unwrap()
-            .bind_schema(ValidSchema::empty())
+            .bind("example".to_owned(), ValidSchema::empty())
             .unwrap()
     )
 }

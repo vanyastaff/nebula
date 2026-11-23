@@ -4,15 +4,15 @@
 //! The ledger seeding writes an earlier dispatch's crash residue directly:
 //! a slot of the node with a granted call that was never explained.
 
+use nebula_resource::ProviderKey;
 use std::sync::Mutex;
 
 use serde_json::json;
 
-use nebula_core::ResourceKey;
 use nebula_credential::default_credential_accessor;
 use nebula_resource::{
     Manager, RegistrationSpec, Resident, ResidentConfig, ResourceContext, SlotIdentity,
-    resource::{Provider, ResourceMetadataDraft},
+    resource::{MetadataDraft, Provider},
     topology::resident::ResidentProvider,
 };
 use nebula_storage_port::{
@@ -448,16 +448,10 @@ impl Provider for Payments {
     type Instance = Arc<Mutex<u32>>;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        ResourceKey::new("test.payments").expect("resource key")
-    }
+    const KEY: &'static str = "test.payments";
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("ScopedPayments"),
-            "",
-        )
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(nebula_resource::metadata_name!("ScopedPayments"), "")
     }
 
     async fn create(

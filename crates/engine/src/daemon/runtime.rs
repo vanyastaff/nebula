@@ -283,11 +283,11 @@ mod tests {
         time::Duration,
     };
 
-    use nebula_core::{ExecutionId, ResourceKey};
+    use nebula_core::ExecutionId;
     use nebula_resource::{
         context::ResourceContext,
         error::Error as ResourceError,
-        resource::{Provider, ResourceConfig, ResourceMetadataDraft},
+        resource::{MetadataDraft, Provider, ResourceConfig},
     };
 
     use super::*;
@@ -323,9 +323,7 @@ mod tests {
         type Instance = ();
         type Topology = nebula_resource::NoTopology;
 
-        fn key() -> ResourceKey {
-            ResourceKey::new("daemon-flaky").unwrap()
-        }
+        const KEY: &'static str = "daemon-flaky";
 
         async fn create(
             &self,
@@ -335,12 +333,8 @@ mod tests {
             Ok(())
         }
 
-        fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::new(
-                Self::key(),
-                nebula_resource::metadata_name!("daemon-flaky"),
-                "",
-            )
+        fn metadata() -> MetadataDraft {
+            MetadataDraft::new(nebula_resource::metadata_name!("daemon-flaky"), "")
         }
     }
 
@@ -367,9 +361,7 @@ mod tests {
         type Instance = ();
         type Topology = nebula_resource::NoTopology;
 
-        fn key() -> ResourceKey {
-            ResourceKey::new("daemon-oneshot").unwrap()
-        }
+        const KEY: &'static str = "daemon-oneshot";
 
         async fn create(
             &self,
@@ -379,12 +371,8 @@ mod tests {
             Ok(())
         }
 
-        fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::new(
-                Self::key(),
-                nebula_resource::metadata_name!("daemon-oneshot"),
-                "",
-            )
+        fn metadata() -> MetadataDraft {
+            MetadataDraft::new(nebula_resource::metadata_name!("daemon-oneshot"), "")
         }
     }
 
@@ -410,9 +398,7 @@ mod tests {
         type Instance = ();
         type Topology = nebula_resource::NoTopology;
 
-        fn key() -> ResourceKey {
-            ResourceKey::new("daemon-panicking").unwrap()
-        }
+        const KEY: &'static str = "daemon-panicking";
 
         async fn create(
             &self,
@@ -422,12 +408,8 @@ mod tests {
             Ok(())
         }
 
-        fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::new(
-                Self::key(),
-                nebula_resource::metadata_name!("daemon-panicking"),
-                "",
-            )
+        fn metadata() -> MetadataDraft {
+            MetadataDraft::new(nebula_resource::metadata_name!("daemon-panicking"), "")
         }
     }
 

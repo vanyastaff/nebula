@@ -14,12 +14,14 @@ use semver::Version;
 use serde::Serialize;
 use serde_json::json;
 
-fn draft() -> MetadataDraft<String> {
-    MetadataDraft::try_new("example".to_owned(), "Example", "").unwrap()
+fn draft() -> MetadataDraft {
+    MetadataDraft::try_new("Example", "").unwrap()
 }
 
-fn admit(draft: MetadataDraft<String>) -> BaseMetadata<String> {
-    draft.bind_schema(ValidSchema::empty()).unwrap()
+fn admit(draft: MetadataDraft) -> BaseMetadata<String> {
+    draft
+        .bind("example".to_owned(), ValidSchema::empty())
+        .unwrap()
 }
 
 fn category(key: &str) -> CatalogCategoryKey {
@@ -30,8 +32,12 @@ fn link(relation: CatalogLinkRelation, target: &str) -> CatalogLink {
     CatalogLink::new(relation, target.parse().unwrap())
 }
 
-fn rejection(draft: MetadataDraft<String>) -> MetadataError {
-    match draft.bind_schema(ValidSchema::empty()).unwrap_err() {
+fn rejection(draft: MetadataDraft) -> MetadataError {
+    rejection_for("example".to_owned(), draft)
+}
+
+fn rejection_for(key: String, draft: MetadataDraft) -> MetadataError {
+    match draft.bind(key, ValidSchema::empty()).unwrap_err() {
         MetadataBuildError::Metadata(error) => error,
         error => panic!("expected intrinsic failure, got {error:?}"),
     }
@@ -274,11 +280,14 @@ fn aggregate_budget_matches_exact_json_including_escaping_at_the_boundary() {
 fn aggregate_budget_includes_generic_keys_names_versions_and_notices() {
     let oversized = "x".repeat(MAX_SHARED_METADATA_BYTES);
     assert_eq!(
-        rejection(MetadataDraft::try_new(oversized.clone(), "Name", "").unwrap()),
+        rejection_for(
+            oversized.clone(),
+            MetadataDraft::try_new("Name", "").unwrap()
+        ),
         MetadataError::SharedBudgetExceeded
     );
     assert_eq!(
-        rejection(MetadataDraft::try_new("key".to_owned(), oversized.clone(), "").unwrap()),
+        rejection(MetadataDraft::try_new(oversized.clone(), "").unwrap()),
         MetadataError::SharedBudgetExceeded
     );
     assert_eq!(
@@ -302,9 +311,9 @@ fn serializer_failures_are_payload_free_and_have_no_raw_source() {
             Err(serde::ser::Error::custom("private_serializer_payload"))
         }
     }
-    let error = MetadataDraft::try_new(BrokenKey, "Name", "")
+    let error = MetadataDraft::try_new("Name", "")
         .unwrap()
-        .bind_schema(ValidSchema::empty())
+        .bind(BrokenKey, ValidSchema::empty())
         .unwrap_err();
     assert!(!format!("{error}: {error:?}").contains("private_serializer_payload"));
     match error {
@@ -492,14 +501,14 @@ fn schema_has_a_separate_exact_budget_and_default_transport_can_round_trip_it() 
         serde_json::to_vec(&exact_schema).unwrap().len(),
         nebula_metadata::MAX_METADATA_SCHEMA_BYTES
     );
-    let metadata = draft().bind_schema(exact_schema).unwrap();
+    let metadata = draft().bind("example".to_owned(), exact_schema).unwrap();
     let bytes = serde_json::to_vec(&metadata).unwrap();
     assert!(bytes.len() <= nebula_metadata::MAX_METADATA_JSON_BYTES);
     let recorded: RecordedBaseMetadata<String> =
         decode_json_slice(&bytes, MetadataDecodeLimits::default()).unwrap();
     assert_eq!(recorded.readmit_against(&metadata).unwrap(), metadata);
     match draft()
-        .bind_schema(schema("x".repeat(content_bytes + 1)))
+        .bind("example".to_owned(), schema("x".repeat(content_bytes + 1)))
         .unwrap_err()
     {
         MetadataBuildError::Metadata(error) => {

@@ -2,6 +2,7 @@
 //! booking, the settled outcome of a unit, cancellation, deadlines, the
 //! drain, pinned slots and the unit's observability.
 
+use crate::resource::ProviderKey;
 use std::{
     num::NonZeroU32,
     sync::{
@@ -11,7 +12,7 @@ use std::{
     time::Duration,
 };
 
-use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
+use nebula_core::{ScopeLevel, resource_key, scope::Scope};
 use nebula_metrics::MetricsRegistry;
 use tokio::{sync::Notify, time::Instant};
 use tokio_util::sync::CancellationToken;
@@ -25,7 +26,7 @@ use crate::{
     PoolConfig, Pooled, Provider, RateLimitProfile, RegistrationSpec, Resident, ResidentConfig,
     ResourceConfig, ResourceContext, ResourceEvent, ResourceGuard, SlotCell, SlotIdentity,
     rate_limit::{Rate, ResiliencePolicy, RowLimit},
-    resource::{HasCredentialSlots, ResourceMetadataDraft},
+    resource::{HasCredentialSlots, MetadataDraft},
     runtime::managed::ManagedResource,
     topology::{
         PoolProvider, ResidentProvider,
@@ -77,12 +78,10 @@ macro_rules! facade_row {
             type Instance = u64;
             type Topology = $topology;
 
-            fn key() -> ResourceKey {
-                resource_key!($key)
-            }
+            const KEY: &'static str = $key;
 
-            fn metadata() -> ResourceMetadataDraft {
-                ResourceMetadataDraft::new(Self::key(), crate::metadata_name!($key), "")
+            fn metadata() -> MetadataDraft {
+                MetadataDraft::new(crate::metadata_name!($key), "")
             }
 
             fn resilience() -> ResiliencePolicy {

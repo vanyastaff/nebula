@@ -42,6 +42,7 @@
 //! outcome's call (a `Write` whose earlier attempt was sent is
 //! `OutcomeUnknown`).
 
+use crate::resource::ProviderKey;
 use tokio_util::sync::CancellationToken;
 
 use super::{

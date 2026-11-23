@@ -22,6 +22,7 @@
 //! `tracing::subscriber::set_global_default` for the test so the
 //! spawned task's spans/events are also captured.
 
+use nebula_resource::ProviderKey;
 use std::io::{self, Write};
 use std::sync::{
     Arc, Mutex,
@@ -29,7 +30,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
+use nebula_core::{OrgId, ScopeLevel, scope::Scope};
 use nebula_credential::{CredentialEvent, CredentialGuard, CredentialId, LeaseEvent};
 use nebula_eventbus::EventBus;
 use nebula_resource::Resident;
@@ -37,7 +38,7 @@ use nebula_resource::{
     AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
     ResourceContext, SlotCell, SlotIdentity,
     error::Error as ResourceError,
-    resource::{HasCredentialSlots, ResourceMetadataDraft},
+    resource::{HasCredentialSlots, MetadataDraft},
     topology::resident::ResidentProvider,
 };
 use nebula_resource::{ResourceFanoutDriver, ResourceFanoutIndex};
@@ -159,9 +160,7 @@ impl Provider for SecretRes {
     type Instance = SecretRuntime;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("wired-redaction-res")
-    }
+    const KEY: &'static str = "wired-redaction-res";
 
     async fn create(&self, _c: &Cfg, _x: &ResourceContext) -> Result<SecretRuntime, ResourceError> {
         Ok(SecretRuntime {
@@ -197,12 +196,8 @@ impl Provider for SecretRes {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("wired-redaction-res"),
-            "",
-        )
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(nebula_resource::metadata_name!("wired-redaction-res"), "")
     }
 }
 

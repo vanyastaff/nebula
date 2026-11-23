@@ -48,6 +48,7 @@
 //! `join_all` polls every per-row dispatch future on the calling thread,
 //! so nothing escapes the capture.
 
+use nebula_resource::ProviderKey;
 use std::io::{self, Write};
 use std::sync::{
     Arc, Mutex,
@@ -55,7 +56,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
+use nebula_core::{OrgId, ScopeLevel, scope::Scope};
 use nebula_credential::{CredentialGuard, CredentialId};
 use nebula_resource::Resident;
 use nebula_resource::{
@@ -63,7 +64,7 @@ use nebula_resource::{
     ResourceConfig, ResourceContext, SlotCell, SlotIdentity,
     error::Error as ResourceError,
     events::ResourceEvent,
-    resource::{HasCredentialSlots, ResourceMetadataDraft},
+    resource::{HasCredentialSlots, MetadataDraft},
     topology::resident::ResidentProvider,
 };
 use nebula_resource::{ResourceFanoutIndex, RotationOutcome};
@@ -228,9 +229,7 @@ impl Provider for SecretBearingResource {
     type Instance = SecretRuntime;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("rotation-redaction-res")
-    }
+    const KEY: &'static str = "rotation-redaction-res";
 
     async fn create(&self, _c: &Cfg, _x: &ResourceContext) -> Result<SecretRuntime, ResourceError> {
         Ok(SecretRuntime {
@@ -270,9 +269,8 @@ impl Provider for SecretBearingResource {
         }
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(
             nebula_resource::metadata_name!("rotation-redaction-res"),
             "",
         )

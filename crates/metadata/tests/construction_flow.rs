@@ -118,16 +118,15 @@ fn notice_takes_precedence_over_every_wire_maturity() {
         }
 
         let recorded: RecordedBaseMetadata<ActionKey> = decode(leaf).expect("valid notice");
-        let fresh = MetadataDraft::try_new(
-            "example.action".parse::<ActionKey>().expect("valid key"),
-            "Example",
-            "",
-        )
-        .expect("valid metadata")
-        .with_version(Version::new(2, 0, 0))
-        .with_deprecation(notice.clone())
-        .bind_schema(ValidSchema::empty())
-        .expect("valid bounded metadata");
+        let fresh = MetadataDraft::try_new("Example", "")
+            .expect("valid metadata")
+            .with_version(Version::new(2, 0, 0))
+            .with_deprecation(notice.clone())
+            .bind(
+                "example.action".parse::<ActionKey>().expect("valid key"),
+                ValidSchema::empty(),
+            )
+            .expect("valid bounded metadata");
         let leaf = recorded
             .readmit_against(&fresh)
             .expect("recorded notice matches fresh definition");
@@ -198,21 +197,15 @@ fn manifest_accepts_valid_dependency_keys_from_owned_json_and_readers() {
 #[test]
 fn draft_constructor_rejects_blank_names_with_a_typed_error() {
     for name in ["", " \t\n", "\u{2003}"] {
-        let error =
-            MetadataDraft::try_new("example".parse::<ActionKey>().expect("valid key"), name, "")
-                .expect_err("a catalog display name must contain non-whitespace text");
+        let error = MetadataDraft::try_new(name, "")
+            .expect_err("a catalog display name must contain non-whitespace text");
         assert_eq!(error, MetadataError::BlankName);
     }
 }
 
 #[test]
 fn draft_lifecycle_setters_preserve_notice_precedence() {
-    let draft = MetadataDraft::try_new(
-        "example".parse::<ActionKey>().expect("valid key"),
-        "Example",
-        "",
-    )
-    .expect("valid metadata");
+    let draft = MetadataDraft::try_new("Example", "").expect("valid metadata");
 
     let notice = DeprecationNotice::new(Version::new(2, 0, 0)).with_reason("Superseded");
     let deprecated = draft
@@ -224,7 +217,10 @@ fn draft_lifecycle_setters_preserve_notice_precedence() {
         deprecated.mark_stable(),
     ] {
         let updated = updated
-            .bind_schema(ValidSchema::empty())
+            .bind(
+                "example".parse::<ActionKey>().expect("valid key"),
+                ValidSchema::empty(),
+            )
             .expect("valid bounded metadata");
         assert_eq!(updated.maturity(), MaturityLevel::Deprecated);
         assert_eq!(updated.deprecation(), Some(&notice));
@@ -233,12 +229,12 @@ fn draft_lifecycle_setters_preserve_notice_precedence() {
 
 #[test]
 fn active_maturity_can_change_before_schema_binding() {
-    let metadata = MetadataDraft::try_new("example".to_owned(), "Example", "")
+    let metadata = MetadataDraft::try_new("Example", "")
         .expect("valid metadata")
         .mark_beta()
         .mark_experimental()
         .mark_stable()
-        .bind_schema(ValidSchema::empty())
+        .bind("example".to_owned(), ValidSchema::empty())
         .expect("valid bounded metadata");
     assert_eq!(metadata.maturity(), MaturityLevel::Stable);
     assert_eq!(metadata.deprecation(), None);
@@ -258,10 +254,10 @@ fn intrinsic_construction_accepts_semver_boundaries_and_unicode_names() {
         Version::new(u64::MAX, u64::MAX, u64::MAX),
         "1.2.3-beta.1+build.2".parse().expect("valid semver"),
     ] {
-        let metadata = MetadataDraft::try_new("example".to_owned(), name, "")
+        let metadata = MetadataDraft::try_new(name, "")
             .expect("Unicode display name and empty description are valid")
             .with_version(version.clone())
-            .bind_schema(ValidSchema::empty())
+            .bind("example".to_owned(), ValidSchema::empty())
             .expect("valid bounded metadata");
         assert_eq!(metadata.name(), name);
         assert_eq!(metadata.description(), "");
@@ -290,10 +286,10 @@ fn nested_typed_metadata_validates_and_preserves_outer_fields() {
     }
 
     let original = Entity {
-        base: MetadataDraft::try_new("example".parse().expect("valid key"), "Example", "")
+        base: MetadataDraft::try_new("Example", "")
             .expect("valid metadata")
             .with_deprecation(DeprecationNotice::new(Version::new(1, 0, 0)))
-            .bind_schema(ValidSchema::empty())
+            .bind("example".parse().expect("valid key"), ValidSchema::empty())
             .expect("valid bounded metadata"),
         category: "network".to_owned(),
     };

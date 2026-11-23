@@ -1,5 +1,6 @@
 //! Queue-owned, constant-message teardown of an owned collection of entries.
 
+use crate::resource::ProviderKey;
 use std::{collections::VecDeque, sync::Arc};
 
 use crate::{

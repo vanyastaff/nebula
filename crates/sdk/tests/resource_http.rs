@@ -9,6 +9,7 @@
 
 #![cfg(feature = "resource-http")]
 
+use nebula_resource::ProviderKey;
 #[path = "support/raw_http.rs"]
 mod raw_http;
 
@@ -28,12 +29,11 @@ use nebula_resource::{
 };
 use nebula_sdk::integration::resource::{
     CredentialGuard, CredentialUnavailableReason, Effect, Error, ErrorKind, HasCredentialSlots,
-    OperationError, PinSlots, Provider, Rate, Resident, ResidentProvider, ResourceConfig,
-    ResourceContext, ResourceHandle, ResourceKey, ResourceMetadataDraft, SentState, SlotCell,
+    MetadataDraft, OperationError, PinSlots, Provider, Rate, Resident, ResidentProvider,
+    ResourceConfig, ResourceContext, ResourceHandle, SentState, SlotCell,
     http::{
         Authorize, HttpApi, HttpConfig, HttpTransport, Request, open_stream, open_stream_until,
     },
-    resource_key,
 };
 use nebula_sdk::prelude::{IdentityPassword, SecretString, SecretToken};
 use raw_http::{Reply, Server};
@@ -99,16 +99,10 @@ impl Provider for Api {
     type Instance = HttpTransport;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("test.http-api")
-    }
+    const KEY: &'static str = "test.http-api";
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_sdk::prelude::metadata_name!("HTTP API"),
-            "",
-        )
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(nebula_sdk::prelude::metadata_name!("HTTP API"), "")
     }
 
     async fn create(

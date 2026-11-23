@@ -3,6 +3,7 @@
 //! [`Registry`] stores managed resources indexed by [`ResourceKey`] and
 //! [`TypeId`], supporting scope-aware lookup and typed downcasting.
 
+use crate::resource::ProviderKey;
 use std::{
     any::{Any, TypeId},
     sync::Arc,

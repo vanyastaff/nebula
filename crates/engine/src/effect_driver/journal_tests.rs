@@ -1,11 +1,10 @@
+use nebula_resource::ProviderKey;
 use std::collections::VecDeque;
-
-use nebula_core::ResourceKey;
 
 use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, Resident, ResidentConfig, ResourceContext,
     call::{Cost, Operation, OperationCx, OperationError, ResourceHandle, SentState},
-    resource::{Provider, ResourceMetadataDraft},
+    resource::{MetadataDraft, Provider},
     topology::resident::ResidentProvider,
 };
 use nebula_storage_port::{
@@ -932,16 +931,10 @@ impl Provider for Gateway {
     type Instance = Arc<Desk>;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        ResourceKey::new("billing.gateway").expect("resource key")
-    }
+    const KEY: &'static str = "billing.gateway";
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("JournalGateway"),
-            "",
-        )
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(nebula_resource::metadata_name!("JournalGateway"), "")
     }
 
     async fn create(

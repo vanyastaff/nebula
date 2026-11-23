@@ -20,6 +20,7 @@
 //!    treat the runtime as stale and deliver `on_credential_refresh`
 //!    (the end-to-end rotation invariant).
 
+use nebula_resource::ProviderKey;
 use std::{
     assert_matches,
     sync::{
@@ -28,7 +29,7 @@ use std::{
     },
 };
 
-use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
+use nebula_core::{ScopeLevel, scope::Scope};
 use nebula_credential::{
     Credential, CredentialContext, CredentialError, CredentialGuard, CredentialMetadataDraft,
     SecretString, SecretToken, StaticResolveResult,
@@ -117,17 +118,11 @@ impl Provider for TwoSlotDerived {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn metadata() -> nebula_resource::ResourceMetadataDraft {
-        nebula_resource::ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("TwoSlotDerived"),
-            "",
-        )
+    fn metadata() -> nebula_resource::MetadataDraft {
+        nebula_resource::MetadataDraft::new(nebula_resource::metadata_name!("TwoSlotDerived"), "")
     }
 
-    fn key() -> ResourceKey {
-        nebula_resource::resource_key!("epochfold-derived")
-    }
+    const KEY: &'static str = "epochfold-derived";
 
     async fn create(&self, _config: &TwoSlotCfg, _ctx: &ResourceContext) -> Result<(), Error> {
         Ok(())
@@ -266,17 +261,11 @@ impl Provider for TwoSlotResident {
     type Instance = TwoSlotRuntime;
     type Topology = Resident<Self>;
 
-    fn metadata() -> nebula_resource::ResourceMetadataDraft {
-        nebula_resource::ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("TwoSlotResident"),
-            "",
-        )
+    fn metadata() -> nebula_resource::MetadataDraft {
+        nebula_resource::MetadataDraft::new(nebula_resource::metadata_name!("TwoSlotResident"), "")
     }
 
-    fn key() -> ResourceKey {
-        resource_key!("epochfold-resident")
-    }
+    const KEY: &'static str = "epochfold-resident";
 
     async fn create(
         &self,
@@ -537,17 +526,11 @@ impl Provider for NoSlotDerived {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn metadata() -> nebula_resource::ResourceMetadataDraft {
-        nebula_resource::ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("NoSlotDerived"),
-            "",
-        )
+    fn metadata() -> nebula_resource::MetadataDraft {
+        nebula_resource::MetadataDraft::new(nebula_resource::metadata_name!("NoSlotDerived"), "")
     }
 
-    fn key() -> ResourceKey {
-        nebula_resource::resource_key!("epochfold-noslot")
-    }
+    const KEY: &'static str = "epochfold-noslot";
 
     async fn create(&self, _config: &TwoSlotCfg, _ctx: &ResourceContext) -> Result<(), Error> {
         Ok(())
@@ -602,17 +585,14 @@ impl Provider for PooledCredResource {
     type Instance = ();
     type Topology = nebula_resource::Pooled<Self>;
 
-    fn metadata() -> nebula_resource::ResourceMetadataDraft {
-        nebula_resource::ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> nebula_resource::MetadataDraft {
+        nebula_resource::MetadataDraft::new(
             nebula_resource::metadata_name!("PooledCredResource"),
             "",
         )
     }
 
-    fn key() -> ResourceKey {
-        resource_key!("epochfold-pooled-cred")
-    }
+    const KEY: &'static str = "epochfold-pooled-cred";
 
     async fn create(&self, _config: &RaceCfg, _ctx: &ResourceContext) -> Result<(), Error> {
         Ok(())

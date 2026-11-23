@@ -206,18 +206,18 @@ fn macro_and_manual_metadata_preserve_the_exact_full_semver() {
 // -- Resource handle fields -------------------------------------------------
 
 mod resource_handle_fields {
+    use nebula_resource::ProviderKey;
     use std::{any::Any, sync::Arc};
 
     use nebula_action::{FromWorkflowNode, testing::TestContextBuilder};
     use nebula_core::{
-        CoreError, ResourceKey, ScopeLevel, accessor::ResourceAccessor, node_key, resource_key,
-        scope::Scope,
+        CoreError, ResourceKey, ScopeLevel, accessor::ResourceAccessor, node_key, scope::Scope,
     };
     use nebula_resource::{
         AcquireOptions, ErrorKind, Manager, PinSlots, RegistrationSpec, Resident, ResidentConfig,
         ResourceConfig, ResourceContext, SlotIdentity,
         call::{Cost, Effect, Operation, OperationCx, OperationError, ResourceHandle},
-        resource::{Provider, ResourceMetadataDraft},
+        resource::{MetadataDraft, Provider},
         topology::ResidentProvider,
     };
     use nebula_workflow::NodeDefinition;
@@ -245,16 +245,10 @@ mod resource_handle_fields {
                 type Instance = u64;
                 type Topology = Resident<Self>;
 
-                fn key() -> ResourceKey {
-                    resource_key!($key)
-                }
+                const KEY: &'static str = $key;
 
-                fn metadata() -> ResourceMetadataDraft {
-                    ResourceMetadataDraft::new(
-                        Self::key(),
-                        nebula_resource::metadata_name!($key),
-                        "",
-                    )
+                fn metadata() -> MetadataDraft {
+                    MetadataDraft::new(nebula_resource::metadata_name!($key), "")
                 }
 
                 async fn create(

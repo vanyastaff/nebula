@@ -14,10 +14,10 @@ use nebula_sdk::{
     integration::credential::{TestFailureCode, TestResult},
     prelude::{
         Action, ActionMetadataDraft, ActionResult, AuthoredValue, Deserialize, Error, Expression,
-        PoolProvider, Pooled, ProgramSyntax, Provider, RemoteDestinationGuarantee,
-        RemoteEffectPolicy, Resource, ResourceContext, ResourceKey, Schema, Serialize, TeardownCx,
+        PoolProvider, Pooled, ProgramSyntax, Provider, ProviderKey, RemoteDestinationGuarantee,
+        RemoteEffectPolicy, Resource, ResourceContext, Schema, Serialize, TeardownCx,
         TeardownReason, TriggerHealthSnapshot, Value, WorkflowBuilder, metadata_name,
-        no_credential_slots, resource_key,
+        no_credential_slots,
     },
     simple_action,
 };
@@ -153,17 +153,14 @@ impl Provider for ManualProvider {
     type Instance = OwnedClient;
     type Topology = Pooled<Self>;
 
-    fn metadata() -> nebula_sdk::integration::resource::ResourceMetadataDraft {
-        nebula_sdk::integration::resource::ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> nebula_sdk::integration::resource::MetadataDraft {
+        nebula_sdk::integration::resource::MetadataDraft::new(
             nebula_sdk::prelude::metadata_name!("ManualProvider"),
             "",
         )
     }
 
-    fn key() -> ResourceKey {
-        resource_key!("example.manual-provider")
-    }
+    const KEY: &'static str = "example.manual-provider";
 
     async fn create(&self, _: &(), _: &ResourceContext) -> Result<OwnedClient, Error> {
         Ok(OwnedClient(String::from("owned connection")))
@@ -191,17 +188,14 @@ impl Provider for CatalogProvider {
     type Instance = ();
     type Topology = Pooled<Self>;
 
-    fn metadata() -> nebula_sdk::integration::resource::ResourceMetadataDraft {
-        nebula_sdk::integration::resource::ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> nebula_sdk::integration::resource::MetadataDraft {
+        nebula_sdk::integration::resource::MetadataDraft::new(
             nebula_sdk::prelude::metadata_name!("CatalogProvider"),
             "",
         )
     }
 
-    fn key() -> ResourceKey {
-        resource_key!("example.catalog-provider")
-    }
+    const KEY: &'static str = "example.catalog-provider";
 
     async fn create(&self, _: &(), _: &ResourceContext) -> Result<(), Error> {
         Ok(())
@@ -380,8 +374,7 @@ fn catalog_constructor_parity() {
         MetadataVersion, RemovalDate, RemovalMilestone, RemovalSchedule, VersionReq,
     };
     use nebula_sdk::integration::{
-        action::ActionMetadataDraft, credential::CredentialMetadataDraft,
-        resource::ResourceMetadataDraft,
+        action::ActionMetadataDraft, credential::CredentialMetadataDraft, resource::MetadataDraft,
     };
     use nebula_sdk::prelude::{action_key, credential_key};
 
@@ -459,23 +452,21 @@ fn catalog_constructor_parity() {
             .add_link(link.clone())
             .with_deprecation(notice.clone());
     assert_eq!(credential, credential_dynamic);
-    let resource =
-        ResourceMetadataDraft::new(resource_key!("example.http"), metadata_name!("HTTP"), "")
-            .with_version(version.clone())
-            .with_categories([category.clone()])
-            .add_link(link.clone())
-            .with_deprecation(notice.clone());
-    let resource_dynamic =
-        ResourceMetadataDraft::try_new(resource_key!("example.http"), "HTTP", "")
-            .expect("valid name")
-            .with_version(version)
-            .with_categories([category])
-            .add_link(link)
-            .with_deprecation(notice);
+    let resource = MetadataDraft::new(metadata_name!("HTTP"), "")
+        .with_version(version.clone())
+        .with_categories([category.clone()])
+        .add_link(link.clone())
+        .with_deprecation(notice.clone());
+    let resource_dynamic = MetadataDraft::try_new("HTTP", "")
+        .expect("valid name")
+        .with_version(version)
+        .with_categories([category])
+        .add_link(link)
+        .with_deprecation(notice);
     assert_eq!(resource, resource_dynamic);
     let _: nebula_sdk::prelude::VersionReq = requirement;
     let _: nebula_sdk::prelude::MetadataField = MetadataField::Links;
     assert!(ActionMetadataDraft::try_new(action_key!("example.echo"), " ", "").is_err());
     assert!(CredentialMetadataDraft::try_new(credential_key!("example.token"), " ", "").is_err());
-    assert!(ResourceMetadataDraft::try_new(resource_key!("example.http"), " ", "").is_err());
+    assert!(MetadataDraft::try_new(" ", "").is_err());
 }

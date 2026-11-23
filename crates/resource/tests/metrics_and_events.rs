@@ -6,12 +6,13 @@
 //! Split out of the former monolithic `basic_integration.rs` (pure move, no
 //! test-body changes) — shared mocks/helpers live in `tests/common/mod.rs`.
 
+use nebula_resource::ProviderKey;
 mod common;
 
 use std::sync::Arc;
 
 use common::{PoolTestResource, ResidentTestResource, poll_until, test_config, test_ctx};
-use nebula_core::{ResourceKey, resource_key};
+use nebula_core::resource_key;
 use nebula_resource::{
     AcquireOptions, Error, ErrorKind, Manager, ManagerConfig, Pooled, Provider, RegistrationSpec,
     Resident, ResidentConfig, ResidentProvider, ResourceContext, ResourceEvent,
@@ -41,18 +42,26 @@ impl<const ID: u8> Provider for FailingRetirementResource<ID> {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn metadata() -> nebula_resource::ResourceMetadataDraft {
-        nebula_resource::ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> nebula_resource::MetadataDraft {
+        nebula_resource::MetadataDraft::new(
             nebula_resource::metadata_name!("FailingRetirementResource"),
             "",
         )
     }
 
-    fn key() -> ResourceKey {
-        ResourceKey::try_from(format!("test-failing-retirement-{ID}"))
-            .expect("static test resource key is valid")
-    }
+    const KEY: &'static str = match ID {
+        0 => "test-failing-retirement-0",
+        1 => "test-failing-retirement-1",
+        2 => "test-failing-retirement-2",
+        3 => "test-failing-retirement-3",
+        4 => "test-failing-retirement-4",
+        5 => "test-failing-retirement-5",
+        6 => "test-failing-retirement-6",
+        7 => "test-failing-retirement-7",
+        8 => "test-failing-retirement-8",
+        9 => "test-failing-retirement-9",
+        _ => panic!("declare a key for this resource id"),
+    };
 
     async fn create(
         &self,

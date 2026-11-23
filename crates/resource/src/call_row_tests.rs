@@ -4,6 +4,7 @@
 //! `Manager.admission` across a read or a create, and settle every refusal
 //! unsent. Streaming units on a row keep the same per-attempt checkout.
 
+use crate::resource::ProviderKey;
 use std::{
     num::{NonZeroU32, NonZeroUsize},
     sync::{
@@ -13,7 +14,7 @@ use std::{
     time::Duration,
 };
 
-use nebula_core::{ResourceKey, Scope, ScopeLevel, resource_key};
+use nebula_core::{ResourceKey, Scope, ScopeLevel};
 use nebula_credential::{
     CredentialAvailability, CredentialAvailabilityObservation, CredentialAvailabilityObserver,
     CredentialBlock, CredentialObserveError,
@@ -38,7 +39,7 @@ use crate::{
         },
     },
     rate_limit::{Rate, RowLimit},
-    resource::{ResourceConfig as _, ResourceMetadataDraft},
+    resource::{MetadataDraft, ResourceConfig as _},
     runtime::managed::ManagedResource,
     topology::{
         PoolProvider,
@@ -315,12 +316,10 @@ impl Provider for PlainPool {
     type Instance = u64;
     type Topology = Pooled<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("row-plain-pool")
-    }
+    const KEY: &'static str = "row-plain-pool";
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("row-plain-pool"), "")
+    fn metadata() -> MetadataDraft {
+        MetadataDraft::new(crate::metadata_name!("row-plain-pool"), "")
     }
 
     async fn create(

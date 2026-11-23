@@ -6,11 +6,8 @@
 //! - A hand-written `impl Provider` with `create` satisfies the trait.
 //! - No `#[resource(...)]` container attribute is required.
 
-use nebula_core::ResourceKey;
 use nebula_resource::topology::resident::ResidentProvider;
-use nebula_resource::{
-    Error, Resident, Resource, ResourceContext, resource::Provider, resource_key,
-};
+use nebula_resource::{Error, ProviderKey, Resident, Resource, ResourceContext, resource::Provider};
 
 #[derive(Clone, Resource)]
 struct UnitResource;
@@ -30,16 +27,10 @@ impl Provider for UnitResource {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn metadata() -> nebula_resource::ResourceMetadataDraft {
-        nebula_resource::ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("UnitResource"),
-            "",
-        )
-    }
+    const KEY: &'static str = "positive.unit";
 
-    fn key() -> ResourceKey {
-        resource_key!("positive.unit")
+    fn metadata() -> nebula_resource::MetadataDraft {
+        nebula_resource::MetadataDraft::new(nebula_resource::metadata_name!("UnitResource"), "")
     }
 
     async fn create(&self, _config: &MyConfig, _ctx: &ResourceContext) -> Result<(), Error> {
@@ -50,7 +41,7 @@ impl Provider for UnitResource {
 impl ResidentProvider for UnitResource {}
 
 fn main() {
-    let _ = <UnitResource as Provider>::key();
+    let _ = <UnitResource as ProviderKey>::key();
     // A slot-less resource pins nothing for the managed call facade.
     let (): <UnitResource as nebula_resource::PinSlots>::Pinned =
         nebula_resource::PinSlots::pin_slots(&UnitResource);

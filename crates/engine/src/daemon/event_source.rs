@@ -459,11 +459,11 @@ mod tests {
         TriggerHandler,
         testing::{TestContextBuilder, TestTriggerContext},
     };
-    use nebula_core::{Context, ResourceKey, action_key};
+    use nebula_core::{Context, action_key};
     use nebula_resource::{
         ResourceContext,
         error::Error as ResourceError,
-        resource::{Provider, ResourceConfig, ResourceMetadataDraft},
+        resource::{MetadataDraft, Provider, ResourceConfig},
     };
 
     use super::*;
@@ -499,9 +499,7 @@ mod tests {
         type Instance = ();
         type Topology = nebula_resource::NoTopology;
 
-        fn key() -> ResourceKey {
-            ResourceKey::new("event-three").unwrap()
-        }
+        const KEY: &'static str = "event-three";
 
         async fn create(
             &self,
@@ -511,12 +509,8 @@ mod tests {
             Ok(())
         }
 
-        fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::new(
-                Self::key(),
-                nebula_resource::metadata_name!("event-three"),
-                "",
-            )
+        fn metadata() -> MetadataDraft {
+            MetadataDraft::new(nebula_resource::metadata_name!("event-three"), "")
         }
     }
 
@@ -631,9 +625,7 @@ mod tests {
         type Instance = ();
         type Topology = nebula_resource::NoTopology;
 
-        fn key() -> ResourceKey {
-            ResourceKey::new("event-permanently-broken").unwrap()
-        }
+        const KEY: &'static str = "event-permanently-broken";
 
         async fn create(
             &self,
@@ -643,9 +635,8 @@ mod tests {
             Ok(())
         }
 
-        fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::new(
-                Self::key(),
+        fn metadata() -> MetadataDraft {
+            MetadataDraft::new(
                 nebula_resource::metadata_name!("event-permanently-broken"),
                 "",
             )

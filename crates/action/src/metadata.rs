@@ -118,7 +118,8 @@ pub enum ActionMetadataReadmissionError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use = "an action metadata draft must be admitted by a factory"]
 pub struct ActionMetadataDraft {
-    base: MetadataDraft<ActionKey>,
+    key: ActionKey,
+    base: MetadataDraft,
     inputs: Vec<InputPort>,
     outputs: Vec<OutputPort>,
     isolation_level: IsolationLevel,
@@ -151,7 +152,8 @@ impl ActionMetadataDraft {
         description: impl Into<String>,
     ) -> Self {
         Self {
-            base: MetadataDraft::new(key, name, description),
+            key,
+            base: MetadataDraft::new(name, description),
             inputs: port::default_input_ports(),
             outputs: port::default_output_ports(),
             isolation_level: IsolationLevel::None,
@@ -319,7 +321,7 @@ impl ActionMetadataDraft {
             .ensure_current_semantics()
             .map_err(MetadataBuildError::from)?;
         let metadata = ActionMetadata {
-            base: self.base.bind_schema(input_schema)?,
+            base: self.base.bind(self.key, input_schema)?,
             inputs: self.inputs.into_boxed_slice(),
             outputs: self.outputs.into_boxed_slice(),
             isolation_level: self.isolation_level,
