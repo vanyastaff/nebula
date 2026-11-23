@@ -24,7 +24,7 @@
 
 use std::{fmt, time::Duration};
 
-use nebula_core::{CredentialKey, ResourceKey};
+use nebula_core::ResourceKey;
 
 /// Why a bound credential refuses a new unit of work.
 ///
@@ -415,10 +415,7 @@ impl Error {
             .unwrap_or_else(|| "resource".to_owned());
         let detail = self.to_string();
         match self.kind() {
-            ErrorKind::NotFound => match CredentialKey::new(&key_label) {
-                Ok(key) => nebula_core::CoreError::credential_not_found(key),
-                Err(_) => nebula_core::CoreError::invalid_key(key_label, "credential"),
-            },
+            ErrorKind::NotFound => nebula_core::CoreError::resource_not_found(key_label),
             ErrorKind::Ambiguous => nebula_core::CoreError::scope_violation(key_label, detail),
             ErrorKind::Cancelled => {
                 nebula_core::CoreError::resource_unavailable(key_label, detail, false, None)
@@ -462,6 +459,12 @@ impl From<nebula_core::CoreError> for Error {
     /// retry machinery reads. Callers attach the resource key via
     /// [`with_resource_key`](Error::with_resource_key).
     ///
+    /// `CoreError::ResourceNotFound` maps back to
+    /// [`NotFound`](ErrorKind::NotFound) with its key.
+    /// `CoreError::CredentialNotFound` maps to
+    /// [`Permanent`](ErrorKind::Permanent), not `NotFound`: `NotFound` means
+    /// "no row under this resource key".
+    ///
     /// The source chain is preserved (`err` becomes
     /// [`with_source`](Error::with_source)'s payload) so a caller walking
     /// `std::error::Error::source` still reaches the original `CoreError`
@@ -489,8 +492,20 @@ impl From<nebula_core::CoreError> for Error {
                 };
                 Self::new(kind, detail.clone())
             },
+            CoreError::ResourceNotFound { key } => {
+                let not_found =
+                    Self::new(ErrorKind::NotFound, format!("resource not found: {key}"));
+                match ResourceKey::new(key) {
+                    Ok(key) => not_found.with_resource_key(key),
+                    Err(_) => not_found,
+                }
+            },
+            // A missing credential is not a missing resource: `NotFound`
+            // means "no row under this resource key", and an optional
+            // resource lookup reads it as "absent". It stays a permanent
+            // fault of the caller's wiring.
             CoreError::CredentialNotFound { key } => {
-                Self::new(ErrorKind::NotFound, format!("credential not found: {key}"))
+                Self::new(ErrorKind::Permanent, format!("credential not found: {key}"))
             },
             CoreError::ScopeViolation { .. } => Self::new(ErrorKind::Ambiguous, err.to_string()),
             _ => Self::new(ErrorKind::Permanent, err.to_string()),
@@ -583,13 +598,46 @@ mod tests {
     }
 
     #[test]
-    fn to_core_error_maps_not_found_to_credential_not_found() {
+    fn to_core_error_reports_a_missing_resource_as_a_resource() {
+        use nebula_error::Classify;
+
         let key = nebula_core::resource_key!("postgres");
-        let err = Error::not_found(&key);
-        assert!(matches!(
-            err.to_core_error(),
-            nebula_core::CoreError::CredentialNotFound { .. }
-        ));
+        let core = Error::not_found(&key).to_core_error();
+        assert!(
+            matches!(&core, nebula_core::CoreError::ResourceNotFound { key } if key == "postgres"),
+            "a missing resource is not a missing credential, got {core:?}"
+        );
+        assert_eq!(core.code().as_str(), "CORE:RESOURCE_NOT_FOUND");
+        assert!(!core.is_retryable());
+    }
+
+    #[test]
+    fn a_missing_resource_round_trips_through_core_error() {
+        let key = nebula_core::resource_key!("postgres");
+        let back = Error::from(Error::not_found(&key).to_core_error());
+        assert_eq!(*back.kind(), ErrorKind::NotFound);
+        assert_eq!(back.resource_key(), Some(&key));
+    }
+
+    #[test]
+    fn a_missing_credential_is_never_read_as_a_missing_resource() {
+        // An optional resource lookup turns `NotFound` into "absent"; a
+        // credential that does not exist must not disappear that way.
+        let missing =
+            nebula_core::CoreError::credential_not_found(nebula_core::credential_key!("oauth"));
+        let error = Error::from(missing);
+        assert_eq!(*error.kind(), ErrorKind::Permanent);
+        assert!(!error.is_retryable());
+        assert!(
+            matches!(
+                error.to_core_error(),
+                nebula_core::CoreError::ResourceUnavailable {
+                    retryable: false,
+                    ..
+                }
+            ),
+            "stays a fatal, non-retryable fault at the action boundary"
+        );
     }
 
     #[test]

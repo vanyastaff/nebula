@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use nebula_core::{CredentialKey, NodeKey};
+use nebula_core::NodeKey;
 
 use super::*;
 
@@ -81,10 +81,7 @@ impl ResourceAccessor for TestGlobalAccessor {
             self.hits.fetch_add(1, Ordering::SeqCst);
             Ok(Box::new(self.payload_marker) as ScopedLookup)
         } else {
-            Err(CoreError::credential_not_found(
-                CredentialKey::new(key.as_str())
-                    .expect("ResourceKey format is CredentialKey-compatible"),
-            ))
+            Err(CoreError::resource_not_found(key.as_str()))
         }
     }
 
@@ -382,8 +379,8 @@ fn missing_in_both_returns_error() {
 
     let result = layered.resource_handle_any(&rk("kafka"));
     assert!(
-        matches!(result, Err(CoreError::CredentialNotFound { .. })),
-        "expected CredentialNotFound, got {result:?}"
+        matches!(result, Err(CoreError::ResourceNotFound { .. })),
+        "expected ResourceNotFound, got {result:?}"
     );
 }
 
