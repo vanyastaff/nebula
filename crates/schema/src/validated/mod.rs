@@ -90,7 +90,7 @@ pub enum SchemaKind {
 /// `serde_tagging` is the single source of truth for a union's wire shape across
 /// all three consumers: the `json_schema` export (feature `schemars`), the
 /// assignability lattice, and the value-layer bridge —
-/// [`ValidSchema::values_from_wire`](ValidSchema::values_from_wire) folds serde's
+/// [`ValidSchema::values_from_wire`] folds serde's
 /// external/adjacent wire (`{"Variant": payload}` / the bare `"Variant"` /
 /// `{tag, content}`) into the internal `{mode, value}` envelope that
 /// [`validate`](ValidSchema::validate) consumes, and

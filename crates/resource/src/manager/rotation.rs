@@ -171,15 +171,15 @@ impl From<SlotHookDeferral> for SlotDeferralReason {
 }
 
 /// A resource registry row whose credential slot has been **synchronously
-/// tainted** by [`Manager::taint_slot`](Manager::taint_slot) /
-/// [`Manager::taint_slot_for_identity`](Manager::taint_slot_for_identity) —
+/// tainted** by [`Manager::taint_slot`] /
+/// [`Manager::taint_slot_for_identity`] —
 /// phase 1 of the
 /// two-phase revoke (see the [`manager`](crate::manager) module docs for the
 /// canonical invariant and why the taint is synchronous-before-the-tail).
 ///
 /// Holding one is proof the taint already ran to completion: new acquires on
 /// this row's credential are already rejected. It is consumed by
-/// [`Manager::drain_and_revoke`](Manager::drain_and_revoke) to run the
+/// [`Manager::drain_and_revoke`] to run the
 /// cancellation-safe drain + revoke-hook tail.
 ///
 /// Opaque by design: the only valid use is to pass it to

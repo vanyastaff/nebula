@@ -1,6 +1,6 @@
 //! Shared validation logic for port and branch key newtypes.
 //!
-//! Both [`PortKey`](crate::PortKey) and [`BranchKey`](crate::BranchKey) enforce
+//! Both [`PortKey`] and [`BranchKey`] enforce
 //! the same rules — only the type identity differs. This private module is the
 //! single source of truth so the rules cannot drift between the two types.
 //!

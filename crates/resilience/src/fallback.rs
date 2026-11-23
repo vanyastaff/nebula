@@ -30,7 +30,7 @@ use crate::{
 /// Implement this trait to define custom fallback behavior.
 ///
 /// [`ValueFallback`] and [`FunctionFallback`] are complete implementations to
-/// copy from; [`FallbackExecutor::call`](FallbackExecutor::call) shows how a
+/// copy from; [`FallbackExecutor::call`] shows how a
 /// strategy is driven.
 pub trait FallbackStrategy<T, E>: Send + Sync {
     /// Produce a recovery value for an error that

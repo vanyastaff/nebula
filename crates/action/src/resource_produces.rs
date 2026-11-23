@@ -1,6 +1,6 @@
 //! ResourceAction Output marker — `ResourceProduces<R>`.
 //!
-//! For the base [`Action`](crate::Action)
+//! For the base [`Action`]
 //! trait has `type Output` for *what this action produces*. For
 //! `ResourceAction`, the produced thing is a scoped resource binding that
 //! downstream nodes consume through their `#[resource]` slots. There is no flowing
@@ -11,7 +11,7 @@
 //!
 //! ## Trait constraint usage
 //!
-//! [`ResourceAction`](crate::resource::ResourceAction) constrains its
+//! [`ResourceAction`] constrains its
 //! `Action::Output` to `ResourceProduces<Self::Resource>`, so the compiler
 //! enforces that the produced marker is tied to the action's own
 //! `type Resource`. Mismatches surface at impl time, not at runtime — an

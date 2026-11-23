@@ -5,7 +5,7 @@
 //! a specific output port, drop an item, pass through, or terminate the
 //! execution. Implementors do **not** hold state across calls, do not
 //! wait on external signals, and do not iterate — those use cases belong
-//! to [`StatefulAction`](crate::stateful::StatefulAction).
+//! to [`StatefulAction`].
 //!
 //! The 7 canonical control nodes (`IfAction`, `SwitchAction`, `RouterAction`,
 //! `FilterAction`, `NoOpAction`, `StopAction`, `FailAction`) are **not**
@@ -17,8 +17,8 @@
 //!
 //! `ControlAction` is erased to [`ControlHandle`] via
 //! [`ControlActionAdapter`]. This mirrors the
-//! [`PollTriggerAdapter`](crate::poll::PollTriggerAdapter) and
-//! [`WebhookTriggerAdapter`](crate::webhook::WebhookTriggerAdapter) pattern
+//! [`PollTriggerAdapter`] and
+//! [`WebhookTriggerAdapter`] pattern
 //! for `TriggerAction` DX families: author writes a typed trait, adapter
 //! wraps and bridges to the dyn-compat handler contract. Registration:
 //!

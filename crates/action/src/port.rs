@@ -1,7 +1,7 @@
 //! Port definitions describing action input/output connection points.
 //!
 //! Every action declares its ports via [`InputPort`] and [`OutputPort`] enums
-//! stored in [`ActionMetadata`](crate::ActionMetadata). Ports describe the
+//! stored in [`ActionMetadata`]. Ports describe the
 //! connection topology — how nodes wire together in a workflow graph.
 //!
 //! Three port semantics exist:

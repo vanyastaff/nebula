@@ -1,6 +1,6 @@
 //! [`IdempotencyKey`] — transport-level dedup identifier.
 //!
-//! Returned by [`TriggerAction::idempotency_key`](crate::TriggerAction::idempotency_key)
+//! Returned by [`TriggerAction::idempotency_key`]
 //! per Tech Spec §15.12 F2. Engine uses the key to suppress duplicate workflow
 //! executions when a trigger transport delivers the same event more than once
 //! (webhook retry, queue redelivery, schedule replay).

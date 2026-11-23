@@ -2,7 +2,7 @@
 //!
 //! A `PortKey` names a specific input or output connection point on an action
 //! (e.g. `"in"`, `"out"`, `"error"`, `"tools"`). It enforces the charset and
-//! structural rules shared with [`BranchKey`](crate::BranchKey) at construction
+//! structural rules shared with [`BranchKey`] at construction
 //! time, so an invalid port name can never reach the engine's routing tables.
 //!
 //! # Serde security contract

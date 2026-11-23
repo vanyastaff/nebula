@@ -3,7 +3,7 @@
 //! A type that implements [`HasSchema`] advertises a canonical [`ValidSchema`]
 //! that describes its structure. A type that implements [`HasSelectOptions`]
 //! advertises an ordered list of [`SelectOption`] values suitable for a
-//! [`SelectField`](crate::field::SelectField).
+//! [`SelectField`].
 //!
 //! These traits are the bridge between the derive layer (`#[derive(Schema)]`,
 //! `#[derive(EnumSelect)]`) and the validator / engine — given a type `T`, a

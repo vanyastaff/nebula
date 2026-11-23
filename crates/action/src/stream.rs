@@ -2,8 +2,8 @@
 //!
 //! Stream actions open an async chunk stream and fold it into a single output
 //! value in-process. They share the same one-shot dispatch shape as
-//! [`StatelessAction`](crate::StatelessAction) but carry a distinct
-//! [`ActionKind::Stream`](crate::metadata::ActionKind::Stream) and a richer
+//! [`StatelessAction`] but carry a distinct
+//! [`ActionKind::Stream`] and a richer
 //! future seam — `open_stream` exposes the chunk boundary so later units
 //! (S3 cursor-replay, S4 egress) can observe chunks without touching stateless
 //! dispatch.

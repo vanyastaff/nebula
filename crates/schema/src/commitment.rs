@@ -18,7 +18,7 @@
 //!   are therefore comparable **only within the lifetime of one key** — they are
 //!   meaningless across process restarts and are *not* a durable address (hence
 //!   [`CommitmentId`] is deliberately distinct from
-//!   [`ContentId`](crate::ContentId) and is not serializable).
+//!   [`ContentId`] and is not serializable).
 //! - Equality of two commitments under one key reveals only "these two secrets
 //!   are equal". That is the same fact [`SecretValue`]'s constant-time `PartialEq`
 //!   already answers; do **not** use a commitment as an equality oracle against

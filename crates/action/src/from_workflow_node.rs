@@ -2,7 +2,7 @@
 //! against a workflow node definition and an action context.
 //!
 //! Every concrete action implementing
-//! [`Action`](crate::Action) ALSO implements [`FromWorkflowNode`]. The engine
+//! [`Action`] ALSO implements [`FromWorkflowNode`]. The engine
 //! calls [`from_workflow_node`](FromWorkflowNode::from_workflow_node) once at
 //! dispatch time:
 //!
@@ -10,7 +10,7 @@
 //! 2. For each slot, look up the override in `node.slot_bindings` for diagnostics and resource
 //! resolution.
 //! 3. Resolve resources by selected id and credentials by declared slot key through
-//! [`ActionContext`](crate::ActionContext) typed helpers
+//! [`ActionContext`] typed helpers
 //! ([`resource_handle_by_id`](crate::context::ActionContextExt::resource_handle_by_id),
 //! [`resolve_credential_by_id`](crate::context::ActionContextExt::resolve_credential_by_id)).
 //! 4. Assemble `Self` with the resolved resource handles and credential guards.

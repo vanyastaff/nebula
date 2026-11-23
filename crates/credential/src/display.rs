@@ -3,10 +3,10 @@
 //! [`CredentialDisplay`] is the human-facing, **non-secret** metadata a user
 //! attaches to a credential *instance* (a created credential like
 //! "Prod GitHub PAT") — distinct from the type-level
-//! [`CredentialMetadata`](crate::CredentialMetadata), which describes the
+//! [`CredentialMetadata`], which describes the
 //! credential *kind*.
 //!
-//! It is carried on [`CredentialSnapshot`](crate::CredentialSnapshot) and
+//! It is carried on [`CredentialSnapshot`] and
 //! persisted by the credential runtime under a reserved `metadata["display"]`
 //! sub-object on the stored credential (a single-writer key, sibling to the
 //! tenancy `owner_id` key). The API contract forbids secret material here, but

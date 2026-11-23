@@ -11,10 +11,10 @@
 //! - [`WebhookAction`] — DX trait with the register / handle / unregister lifecycle. Implement this
 //! and register via `registry.register_webhook(action)`.
 //! - [`WebhookTriggerAdapter`] — bridges a typed `WebhookAction` to the
-//! [`TriggerHandler`](crate::trigger::TriggerHandler) dyn contract. Stores state from
+//! [`TriggerHandler`] dyn contract. Stores state from
 //! `on_activate` in a `RwLock<Option<Arc<State>>>`, rejects double-start with
 //! `ActionError::Fatal`, cleans up orphaned state on lost-race rollback, and downcasts incoming
-//! [`TriggerEvent`](crate::trigger::TriggerEvent)s to [`WebhookRequest`].
+//! [`TriggerEvent`]s to [`WebhookRequest`].
 //! - [`verify_hmac_sha256`], [`hmac_sha256_compute`], [`verify_tag_constant_time`],
 //! [`SignatureOutcome`] — constant-time HMAC primitives. Use `verify_hmac_sha256` for
 //! GitHub-style `sha256=…` bare-hex signatures; reach for the lower-level pair for Stripe / Slack
