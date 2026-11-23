@@ -117,7 +117,7 @@ bytes = "1.11.1"
 lasso = { version = "0.7", features = ["multi-threaded"] }
 
 # Crypto
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 blake3 = "1.5"
 sha2 = "0.11"
 hmac = "0.13"
@@ -125,7 +125,7 @@ hex = "0.4"
 subtle = "2.6"
 zeroize = { version = "1.8.2", features = ["std", "zeroize_derive"] }
 secrecy = { version = "0.10", features = ["serde"] }
-argon2 = { version = "0.5.3", default-features = false, features = ["std"] }
+argon2 = { version = "0.6.0", default-features = false, features = ["alloc", "password-hash", "getrandom"] }
 totp-rs = { version = "6", default-features = false, features = ["otpauth"] }
 
 # CLI

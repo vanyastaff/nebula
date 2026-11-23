@@ -190,7 +190,7 @@ fn fresh_nonce() -> aes_gcm::Nonce<aes_gcm::aes::cipher::typenum::U12> {
 
     let mut rng = rand::rng();
     let nonce_bytes: [u8; 12] = rng.random();
-    *aes_gcm::Nonce::from_slice(&nonce_bytes)
+    aes_gcm::Nonce::from(nonce_bytes)
 }
 
 /// Encrypt plaintext using AES-256-GCM (no AAD).
@@ -238,7 +238,7 @@ pub fn decrypt(
     let cipher =
         Aes256Gcm::new_from_slice(key.as_bytes()).map_err(|_| CryptoError::DecryptionFailed)?;
 
-    let nonce = aes_gcm::Nonce::from_slice(&encrypted.nonce);
+    let nonce = &aes_gcm::Nonce::from(encrypted.nonce);
 
     // Combine ciphertext and tag for decryption
     let mut ciphertext_with_tag = encrypted.ciphertext.clone();
@@ -312,7 +312,7 @@ pub fn decrypt_with_aad(
     let cipher =
         Aes256Gcm::new_from_slice(key.as_bytes()).map_err(|_| CryptoError::DecryptionFailed)?;
 
-    let nonce = aes_gcm::Nonce::from_slice(&encrypted.nonce);
+    let nonce = &aes_gcm::Nonce::from(encrypted.nonce);
 
     // Combine ciphertext and tag for decryption
     let mut ciphertext_with_tag = encrypted.ciphertext.clone();
