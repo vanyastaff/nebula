@@ -91,6 +91,21 @@ changes are expected between minor releases — call them out here.
 
 ### Fixed
 
+- **An unregistered resource is no longer reported as a missing
+  credential.** `nebula_resource::Error::to_core_error` projected
+  `ErrorKind::NotFound` ("resource key not in registry") onto
+  `CoreError::CredentialNotFound`, so an action asking for a resource nobody
+  registered failed with `CORE:CREDENTIAL_NOT_FOUND` and the resource key in
+  the credential field — pointing the operator at the wrong binding. It is now
+  `CoreError::ResourceNotFound` (new variant and `resource_not_found`
+  constructor, code `CORE:RESOURCE_NOT_FOUND`, category `NotFound`, never
+  retryable), and the inverse `From<CoreError>` maps it back to `NotFound`
+  with its key. In that inverse, `CoreError::CredentialNotFound` now becomes
+  `ErrorKind::Permanent` instead of `NotFound`: an optional resource lookup
+  reads `NotFound` as "absent", which would have hidden a missing credential.
+  Code matching `CoreError::CredentialNotFound` on a resource accessor's
+  result must match `ResourceNotFound`.
+
 - **Concurrent acquires of one resident resource no longer queue behind each
   other.** Every acquire of a live resident master took two fair async locks
   for a few hundred nanoseconds of reads: the topology's state lock, held
