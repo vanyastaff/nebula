@@ -193,9 +193,11 @@ SDK persona types.
 
 ### Catalog construction migration
 
-Use the three concrete drafts from `integration::{action, credential, resource}`
-or `prelude`. Each has `new(key, MetadataName, description)` and fallible
-`try_new(key, name, description)`. Credential constructors no longer take an auth
+Use the author types from `integration::{action, credential, resource}` or `prelude`.
+`ActionMetadataDraft` and `CredentialMetadataDraft` have `new(key, MetadataName, description)`
+and fallible `try_new(key, name, description)`. `ResourceMetadata` takes no key
+(`new(MetadataName, description)` / `try_new(name, description)`): a resource's identity is
+`Provider::KEY`. Credential constructors no longer take an auth
 pattern; the registry derives it from the associated scheme. Resource authors
 implement `Provider::metadata` explicitly; `from_key` is removed. Action macros
 preserve full SemVer, including prerelease and build metadata.

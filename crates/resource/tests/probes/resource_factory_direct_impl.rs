@@ -21,7 +21,7 @@ impl ResourceFactory for ForgedFactory {
         TypeId::of::<Self>()
     }
 
-    fn metadata(&self) -> Result<&ResourceDefinition, MetadataBuildError> {
+    fn definition(&self) -> Result<&ResourceDefinition, MetadataBuildError> {
         panic!("compile-only probe")
     }
 

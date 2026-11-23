@@ -10,7 +10,7 @@ fn lifecycle_authority_is_not_publicly_callable() {
     tests.compile_fail("tests/probes/provider_has_no_shutdown_hook.rs");
     tests.compile_fail("tests/probes/provider_key_literal_is_checked.rs");
     tests.compile_fail("tests/probes/resource_metadata_fields_are_private.rs");
-    tests.compile_fail("tests/probes/resource_metadata_is_not_deserialize.rs");
+    tests.compile_fail("tests/probes/resource_definition_is_not_deserialize.rs");
     tests.compile_fail("tests/probes/resource_config_input_rejects_valid_values.rs");
     tests.compile_fail("tests/probes/resource_config_input_rejects_resolved_values.rs");
     tests.compile_fail("tests/probes/resource_factory_direct_impl.rs");

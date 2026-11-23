@@ -395,15 +395,14 @@ impl<S: Zeroize + Send + Sync + 'static> fmt::Debug for CredentialGuard<S>
 impl<S: Zeroize> Deref for CredentialGuard<S>
 impl<S: Zeroize> Drop for CredentialGuard<S>
 
-## struct nebula_metadata::base::ResourceMetadata
-exported as nebula_sdk::integration::resource::ResourceMetadata
-exported as nebula_sdk::prelude::ResourceMetadata
+## struct nebula_metadata::base::Metadata
+exported as nebula_sdk::prelude::ResourceMetadata (through the alias)
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResourceMetadata {
+pub struct Metadata {
     /* private fields */
 }
-impl ResourceMetadata {
+impl Metadata {
     pub fn new(name: MetadataName, description: impl Into<String>) -> Self;
     pub fn try_new(name: impl Into<String>, description: impl Into<String>) -> Result<Self, MetadataError>;
     pub fn with_version(mut self, version: Version) -> Self;
@@ -1282,6 +1281,11 @@ pub trait Method: sealed::Sealed + Send + 'static {
 ## type nebula_resource::call::session::SessionFuture
 exported as nebula_sdk::integration::resource::SessionFuture
 pub type SessionFuture<'s, T> = Pin<Box<dyn Future<Output = Result<T, OperationError>> + Send + 's>>;
+
+## type nebula_resource::resource::ResourceMetadata
+exported as nebula_sdk::integration::resource::ResourceMetadata
+exported as nebula_sdk::prelude::ResourceMetadata
+pub type ResourceMetadata = nebula_metadata::Metadata;
 
 ## type nebula_resource::slot::CredentialSlot
 exported as nebula_sdk::integration::resource::CredentialSlot

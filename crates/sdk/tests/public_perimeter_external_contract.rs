@@ -175,7 +175,8 @@ const REMOVED_CATALOG_API: &[(&str, &str, &str)] = &[
         "with_checkpoint_policy",
         "ActionMetadataDraft",
     ),
-    ("removed_resource_from_key", "from_key", "ResourceMetadata"),
+    // `ResourceMetadata` is an alias; rustc names the type behind it.
+    ("removed_resource_from_key", "from_key", "Metadata"),
     (
         "removed_credential_pattern",
         "pattern",

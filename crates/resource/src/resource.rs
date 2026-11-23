@@ -428,9 +428,10 @@ impl CheckCost {
 /// where the resource is declared.
 ///
 /// Slot plumbing is also emitted for types that are not providers, so the
-/// constant cannot require `T: Provider`: [`KeyOf<T>::VALID`](KeyOf) is the
-/// inherent constant when `T` is a provider and falls back to the always-true
-/// [`NotAProvider::VALID`] when it is not.
+/// constant cannot require `T: Provider`: [`KeyOf<T>::VALID`](key_check::KeyOf) is
+/// the inherent constant when `T` is a provider and falls back to the
+/// always-true [`NotAProvider::VALID`](key_check::NotAProvider::VALID) when it
+/// is not.
 #[doc(hidden)]
 pub mod key_check {
     use std::marker::PhantomData;

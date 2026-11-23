@@ -90,6 +90,18 @@ fn resource_targets(workspace: &Workspace) -> BTreeMap<Target, Vec<String>> {
         let target = workspace.resolve_path("nebula_sdk", &export.module, origin, 0);
         targets.entry(target).or_default().push(export.public_path);
     }
+    // `ResourceMetadata` is a type alias, and the walker stops at an alias.
+    // Its methods are the authoring surface, so pin the type behind it too.
+    let aliased = workspace.resolve_path(
+        "nebula_resource",
+        &["resource".to_owned()],
+        &["nebula_metadata".to_owned(), "Metadata".to_owned()],
+        0,
+    );
+    targets
+        .entry(aliased)
+        .or_default()
+        .push("nebula_sdk::prelude::ResourceMetadata (through the alias)".to_owned());
     targets
 }
 
