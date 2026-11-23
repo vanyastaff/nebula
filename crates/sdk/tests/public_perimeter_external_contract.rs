@@ -176,7 +176,11 @@ const REMOVED_CATALOG_API: &[(&str, &str, &str)] = &[
         "ActionMetadataDraft",
     ),
     // `ResourceMetadata` is an alias; rustc names the type behind it.
-    ("removed_resource_from_key", "from_key", "Metadata"),
+    (
+        "removed_resource_from_key",
+        "from_key",
+        "nebula_metadata::base::Metadata",
+    ),
     (
         "removed_credential_pattern",
         "pattern",

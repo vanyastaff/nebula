@@ -510,9 +510,7 @@ impl Provider for MeetingResident {
     type Instance = u32;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("meeting-resident")
-    }
+    const KEY: &'static str = "meeting-resident";
 
     async fn create(&self, _config: &bool, _ctx: &ResourceContext) -> Result<u32, Error> {
         Ok(1)
@@ -524,8 +522,8 @@ impl Provider for MeetingResident {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("meeting-resident"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("meeting-resident"), "")
     }
 }
 
