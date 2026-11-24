@@ -30,7 +30,7 @@ use axum::{
 };
 use hmac::{Hmac, KeyInit, Mac};
 use nebula_action::{
-    Action, ActionError, ActionMetadataDraft, SignaturePolicy, TriggerContext, TriggerEventOutcome,
+    Action, ActionError, ActionMetadata, SignaturePolicy, TriggerContext, TriggerEventOutcome,
     TriggerHandler, TriggerRuntimeContext, WebhookAction, WebhookConfig, WebhookRequest,
     WebhookResponse, WebhookTriggerAdapter,
 };
@@ -68,12 +68,12 @@ struct RegistrationState {
 }
 
 impl Action for GitHubLikeWebhook {
+    const KEY: &'static str = "test.webhook.integration";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            nebula_core::action_key!("test.webhook.integration"),
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
             nebula_action::metadata_name!("GitHub-like"),
             "Integration test webhook",
         )
@@ -417,12 +417,12 @@ async fn rate_limit_returns_429_with_retry_after() {
 struct HangingWebhook;
 
 impl Action for HangingWebhook {
+    const KEY: &'static str = "test.webhook.hang";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            nebula_core::action_key!("test.webhook.hang"),
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
             nebula_action::metadata_name!("Hanging"),
             "Handler that never returns",
         )
@@ -629,12 +629,12 @@ async fn post_still_dispatches() {
 struct UnsignedWebhook;
 
 impl Action for UnsignedWebhook {
+    const KEY: &'static str = "test.webhook.unsigned";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            nebula_core::action_key!("test.webhook.unsigned"),
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
             nebula_action::metadata_name!("Unsigned"),
             "OptionalAcceptUnsigned regression guard",
         )
@@ -676,15 +676,12 @@ struct DefaultConfigWebhook {
 }
 
 impl Action for DefaultConfigWebhook {
+    const KEY: &'static str = "test.webhook.default_config.static";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            nebula_core::action_key!("test.webhook.default_config.static"),
-            nebula_action::metadata_name!("DefaultConfig"),
-            "static",
-        )
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(nebula_action::metadata_name!("DefaultConfig"), "static")
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();

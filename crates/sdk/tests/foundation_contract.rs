@@ -138,7 +138,7 @@ simple_action! {
 
 #[tokio::test]
 async fn simple_action_uses_typed_input_and_output_through_the_sdk_runtime() {
-    let draft: ActionMetadataDraft = GreetAction::metadata();
+    let draft: ActionMetadata = GreetAction::metadata();
     let _ = draft;
     let context = TestContextBuilder::new().with_input(json!({"name": "Nebula"}));
     let report = TestRuntime::new(context)

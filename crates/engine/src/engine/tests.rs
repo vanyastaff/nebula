@@ -8,7 +8,7 @@ use std::{
 
 use nebula_action::{
     ActionError, BranchKey, OutputPort, action::Action, context::CredentialContextExt,
-    metadata::ActionMetadataDraft, result::ActionResult, stateless::StatelessAction,
+    metadata::ActionMetadata, result::ActionResult, stateless::StatelessAction,
 };
 use nebula_core::{ActionKey, Dependencies, action_key, port_key, scope::Principal};
 use nebula_storage_port::StorageError;
@@ -24,29 +24,65 @@ use crate::runtime::{DataPassingPolicy, InProcessRunner, registry::ActionRegistr
 
 // ── Variant A test fixtures ───────────────────────────────────────────
 //
-// Per Plan-agent R-NEW-7, fixtures register through
-// [`ActionRegistry::register_stateless_instance`] (the
-// test-only escape) so each test can vary key/version while the static
-// `<X as Action>::metadata()` keeps a placeholder default.
+// Fixtures register instances through
+// [`ActionRegistry::register_stateless_instance`]. Key and metadata are each
+// type's own, so a test that needs the same handler under another key or
+// version declares a `stateless_entry!` type for that catalog entry.
 
 struct EchoHandler;
 
 impl Action for EchoHandler {
+    const KEY: &'static str = "echo";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        pure_metadata(
-            action_key!("test.echo.static"),
-            nebula_action::metadata_name!("Echo"),
-            "echoes input",
-        )
+    fn metadata() -> ActionMetadata {
+        pure_metadata(nebula_action::metadata_name!("Echo"), "echoes input")
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
     }
 }
+
+nebula_action::stateless_entry!(
+    CoreEchoEntry(EchoHandler) = "core.echo",
+    pure_metadata(nebula_action::metadata_name!("Echo"), "echoes input",),
+);
+
+nebula_action::stateless_entry!(
+    CoreEchoEntry2(EchoHandler) = "core.echo",
+    pure_metadata(nebula_action::metadata_name!("Echo"), "echoes",),
+);
+
+nebula_action::stateless_entry!(
+    EchoEntry(EchoHandler) = "echo",
+    // Declares "alt" alongside the default "out" — required since W0
+    // U2's undeclared-output-port pre-flight now rejects connections
+    // wired to a flow-only action's undeclared port. The edge-count
+    // regression this test guards fires either way (both edges are
+    // counted as resolved regardless of which port activates); "alt"
+    // just needs to be a *declared* port to pass the pre-flight, not one
+    // `EchoHandler` ever actually produces output on.
+    pure_metadata(nebula_action::metadata_name!("Echo"), "echoes input",).with_outputs(vec![
+        OutputPort::flow(port_key!("out")),
+        OutputPort::flow(port_key!("alt")),
+    ]),
+);
+
+nebula_action::stateless_entry!(
+    VersionedPortsEntry(EchoHandler) = "versioned_ports",
+    pure_metadata(nebula_action::metadata_name!("V1"), "v1",)
+        .with_version(semver::Version::new(1, 0, 0))
+        .with_outputs(vec![OutputPort::flow(port_key!("legacy"))]),
+);
+
+nebula_action::stateless_entry!(
+    VersionedPortsEntry2(EchoHandler) = "versioned_ports",
+    pure_metadata(nebula_action::metadata_name!("V2"), "v2",)
+        .with_version(semver::Version::new(2, 0, 0))
+        .with_outputs(vec![OutputPort::flow(port_key!("out"))]),
+);
 
 impl StatelessAction for EchoHandler {
     async fn execute(
@@ -67,15 +103,12 @@ struct SetupFailureInput {
 struct SetupFailureHandler;
 
 impl Action for SetupFailureHandler {
+    const KEY: &'static str = "core.echo";
     type Input = SetupFailureInput;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        pure_metadata(
-            action_key!("test.setup_failure.static"),
-            nebula_action::metadata_name!("Setup Failure"),
-            "setup-failure fixture",
-        )
+    fn metadata() -> ActionMetadata {
+        pure_metadata(nebula_action::metadata_name!("Echo"), "echoes input")
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -83,6 +116,11 @@ impl Action for SetupFailureHandler {
         DEPENDENCIES.get_or_init(Dependencies::new)
     }
 }
+
+nebula_action::stateless_entry!(
+    CoreEchoEntry3(SetupFailureHandler) = "core.echo",
+    pure_metadata(nebula_action::metadata_name!("Echo"), "echoes",),
+);
 
 impl StatelessAction for SetupFailureHandler {
     async fn execute(
@@ -100,21 +138,28 @@ impl StatelessAction for SetupFailureHandler {
 struct FailHandler;
 
 impl Action for FailHandler {
+    const KEY: &'static str = "fail";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        pure_metadata(
-            action_key!("test.fail.static"),
-            nebula_action::metadata_name!("Fail"),
-            "fails",
-        )
+    fn metadata() -> ActionMetadata {
+        pure_metadata(nebula_action::metadata_name!("Fail"), "always fails")
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
     }
 }
+
+nebula_action::stateless_entry!(
+    CoreFailEntry(FailHandler) = "core.fail",
+    pure_metadata(nebula_action::metadata_name!("Fail"), "always fails",),
+);
+
+nebula_action::stateless_entry!(
+    CoreFailEntry2(FailHandler) = "core.fail",
+    pure_metadata(nebula_action::metadata_name!("Fail"), "fails",),
+);
 
 impl StatelessAction for FailHandler {
     async fn execute(
@@ -131,21 +176,23 @@ struct SlowHandler {
 }
 
 impl Action for SlowHandler {
+    const KEY: &'static str = "slow";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        pure_metadata(
-            action_key!("test.slow.static"),
-            nebula_action::metadata_name!("Slow"),
-            "delays",
-        )
+    fn metadata() -> ActionMetadata {
+        pure_metadata(nebula_action::metadata_name!("Slow"), "sleeps")
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
     }
 }
+
+nebula_action::stateless_entry!(
+    CoreSlowEntry(SlowHandler) = "core.slow",
+    pure_metadata(nebula_action::metadata_name!("Slow"), "slow echoes",),
+);
 
 impl StatelessAction for SlowHandler {
     async fn execute(
@@ -163,11 +210,10 @@ impl StatelessAction for SlowHandler {
 // -- Helpers --
 
 fn pure_metadata(
-    key: ActionKey,
     name: nebula_action::MetadataName,
     description: impl Into<String>,
-) -> ActionMetadataDraft {
-    ActionMetadataDraft::new(key, name, description)
+) -> ActionMetadata {
+    ActionMetadata::new(name, description)
         .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
 }
 
@@ -467,14 +513,7 @@ impl TestStores {
 async fn single_node_workflow() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -503,14 +542,7 @@ async fn single_node_workflow() {
 async fn linear_two_node_workflow() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -545,14 +577,7 @@ async fn linear_two_node_workflow() {
 async fn diamond_workflow() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -600,24 +625,10 @@ async fn diamond_workflow() {
 async fn failing_node_stops_execution() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("fail"),
-                nebula_action::metadata_name!("Fail"),
-                "always fails",
-            ),
-            FailHandler,
-        )
+        .register_stateless_instance(FailHandler)
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -700,14 +711,7 @@ async fn empty_workflow_returns_planning_error() {
 async fn telemetry_events_emitted() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
 
     let (engine, metrics) = make_engine(registry);
@@ -748,14 +752,7 @@ async fn telemetry_events_emitted() {
 async fn metrics_recorded_on_failure() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("fail"),
-                nebula_action::metadata_name!("Fail"),
-                "always fails",
-            ),
-            FailHandler,
-        )
+        .register_stateless_instance(FailHandler)
         .expect("valid test catalog definition");
 
     let (engine, metrics) = make_engine(registry);
@@ -817,15 +814,12 @@ async fn trigger_context_construction_is_usable_in_engine() {
 struct SkipHandler;
 
 impl Action for SkipHandler {
+    const KEY: &'static str = "skip";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        pure_metadata(
-            action_key!("test.skip.static"),
-            nebula_action::metadata_name!("Skip"),
-            "skips",
-        )
+    fn metadata() -> ActionMetadata {
+        pure_metadata(nebula_action::metadata_name!("Skip"), "always skips")
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -848,21 +842,45 @@ struct BranchHandler {
 }
 
 impl Action for BranchHandler {
+    const KEY: &'static str = "branch";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        pure_metadata(
-            action_key!("test.branch.static"),
-            nebula_action::metadata_name!("Branch"),
-            "branches",
-        )
+    fn metadata() -> ActionMetadata {
+        // Declares the "true"/"false" branch ports it actually routes on —
+        // required since W0 U2's undeclared-output-port pre-flight now
+        // rejects connections wired to a flow-only action's undeclared port.
+        pure_metadata(nebula_action::metadata_name!("Branch"), "branches").with_outputs(vec![
+            OutputPort::flow(port_key!("true")),
+            OutputPort::flow(port_key!("false")),
+        ])
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
     }
 }
+
+nebula_action::stateless_entry!(
+    CoreBranchEntry(BranchHandler) = "core.branch",
+    pure_metadata(nebula_action::metadata_name!("Branch"), "branches",),
+);
+
+nebula_action::stateless_entry!(
+    SwitchEntry(BranchHandler) = "switch",
+    pure_metadata(nebula_action::metadata_name!("Switch"), "routes by config",)
+        .with_outputs(vec![OutputPort::dynamic(port_key!("case"), "cases")]),
+);
+
+nebula_action::stateless_entry!(
+    IfEntry(BranchHandler) = "if",
+    pure_metadata(nebula_action::metadata_name!("If"), "branches on a boolean",).with_outputs(
+        vec![
+            OutputPort::flow(port_key!("true")),
+            OutputPort::flow(port_key!("false")),
+        ]
+    ),
+);
 
 impl StatelessAction for BranchHandler {
     async fn execute(
@@ -886,33 +904,12 @@ impl StatelessAction for BranchHandler {
 async fn branch_workflow_only_selected_path_executes() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            // Declares the "true"/"false" branch ports it actually routes on —
-            // required since W0 U2's undeclared-output-port pre-flight now
-            // rejects connections wired to a flow-only action's undeclared port.
-            pure_metadata(
-                action_key!("branch"),
-                nebula_action::metadata_name!("Branch"),
-                "branches",
-            )
-            .with_outputs(vec![
-                OutputPort::flow(port_key!("true")),
-                OutputPort::flow(port_key!("false")),
-            ]),
-            BranchHandler {
-                selected: nebula_action::branch_key!("true"),
-            },
-        )
+        .register_stateless_instance(BranchHandler {
+            selected: nebula_action::branch_key!("true"),
+        })
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -962,24 +959,10 @@ async fn branch_workflow_only_selected_path_executes() {
 async fn skip_propagation() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("skip"),
-                nebula_action::metadata_name!("Skip"),
-                "always skips",
-            ),
-            SkipHandler,
-        )
+        .register_stateless_instance(SkipHandler)
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -1024,24 +1007,10 @@ async fn skip_propagation() {
 async fn error_routing_with_handler() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("fail"),
-                nebula_action::metadata_name!("Fail"),
-                "always fails",
-            ),
-            FailHandler,
-        )
+        .register_stateless_instance(FailHandler)
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -1087,24 +1056,10 @@ async fn error_routing_with_handler() {
 async fn error_without_handler_fails_fast() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("fail"),
-                nebula_action::metadata_name!("Fail"),
-                "always fails",
-            ),
-            FailHandler,
-        )
+        .register_stateless_instance(FailHandler)
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -1145,14 +1100,7 @@ async fn error_without_handler_fails_fast() {
 async fn conditional_edge_on_result() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -1189,14 +1137,7 @@ async fn conditional_edge_on_result() {
 async fn diamond_with_mixed_conditions() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -1246,14 +1187,7 @@ async fn diamond_with_mixed_conditions() {
 async fn persists_execution_state_on_success() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(CoreEchoEntry(EchoHandler))
         .expect("valid test catalog definition");
 
     let stores = TestStores::new();
@@ -1299,14 +1233,7 @@ async fn persists_execution_state_on_success() {
 async fn persists_execution_state_on_failure() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.fail"),
-                nebula_action::metadata_name!("Fail"),
-                "always fails",
-            ),
-            FailHandler,
-        )
+        .register_stateless_instance(CoreFailEntry(FailHandler))
         .expect("valid test catalog definition");
 
     let stores = TestStores::new();
@@ -1341,14 +1268,7 @@ async fn persists_execution_state_on_failure() {
 async fn persists_node_outputs_for_multi_node_workflow() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(CoreEchoEntry(EchoHandler))
         .expect("valid test catalog definition");
 
     let stores = TestStores::new();
@@ -1397,26 +1317,12 @@ async fn persists_node_outputs_for_multi_node_workflow() {
 async fn budget_max_duration_exceeded() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("slow"),
-                nebula_action::metadata_name!("Slow"),
-                "sleeps",
-            ),
-            SlowHandler {
-                delay: Duration::from_millis(100),
-            },
-        )
+        .register_stateless_instance(SlowHandler {
+            delay: Duration::from_millis(100),
+        })
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -1453,14 +1359,7 @@ async fn budget_max_duration_exceeded() {
 async fn budget_max_output_bytes_exceeded() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -1499,24 +1398,10 @@ async fn budget_max_output_bytes_exceeded() {
 async fn error_strategy_continue_on_error_skips_dependents() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("fail"),
-                nebula_action::metadata_name!("Fail"),
-                "always fails",
-            ),
-            FailHandler,
-        )
+        .register_stateless_instance(FailHandler)
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -1573,24 +1458,10 @@ async fn error_strategy_continue_on_error_skips_dependents() {
 async fn error_strategy_ignore_errors_continues_downstream() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("fail"),
-                nebula_action::metadata_name!("Fail"),
-                "always fails",
-            ),
-            FailHandler,
-        )
+        .register_stateless_instance(FailHandler)
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -2023,14 +1894,7 @@ async fn resume_returns_error_for_missing_execution() {
 async fn resume_returns_error_for_terminal_execution() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(CoreEchoEntry(EchoHandler))
         .expect("valid test catalog definition");
     let stores = TestStores::new();
     let (engine, _) = make_engine(registry);
@@ -2077,14 +1941,7 @@ async fn resume_continues_from_injected_partial_state() {
     // the repos and verify that resume runs n2 and n3.
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(CoreEchoEntry(EchoHandler))
         .expect("valid test catalog definition");
 
     let stores = TestStores::new();
@@ -2169,14 +2026,7 @@ async fn resume_continues_from_injected_partial_state() {
 async fn resume_uses_persisted_workflow_version_number_not_latest_published() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(CoreEchoEntry(EchoHandler))
         .expect("valid test catalog definition");
 
     let stores = TestStores::new();
@@ -2222,14 +2072,7 @@ async fn resume_uses_persisted_workflow_version_number_not_latest_published() {
 async fn graph_preflight_rejection_terminalizes_created_execution() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
 
     let stores = TestStores::new();
@@ -2339,14 +2182,7 @@ async fn graph_preflight_rejection_terminalizes_created_execution() {
 async fn graph_preflight_rejects_undeclared_ports_for_warm_execution() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
 
     let stores = TestStores::new();
@@ -2472,14 +2308,7 @@ async fn setup_failure_persists_before_final_checkpoint() {
 
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            SetupFailureHandler,
-        )
+        .register_stateless_instance(SetupFailureHandler)
         .expect("valid test catalog definition");
 
     // `ContinueOnError` ensures `handle_node_failure` returns `None`
@@ -2784,24 +2613,10 @@ impl ExecutionStore for FailAtCommitN {
 async fn runtime_failure_checkpoint_error_aborts_before_edge_routing() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.fail"),
-                nebula_action::metadata_name!("Fail"),
-                "fails",
-            ),
-            FailHandler,
-        )
+        .register_stateless_instance(CoreFailEntry2(FailHandler))
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(CoreEchoEntry2(EchoHandler))
         .expect("valid test catalog definition");
 
     // A (fail) --OnError--> B (echo). ContinueOnError so the frontier
@@ -2913,14 +2728,7 @@ async fn runtime_failure_checkpoint_error_aborts_before_edge_routing() {
 async fn ignore_errors_persists_recovered_completed_state() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.fail"),
-                nebula_action::metadata_name!("Fail"),
-                "fails",
-            ),
-            FailHandler,
-        )
+        .register_stateless_instance(CoreFailEntry2(FailHandler))
         .expect("valid test catalog definition");
 
     let a = node_key!("a");
@@ -2997,14 +2805,7 @@ async fn setup_failure_checkpoint_error_aborts_before_edge_routing() {
     use nebula_workflow::ParamValue;
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes",
-            ),
-            SetupFailureHandler,
-        )
+        .register_stateless_instance(CoreEchoEntry3(SetupFailureHandler))
         .expect("valid test catalog definition");
 
     let a = node_key!("a");
@@ -3084,24 +2885,10 @@ async fn setup_failure_checkpoint_error_aborts_before_edge_routing() {
 async fn on_error_payload_is_persisted_before_checkpoint_commits() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.fail"),
-                nebula_action::metadata_name!("Fail"),
-                "fails",
-            ),
-            FailHandler,
-        )
+        .register_stateless_instance(CoreFailEntry2(FailHandler))
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(CoreEchoEntry2(EchoHandler))
         .expect("valid test catalog definition");
 
     let a = node_key!("a");
@@ -3209,15 +2996,12 @@ async fn successful_execution_records_idempotency_mark_and_output() {
     }
 
     impl Action for CountingHandler {
+        const KEY: &'static str = "core.counting";
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadataDraft {
-            pure_metadata(
-                action_key!("counting.static"),
-                nebula_action::metadata_name!("Counting"),
-                "counts calls",
-            )
+        fn metadata() -> ActionMetadata {
+            pure_metadata(nebula_action::metadata_name!("Counting"), "counts calls")
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -3238,16 +3022,9 @@ async fn successful_execution_records_idempotency_mark_and_output() {
 
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.counting"),
-                nebula_action::metadata_name!("Counting"),
-                "counts calls",
-            ),
-            CountingHandler {
-                count: call_count_clone,
-            },
-        )
+        .register_stateless_instance(CountingHandler {
+            count: call_count_clone,
+        })
         .expect("valid test catalog definition");
 
     let stores = TestStores::new();
@@ -3332,15 +3109,14 @@ async fn version_pinned_node_uses_specified_handler() {
     struct V1Handler;
 
     impl Action for V1Handler {
+        const KEY: &'static str = "versioned";
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadataDraft {
-            pure_metadata(
-                action_key!("versioned.v1.static"),
-                nebula_action::metadata_name!("V1"),
-                "v1 static",
-            )
+        fn metadata() -> ActionMetadata {
+            pure_metadata(nebula_action::metadata_name!("V1"), "v1 handler")
+                .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
+                .with_version(Version::new(1, 0, 0))
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -3362,15 +3138,13 @@ async fn version_pinned_node_uses_specified_handler() {
     struct V2Handler;
 
     impl Action for V2Handler {
+        const KEY: &'static str = "versioned";
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadataDraft {
-            pure_metadata(
-                action_key!("versioned.v2.static"),
-                nebula_action::metadata_name!("V2"),
-                "v2 static",
-            )
+        fn metadata() -> ActionMetadata {
+            pure_metadata(nebula_action::metadata_name!("V2"), "v2 handler")
+                .with_version(Version::new(2, 0, 0))
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -3393,27 +3167,10 @@ async fn version_pinned_node_uses_specified_handler() {
     let v2 = Version::new(2, 0, 0);
     // Register v1 first; v2 will become the "latest" (handlers map entry).
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("versioned"),
-                nebula_action::metadata_name!("V1"),
-                "v1 handler",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
-            .with_version(v1.clone()),
-            V1Handler,
-        )
+        .register_stateless_instance(V1Handler)
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("versioned"),
-                nebula_action::metadata_name!("V2"),
-                "v2 handler",
-            )
-            .with_version(v2.clone()),
-            V2Handler,
-        )
+        .register_stateless_instance(V2Handler)
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -3493,14 +3250,7 @@ async fn credential_refresh_hook_is_called_before_node_dispatch() {
 
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
 
     // The refresh hook is only called when a credential resolver is also set.
@@ -3558,25 +3308,7 @@ async fn credential_refresh_hook_is_called_before_node_dispatch() {
 async fn multi_edge_from_same_source_executes_target() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            // Declares "alt" alongside the default "out" — required since W0
-            // U2's undeclared-output-port pre-flight now rejects connections
-            // wired to a flow-only action's undeclared port. The edge-count
-            // regression this test guards fires either way (both edges are
-            // counted as resolved regardless of which port activates); "alt"
-            // just needs to be a *declared* port to pass the pre-flight, not one
-            // `EchoHandler` ever actually produces output on.
-            pure_metadata(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            )
-            .with_outputs(vec![
-                OutputPort::flow(port_key!("out")),
-                OutputPort::flow(port_key!("alt")),
-            ]),
-            EchoHandler,
-        )
+        .register_stateless_instance(EchoEntry(EchoHandler))
         .expect("valid test catalog definition");
     let (engine, _) = make_engine(registry);
 
@@ -3984,15 +3716,12 @@ async fn credential_refresh_failure_surfaces_as_typed_error() {
         invoked: Arc<AtomicU32>,
     }
     impl Action for NeverRunHandler {
+        const KEY: &'static str = "never";
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadataDraft {
-            pure_metadata(
-                action_key!("never.static"),
-                nebula_action::metadata_name!("Never"),
-                "must not run",
-            )
+        fn metadata() -> ActionMetadata {
+            pure_metadata(nebula_action::metadata_name!("Never"), "must not run")
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -4013,16 +3742,9 @@ async fn credential_refresh_failure_surfaces_as_typed_error() {
     let invoked = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("never"),
-                nebula_action::metadata_name!("Never"),
-                "must not run",
-            ),
-            NeverRunHandler {
-                invoked: invoked.clone(),
-            },
-        )
+        .register_stateless_instance(NeverRunHandler {
+            invoked: invoked.clone(),
+        })
         .expect("valid test catalog definition");
 
     // Refresh hook always fails. Use `ActionError::retryable` for
@@ -4157,15 +3879,13 @@ fn error_is_terminal_classification() {
 struct CredProbeAction;
 
 impl Action for CredProbeAction {
+    const KEY: &'static str = "probe";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        // Static placeholder — per-probe key/name are supplied at registration
-        // via `register_stateless_instance(meta, CredProbeAction)`.
+    fn metadata() -> ActionMetadata {
         pure_metadata(
-            action_key!("test.cred_probe"),
-            nebula_action::metadata_name!("CredProbe"),
+            nebula_action::metadata_name!("Probe"),
             "acquires a credential",
         )
     }
@@ -4194,15 +3914,34 @@ impl StatelessAction for CredProbeAction {
     }
 }
 
-/// Register a `CredProbeAction` under `key` into the given registry.
-fn register_probe(registry: &ActionRegistry, key: ActionKey, name: &str) {
-    let meta = pure_metadata(
-        key,
-        nebula_action::MetadataName::try_from(name).expect("fixture display name"),
-        "acquires a credential",
-    );
+nebula_action::stateless_entry!(
+    /// A second credential probe, so one workflow can run two distinct probes.
+    ProbeA(CredProbeAction) = "probe_a",
+    pure_metadata(
+        nebula_action::metadata_name!("Probe A"),
+        "acquires a credential"
+    ),
+);
+
+nebula_action::stateless_entry!(
+    /// A third credential probe, so one workflow can run two distinct probes.
+    ProbeB(CredProbeAction) = "probe_b",
+    pure_metadata(
+        nebula_action::metadata_name!("Probe B"),
+        "acquires a credential"
+    ),
+);
+
+/// Register a credential probe action into the given registry.
+fn register_probe<A>(registry: &ActionRegistry, action: A)
+where
+    A: StatelessAction<Input = serde_json::Value, Output = serde_json::Value>
+        + Send
+        + Sync
+        + 'static,
+{
     registry
-        .register_stateless_instance(meta, CredProbeAction)
+        .register_stateless_instance(action)
         .expect("valid test catalog definition");
 }
 
@@ -4227,7 +3966,7 @@ fn probe_workflow(action: &str, cred_id: &str) -> WorkflowDefinition {
 #[tokio::test]
 async fn credential_access_denied_without_declaration() {
     let registry = Arc::new(ActionRegistry::new());
-    register_probe(&registry, action_key!("probe"), "Probe");
+    register_probe(&registry, CredProbeAction);
 
     let (engine, _) = make_engine(registry);
     let engine = engine.with_credential_resolver(Arc::new(UnavailableSlotResolver));
@@ -4268,7 +4007,7 @@ async fn credential_access_denied_without_declaration() {
 #[tokio::test]
 async fn storeless_execution_cannot_grant_credential_access() {
     let registry = Arc::new(ActionRegistry::new());
-    register_probe(&registry, action_key!("probe"), "Probe");
+    register_probe(&registry, CredProbeAction);
 
     let (engine, _) = make_engine(registry);
     let engine = engine.with_credential_resolver(Arc::new(UnavailableSlotResolver));
@@ -4296,7 +4035,7 @@ async fn storeless_execution_cannot_grant_credential_access() {
 #[tokio::test]
 async fn credential_access_denied_for_mismatched_key() {
     let registry = Arc::new(ActionRegistry::new());
-    register_probe(&registry, action_key!("probe"), "Probe");
+    register_probe(&registry, CredProbeAction);
 
     let (engine, _) = make_engine(registry);
     let engine = engine.with_credential_resolver(Arc::new(UnavailableSlotResolver));
@@ -4334,8 +4073,8 @@ async fn credential_access_denied_for_mismatched_key() {
 #[tokio::test]
 async fn credential_declaration_is_per_action_key() {
     let registry = Arc::new(ActionRegistry::new());
-    register_probe(&registry, action_key!("probe_a"), "Probe A");
-    register_probe(&registry, action_key!("probe_b"), "Probe B");
+    register_probe(&registry, ProbeA(CredProbeAction));
+    register_probe(&registry, ProbeB(CredProbeAction));
 
     let (engine, _) = make_engine(registry);
     let engine = engine.with_credential_resolver(Arc::new(UnavailableSlotResolver));
@@ -4362,7 +4101,7 @@ async fn credential_declaration_is_per_action_key() {
 #[tokio::test]
 async fn resolver_without_durable_manifest_denies_every_slot() {
     let registry = Arc::new(ActionRegistry::new());
-    register_probe(&registry, action_key!("probe"), "Probe");
+    register_probe(&registry, CredProbeAction);
 
     let (engine, _) = make_engine(registry);
     let engine = engine.with_credential_resolver(Arc::new(UnavailableSlotResolver));
@@ -4398,14 +4137,7 @@ async fn setup_failure_checkpoints_execution_state() {
     // that has no output in the shared outputs map.
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            SetupFailureHandler,
-        )
+        .register_stateless_instance(SetupFailureHandler)
         .expect("valid test catalog definition");
 
     let stores = TestStores::new();
@@ -4477,14 +4209,7 @@ async fn setup_failure_checkpoints_execution_state() {
 async fn resume_restores_original_workflow_input() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(CoreEchoEntry(EchoHandler))
         .expect("valid test catalog definition");
 
     let stores = TestStores::new();
@@ -4535,14 +4260,7 @@ async fn resume_restores_persisted_budget() {
 
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(CoreEchoEntry(EchoHandler))
         .expect("valid test catalog definition");
 
     // Start an execution on "engine A" with a non-default budget
@@ -4616,14 +4334,7 @@ async fn resume_restores_persisted_budget() {
 async fn resume_rejects_missing_budget_without_dispatch() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(CoreEchoEntry(EchoHandler))
         .expect("valid test catalog definition");
 
     let stores = TestStores::new();
@@ -4716,15 +4427,12 @@ async fn panicked_task_reports_real_node_id() {
     struct PanicHandler;
 
     impl Action for PanicHandler {
+        const KEY: &'static str = "core.boom";
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadataDraft {
-            pure_metadata(
-                action_key!("boom.static"),
-                nebula_action::metadata_name!("Boom"),
-                "panics",
-            )
+        fn metadata() -> ActionMetadata {
+            pure_metadata(nebula_action::metadata_name!("Boom"), "panics")
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -4744,14 +4452,7 @@ async fn panicked_task_reports_real_node_id() {
 
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.boom"),
-                nebula_action::metadata_name!("Boom"),
-                "panics",
-            ),
-            PanicHandler,
-        )
+        .register_stateless_instance(PanicHandler)
         .expect("valid test catalog definition");
 
     let stores = TestStores::new();
@@ -4808,26 +4509,12 @@ async fn panicked_task_reports_real_node_id() {
 async fn branch_result_persistence_preserves_selected_port() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.branch"),
-                nebula_action::metadata_name!("Branch"),
-                "branches",
-            ),
-            BranchHandler {
-                selected: nebula_action::branch_key!("out"),
-            },
-        )
+        .register_stateless_instance(CoreBranchEntry(BranchHandler {
+            selected: nebula_action::branch_key!("out"),
+        }))
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(CoreEchoEntry(EchoHandler))
         .expect("valid test catalog definition");
 
     let stores = TestStores::new();
@@ -5062,14 +4749,7 @@ impl ExecutionStore for ExternalMutateBeforeN {
 async fn final_cas_conflict_with_external_cancel_honors_external_status() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(CoreEchoEntry2(EchoHandler))
         .expect("valid test catalog definition");
 
     let a = node_key!("a");
@@ -5156,14 +4836,7 @@ async fn final_cas_conflict_with_external_cancel_honors_external_status() {
 async fn node_checkpoint_cas_conflict_surfaces_observed_status() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(CoreEchoEntry2(EchoHandler))
         .expect("valid test catalog definition");
 
     let a = node_key!("a");
@@ -5501,16 +5174,9 @@ async fn two_concurrent_resume_runners_are_fenced_by_lease() {
     // Slow echo so the first runner is still inside the frontier
     // loop when the second call arrives.
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.slow"),
-                nebula_action::metadata_name!("Slow"),
-                "slow echoes",
-            ),
-            SlowHandler {
-                delay: Duration::from_millis(300),
-            },
-        )
+        .register_stateless_instance(CoreSlowEntry(SlowHandler {
+            delay: Duration::from_millis(300),
+        }))
         .expect("valid test catalog definition");
 
     let stores = TestStores::new();
@@ -5616,16 +5282,9 @@ async fn two_concurrent_resume_runners_are_fenced_by_lease() {
 async fn overlapping_resume_losers_do_not_clobber_winners_registry_entry() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.slow"),
-                nebula_action::metadata_name!("Slow"),
-                "slow echoes",
-            ),
-            SlowHandler {
-                delay: Duration::from_millis(500),
-            },
-        )
+        .register_stateless_instance(CoreSlowEntry(SlowHandler {
+            delay: Duration::from_millis(500),
+        }))
         .expect("valid test catalog definition");
 
     let stores = TestStores::new();
@@ -5724,14 +5383,7 @@ async fn overlapping_resume_losers_do_not_clobber_winners_registry_entry() {
 async fn lease_is_released_after_terminal_completion_so_next_runner_can_acquire() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(CoreEchoEntry(EchoHandler))
         .expect("valid test catalog definition");
 
     let stores = TestStores::new();
@@ -5779,14 +5431,7 @@ async fn lease_is_released_after_terminal_completion_so_next_runner_can_acquire(
 async fn execute_workflow_produces_independent_lease_per_execution_id() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(CoreEchoEntry(EchoHandler))
         .expect("valid test catalog definition");
 
     let stores = TestStores::new();
@@ -5848,12 +5493,12 @@ async fn execute_workflow_produces_independent_lease_per_execution_id() {
 struct FactoryEcho;
 
 impl Action for FactoryEcho {
+    const KEY: &'static str = "test.factory.echo";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
+    fn metadata() -> ActionMetadata {
         pure_metadata(
-            action_key!("test.factory.echo"),
             nebula_action::metadata_name!("FactoryEcho"),
             "echo via factory dispatch",
         )
@@ -6807,15 +6452,13 @@ async fn undeclared_flow_port_rejected_before_execution() {
     }
 
     impl Action for CountingHandler {
+        // Only declares the default "out" port.
+        const KEY: &'static str = "counting";
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadataDraft {
-            pure_metadata(
-                action_key!("counting.static"),
-                nebula_action::metadata_name!("Counting"),
-                "counts calls",
-            )
+        fn metadata() -> ActionMetadata {
+            pure_metadata(nebula_action::metadata_name!("Counting"), "counts calls")
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -6836,17 +6479,9 @@ async fn undeclared_flow_port_rejected_before_execution() {
 
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            // Only declares the default "out" port.
-            pure_metadata(
-                action_key!("counting"),
-                nebula_action::metadata_name!("Counting"),
-                "counts calls",
-            ),
-            CountingHandler {
-                count: dispatch_count.clone(),
-            },
-        )
+        .register_stateless_instance(CountingHandler {
+            count: dispatch_count.clone(),
+        })
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -6905,14 +6540,7 @@ async fn undeclared_flow_port_rejected_before_execution() {
 async fn persistent_direct_start_rejection_leaves_no_row_or_lease() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
 
     let stores = TestStores::new();
@@ -6957,29 +6585,14 @@ async fn persistent_direct_start_rejection_leaves_no_row_or_lease() {
 async fn switch_dynamic_port_wire_not_rejected() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("switch"),
-                nebula_action::metadata_name!("Switch"),
-                "routes by config",
-            )
-            .with_outputs(vec![OutputPort::dynamic(port_key!("case"), "cases")]),
-            BranchHandler {
-                // A config-derived key never present in the declared "case"
-                // template — exactly what `core.switch` produces at runtime.
-                selected: nebula_action::branch_key!("a"),
-            },
-        )
+        .register_stateless_instance(SwitchEntry(BranchHandler {
+            // A config-derived key never present in the declared "case"
+            // template — exactly what `core.switch` produces at runtime.
+            selected: nebula_action::branch_key!("a"),
+        }))
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -7018,30 +6631,12 @@ async fn switch_dynamic_port_wire_not_rejected() {
 async fn if_true_false_declared_routes() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("if"),
-                nebula_action::metadata_name!("If"),
-                "branches on a boolean",
-            )
-            .with_outputs(vec![
-                OutputPort::flow(port_key!("true")),
-                OutputPort::flow(port_key!("false")),
-            ]),
-            BranchHandler {
-                selected: nebula_action::branch_key!("false"),
-            },
-        )
+        .register_stateless_instance(IfEntry(BranchHandler {
+            selected: nebula_action::branch_key!("false"),
+        }))
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -7089,25 +6684,10 @@ async fn if_true_false_declared_routes() {
 async fn error_port_allowed_without_declaration() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            // Declares only the default "out" port — no "error" port.
-            pure_metadata(
-                action_key!("fail"),
-                nebula_action::metadata_name!("Fail"),
-                "always fails",
-            ),
-            FailHandler,
-        )
+        .register_stateless_instance(FailHandler)
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -7151,14 +6731,7 @@ async fn error_port_allowed_without_declaration() {
 async fn unresolvable_action_fails_open() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
     let (engine, _) = make_engine(registry);
 
@@ -7196,40 +6769,14 @@ async fn preflight_accepts_a_port_only_the_pinned_version_declares() {
 
     let registry = Arc::new(ActionRegistry::new());
     let v1 = Version::new(1, 0, 0);
-    let v2 = Version::new(2, 0, 0);
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("versioned_ports"),
-                nebula_action::metadata_name!("V1"),
-                "v1",
-            )
-            .with_version(v1.clone())
-            .with_outputs(vec![OutputPort::flow(port_key!("legacy"))]),
-            EchoHandler,
-        )
+        .register_stateless_instance(VersionedPortsEntry(EchoHandler))
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("versioned_ports"),
-                nebula_action::metadata_name!("V2"),
-                "v2",
-            )
-            .with_version(v2)
-            .with_outputs(vec![OutputPort::flow(port_key!("out"))]),
-            EchoHandler,
-        )
+        .register_stateless_instance(VersionedPortsEntry2(EchoHandler))
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -7277,40 +6824,14 @@ async fn preflight_rejects_a_port_the_pinned_version_lacks_even_if_latest_declar
 
     let registry = Arc::new(ActionRegistry::new());
     let v1 = Version::new(1, 0, 0);
-    let v2 = Version::new(2, 0, 0);
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("versioned_ports"),
-                nebula_action::metadata_name!("V1"),
-                "v1",
-            )
-            .with_version(v1.clone())
-            .with_outputs(vec![OutputPort::flow(port_key!("legacy"))]),
-            EchoHandler,
-        )
+        .register_stateless_instance(VersionedPortsEntry(EchoHandler))
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("versioned_ports"),
-                nebula_action::metadata_name!("V2"),
-                "v2",
-            )
-            .with_version(v2)
-            .with_outputs(vec![OutputPort::flow(port_key!("out"))]),
-            EchoHandler,
-        )
+        .register_stateless_instance(VersionedPortsEntry2(EchoHandler))
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -7373,14 +6894,7 @@ async fn preflight_rejects_a_port_the_pinned_version_lacks_even_if_latest_declar
 async fn node_rate_limit_quota_is_shared_per_action_key() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -7466,14 +6980,7 @@ fn rate_limiter_registry_shares_one_bucket_per_action_key() {
 async fn unrepresentable_rate_limit_policy_refuses_setup() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);

@@ -3,7 +3,7 @@ use std::sync::{Arc, OnceLock};
 #[test]
 fn public_adapter_stamps_agent_kind() {
     let adapter = AgentActionAdapter::new(CountingAgent { target: 1 }).unwrap();
-    assert_eq!(adapter.metadata().kind(), crate::ActionKind::Agent);
+    assert_eq!(adapter.definition().kind(), crate::ActionKind::Agent);
 }
 
 use nebula_core::Dependencies;
@@ -36,12 +36,12 @@ struct CountingTurn {
 }
 
 impl Action for CountingAgent {
+    const KEY: &'static str = "test.agent.counting";
     type Input = Value;
     type Output = Value;
 
-    fn metadata() -> crate::ActionMetadataDraft {
-        crate::ActionMetadataDraft::new(
-            nebula_core::action_key!("test.agent.counting"),
+    fn metadata() -> crate::ActionMetadata {
+        crate::ActionMetadata::new(
             crate::metadata_name!("CountingAgent"),
             "Counts up to target then breaks",
         )
@@ -94,12 +94,12 @@ struct NoMutationTurn {
 }
 
 impl Action for NoMutationAgent {
+    const KEY: &'static str = "test.agent.no_mutation";
     type Input = Value;
     type Output = Value;
 
-    fn metadata() -> crate::ActionMetadataDraft {
-        crate::ActionMetadataDraft::new(
-            nebula_core::action_key!("test.agent.no_mutation"),
+    fn metadata() -> crate::ActionMetadata {
+        crate::ActionMetadata::new(
             crate::metadata_name!("NoMutationAgent"),
             "Keeps turn state unchanged; breaks after N steps tracked externally",
         )

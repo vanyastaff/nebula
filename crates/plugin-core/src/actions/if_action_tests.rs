@@ -543,7 +543,7 @@ fn action_key_is_core_dot_if() {
     let factory =
         nebula_action::GenericControlFactory::<CoreIf>::new().expect("if metadata must admit");
     assert_eq!(
-        nebula_action::ActionFactory::metadata(&factory)
+        nebula_action::ActionFactory::definition(&factory)
             .base()
             .key()
             .as_str(),
@@ -555,7 +555,7 @@ fn action_key_is_core_dot_if() {
 fn metadata_has_two_output_ports_true_and_false() {
     let factory =
         nebula_action::GenericControlFactory::<CoreIf>::new().expect("if metadata must admit");
-    let metadata = nebula_action::ActionFactory::metadata(&factory);
+    let metadata = nebula_action::ActionFactory::definition(&factory);
     let port_keys: Vec<&str> = metadata.outputs().iter().map(OutputPort::key).collect();
     assert!(
         port_keys.contains(&"true"),
@@ -578,7 +578,7 @@ fn action_kind_is_control_after_factory_stamp() {
     let factory = GenericControlFactory::<CoreIf>::new().expect("if metadata must admit");
     use nebula_action::ActionFactory;
     assert_eq!(
-        factory.metadata().kind(),
+        factory.definition().kind(),
         nebula_action::metadata::ActionKind::Control,
         "GenericControlFactory must stamp ActionKind::Control on CoreIf"
     );

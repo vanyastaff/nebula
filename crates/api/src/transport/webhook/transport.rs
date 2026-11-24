@@ -759,8 +759,8 @@ mod tests {
     use std::sync::Arc;
 
     use nebula_action::{
-        Action, ActionMetadataDraft, TriggerContext, TriggerEventOutcome, TriggerHandler,
-        WebhookAction, WebhookConfig, WebhookRequest, WebhookResponse, WebhookTriggerAdapter,
+        Action, ActionMetadata, TriggerContext, TriggerEventOutcome, TriggerHandler, WebhookAction,
+        WebhookConfig, WebhookRequest, WebhookResponse, WebhookTriggerAdapter,
     };
     use nebula_core::{BaseContext, Dependencies, scope::Principal};
     use nebula_storage::inmem::InMemoryWebhookActivationStore;
@@ -778,15 +778,12 @@ mod tests {
     struct NoopWebhook;
 
     impl Action for NoopWebhook {
+        const KEY: &'static str = "test.transport.noop";
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadataDraft {
-            ActionMetadataDraft::new(
-                nebula_core::action_key!("test.transport.noop"),
-                nebula_action::metadata_name!("Noop"),
-                "mint-persist test",
-            )
+        fn metadata() -> ActionMetadata {
+            ActionMetadata::new(nebula_action::metadata_name!("Noop"), "mint-persist test")
         }
 
         fn dependencies() -> &'static Dependencies {

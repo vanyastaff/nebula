@@ -21,10 +21,9 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, ActionMetadataDraft, action::Action, result::ActionResult,
-    stateless::StatelessAction,
+    ActionError, ActionMetadata, action::Action, result::ActionResult, stateless::StatelessAction,
 };
-use nebula_core::{ActionKey, Dependencies, action_key, id::ExecutionId, node_key};
+use nebula_core::{Dependencies, id::ExecutionId, node_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, ControlConsumer, ControlDispatch, ControlDispatchError,
     DataPassingPolicy, EngineControlDispatch, InProcessRunner, WorkflowEngine,
@@ -123,15 +122,12 @@ struct CountingEchoHandler {
 }
 
 impl Action for CountingEchoHandler {
+    const KEY: &'static str = "core.echo";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            action_key!("test.counting_echo.static"),
-            nebula_action::metadata_name!("CountingEcho"),
-            "static",
-        )
+    fn metadata() -> ActionMetadata {
+        meta("core.echo")
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -158,15 +154,12 @@ struct SlowCancellableHandler {
 }
 
 impl Action for SlowCancellableHandler {
+    const KEY: &'static str = "core.slow";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            action_key!("test.slow_cancellable.static"),
-            nebula_action::metadata_name!("SlowCancellable"),
-            "static",
-        )
+    fn metadata() -> ActionMetadata {
+        meta("core.slow")
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -189,9 +182,9 @@ impl StatelessAction for SlowCancellableHandler {
     }
 }
 
-fn meta(key: ActionKey) -> ActionMetadataDraft {
-    let name = key.clone().into();
-    ActionMetadataDraft::new(key, name, "control_dispatch test handler")
+fn meta(name: &str) -> ActionMetadata {
+    ActionMetadata::try_new(name, "control_dispatch test handler")
+        .expect("fixture display name")
         .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
 }
 
@@ -214,21 +207,15 @@ impl Harness {
         let slow_started = Arc::new(Notify::new());
         let registry = Arc::new(ActionRegistry::new());
         registry
-            .register_stateless_instance(
-                meta(action_key!("core.echo")),
-                CountingEchoHandler {
-                    count: Arc::clone(&action_count),
-                },
-            )
+            .register_stateless_instance(CountingEchoHandler {
+                count: Arc::clone(&action_count),
+            })
             .expect("valid test catalog definition");
         registry
-            .register_stateless_instance(
-                meta(action_key!("core.slow")),
-                SlowCancellableHandler {
-                    started: Arc::clone(&slow_started),
-                    count: Arc::clone(&slow_count),
-                },
-            )
+            .register_stateless_instance(SlowCancellableHandler {
+                started: Arc::clone(&slow_started),
+                count: Arc::clone(&slow_count),
+            })
             .expect("valid test catalog definition");
         let frozen = exact_fixture::freeze_registry(
             &registry,

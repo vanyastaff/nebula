@@ -1,5 +1,11 @@
 use super::*;
 
+nebula_action::stateless_entry!(
+    /// The echo action without a declared effect contract.
+    UndeclaredEffectEcho(EchoHandler) = "echo",
+    ActionMetadata::new(nebula_action::metadata_name!("Echo"), "echoes input"),
+);
+
 #[derive(serde::Serialize, serde::Deserialize, nebula_schema::Schema)]
 enum RecordedUnionInput {
     Count { number: i64 },
@@ -10,12 +16,12 @@ struct UnionEcho {
 }
 
 impl Action for UnionEcho {
+    const KEY: &'static str = "exact.union_echo";
     type Input = RecordedUnionInput;
     type Output = RecordedUnionInput;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            action_key!("exact.union_echo"),
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
             nebula_action::metadata_name!("Union echo"),
             "Preserve declared union input",
         )
@@ -42,12 +48,9 @@ fn union_echo_fixture() -> (WorkflowEngine, Arc<AtomicU32>, NodeDefinition) {
     let registry = Arc::new(ActionRegistry::new());
     let calls = Arc::new(AtomicU32::new(0));
     registry
-        .register_stateless_instance(
-            UnionEcho::metadata(),
-            UnionEcho {
-                calls: Arc::clone(&calls),
-            },
-        )
+        .register_stateless_instance(UnionEcho {
+            calls: Arc::clone(&calls),
+        })
         .unwrap();
     let (engine, _) = make_engine(registry);
     let node =
@@ -446,14 +449,7 @@ async fn durable_resume_does_not_restart_persisted_duration_budget() {
 async fn durable_resume_rejects_unpinned_state_before_action_dispatch() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            ActionMetadataDraft::new(
-                action_key!("echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(UndeclaredEffectEcho(EchoHandler))
         .expect("valid test catalog definition");
     let (engine, _) = make_engine(registry);
     let stores = TestStores::new();

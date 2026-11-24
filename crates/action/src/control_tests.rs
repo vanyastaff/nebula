@@ -153,20 +153,17 @@ impl TestIf {
 }
 
 impl Action for TestIf {
+    const KEY: &'static str = "test.if";
     type Input = TestIfInput;
     type Output = TestIfInput;
 
-    fn metadata() -> crate::ActionMetadataDraft {
-        crate::ActionMetadataDraft::new(
-            action_key!("test.if"),
-            crate::metadata_name!("TestIf"),
-            "Binary branch",
-        )
-        .with_inputs(default_input_ports())
-        .with_outputs(vec![
-            OutputPort::flow(port_key!("true")),
-            OutputPort::flow(port_key!("false")),
-        ])
+    fn metadata() -> crate::ActionMetadata {
+        crate::ActionMetadata::new(crate::metadata_name!("TestIf"), "Binary branch")
+            .with_inputs(default_input_ports())
+            .with_outputs(vec![
+                OutputPort::flow(port_key!("true")),
+                OutputPort::flow(port_key!("false")),
+            ])
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -202,16 +199,13 @@ impl TestStop {
 }
 
 impl Action for TestStop {
+    const KEY: &'static str = "test.stop";
     type Input = Value;
     type Output = Value;
 
-    fn metadata() -> crate::ActionMetadataDraft {
-        crate::ActionMetadataDraft::new(
-            action_key!("test.stop"),
-            crate::metadata_name!("TestStop"),
-            "Terminate",
-        )
-        .with_outputs(Vec::new())
+    fn metadata() -> crate::ActionMetadata {
+        crate::ActionMetadata::new(crate::metadata_name!("TestStop"), "Terminate")
+            .with_outputs(Vec::new())
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -236,7 +230,7 @@ impl ControlAction for TestStop {
 #[test]
 fn adapter_stamps_control_kind() {
     let adapter = ControlActionAdapter::new(TestIf::new()).expect("valid test catalog definition");
-    let meta = adapter.metadata();
+    let meta = adapter.definition();
     assert_eq!(meta.kind(), ActionKind::Control);
     assert!(
         !meta.outputs().is_empty(),
@@ -251,7 +245,7 @@ fn adapter_terminal_node_keeps_control_kind_with_empty_outputs() {
     // is what the workflow validator reads to recognise the graph sink.
     let adapter =
         ControlActionAdapter::new(TestStop::new()).expect("valid test catalog definition");
-    let meta = adapter.metadata();
+    let meta = adapter.definition();
     assert_eq!(meta.kind(), ActionKind::Control);
     assert!(
         meta.outputs().is_empty(),
@@ -263,7 +257,7 @@ fn adapter_terminal_node_keeps_control_kind_with_empty_outputs() {
 fn adapter_preserves_action_key() {
     let adapter = ControlActionAdapter::new(TestIf::new()).expect("valid test catalog definition");
     assert_eq!(
-        adapter.metadata().base().key().clone(),
+        adapter.definition().base().key().clone(),
         action_key!("test.if")
     );
 }
@@ -352,7 +346,7 @@ fn adapter_is_dyn_compatible() {
 #[test]
 fn adapter_into_inner_returns_action() {
     let adapter = ControlActionAdapter::new(TestIf::new()).expect("valid test catalog definition");
-    let key = adapter.metadata().base().key().clone();
+    let key = adapter.definition().base().key().clone();
     let _action = adapter.into_inner();
     assert_eq!(key, action_key!("test.if"));
 }
@@ -363,7 +357,7 @@ fn adapter_preserves_original_outputs_after_stamp() {
     // or any other metadata field.
     let adapter = ControlActionAdapter::new(TestIf::new()).expect("valid test catalog definition");
     assert_eq!(
-        adapter.metadata().outputs(),
+        adapter.definition().outputs(),
         [
             OutputPort::flow(port_key!("true")),
             OutputPort::flow(port_key!("false")),

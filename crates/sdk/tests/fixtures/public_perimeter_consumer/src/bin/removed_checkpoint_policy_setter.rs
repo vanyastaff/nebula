@@ -1,5 +1,5 @@
-use nebula_sdk::prelude::ActionMetadataDraft;
+use nebula_sdk::prelude::ActionMetadata;
 
 fn main() {
-    let _ = ActionMetadataDraft::with_checkpoint_policy;
+    let _ = ActionMetadata::with_checkpoint_policy;
 }

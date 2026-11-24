@@ -24,12 +24,12 @@ struct TickPoller {
 }
 
 impl Action for TickPoller {
+    const KEY: &'static str = "test.tick";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            nebula_core::action_key!("test.tick"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Tick Poller"),
             "Test poll trigger",
         )
@@ -171,12 +171,12 @@ struct ZeroIntervalPoller {
 }
 
 impl Action for ZeroIntervalPoller {
+    const KEY: &'static str = "test.tick.zero";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            nebula_core::action_key!("test.tick.zero"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Zero Interval"),
             "Returns Duration::ZERO from poll_config",
         )
@@ -454,12 +454,12 @@ fn dedup_cursor_mark_seen_is_idempotent() {
 struct FailingValidator;
 
 impl Action for FailingValidator {
+    const KEY: &'static str = "test.validate.fail";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            nebula_core::action_key!("test.validate.fail"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Failing Validator"),
             "validate() returns Err",
         )
@@ -516,12 +516,12 @@ struct StartFromNowPoller {
 }
 
 impl Action for StartFromNowPoller {
+    const KEY: &'static str = "test.initial_cursor";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            nebula_core::action_key!("test.initial_cursor"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Start From Now"),
             "initial_cursor returns 1000",
         )
@@ -626,12 +626,12 @@ struct ReadyPoller {
 }
 
 impl Action for ReadyPoller {
+    const KEY: &'static str = "test.retry_batch";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            nebula_core::action_key!("test.retry_batch"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Retry Batch"),
             "always-ready, emitter fails",
         )
@@ -746,12 +746,12 @@ impl ExecutionEmitter for DropCountingFailingEmitter {
 struct DropPoller;
 
 impl Action for DropPoller {
+    const KEY: &'static str = "test.drop_loss";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            nebula_core::action_key!("test.drop_loss"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Drop Loss"),
             "all events dropped under DropAndContinue",
         )
@@ -843,12 +843,12 @@ struct HugeOverridePoller {
 }
 
 impl Action for HugeOverridePoller {
+    const KEY: &'static str = "test.huge_override";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            nebula_core::action_key!("test.huge_override"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Huge Override"),
             "override_next = 1h, max_interval = 200ms",
         )
@@ -926,12 +926,12 @@ struct EmptyPartialPoller {
 }
 
 impl Action for EmptyPartialPoller {
+    const KEY: &'static str = "test.empty_partial";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            nebula_core::action_key!("test.empty_partial"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Empty Partial"),
             "returns Partial with no events and a retryable error",
         )
@@ -1010,12 +1010,12 @@ struct SlowPoller {
 }
 
 impl Action for SlowPoller {
+    const KEY: &'static str = "test.first_poll.immediate";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            nebula_core::action_key!("test.first_poll.immediate"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Slow Poller"),
             "base_interval 10min, first poll should still run immediately",
         )
@@ -1165,12 +1165,12 @@ struct WildConfigPoller {
 }
 
 impl Action for WildConfigPoller {
+    const KEY: &'static str = "test.wild_config";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            nebula_core::action_key!("test.wild_config"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Wild Config"),
             "Configurable PollConfig for clamp tests",
         )

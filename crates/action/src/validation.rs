@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use crate::{
-    metadata::ActionMetadata,
+    metadata::ActionDefinition,
     port::{InputPort, OutputPort},
 };
 
@@ -79,7 +79,7 @@ impl ActionPackageValidationErrors {
 
 /// Validate action package structure and declarations during admission.
 pub(crate) fn validate_action_package(
-    metadata: &ActionMetadata,
+    metadata: &ActionDefinition,
 ) -> Result<(), ActionPackageValidationErrors> {
     let mut errors = Vec::new();
 
@@ -145,7 +145,7 @@ pub(crate) fn validate_action_package(
 mod tests {
     use std::sync::OnceLock;
 
-    use nebula_core::{Dependencies, action_key};
+    use nebula_core::Dependencies;
 
     use super::*;
     use crate::{
@@ -156,15 +156,12 @@ mod tests {
     struct ValidationAction;
 
     impl crate::Action for ValidationAction {
+        const KEY: &'static str = "test.action";
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> crate::ActionMetadataDraft {
-            crate::ActionMetadataDraft::new(
-                action_key!("test.action"),
-                crate::metadata_name!("Test"),
-                "desc",
-            )
+        fn metadata() -> crate::ActionMetadata {
+            crate::ActionMetadata::new(crate::metadata_name!("Test"), "desc")
         }
 
         fn dependencies() -> &'static Dependencies {
@@ -173,15 +170,14 @@ mod tests {
         }
     }
 
-    fn admit(draft: crate::ActionMetadataDraft) -> ActionMetadata {
+    fn admit(draft: crate::ActionMetadata) -> ActionDefinition {
         draft
             .admit_for::<ValidationAction>(crate::ActionKind::Stateless)
             .expect("test metadata must admit")
     }
 
-    fn valid_metadata() -> ActionMetadata {
-        admit(crate::ActionMetadataDraft::new(
-            action_key!("test.action"),
+    fn valid_metadata() -> ActionDefinition {
+        admit(crate::ActionMetadata::new(
             crate::metadata_name!("Test"),
             "desc",
         ))
@@ -195,12 +191,9 @@ mod tests {
 
     #[test]
     fn only_control_actions_may_terminate_without_output_ports() {
-        let terminal = crate::ActionMetadataDraft::new(
-            action_key!("test.terminal"),
-            crate::metadata_name!("Terminal"),
-            "terminal control",
-        )
-        .with_outputs(Vec::new());
+        let terminal =
+            crate::ActionMetadata::new(crate::metadata_name!("Terminal"), "terminal control")
+                .with_outputs(Vec::new());
 
         let admitted = terminal
             .clone()
@@ -224,12 +217,8 @@ mod tests {
     #[test]
     fn a_capability_gated_agent_is_refused_at_admission() {
         let draft = |isolation| {
-            crate::ActionMetadataDraft::new(
-                action_key!("test.agent"),
-                crate::metadata_name!("Agent"),
-                "desc",
-            )
-            .with_isolation_level(isolation)
+            crate::ActionMetadata::new(crate::metadata_name!("Agent"), "desc")
+                .with_isolation_level(isolation)
         };
 
         let crate::ActionMetadataAdmissionError::Package(error) =
@@ -254,19 +243,15 @@ mod tests {
 
     #[test]
     fn duplicate_ports_fail_validation() {
-        let draft = crate::ActionMetadataDraft::new(
-            action_key!("test.action"),
-            crate::metadata_name!("Test"),
-            "desc",
-        )
-        .with_inputs(vec![
-            InputPort::flow(port_key!("in")),
-            InputPort::flow(port_key!("in")),
-        ])
-        .with_outputs(vec![
-            OutputPort::flow(port_key!("out")),
-            OutputPort::error(port_key!("out")),
-        ]);
+        let draft = crate::ActionMetadata::new(crate::metadata_name!("Test"), "desc")
+            .with_inputs(vec![
+                InputPort::flow(port_key!("in")),
+                InputPort::flow(port_key!("in")),
+            ])
+            .with_outputs(vec![
+                OutputPort::flow(port_key!("out")),
+                OutputPort::error(port_key!("out")),
+            ]);
 
         let crate::ActionMetadataAdmissionError::Package(err) = draft
             .admit_for::<ValidationAction>(crate::ActionKind::Stateless)
@@ -286,25 +271,21 @@ mod tests {
 
     #[test]
     fn invalid_support_and_dynamic_ports_fail_validation() {
-        let draft = crate::ActionMetadataDraft::new(
-            action_key!("test.action"),
-            crate::metadata_name!("Test"),
-            "desc",
-        )
-        .with_inputs(vec![InputPort::Support(SupportPort {
-            key: port_key!("tools"),
-            name: String::new(),
-            description: String::new(),
-            required: false,
-            multi: true,
-            filter: Default::default(),
-        })])
-        .with_outputs(vec![OutputPort::Dynamic(DynamicPort {
-            key: port_key!("rule"),
-            source_field: String::new(),
-            label_field: None,
-            include_fallback: false,
-        })]);
+        let draft = crate::ActionMetadata::new(crate::metadata_name!("Test"), "desc")
+            .with_inputs(vec![InputPort::Support(SupportPort {
+                key: port_key!("tools"),
+                name: String::new(),
+                description: String::new(),
+                required: false,
+                multi: true,
+                filter: Default::default(),
+            })])
+            .with_outputs(vec![OutputPort::Dynamic(DynamicPort {
+                key: port_key!("rule"),
+                source_field: String::new(),
+                label_field: None,
+                include_fallback: false,
+            })]);
 
         let crate::ActionMetadataAdmissionError::Package(err) = draft
             .admit_for::<ValidationAction>(crate::ActionKind::Stateless)

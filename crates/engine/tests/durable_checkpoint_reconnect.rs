@@ -54,11 +54,11 @@ struct ActionBarrier {
 struct Park;
 
 impl Action for Echo {
+    const KEY: &'static str = "checkpoint.echo";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("checkpoint.echo"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Echo"),
             "pure payload echo",
         )
@@ -86,11 +86,11 @@ impl StatelessAction for Echo {
     }
 }
 impl Action for Park {
+    const KEY: &'static str = "checkpoint.park";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("checkpoint.park"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Park"),
             "durable signal wait",
         )
@@ -144,10 +144,10 @@ fn frozen_registry_with_barrier(
 ) -> (Arc<ActionRegistry>, Arc<FrozenPluginRegistry>) {
     let actions = Arc::new(ActionRegistry::new());
     actions
-        .register_stateless_instance(Echo::metadata(), Echo(Arc::clone(count), barrier))
+        .register_stateless_instance(Echo(Arc::clone(count), barrier))
         .expect("valid test catalog definition");
     actions
-        .register_stateless_instance(Park::metadata(), Park)
+        .register_stateless_instance(Park)
         .expect("valid test catalog definition");
     let plugin = FixturePlugin {
         manifest: PluginManifest::builder("checkpoint", "Checkpoint")

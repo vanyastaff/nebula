@@ -380,7 +380,7 @@ fn action_key_is_core_dot_delay() {
     let factory = nebula_action::GenericStatelessFactory::<CoreDelay>::new()
         .expect("delay metadata must admit");
     assert_eq!(
-        nebula_action::ActionFactory::metadata(&factory)
+        nebula_action::ActionFactory::definition(&factory)
             .base()
             .key()
             .as_str(),
@@ -393,7 +393,7 @@ fn action_display_name_is_delay() {
     let factory = nebula_action::GenericStatelessFactory::<CoreDelay>::new()
         .expect("delay metadata must admit");
     assert_eq!(
-        nebula_action::ActionFactory::metadata(&factory)
+        nebula_action::ActionFactory::definition(&factory)
             .base()
             .name()
             .to_owned(),

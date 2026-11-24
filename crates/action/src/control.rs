@@ -25,7 +25,7 @@
 //! ```rust
 //! # use std::sync::OnceLock;
 //! # use nebula_action::{
-//! #     Action, ActionContext, ActionError, ActionKind, ActionMetadata,
+//! #     Action, ActionContext, ActionError, ActionKind, ActionDefinition,
 //! #     ControlAction, ControlOutcome, branch_key,
 //! # };
 //! # use nebula_core::{Dependencies, action_key};
@@ -34,10 +34,11 @@
 //! # struct MyIf;
 //! # impl MyIf { fn new() -> Self { Self } }
 //! # impl Action for MyIf {
+//! const KEY: &'static str = "control.if";
 //! #     type Input = bool;
 //! #     type Output = bool;
-//! #     fn metadata() -> nebula_action::ActionMetadataDraft {
-//! #         nebula_action::ActionMetadataDraft::new(action_key!("control.if"), nebula_action::metadata_name!("If"), "Binary branch")
+//! #     fn metadata() -> nebula_action::ActionMetadata {
+//! #         nebula_action::ActionMetadata::new(nebula_action::metadata_name!("If"), "Binary branch")
 //! #     }
 //! #     fn dependencies() -> &'static Dependencies {
 //! #         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -58,7 +59,7 @@
 //! let handler: Arc<dyn ControlHandle> = Arc::new(adapter);
 //! // The adapter stamps `ActionKind::Control`, so the registry can classify
 //! // the erased handler without the author tagging the node by hand.
-//! assert_eq!(handler.metadata().kind(), ActionKind::Control);
+//! assert_eq!(handler.definition().kind(), ActionKind::Control);
 //! ```
 //!
 //! # Example: writing an `If` node
@@ -77,13 +78,14 @@
 //! pub struct MyIf;
 //!
 //! impl Action for MyIf {
+//!     const KEY: &'static str = "control.if";
 //!     type Input = bool;
 //!     type Output = bool;
 //!
 //!     // The `ControlActionAdapter` stamps `ActionKind::Control` automatically;
 //!     // authors do not classify the node by hand.
-//!     fn metadata() -> nebula_action::ActionMetadataDraft {
-//!         nebula_action::ActionMetadataDraft::new(action_key!("control.if"), nebula_action::metadata_name!("If"), "Binary branch")
+//!     fn metadata() -> nebula_action::ActionMetadata {
+//!         nebula_action::ActionMetadata::new(nebula_action::metadata_name!("If"), "Binary branch")
 //!             .with_inputs(default_input_ports())
 //!             .with_outputs(vec![
 //!                 OutputPort::flow(port_key!("true")),
@@ -139,7 +141,7 @@ use crate::{
     error::ActionError,
     handle::ControlHandle,
     input::{ActionInputContract, PreparedActionInput},
-    metadata::{ActionKind, ActionMetadata},
+    metadata::{ActionDefinition, ActionKind},
     port_key::PortKey,
     result::{ActionResult, TerminationReason},
 };
@@ -164,7 +166,7 @@ pub enum ControlOutcome<T> {
     ///
     /// Used by `If` (2-way), `Switch` (N-way static), and `Router` in
     /// first-match mode. `selected` must match a port key declared in
-    /// [`ActionMetadata::outputs`].
+    /// [`ActionDefinition::outputs`].
     Branch {
         /// Key of the chosen branch output port.
         selected: BranchKey,
@@ -298,16 +300,17 @@ pub trait ControlAction: Action {
     /// ```rust
     /// # use std::sync::OnceLock;
     /// # use nebula_action::{
-    /// #     Action, ActionContext, ActionError, ActionMetadata,
+    /// #     Action, ActionContext, ActionError, ActionDefinition,
     /// #     ControlAction, ControlOutcome,
     /// # };
     /// # use nebula_core::{Dependencies, action_key};
     /// struct SugarPass;
     /// # impl Action for SugarPass {
+    /// const KEY: &'static str = "control.pass";
     /// #     type Input = bool;
     /// #     type Output = bool;
-    /// #     fn metadata() -> nebula_action::ActionMetadataDraft {
-    /// #         nebula_action::ActionMetadataDraft::new(action_key!("control.pass"), nebula_action::metadata_name!("Pass"), "Pass through")
+    /// #     fn metadata() -> nebula_action::ActionMetadata {
+    /// #         nebula_action::ActionMetadata::new(nebula_action::metadata_name!("Pass"), "Pass through")
     /// #     }
     /// #     fn dependencies() -> &'static Dependencies {
     /// #         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -341,16 +344,17 @@ pub trait ControlAction: Action {
     /// # use std::future::Future;
     /// # use std::sync::OnceLock;
     /// # use nebula_action::{
-    /// #     Action, ActionContext, ActionError, ActionMetadata,
+    /// #     Action, ActionContext, ActionError, ActionDefinition,
     /// #     ControlAction, ControlOutcome,
     /// # };
     /// # use nebula_core::{Dependencies, action_key};
     /// struct ExplicitPass;
     /// # impl Action for ExplicitPass {
+    /// const KEY: &'static str = "control.pass";
     /// #     type Input = bool;
     /// #     type Output = bool;
-    /// #     fn metadata() -> nebula_action::ActionMetadataDraft {
-    /// #         nebula_action::ActionMetadataDraft::new(action_key!("control.pass"), nebula_action::metadata_name!("Pass"), "Pass through")
+    /// #     fn metadata() -> nebula_action::ActionMetadata {
+    /// #         nebula_action::ActionMetadata::new(nebula_action::metadata_name!("Pass"), "Pass through")
     /// #     }
     /// #     fn dependencies() -> &'static Dependencies {
     /// #         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -394,7 +398,7 @@ pub trait ControlAction: Action {
 
 /// Wraps a [`ControlAction`] as a [`dyn ControlHandle`].
 ///
-/// The adapter caches a copy of the action's [`ActionMetadata`] with the
+/// The adapter caches a copy of the action's [`ActionDefinition`] with the
 /// [`ActionKind::Control`] node kind stamped automatically, so authors cannot
 /// forget to classify a control node. Terminal control nodes (Stop, Fail)
 /// declare an empty `outputs` set and keep [`ActionKind::Control`] —
@@ -407,7 +411,7 @@ pub trait ControlAction: Action {
 /// ```rust
 /// # use std::sync::OnceLock;
 /// # use nebula_action::{
-/// #     Action, ActionContext, ActionError, ActionKind, ActionMetadata,
+/// #     Action, ActionContext, ActionError, ActionKind, ActionDefinition,
 /// #     ControlAction, ControlOutcome,
 /// # };
 /// # use nebula_core::{Dependencies, action_key};
@@ -416,10 +420,11 @@ pub trait ControlAction: Action {
 /// # struct MyIf;
 /// # impl MyIf { fn new() -> Self { Self } }
 /// # impl Action for MyIf {
+/// const KEY: &'static str = "control.if";
 /// #     type Input = bool;
 /// #     type Output = bool;
-/// #     fn metadata() -> nebula_action::ActionMetadataDraft {
-/// #         nebula_action::ActionMetadataDraft::new(action_key!("control.if"), nebula_action::metadata_name!("If"), "Binary branch")
+/// #     fn metadata() -> nebula_action::ActionMetadata {
+/// #         nebula_action::ActionMetadata::new(nebula_action::metadata_name!("If"), "Binary branch")
 /// #     }
 /// #     fn dependencies() -> &'static Dependencies {
 /// #         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -438,11 +443,11 @@ pub trait ControlAction: Action {
 /// let adapter = ControlActionAdapter::new(MyIf::new()).expect("valid metadata");
 /// let handler: Arc<dyn ControlHandle> = Arc::new(adapter);
 /// // The kind is stamped at construction, regardless of the inner action.
-/// assert_eq!(handler.metadata().kind(), ActionKind::Control);
+/// assert_eq!(handler.definition().kind(), ActionKind::Control);
 /// ```
 pub struct ControlActionAdapter<A: ControlAction> {
     action: A,
-    cached_metadata: Arc<ActionMetadata>,
+    cached_metadata: Arc<ActionDefinition>,
     input_contract: ActionInputContract,
 }
 
@@ -485,7 +490,7 @@ impl<A> ControlHandle for ControlActionAdapter<A>
 where
     A: ControlAction + Send + Sync + 'static,
 {
-    fn metadata(&self) -> &Arc<ActionMetadata> {
+    fn definition(&self) -> &Arc<ActionDefinition> {
         &self.cached_metadata
     }
 

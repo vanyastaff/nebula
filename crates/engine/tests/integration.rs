@@ -18,10 +18,9 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, ActionMetadataDraft, action::Action, result::ActionResult,
-    stateless::StatelessAction,
+    ActionError, ActionMetadata, action::Action, result::ActionResult, stateless::StatelessAction,
 };
-use nebula_core::{ActionKey, Dependencies, NodeKey, action_key, id::WorkflowId, node_key};
+use nebula_core::{Dependencies, NodeKey, id::WorkflowId, node_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, WorkflowEngine,
 };
@@ -41,14 +40,14 @@ use nebula_workflow::{
 
 /// Macro to reduce boilerplate for unit-struct fixtures.
 macro_rules! variant_a_action {
-    ($ty:ident, $key:expr, $name:expr, $desc:expr) => {
+    ($ty:ident, $key:expr, $metadata:expr $(,)?) => {
         impl Action for $ty {
+            const KEY: &'static str = $key;
             type Input = serde_json::Value;
             type Output = serde_json::Value;
 
-            fn metadata() -> ActionMetadataDraft {
-                ActionMetadataDraft::new($key, nebula_action::metadata_name!($name), $desc)
-                    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
+            fn metadata() -> ActionMetadata {
+                $metadata
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -60,12 +59,7 @@ macro_rules! variant_a_action {
 
 /// Echoes input unchanged.
 struct EchoHandler;
-variant_a_action!(
-    EchoHandler,
-    action_key!("test.echo.static"),
-    "Echo",
-    "echoes input"
-);
+variant_a_action!(EchoHandler, "echo", meta("echo"),);
 
 impl StatelessAction for EchoHandler {
     async fn execute(
@@ -79,12 +73,7 @@ impl StatelessAction for EchoHandler {
 
 /// Wraps the input in `{"doubled": <input * 2>}` (numeric only).
 struct DoubleHandler;
-variant_a_action!(
-    DoubleHandler,
-    action_key!("test.double.static"),
-    "Double",
-    "doubles input"
-);
+variant_a_action!(DoubleHandler, "double", meta("double"),);
 
 impl StatelessAction for DoubleHandler {
     async fn execute(
@@ -101,12 +90,7 @@ impl StatelessAction for DoubleHandler {
 
 /// Adds 10 to a numeric input.
 struct Add10Handler;
-variant_a_action!(
-    Add10Handler,
-    action_key!("test.add10.static"),
-    "Add10",
-    "adds 10"
-);
+variant_a_action!(Add10Handler, "add10", meta("add10"),);
 
 impl StatelessAction for Add10Handler {
     async fn execute(
@@ -125,12 +109,7 @@ impl StatelessAction for Add10Handler {
 struct SlowHandler {
     delay: Duration,
 }
-variant_a_action!(
-    SlowHandler,
-    action_key!("test.slow.static"),
-    "Slow",
-    "sleeps"
-);
+variant_a_action!(SlowHandler, "slow", meta("slow"),);
 
 impl StatelessAction for SlowHandler {
     async fn execute(
@@ -147,12 +126,7 @@ impl StatelessAction for SlowHandler {
 
 /// Always fails.
 struct FailHandler;
-variant_a_action!(
-    FailHandler,
-    action_key!("test.fail.static"),
-    "Fail",
-    "always fails"
-);
+variant_a_action!(FailHandler, "fail", meta("fail"),);
 
 impl StatelessAction for FailHandler {
     async fn execute(
@@ -168,12 +142,7 @@ impl StatelessAction for FailHandler {
 struct CounterHandler {
     count: Arc<AtomicUsize>,
 }
-variant_a_action!(
-    CounterHandler,
-    action_key!("test.counter.static"),
-    "Counter",
-    "counts calls"
-);
+variant_a_action!(CounterHandler, "counter", meta("counter"),);
 
 impl StatelessAction for CounterHandler {
     async fn execute(
@@ -193,7 +162,7 @@ impl StatelessAction for CounterHandler {
 /// `evaluate_edge`), so successors with no other active source are
 /// transitively skipped.
 struct SkipHandler;
-variant_a_action!(SkipHandler, action_key!("test.skip.static"), "Skip", "skip");
+variant_a_action!(SkipHandler, "skip", meta("skip"),);
 
 impl StatelessAction for SkipHandler {
     async fn execute(
@@ -255,7 +224,7 @@ async fn engine_and_runtime_share_metrics_registry() {
 
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(meta(action_key!("echo")), EchoHandler)
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
     let runner = Arc::new(InProcessRunner::new());
 
@@ -295,9 +264,9 @@ async fn engine_and_runtime_share_metrics_registry() {
     );
 }
 
-fn meta(key: ActionKey) -> ActionMetadataDraft {
-    let name = key.clone().into();
-    ActionMetadataDraft::new(key, name, "integration test handler")
+fn meta(name: &str) -> ActionMetadata {
+    ActionMetadata::try_new(name, "integration test handler")
+        .expect("fixture display name")
         .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
 }
 
@@ -311,10 +280,10 @@ fn meta(key: ActionKey) -> ActionMetadataDraft {
 async fn linear_pipeline_data_flows_through() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(meta(action_key!("echo")), EchoHandler)
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(meta(action_key!("double")), DoubleHandler)
+        .register_stateless_instance(DoubleHandler)
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -350,13 +319,13 @@ async fn linear_pipeline_data_flows_through() {
 async fn fan_out_parallel_execution() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(meta(action_key!("echo")), EchoHandler)
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(meta(action_key!("double")), DoubleHandler)
+        .register_stateless_instance(DoubleHandler)
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(meta(action_key!("add10")), Add10Handler)
+        .register_stateless_instance(Add10Handler)
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -398,13 +367,13 @@ async fn fan_out_parallel_execution() {
 async fn diamond_merge_receives_combined_outputs() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(meta(action_key!("echo")), EchoHandler)
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(meta(action_key!("double")), DoubleHandler)
+        .register_stateless_instance(DoubleHandler)
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(meta(action_key!("add10")), Add10Handler)
+        .register_stateless_instance(Add10Handler)
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -458,10 +427,10 @@ async fn diamond_merge_receives_combined_outputs() {
 async fn error_propagation_stops_downstream() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(meta(action_key!("echo")), EchoHandler)
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(meta(action_key!("fail")), FailHandler)
+        .register_stateless_instance(FailHandler)
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -508,18 +477,15 @@ async fn error_propagation_stops_downstream() {
 async fn cancellation_via_sibling_failure() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            meta(action_key!("slow")),
-            SlowHandler {
-                delay: Duration::from_secs(10),
-            },
-        )
+        .register_stateless_instance(SlowHandler {
+            delay: Duration::from_secs(10),
+        })
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(meta(action_key!("fail")), FailHandler)
+        .register_stateless_instance(FailHandler)
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(meta(action_key!("echo")), EchoHandler)
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -573,7 +539,7 @@ async fn cancellation_via_sibling_failure() {
 async fn metrics_cover_full_lifecycle() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(meta(action_key!("echo")), EchoHandler)
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
 
     let (engine, metrics) = make_engine(registry);
@@ -631,12 +597,9 @@ async fn bounded_concurrency_with_multiple_parallel_nodes() {
 
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            meta(action_key!("counter")),
-            CounterHandler {
-                count: counter.clone(),
-            },
-        )
+        .register_stateless_instance(CounterHandler {
+            count: counter.clone(),
+        })
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -678,7 +641,7 @@ async fn bounded_concurrency_with_multiple_parallel_nodes() {
 async fn zero_concurrency_budget_returns_planning_error() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(meta(action_key!("echo")), EchoHandler)
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -716,10 +679,10 @@ async fn zero_concurrency_budget_returns_planning_error() {
 async fn deep_chain_propagates_outputs() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(meta(action_key!("echo")), EchoHandler)
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(meta(action_key!("double")), DoubleHandler)
+        .register_stateless_instance(DoubleHandler)
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -764,7 +727,7 @@ async fn deep_chain_propagates_outputs() {
 async fn metrics_accurate_on_failure() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(meta(action_key!("fail")), FailHandler)
+        .register_stateless_instance(FailHandler)
         .expect("valid test catalog definition");
 
     let (engine, metrics) = make_engine(registry);
@@ -818,7 +781,7 @@ async fn metrics_accurate_on_failure() {
 async fn disabled_node_is_skipped_and_successor_executes() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(meta(action_key!("echo")), EchoHandler)
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
 
     let (engine, _) = make_engine(registry);
@@ -897,10 +860,10 @@ async fn disabled_node_is_skipped_and_successor_executes() {
 async fn skip_propagates_transitively_through_three_hop_chain() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(meta(action_key!("echo")), EchoHandler)
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(meta(action_key!("skip")), SkipHandler)
+        .register_stateless_instance(SkipHandler)
         .expect("valid test catalog definition");
     let (engine, _) = make_engine(registry);
 
@@ -965,10 +928,10 @@ async fn skip_propagates_transitively_through_three_hop_chain() {
 async fn diamond_with_one_skipped_branch_still_completes() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(meta(action_key!("echo")), EchoHandler)
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(meta(action_key!("skip")), SkipHandler)
+        .register_stateless_instance(SkipHandler)
         .expect("valid test catalog definition");
     let (engine, _) = make_engine(registry);
 
@@ -1024,10 +987,10 @@ async fn diamond_with_one_skipped_branch_still_completes() {
 async fn aggregate_with_one_skipped_source_fires() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(meta(action_key!("echo")), EchoHandler)
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(meta(action_key!("skip")), SkipHandler)
+        .register_stateless_instance(SkipHandler)
         .expect("valid test catalog definition");
     let (engine, _) = make_engine(registry);
 
@@ -1077,10 +1040,10 @@ async fn aggregate_with_one_skipped_source_fires() {
 async fn aggregate_with_all_sources_skipped_propagates_skip() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(meta(action_key!("skip")), SkipHandler)
+        .register_stateless_instance(SkipHandler)
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(meta(action_key!("echo")), EchoHandler)
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
     let (engine, _) = make_engine(registry);
 
@@ -1142,10 +1105,10 @@ async fn aggregate_with_all_sources_skipped_propagates_skip() {
 async fn multi_hop_skip_with_sibling_activation_still_runs() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(meta(action_key!("echo")), EchoHandler)
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(meta(action_key!("skip")), SkipHandler)
+        .register_stateless_instance(SkipHandler)
         .expect("valid test catalog definition");
     let (engine, _) = make_engine(registry);
 
@@ -1213,10 +1176,10 @@ async fn multi_hop_skip_with_sibling_activation_still_runs() {
 async fn duplicate_edges_from_skipped_source_count_per_edge() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(meta(action_key!("skip")), SkipHandler)
+        .register_stateless_instance(SkipHandler)
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(meta(action_key!("echo")), EchoHandler)
+        .register_stateless_instance(EchoHandler)
         .expect("valid test catalog definition");
     let (engine, _) = make_engine(registry);
 

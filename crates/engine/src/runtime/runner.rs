@@ -93,7 +93,7 @@ impl ActionRunner for InProcessRunner {
     #[tracing::instrument(
         name = "action.runner.stateless",
         skip_all,
-        fields(action_key = %handle.metadata().base().key())
+        fields(action_key = %handle.definition().base().key())
     )]
     async fn execute_stateless(
         &self,
@@ -111,7 +111,7 @@ impl ActionRunner for InProcessRunner {
     #[tracing::instrument(
         name = "action.runner.stream",
         skip_all,
-        fields(action_key = %handle.metadata().base().key())
+        fields(action_key = %handle.definition().base().key())
     )]
     async fn execute_stream(
         &self,

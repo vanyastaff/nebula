@@ -21,7 +21,7 @@
 - `src/resource_contribution.rs` — sealed SDK-owned token and typed bridge for topology-bearing
   resource derives; it must never expose the erased leaf factory or registration authority.
 - `src/prelude.rs` — one-stop `use nebula_sdk::prelude::*` set (action traits, schema, credential/OAuth2 types).
-- `src/action.rs` — typed action and `ActionMetadataDraft` authoring contracts.
+- `src/action.rs` — typed action and `ActionMetadata` authoring contracts.
 - `src/workflow.rs` — `WorkflowBuilder` (`add_node` / `connect` / `build`).
 - `src/runtime.rs` — `TestRuntime`, `RunReport` in-process test harness.
 - `src/testing.rs` — test helpers/fixtures (feature `testing`).

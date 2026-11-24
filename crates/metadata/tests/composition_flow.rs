@@ -6,7 +6,7 @@
 //! `nebula-resource::ResourceDefinition`), one scalar extra field (mirrors
 //! `nebula-credential::CredentialDefinition::pattern`), and a
 //! multi-field-with-collection shape (mirrors
-//! `nebula-action::ActionMetadata`'s `category`/`isolation_level`/`inputs`).
+//! `nebula-action::ActionDefinition`'s `category`/`isolation_level`/`inputs`).
 //!
 //! Nested `base` placement keeps strict shared-field decoding independent of
 //! leaf-specific fields. These fixtures exercise that contract across shapes

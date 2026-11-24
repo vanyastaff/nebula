@@ -49,7 +49,7 @@ impl std::fmt::Debug for ActivationEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use nebula_core::Context;
         f.debug_struct("ActivationEntry")
-            .field("handler_key", self.handler.metadata().base().key())
+            .field("handler_key", self.handler.definition().base().key())
             .field("trigger_id", &self.ctx.trigger_id())
             .field("workflow_id", &self.ctx.scope().workflow_id)
             .finish_non_exhaustive()
@@ -131,8 +131,8 @@ impl RoutingMap {
 #[cfg(test)]
 mod tests {
     use nebula_action::{
-        Action, ActionMetadataDraft, TriggerContext, TriggerEventOutcome, WebhookAction,
-        WebhookRequest, WebhookResponse, WebhookTriggerAdapter,
+        Action, ActionMetadata, TriggerContext, TriggerEventOutcome, WebhookAction, WebhookRequest,
+        WebhookResponse, WebhookTriggerAdapter,
     };
     use nebula_core::Dependencies;
     use uuid::Uuid;
@@ -142,12 +142,12 @@ mod tests {
     struct NoopWebhook;
 
     impl Action for NoopWebhook {
+        const KEY: &'static str = "test.routing.noop";
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadataDraft {
-            ActionMetadataDraft::new(
-                nebula_core::action_key!("test.routing.noop"),
+        fn metadata() -> ActionMetadata {
+            ActionMetadata::new(
                 nebula_action::metadata_name!("Noop"),
                 "routing map unit test",
             )

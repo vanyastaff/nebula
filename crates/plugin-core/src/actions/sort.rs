@@ -65,7 +65,6 @@ use std::cmp::Ordering;
 use std::sync::OnceLock;
 
 use nebula_action::{ActionContext, ActionError, ActionResult, StatelessAction};
-use nebula_core::action_key;
 use nebula_schema::{HasSchema, Property, Schema, ValidSchema, ValidationReport, field_key};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -212,12 +211,12 @@ impl HasSchema for SortInput {
 pub struct Sort;
 
 impl nebula_action::action::Action for Sort {
+    const KEY: &'static str = "core.sort";
     type Input = SortInput;
     type Output = Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("core.sort"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Sort"),
             "Sort an array of objects by one or more fields (asc/desc)",
         )

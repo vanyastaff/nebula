@@ -26,8 +26,8 @@ mod qualified_runtime;
 mod workflow_fixture;
 
 macro_rules! pure_action_metadata {
-    ($key:expr, $name:expr, $description:expr $(,)?) => {
-        nebula_action::metadata::ActionMetadataDraft::new($key, $name, $description)
+    ($name:expr, $description:expr $(,)?) => {
+        nebula_action::metadata::ActionMetadata::new($name, $description)
             .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     };
 }
@@ -45,7 +45,7 @@ use nebula_action::{
     result::{ActionResult, WaitCondition},
     stateless::StatelessAction,
 };
-use nebula_core::{Dependencies, action_key, id::ExecutionId, node_key};
+use nebula_core::{Dependencies, id::ExecutionId, node_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, ControlDispatch, DataPassingPolicy, EngineControlDispatch,
     InProcessRunner, WorkflowEngine,
@@ -65,12 +65,12 @@ use nebula_workflow::{
 struct WebhookParkNode;
 
 impl Action for WebhookParkNode {
+    const KEY: &'static str = "test.w_s3c.webhook_park";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
+    fn metadata() -> nebula_action::ActionMetadata {
         pure_action_metadata!(
-            action_key!("test.w_s3c.webhook_park"),
             nebula_action::metadata_name!("WebhookParkNode"),
             "resume-token mint integration test stub",
         )
@@ -112,14 +112,7 @@ impl MintHarness {
     async fn new() -> Self {
         let registry = Arc::new(ActionRegistry::new());
         registry
-            .register_stateless_instance(
-                pure_action_metadata!(
-                    action_key!("test.w_s3c.webhook_park"),
-                    nebula_action::metadata_name!("WebhookParkNode"),
-                    "resume-token mint integration test stub",
-                ),
-                WebhookParkNode,
-            )
+            .register_stateless_instance(WebhookParkNode)
             .expect("valid test catalog definition");
 
         let exact = qualified_runtime::QualifiedRuntime::new(&registry);

@@ -2,7 +2,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use nebula_action::{ActionFactory, ActionMetadata, InputPort, SupportPort};
+use nebula_action::{ActionDefinition, ActionFactory, InputPort, SupportPort};
 use nebula_core::{NodeKey, PortKey};
 use nebula_workflow::{DependencyGraph, NodeDefinition};
 
@@ -102,11 +102,11 @@ impl WorkflowEngine {
         node_id: &NodeKey,
         node: &NodeDefinition,
         factories: Option<&HashMap<NodeKey, Arc<dyn ActionFactory>>>,
-    ) -> Result<Option<Arc<ActionMetadata>>, EngineError> {
+    ) -> Result<Option<Arc<ActionDefinition>>, EngineError> {
         if let Some(factories) = factories {
             return factories
                 .get(node_id)
-                .map(|factory| Some(Arc::clone(factory.metadata())))
+                .map(|factory| Some(Arc::clone(factory.definition())))
                 .ok_or(EngineError::ExactFactoryUnavailable);
         }
         let registered = match node.interface_version.as_ref() {
@@ -123,7 +123,7 @@ impl WorkflowEngine {
 fn support_filter_accepts(
     port: &SupportPort,
     source: &NodeDefinition,
-    source_metadata: Option<&ActionMetadata>,
+    source_metadata: Option<&ActionDefinition>,
 ) -> bool {
     let type_allowed = port
         .filter

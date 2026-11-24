@@ -4,7 +4,7 @@ use std::{
 };
 
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionFactory, ActionMetadataDraft, ActionResult,
+    Action, ActionContext, ActionError, ActionFactory, ActionMetadata, ActionResult,
     InstanceFactory, OutputPort, StatelessAction,
 };
 use nebula_core::{
@@ -44,24 +44,49 @@ impl ContractAction {
     ) -> Arc<dyn ActionFactory> {
         INPUT_SCHEMA.with(|schema| *schema.borrow_mut() = Some(input_schema));
         OUTPUT_SCHEMA.with(|schema| *schema.borrow_mut() = Some(output_schema));
-        let mut draft = ActionMetadataDraft::new(
-            ActionKey::new(key).expect("fixture action key is valid"),
+        let mut metadata = ActionMetadata::new(
             nebula_action::metadata_name!("Echo"),
             "Graph-v1 contract fixture",
         )
         .with_effect_contract(effect_contract);
         if let Some(outputs) = outputs {
-            draft = draft.with_outputs(outputs);
+            metadata = metadata.with_outputs(outputs);
         }
-        let factory = InstanceFactory::new(draft, ContractImplementation)
-            .expect("graph contract admits through its structural factory");
+        METADATA.with(|installed| *installed.borrow_mut() = Some(metadata));
+        let factory: Arc<dyn ActionFactory> =
+            match CONTRACT_KEYS.iter().position(|known| *known == key) {
+                Some(0) => contract_factory::<0>(),
+                Some(1) => contract_factory::<1>(),
+                Some(2) => contract_factory::<2>(),
+                Some(3) => contract_factory::<3>(),
+                _ => panic!("graph fixture key {key} has no fixture type"),
+            };
+        METADATA.with(|installed| *installed.borrow_mut() = None);
         INPUT_SCHEMA.with(|schema| *schema.borrow_mut() = None);
         OUTPUT_SCHEMA.with(|schema| *schema.borrow_mut() = None);
-        Arc::new(factory)
+        factory
     }
 }
 
+fn contract_factory<const INDEX: usize>() -> Arc<dyn ActionFactory> {
+    Arc::new(
+        InstanceFactory::new(ContractImplementation::<INDEX>)
+            .expect("graph contract admits through its structural factory"),
+    )
+}
+
+/// Fixture keys the graph contract fixtures register, by `INDEX`.
+const CONTRACT_KEYS: [&str; 4] = [
+    "demo.echo",
+    "demo.source",
+    "demo.target",
+    "demo.incompatible",
+];
+
 thread_local! {
+    /// Metadata the fixture under admission declares; tests vary the effect
+    /// contract and output ports per fixture.
+    static METADATA: RefCell<Option<ActionMetadata>> = const { RefCell::new(None) };
     static INPUT_SCHEMA: RefCell<Option<ValidSchema>> = const { RefCell::new(None) };
     static OUTPUT_SCHEMA: RefCell<Option<ValidSchema>> = const { RefCell::new(None) };
 }
@@ -94,18 +119,22 @@ impl nebula_schema::HasSchema for ContractOutput {
     }
 }
 
-struct ContractImplementation;
+/// Backing stateless action for one graph fixture key: every catalog entry is
+/// its own type, so each fixture key has its own `INDEX`.
+struct ContractImplementation<const INDEX: usize>;
 
-impl Action for ContractImplementation {
+impl<const INDEX: usize> Action for ContractImplementation<INDEX> {
+    const KEY: &'static str = CONTRACT_KEYS[INDEX];
     type Input = ContractInput;
     type Output = ContractOutput;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            nebula_core::action_key!("fixture.contract"),
-            nebula_action::metadata_name!("Fixture contract"),
-            "Graph contract fixture",
-        )
+    fn metadata() -> ActionMetadata {
+        METADATA.with(|metadata| {
+            metadata
+                .borrow()
+                .clone()
+                .expect("metadata is installed during fixture admission")
+        })
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -114,7 +143,7 @@ impl Action for ContractImplementation {
     }
 }
 
-impl StatelessAction for ContractImplementation {
+impl<const INDEX: usize> StatelessAction for ContractImplementation<INDEX> {
     async fn execute(
         &self,
         input: ContractInput,
@@ -609,12 +638,12 @@ fn the_default_effect_contract_compiles_and_records_journaled_v1() {
 struct EchoAgent;
 
 impl Action for EchoAgent {
+    const KEY: &'static str = "demo.echo";
     type Input = Value;
     type Output = Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            nebula_core::action_key!("demo.echo"),
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
             nebula_action::metadata_name!("Echo agent"),
             "Graph-v1 agent fixture",
         )

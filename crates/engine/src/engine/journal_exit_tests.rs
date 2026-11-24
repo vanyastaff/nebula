@@ -43,12 +43,12 @@ struct ProbeInput {
 struct JournaledProbe(Arc<AtomicU32>);
 
 impl Action for JournaledProbe {
+    const KEY: &'static str = "test.journaled_probe";
     type Input = ProbeInput;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            action_key!("test.journaled_probe"),
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
             nebula_action::metadata_name!("Journaled probe"),
             "Counts the dispatches of a journaled node",
         )
@@ -119,10 +119,7 @@ impl JournaledNode {
         let dispatches = Arc::new(AtomicU32::new(0));
         let registry = Arc::new(ActionRegistry::new());
         registry
-            .register_stateless_instance(
-                JournaledProbe::metadata(),
-                JournaledProbe(Arc::clone(&dispatches)),
-            )
+            .register_stateless_instance(JournaledProbe(Arc::clone(&dispatches)))
             .expect("register the probe");
         let (_, factory) = registry
             .get_factory(&action_key!("test.journaled_probe"))
@@ -239,7 +236,7 @@ impl JournaledNode {
                 cancellation: cancel.clone(),
             })
             .expect("prepared input");
-        let metadata = self.factory.metadata();
+        let metadata = self.factory.definition();
         NodeTask {
             runtime: self.engine.runtime.clone(),
             factory_dispatch: NodeFactoryDispatch::Frozen {

@@ -3,10 +3,10 @@
 use std::sync::OnceLock;
 
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionFactory, ActionMetadataDraft, ActionResult,
+    Action, ActionContext, ActionError, ActionFactory, ActionMetadata, ActionResult,
     InstanceFactory, StatelessAction,
 };
-use nebula_core::{ActionKey, Dependencies, action_key};
+use nebula_core::{ActionKey, Dependencies};
 use nebula_plugin::ResolvedPlugin;
 use nebula_plugin_core::{CorePlugin, actions::*};
 use nebula_schema::{
@@ -23,12 +23,12 @@ struct LegacyInput {
 struct LegacySchemaAction;
 
 impl Action for LegacySchemaAction {
+    const KEY: &'static str = "legacy.schema";
     type Input = LegacyInput;
     type Output = Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            action_key!("legacy.schema"),
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
             nebula_action::metadata_name!("Legacy schema"),
             "Legacy schema compatibility fixture",
         )
@@ -82,6 +82,17 @@ macro_rules! input_contract {
         mod $module {
             use super::*;
 
+            nebula_action::stateless_entry!(
+                /// The legacy-schema catalog entry this action's schema replaced.
+                LegacyEntry(LegacySchemaAction) = $action,
+                ActionMetadata::new(
+                    nebula_action::metadata_name!("Legacy action"),
+                    "Legacy schema compatibility fixture",
+                )
+                .with_version(nebula_action::MetadataVersion::new(1, 0, 0))
+                .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+            );
+
             #[test]
             fn discovery_keeps_known_fields_and_caches_the_checked_schema() {
                 let schema = <$input>::schema().unwrap();
@@ -93,7 +104,7 @@ macro_rules! input_contract {
                 assert!(schema.ptr_eq(&<$input>::schema().unwrap()));
                 let plugin = ResolvedPlugin::from(CorePlugin::try_new().unwrap()).unwrap();
                 let metadata = plugin.action(&ActionKey::new($action).unwrap()).unwrap()
-                    .metadata();
+                    .definition();
                 assert_eq!(metadata.base().schema(), &schema);
                 assert_eq!(metadata.output_schema().kind(), SchemaKind::Any);
             }
@@ -102,23 +113,11 @@ macro_rules! input_contract {
             fn changed_schema_advances_its_catalog_interface_major() {
                 let plugin = ResolvedPlugin::from(CorePlugin::try_new().unwrap()).unwrap();
                 let current = plugin.action(&ActionKey::new($action).unwrap()).unwrap()
-                    .metadata();
+                    .definition();
                 assert_eq!(current.base().version().major, 2);
                 assert_eq!(current.base().version().minor, 0);
-                let legacy_factory = InstanceFactory::new(
-                    ActionMetadataDraft::new(
-                        ActionKey::new($action).unwrap(),
-                        nebula_action::metadata_name!("Legacy action"),
-                        "Legacy schema compatibility fixture",
-                    )
-                    .with_version(nebula_action::MetadataVersion::new(1, 0, 0))
-                    .with_effect_contract(
-                        nebula_action::effect::ActionEffectContract::ReadOnly,
-                    ),
-                    LegacySchemaAction,
-                )
-                .unwrap();
-                let legacy = legacy_factory.metadata();
+                let legacy_factory = InstanceFactory::new(LegacyEntry(LegacySchemaAction)).unwrap();
+                let legacy = legacy_factory.definition();
                 assert_ne!(current.base().schema(), legacy.base().schema());
                 assert_eq!(nebula_metadata::validate_base_compat(current.base(), legacy.base()), Ok(()));
             }

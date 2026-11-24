@@ -1,7 +1,7 @@
 //! Compile contract for the supported SDK perimeter.
 //!
 //! The fixture has exactly one Nebula dependency. Its positive binary exercises
-//! typed action authoring (`ActionMetadataDraft`, `simple_action!`, and associated
+//! typed action authoring (`ActionMetadata`, `simple_action!`, and associated
 //! `Input`/`Output`), `WorkflowBuilder`, credential `TestResult`, and manual `Provider` authoring
 //! with a consuming terminal hook over a non-Clone instance, using the
 //! general-purpose `async-trait` dependency. This is a compile check, not runtime
@@ -137,7 +137,7 @@ const FORBIDDEN: &[(&str, &str)] = &[
     ("action_input", "ActionInput"),
     ("prepared_action_input", "PreparedActionInput"),
     ("base_definition", "BaseDefinition"),
-    ("action_metadata", "ActionMetadata"),
+    ("action_metadata", "ActionDefinition"),
     ("credential_definition", "CredentialDefinition"),
     ("resource_definition", "ResourceDefinition"),
     ("definition_trait", "Definition"),
@@ -173,7 +173,7 @@ const REMOVED_CATALOG_API: &[(&str, &str, &str)] = &[
     (
         "removed_checkpoint_policy_setter",
         "with_checkpoint_policy",
-        "ActionMetadataDraft",
+        "ActionMetadata",
     ),
     // `ResourceMetadata` is an alias; rustc names the type behind it.
     (
@@ -473,14 +473,14 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
             pub mod action {
                 pub use nebula_action::{
                     Action, ActionContext, ActionContextExt, ActionEffectContract, ActionError,
-                    ActionMetadataDraft, ActionResult, FromWorkflowNode, MetadataVersion,
+                    ActionMetadata, ActionResult, FromWorkflowNode, MetadataVersion,
                     StatelessAction, metadata_name,
                 };
             }
             pub mod core {
                 pub use nebula_core::{
                     ActionKey, CredentialKey, DeclaresDependencies, Dependencies, ResourceKey,
-                    SlotField, SlotKind, action_key,
+                    SlotField, SlotKind,
                 };
                 pub mod auth {
                     pub use nebula_core::auth::{

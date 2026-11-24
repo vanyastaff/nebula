@@ -26,7 +26,7 @@ use crate::{
     context::{ActionContext, TriggerContext},
     error::ActionError,
     input::PreparedActionInput,
-    metadata::{ActionKind, ActionMetadata},
+    metadata::{ActionDefinition, ActionKind},
     result::ActionResult,
     trigger::{TriggerEvent, TriggerEventOutcome},
 };
@@ -56,7 +56,7 @@ pub(crate) mod sealed {
 #[async_trait]
 pub trait StatelessHandle: sealed::Stateless + Send + Sync + 'static {
     /// Action metadata (key, version, ports, schemas).
-    fn metadata(&self) -> &Arc<ActionMetadata>;
+    fn definition(&self) -> &Arc<ActionDefinition>;
 
     /// Admit erased ingress against this handle's complete typed contract.
     fn prepare_input(&self, input: ActionInput) -> Result<PreparedActionInput, ActionError>;
@@ -77,7 +77,7 @@ pub trait StatelessHandle: sealed::Stateless + Send + Sync + 'static {
 #[async_trait]
 pub trait StatefulHandle: sealed::Stateful + Send + Sync + 'static {
     /// Action metadata.
-    fn metadata(&self) -> &Arc<ActionMetadata>;
+    fn definition(&self) -> &Arc<ActionDefinition>;
 
     /// Build initial state as JSON.
     ///
@@ -120,7 +120,7 @@ pub trait StatefulHandle: sealed::Stateful + Send + Sync + 'static {
 #[async_trait]
 pub trait TriggerHandle: sealed::Trigger + Send + Sync + 'static {
     /// Action metadata.
-    fn metadata(&self) -> &Arc<ActionMetadata>;
+    fn definition(&self) -> &Arc<ActionDefinition>;
 
     /// Start the trigger.
     ///
@@ -163,7 +163,7 @@ pub trait TriggerHandle: sealed::Trigger + Send + Sync + 'static {
 #[async_trait]
 pub trait ResourceActionHandle: sealed::Resource + Send + Sync + 'static {
     /// Action metadata.
-    fn metadata(&self) -> &Arc<ActionMetadata>;
+    fn definition(&self) -> &Arc<ActionDefinition>;
 
     /// Configure the resource for this scope.
     ///
@@ -205,7 +205,7 @@ pub trait ResourceActionHandle: sealed::Resource + Send + Sync + 'static {
 #[async_trait]
 pub trait StreamHandle: sealed::Stream + Send + Sync + 'static {
     /// Action metadata (key, version, ports, schemas), with `ActionKind::Stream` stamped.
-    fn metadata(&self) -> &Arc<ActionMetadata>;
+    fn definition(&self) -> &Arc<ActionDefinition>;
 
     /// Admit erased ingress against this handle's complete typed contract.
     fn prepare_input(&self, input: ActionInput) -> Result<PreparedActionInput, ActionError>;
@@ -227,7 +227,7 @@ pub trait StreamHandle: sealed::Stream + Send + Sync + 'static {
 #[async_trait]
 pub trait ControlHandle: sealed::Control + Send + Sync + 'static {
     /// Action metadata (with `ActionKind::Control` stamped).
-    fn metadata(&self) -> &Arc<ActionMetadata>;
+    fn definition(&self) -> &Arc<ActionDefinition>;
 
     /// Admit erased ingress against this handle's complete typed contract.
     fn prepare_input(&self, input: ActionInput) -> Result<PreparedActionInput, ActionError>;
@@ -271,15 +271,15 @@ pub enum ActionHandle {
 impl ActionHandle {
     /// Get metadata regardless of variant.
     #[must_use]
-    pub fn metadata(&self) -> &Arc<ActionMetadata> {
+    pub fn definition(&self) -> &Arc<ActionDefinition> {
         match self {
-            Self::Stateless(h) => h.metadata(),
-            Self::Stateful(h) => h.metadata(),
-            Self::Stream(h) => h.metadata(),
-            Self::Trigger(h) => h.metadata(),
-            Self::Resource(h) => h.metadata(),
-            Self::Control(h) => h.metadata(),
-            Self::Agent(h) => h.metadata(),
+            Self::Stateless(h) => h.definition(),
+            Self::Stateful(h) => h.definition(),
+            Self::Stream(h) => h.definition(),
+            Self::Trigger(h) => h.definition(),
+            Self::Resource(h) => h.definition(),
+            Self::Control(h) => h.definition(),
+            Self::Agent(h) => h.definition(),
         }
     }
 
@@ -343,13 +343,13 @@ impl ActionHandle {
 impl fmt::Debug for ActionHandle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (tag, key) = match self {
-            Self::Stateless(h) => ("Stateless", h.metadata().base().key().as_str()),
-            Self::Stateful(h) => ("Stateful", h.metadata().base().key().as_str()),
-            Self::Stream(h) => ("Stream", h.metadata().base().key().as_str()),
-            Self::Trigger(h) => ("Trigger", h.metadata().base().key().as_str()),
-            Self::Resource(h) => ("Resource", h.metadata().base().key().as_str()),
-            Self::Control(h) => ("Control", h.metadata().base().key().as_str()),
-            Self::Agent(h) => ("Agent", h.metadata().base().key().as_str()),
+            Self::Stateless(h) => ("Stateless", h.definition().base().key().as_str()),
+            Self::Stateful(h) => ("Stateful", h.definition().base().key().as_str()),
+            Self::Stream(h) => ("Stream", h.definition().base().key().as_str()),
+            Self::Trigger(h) => ("Trigger", h.definition().base().key().as_str()),
+            Self::Resource(h) => ("Resource", h.definition().base().key().as_str()),
+            Self::Control(h) => ("Control", h.definition().base().key().as_str()),
+            Self::Agent(h) => ("Agent", h.definition().base().key().as_str()),
         };
         f.debug_tuple(tag).field(&key).finish()
     }

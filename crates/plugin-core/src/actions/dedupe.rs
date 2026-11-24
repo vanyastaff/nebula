@@ -52,7 +52,6 @@ use std::collections::HashSet;
 use std::sync::OnceLock;
 
 use nebula_action::{ActionContext, ActionError, ActionResult, StatelessAction};
-use nebula_core::action_key;
 use nebula_schema::{HasSchema, Schema, ValidSchema, ValidationReport, field_key};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -134,12 +133,12 @@ impl HasSchema for DedupeInput {
 pub struct Dedupe;
 
 impl nebula_action::action::Action for Dedupe {
+    const KEY: &'static str = "core.dedupe";
     type Input = DedupeInput;
     type Output = Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("core.dedupe"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Dedupe"),
             "Remove duplicate array elements by one or more key fields (first occurrence wins)",
         )

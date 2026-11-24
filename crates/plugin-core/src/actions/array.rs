@@ -51,7 +51,6 @@
 use std::sync::OnceLock;
 
 use nebula_action::{ActionContext, ActionError, ActionResult, StatelessAction};
-use nebula_core::action_key;
 use nebula_schema::{HasSchema, Property, Schema, ValidSchema, ValidationReport, field_key};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -233,12 +232,12 @@ fn apply_flatten(elements: Vec<Value>, depth: usize) -> Vec<Value> {
 pub struct ArrayAction;
 
 impl nebula_action::action::Action for ArrayAction {
+    const KEY: &'static str = "core.array";
     type Input = ArrayInput;
     type Output = Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("core.array"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Array"),
             "Shape a JSON array with chunk/flatten/take/skip operations applied left-to-right",
         )

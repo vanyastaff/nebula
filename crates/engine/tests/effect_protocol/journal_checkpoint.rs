@@ -50,7 +50,7 @@ pub(super) fn action_version(fixture: &JournalFixture) -> String {
         .frozen
         .resolve_action(&action_key!("journal.charge"))
         .expect("the fixture's action")
-        .metadata()
+        .definition()
         .base()
         .version()
         .to_string()

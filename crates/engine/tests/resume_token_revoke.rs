@@ -35,8 +35,8 @@ mod qualified_runtime;
 mod workflow_fixture;
 
 macro_rules! pure_action_metadata {
-    ($key:expr, $name:expr, $description:expr $(,)?) => {
-        nebula_action::metadata::ActionMetadataDraft::new($key, $name, $description)
+    ($name:expr, $description:expr $(,)?) => {
+        nebula_action::metadata::ActionMetadata::new($name, $description)
             .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     };
 }
@@ -58,7 +58,7 @@ use nebula_action::{
     result::{ActionResult, WaitCondition},
     stateless::StatelessAction,
 };
-use nebula_core::{Dependencies, action_key, id::ExecutionId, node_key};
+use nebula_core::{Dependencies, id::ExecutionId, node_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, ControlDispatch, DataPassingPolicy, EngineControlDispatch,
     InProcessRunner, WorkflowEngine,
@@ -313,12 +313,12 @@ impl ExecutionStore for ArmableConflictStore {
 struct WebhookParkNode;
 
 impl Action for WebhookParkNode {
+    const KEY: &'static str = "test.w_s3e.webhook_park";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
+    fn metadata() -> nebula_action::ActionMetadata {
         pure_action_metadata!(
-            action_key!("test.w_s3e.webhook_park"),
             nebula_action::metadata_name!("WebhookParkNode"),
             "W-S3e revoke-on-terminal integration test stub",
         )
@@ -362,12 +362,12 @@ fn webhook_target() -> Option<nebula_engine::ResumeTarget> {
 struct EchoNode;
 
 impl Action for EchoNode {
+    const KEY: &'static str = "test.w_s3e.echo";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
+    fn metadata() -> nebula_action::ActionMetadata {
         pure_action_metadata!(
-            action_key!("test.w_s3e.echo"),
             nebula_action::metadata_name!("EchoNode"),
             "W-S3e downstream echo stub",
         )
@@ -435,24 +435,10 @@ impl RevokeHarness {
     async fn new(resume_tokens: Option<Arc<dyn ResumeTokenStore>>) -> Self {
         let registry = Arc::new(ActionRegistry::new());
         registry
-            .register_stateless_instance(
-                pure_action_metadata!(
-                    action_key!("test.w_s3e.webhook_park"),
-                    nebula_action::metadata_name!("WebhookParkNode"),
-                    "W-S3e revoke-on-terminal integration test stub",
-                ),
-                WebhookParkNode,
-            )
+            .register_stateless_instance(WebhookParkNode)
             .expect("valid test catalog definition");
         registry
-            .register_stateless_instance(
-                pure_action_metadata!(
-                    action_key!("test.w_s3e.echo"),
-                    nebula_action::metadata_name!("EchoNode"),
-                    "W-S3e downstream echo stub",
-                ),
-                EchoNode,
-            )
+            .register_stateless_instance(EchoNode)
             .expect("valid test catalog definition");
 
         let exact = qualified_runtime::QualifiedRuntime::new(&registry);
@@ -518,24 +504,10 @@ impl RevokeHarness {
     async fn new_with_cas_interceptor() -> (Self, Arc<ArmableConflictStore>) {
         let registry = Arc::new(ActionRegistry::new());
         registry
-            .register_stateless_instance(
-                pure_action_metadata!(
-                    action_key!("test.w_s3e.webhook_park"),
-                    nebula_action::metadata_name!("WebhookParkNode"),
-                    "W-S3e revoke-on-terminal integration test stub",
-                ),
-                WebhookParkNode,
-            )
+            .register_stateless_instance(WebhookParkNode)
             .expect("valid test catalog definition");
         registry
-            .register_stateless_instance(
-                pure_action_metadata!(
-                    action_key!("test.w_s3e.echo"),
-                    nebula_action::metadata_name!("EchoNode"),
-                    "W-S3e downstream echo stub",
-                ),
-                EchoNode,
-            )
+            .register_stateless_instance(EchoNode)
             .expect("valid test catalog definition");
 
         let exact = qualified_runtime::QualifiedRuntime::new(&registry);

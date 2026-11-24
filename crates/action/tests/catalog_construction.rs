@@ -1,10 +1,11 @@
 //! Recorded action metadata is the only deserializable catalog representation.
 
-use std::sync::OnceLock;
+use std::{cell::RefCell, sync::OnceLock};
 
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionFactory, ActionMetadataDraft, ActionResult,
-    InstanceFactory, MetadataVersion, RecordedActionMetadata, StatelessAction, metadata_name,
+    Action, ActionContext, ActionError, ActionFactory, ActionMetadata,
+    ActionMetadataAdmissionError, ActionResult, InstanceFactory, MetadataVersion,
+    RecordedActionDefinition, StatelessAction, metadata_name,
 };
 use nebula_core::{Dependencies, action_key};
 use nebula_metadata::{
@@ -17,12 +18,12 @@ use serde_json::Value;
 struct CatalogAction;
 
 impl Action for CatalogAction {
+    const KEY: &'static str = "catalog.action";
     type Input = Value;
     type Output = Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            action_key!("catalog.action"),
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
             metadata_name!("Catalog action"),
             "Catalog admission fixture",
         )
@@ -44,26 +45,71 @@ impl StatelessAction for CatalogAction {
     }
 }
 
+thread_local! {
+    static METADATA: RefCell<Option<ActionMetadata>> = const { RefCell::new(None) };
+}
+
+/// `A` admitted with metadata a test installs.
+///
+/// Admission reads a type's metadata from `Action::metadata` and nowhere else.
+/// These tests feed it computed or invalid metadata, so this wrapper's
+/// `metadata()` returns what [`admit`] installed; the key stays `A::KEY`.
+struct WithMetadata<A>(A);
+
+impl<A: Action> Action for WithMetadata<A> {
+    const KEY: &'static str = A::KEY;
+    type Input = A::Input;
+    type Output = A::Output;
+
+    fn metadata() -> ActionMetadata {
+        METADATA
+            .with_borrow(Clone::clone)
+            .expect("a test installs metadata before admission")
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        A::dependencies()
+    }
+}
+
+impl<A: StatelessAction> StatelessAction for WithMetadata<A> {
+    fn execute(
+        &self,
+        input: A::Input,
+        ctx: &(impl ActionContext + ?Sized),
+    ) -> impl Future<Output = Result<ActionResult<A::Output>, ActionError>> + Send {
+        self.0.execute(input, ctx)
+    }
+}
+
+fn admit<A: StatelessAction>(
+    action: A,
+    metadata: ActionMetadata,
+) -> Result<InstanceFactory<WithMetadata<A>>, ActionMetadataAdmissionError> {
+    METADATA.set(Some(metadata));
+    let factory = InstanceFactory::new(WithMetadata(action));
+    METADATA.set(None);
+    factory
+}
+
 #[test]
 fn recorded_metadata_readmits_only_against_factory_admission() {
-    let factory = InstanceFactory::new(CatalogAction::metadata(), CatalogAction)
-        .expect("valid action contract");
-    let encoded = serde_json::to_value(factory.metadata()).expect("admitted metadata serializes");
-    let recorded: RecordedActionMetadata =
+    let factory = InstanceFactory::new(CatalogAction).expect("valid action contract");
+    let encoded = serde_json::to_value(factory.definition()).expect("admitted metadata serializes");
+    let recorded: RecordedActionDefinition =
         serde_json::from_value(encoded).expect("recorded evidence deserializes");
 
     let readmitted = recorded
-        .readmit_against(factory.metadata())
+        .readmit_against(factory.definition())
         .expect("exact factory definition readmits recorded evidence");
 
-    assert_eq!(readmitted, **factory.metadata());
+    assert_eq!(readmitted, **factory.definition());
 }
 
 #[test]
 fn historical_checkpoint_tags_preserve_wire_order_and_require_fresh_evidence() {
-    let factory = InstanceFactory::new(CatalogAction::metadata(), CatalogAction)
-        .expect("valid action contract");
-    let admitted = factory.metadata();
+    let factory = InstanceFactory::new(CatalogAction).expect("valid action contract");
+    let admitted = factory.definition();
     let fresh_wire = serde_json::to_string(admitted).expect("admitted metadata serializes");
     for policy in ["inherit", "one_pass", "stepwise", "forced_handoff"] {
         let historical_wire = format!(
@@ -74,7 +120,7 @@ fn historical_checkpoint_tags_preserve_wire_order_and_require_fresh_evidence() {
             serde_json::to_string(admitted.effect_contract()).unwrap(),
             serde_json::to_string(admitted.output_schema()).unwrap(),
         );
-        let recorded = RecordedActionMetadata::from_slice(
+        let recorded = RecordedActionDefinition::from_slice(
             historical_wire.as_bytes(),
             MetadataDecodeLimits::default(),
         )
@@ -94,15 +140,15 @@ fn historical_checkpoint_tags_preserve_wire_order_and_require_fresh_evidence() {
 
 #[test]
 fn recorded_metadata_rejects_blank_wire_names() {
-    let factory = InstanceFactory::new(CatalogAction::metadata(), CatalogAction)
-        .expect("valid action contract");
-    let admitted = serde_json::to_value(factory.metadata()).expect("admitted metadata serializes");
+    let factory = InstanceFactory::new(CatalogAction).expect("valid action contract");
+    let admitted =
+        serde_json::to_value(factory.definition()).expect("admitted metadata serializes");
 
     for blank_name in ["", " \t", "\u{3000}"] {
         let mut wire = admitted.clone();
         wire["base"]["name"] = blank_name.into();
         assert!(
-            serde_json::from_value::<RecordedActionMetadata>(wire).is_err(),
+            serde_json::from_value::<RecordedActionDefinition>(wire).is_err(),
             "recorded metadata accepted blank name {blank_name:?}"
         );
     }
@@ -116,11 +162,7 @@ fn invalid_shared_catalog_fields_never_produce_a_factory() {
             MetadataError::BlankTag,
         ),
         (
-            ActionMetadataDraft::new(
-                action_key!("catalog.action"),
-                metadata_name!("Catalog action"),
-                "x".repeat(8193),
-            ),
+            ActionMetadata::new(metadata_name!("Catalog action"), "x".repeat(8193)),
             MetadataError::FieldTooLarge(MetadataField::Description),
         ),
         (
@@ -129,18 +171,17 @@ fn invalid_shared_catalog_fields_never_produce_a_factory() {
             MetadataError::FutureDeprecation,
         ),
         (
-            ActionMetadataDraft::try_new(action_key!("catalog.action"), "\"".repeat(20_000), "")
-                .expect("nonblank authored name"),
+            ActionMetadata::try_new("\"".repeat(20_000), "").expect("nonblank authored name"),
             MetadataError::SharedBudgetExceeded,
         ),
     ];
     for (draft, expected) in invalid {
         for _ in 0..2 {
-            let error = InstanceFactory::new(draft.clone(), CatalogAction)
+            let error = admit(CatalogAction, draft.clone())
                 .err()
                 .expect("invalid metadata must prevent factory construction");
             std::assert_matches!(error,
-                nebula_action::ActionMetadataAdmissionError::Schema(nebula_metadata::MetadataBuildError::Metadata(actual))
+                ActionMetadataAdmissionError::Schema(nebula_metadata::MetadataBuildError::Metadata(actual))
                 if actual == expected);
         }
     }
@@ -148,10 +189,9 @@ fn invalid_shared_catalog_fields_never_produce_a_factory() {
 
 #[test]
 fn same_semver_catalog_changes_and_leaf_extras_require_fresh_evidence() {
-    let original =
-        InstanceFactory::new(CatalogAction::metadata(), CatalogAction).expect("valid draft");
-    let recorded = RecordedActionMetadata::from_slice(
-        &serde_json::to_vec(original.metadata()).expect("serializable"),
+    let original = InstanceFactory::new(CatalogAction).expect("valid draft");
+    let recorded = RecordedActionDefinition::from_slice(
+        &serde_json::to_vec(original.definition()).expect("serializable"),
         MetadataDecodeLimits::default(),
     )
     .expect("default decoder accepts admitted wire");
@@ -169,22 +209,22 @@ fn same_semver_catalog_changes_and_leaf_extras_require_fresh_evidence() {
         CatalogAction::metadata()
             .with_max_concurrent(std::num::NonZeroU32::new(3).expect("positive")),
     ] {
-        let changed = InstanceFactory::new(draft, CatalogAction).expect("valid changed definition");
+        let changed = admit(CatalogAction, draft).expect("valid changed definition");
         assert_eq!(
-            original.metadata().base().version(),
-            changed.metadata().base().version()
+            original.definition().base().version(),
+            changed.definition().base().version()
         );
-        assert!(recorded.readmit_against(changed.metadata()).is_err());
-        let current = RecordedActionMetadata::from_slice(
-            &serde_json::to_vec(changed.metadata()).expect("serializable"),
+        assert!(recorded.readmit_against(changed.definition()).is_err());
+        let current = RecordedActionDefinition::from_slice(
+            &serde_json::to_vec(changed.definition()).expect("serializable"),
             MetadataDecodeLimits::default(),
         )
         .expect("default decoder accepts changed admitted wire");
         assert_eq!(
             current
-                .readmit_against(changed.metadata())
+                .readmit_against(changed.definition())
                 .expect("exact evidence"),
-            **changed.metadata()
+            **changed.definition()
         );
     }
 }
@@ -192,9 +232,8 @@ fn same_semver_catalog_changes_and_leaf_extras_require_fresh_evidence() {
 #[test]
 fn recorded_leaf_rejects_legacy_and_redacts_unknown_keys_and_wrong_types() {
     const CANARY: &str = "PRIVATE_ACTION_WIRE_CANARY";
-    let factory =
-        InstanceFactory::new(CatalogAction::metadata(), CatalogAction).expect("valid draft");
-    let wire = serde_json::to_value(factory.metadata()).expect("serializable");
+    let factory = InstanceFactory::new(CatalogAction).expect("valid draft");
+    let wire = serde_json::to_value(factory.definition()).expect("serializable");
     assert_eq!(wire["base"]["metadata_wire_version"], 2);
     let mut unknown = wire.clone();
     unknown[CANARY] = Value::String(CANARY.into());
@@ -239,30 +278,30 @@ fn recorded_leaf_rejects_legacy_and_redacts_unknown_keys_and_wrong_types() {
     ] {
         let bytes = serde_json::to_vec(&rejected).expect("serializable");
         let error =
-            serde_json::from_slice::<RecordedActionMetadata>(&bytes).expect_err("invalid leaf");
+            serde_json::from_slice::<RecordedActionDefinition>(&bytes).expect_err("invalid leaf");
         assert!(!format!("{error:?} {error}").contains(CANARY));
         assert_eq!(
-            RecordedActionMetadata::from_slice(&bytes, MetadataDecodeLimits::default()),
+            RecordedActionDefinition::from_slice(&bytes, MetadataDecodeLimits::default()),
             Err(MetadataDecodeError::InvalidRecord)
         );
     }
     let bytes = serde_json::to_vec(&wire).expect("serializable");
     let exact = MetadataDecodeLimits::new(bytes.len()).expect("within ceiling");
     let shorter = MetadataDecodeLimits::new(bytes.len() - 1).expect("positive lower limit");
-    let recorded =
-        RecordedActionMetadata::from_reader(bytes.as_slice(), exact).expect("exact limit accepts");
+    let recorded = RecordedActionDefinition::from_reader(bytes.as_slice(), exact)
+        .expect("exact limit accepts");
     assert_eq!(
         recorded
-            .readmit_against(factory.metadata())
+            .readmit_against(factory.definition())
             .expect("fresh evidence"),
-        **factory.metadata()
+        **factory.definition()
     );
     assert_eq!(
-        RecordedActionMetadata::from_slice(&bytes, shorter),
+        RecordedActionDefinition::from_slice(&bytes, shorter),
         Err(MetadataDecodeError::EnvelopeTooLarge)
     );
     assert_eq!(
-        RecordedActionMetadata::from_reader(bytes.as_slice(), shorter),
+        RecordedActionDefinition::from_reader(bytes.as_slice(), shorter),
         Err(MetadataDecodeError::EnvelopeTooLarge)
     );
 }
@@ -276,16 +315,14 @@ fn hidden_version_literal_is_checked_and_the_last_setter_wins() {
             .with_version(MetadataVersion::new(2, 0, 0))
             .with_version_literal(CANARY),
     ] {
-        let error = InstanceFactory::new(invalid, CatalogAction)
+        let error = admit(CatalogAction, invalid)
             .err()
             .expect("invalid literal cannot admit");
         std::assert_matches!(
             error,
-            nebula_action::ActionMetadataAdmissionError::Schema(
-                nebula_metadata::MetadataBuildError::Metadata(MetadataError::InvalidVersion(
-                    MetadataField::Version
-                ))
-            )
+            ActionMetadataAdmissionError::Schema(nebula_metadata::MetadataBuildError::Metadata(
+                MetadataError::InvalidVersion(MetadataField::Version)
+            ))
         );
         assert!(!format!("{error:?} {error}").contains(CANARY));
     }
@@ -298,9 +335,8 @@ fn hidden_version_literal_is_checked_and_the_last_setter_wins() {
             .with_version(MetadataVersion::new(3, 0, 0))
             .with_version_literal("2.5.0-rc.7+build.009"),
     ] {
-        let factory = InstanceFactory::new(draft, CatalogAction)
-            .expect("last valid setter replaces old intent");
-        assert_eq!(factory.metadata().base().version(), &version);
+        let factory = admit(CatalogAction, draft).expect("last valid setter replaces old intent");
+        assert_eq!(factory.definition().base().version(), &version);
     }
 }
 
@@ -320,25 +356,21 @@ fn draft_shared_authoring_surface_survives_factory_admission() {
             .parse()
             .expect("valid documentation link"),
     );
-    let draft = ActionMetadataDraft::try_new(
-        action_key!("catalog.action"),
-        "Catalog action",
-        "Catalog admission fixture",
-    )
-    .expect("dynamic name is valid")
-    .with_version(version.clone())
-    .with_icon(Icon::None)
-    .with_inline_icon("catalog-action")
-    .with_documentation_url("https://example.test/actions/catalog")
-    .with_categories([category.clone()])
-    .add_link(link.clone())
-    .with_tags(["actions"])
-    .add_tag("catalog")
-    .mark_experimental()
-    .mark_beta();
+    let draft = ActionMetadata::try_new("Catalog action", "Catalog admission fixture")
+        .expect("dynamic name is valid")
+        .with_version(version.clone())
+        .with_icon(Icon::None)
+        .with_inline_icon("catalog-action")
+        .with_documentation_url("https://example.test/actions/catalog")
+        .with_categories([category.clone()])
+        .add_link(link.clone())
+        .with_tags(["actions"])
+        .add_tag("catalog")
+        .mark_experimental()
+        .mark_beta();
 
-    let factory = InstanceFactory::new(draft, CatalogAction).expect("valid action contract");
-    let base = factory.metadata().base();
+    let factory = admit(CatalogAction, draft).expect("valid action contract");
+    let base = factory.definition().base();
 
     assert_eq!(base.key(), &action_key!("catalog.action"));
     assert_eq!(base.name(), "Catalog action");
@@ -376,9 +408,10 @@ impl nebula_schema::HasSchema for LargeRecord {
 struct LargeCatalogAction;
 
 impl Action for LargeCatalogAction {
+    const KEY: &'static str = "catalog.action";
     type Input = LargeRecord;
     type Output = LargeRecord;
-    fn metadata() -> ActionMetadataDraft {
+    fn metadata() -> ActionMetadata {
         CatalogAction::metadata().with_inline_icon("")
     }
     fn dependencies() -> &'static Dependencies {
@@ -398,9 +431,9 @@ impl StatelessAction for LargeCatalogAction {
 
 #[test]
 fn whole_canonical_leaf_budget_includes_both_schemas_and_leaf_overhead() {
-    let baseline = InstanceFactory::new(LargeCatalogAction::metadata(), LargeCatalogAction)
-        .expect("two near-limit schemas fit together");
-    let baseline_size = serde_json::to_vec(baseline.metadata())
+    let baseline =
+        InstanceFactory::new(LargeCatalogAction).expect("two near-limit schemas fit together");
+    let baseline_size = serde_json::to_vec(baseline.definition())
         .expect("serializable")
         .len();
     let available = nebula_metadata::MAX_METADATA_JSON_BYTES
@@ -410,45 +443,45 @@ fn whole_canonical_leaf_budget_includes_both_schemas_and_leaf_overhead() {
         available < nebula_metadata::MAX_SHARED_METADATA_BYTES / 2,
         "schemas dominate the whole-record budget"
     );
-    let exact = InstanceFactory::new(
-        LargeCatalogAction::metadata().with_inline_icon("x".repeat(available)),
+    let exact = admit(
         LargeCatalogAction,
+        LargeCatalogAction::metadata().with_inline_icon("x".repeat(available)),
     )
     .expect("exact ceiling admits");
-    let bytes = serde_json::to_vec(exact.metadata()).expect("serializable");
+    let bytes = serde_json::to_vec(exact.definition()).expect("serializable");
     assert_eq!(bytes.len(), nebula_metadata::MAX_METADATA_JSON_BYTES);
-    let recorded = RecordedActionMetadata::from_slice(&bytes, MetadataDecodeLimits::default())
+    let recorded = RecordedActionDefinition::from_slice(&bytes, MetadataDecodeLimits::default())
         .expect("every admitted canonical record fits default ingress");
     assert_eq!(
         recorded
-            .readmit_against(exact.metadata())
+            .readmit_against(exact.definition())
             .expect("fresh evidence"),
-        **exact.metadata()
+        **exact.definition()
     );
     let mut oversized: Value = serde_json::from_slice(&bytes).expect("exact record is JSON");
     oversized["max_concurrent"] = Value::from(1);
     let oversized_bytes = serde_json::to_vec(&oversized).expect("oversized record serializes");
     assert!(oversized_bytes.len() > nebula_metadata::MAX_METADATA_JSON_BYTES);
     assert_eq!(
-        serde_json::from_value::<RecordedActionMetadata>(oversized)
+        serde_json::from_value::<RecordedActionDefinition>(oversized)
             .expect_err("structural serde also checks the canonical whole record")
             .to_string(),
         MetadataError::RecordTooLarge.to_string()
     );
     assert_eq!(
-        RecordedActionMetadata::from_slice(&oversized_bytes, MetadataDecodeLimits::default()),
+        RecordedActionDefinition::from_slice(&oversized_bytes, MetadataDecodeLimits::default()),
         Err(MetadataDecodeError::EnvelopeTooLarge)
     );
-    let error = InstanceFactory::new(
-        LargeCatalogAction::metadata().with_inline_icon("x".repeat(available + 1)),
+    let error = admit(
         LargeCatalogAction,
+        LargeCatalogAction::metadata().with_inline_icon("x".repeat(available + 1)),
     )
     .err()
     .expect("one byte beyond the canonical record ceiling cannot publish a factory");
     std::assert_matches!(
         error,
-        nebula_action::ActionMetadataAdmissionError::Schema(
-            nebula_metadata::MetadataBuildError::Metadata(MetadataError::RecordTooLarge)
-        )
+        ActionMetadataAdmissionError::Schema(nebula_metadata::MetadataBuildError::Metadata(
+            MetadataError::RecordTooLarge
+        ))
     );
 }

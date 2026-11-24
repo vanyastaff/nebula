@@ -2,29 +2,47 @@ use nebula_action::result::WaitCondition;
 
 use super::*;
 
+nebula_action::stateless_entry!(
+    /// The snapshot action under the same key with a drifted version.
+    SnapshotVersionDrift(SnapshotHandler) = "exact.run",
+    SnapshotHandler::metadata().with_version(semver::Version::new(99, 0, 0)),
+);
+
+nebula_action::stateless_entry!(
+    /// The snapshot action under the same key with a drifted effect contract.
+    SnapshotEffectDrift(SnapshotHandler) = "exact.run",
+    SnapshotHandler::metadata().with_effect_contract(
+        nebula_action::effect::ActionEffectContract::Journaled(nebula_action::JournalProtocol::V1),
+    ),
+);
+
+nebula_action::stateless_entry!(
+    /// The echo action under the core key, described as checkpoint tests read it.
+    CheckpointEcho(EchoHandler) = "core.echo",
+    pure_metadata(nebula_action::metadata_name!("Echo"), "echo"),
+);
+
 #[tokio::test]
 async fn exact_turn_rejects_factory_effect_or_version_drift_before_instantiation() {
     for change_version in [false, true] {
         let original_runtime_registry = Arc::new(ActionRegistry::new());
-        let metadata = SnapshotHandler::metadata()
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly);
         let (frozen, executions) =
             snapshot_registry_counted(&original_runtime_registry, "must-not-run");
         let stores = TestStores::new();
         let (id, _) = install_snapshot_execution(&stores, &frozen).await;
         let before = stores.get_state(id).await.unwrap();
 
-        let changed_draft = if change_version {
-            metadata.with_version(semver::Version::new(99, 0, 0))
+        let changed_runtime_registry = Arc::new(ActionRegistry::new());
+        let changed = if change_version {
+            changed_runtime_registry.register_stateless_instance(SnapshotVersionDrift(
+                SnapshotHandler::new("must-not-run"),
+            ))
         } else {
-            metadata.with_effect_contract(nebula_action::effect::ActionEffectContract::Journaled(
-                nebula_action::JournalProtocol::V1,
+            changed_runtime_registry.register_stateless_instance(SnapshotEffectDrift(
+                SnapshotHandler::new("must-not-run"),
             ))
         };
-        let changed_runtime_registry = Arc::new(ActionRegistry::new());
-        changed_runtime_registry
-            .register_stateless_instance(changed_draft, SnapshotHandler::new("must-not-run"))
-            .expect("changed test definition is structurally valid");
+        changed.expect("changed test definition is structurally valid");
         let changed_frozen = frozen_registered_snapshot(&changed_runtime_registry);
         let (engine, _) = make_engine(changed_runtime_registry);
         let engine = stores.attach(engine).with_plan_flavor_runtime(
@@ -252,14 +270,7 @@ fn checkpoint_requires_supported_format_and_terminal_evidence() {
 async fn resume_does_not_activate_an_all_dead_join() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echo",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(CheckpointEcho(EchoHandler))
         .expect("valid test catalog definition");
     let stores = TestStores::new();
     let (engine, _) = make_engine(registry);
@@ -299,14 +310,7 @@ async fn resume_does_not_activate_an_all_dead_join() {
 async fn resume_counts_distinct_ports_from_same_source_once_each() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echo",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(CheckpointEcho(EchoHandler))
         .expect("valid test catalog definition");
     let stores = TestStores::new();
     let (engine, _) = make_engine(registry);
@@ -524,14 +528,7 @@ async fn linear_run_snapshot_carries_each_node_output_once() {
     const PAYLOAD_BYTES: usize = 4096;
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("core.echo"),
-                nebula_action::metadata_name!("Echo"),
-                "echoes input",
-            ),
-            EchoHandler,
-        )
+        .register_stateless_instance(CoreEchoEntry(EchoHandler))
         .unwrap();
     let keys: Vec<NodeKey> = (0..NODES)
         .map(|index| NodeKey::new(format!("n{index:03}")).unwrap())

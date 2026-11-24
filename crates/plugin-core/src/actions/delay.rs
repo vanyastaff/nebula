@@ -51,7 +51,6 @@ use std::time::Duration as StdDuration;
 use nebula_action::{
     ActionContext, ActionError, ActionOutput, ActionResult, StatelessAction, result::WaitCondition,
 };
-use nebula_core::action_key;
 use nebula_schema::{
     HasSchema, Predicate, Property, Rule, Schema, ValidSchema, ValidationReport, ValuePath,
     field_key,
@@ -230,12 +229,12 @@ fn parse_until_utc(s: &str) -> Result<chrono::DateTime<chrono::Utc>, ActionError
 pub struct CoreDelay;
 
 impl nebula_action::action::Action for CoreDelay {
+    const KEY: &'static str = "core.delay";
     type Input = DelayInput;
     type Output = Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("core.delay"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Delay"),
             "Parks the execution for a fixed duration or until a timestamp, then resumes",
         )

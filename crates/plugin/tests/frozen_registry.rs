@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionFactory, ActionMetadataDraft, ActionResult,
+    Action, ActionContext, ActionError, ActionFactory, ActionMetadata, ActionResult,
     InstanceFactory, StatelessAction,
 };
 use nebula_core::{
@@ -89,33 +89,47 @@ fn resource_factory(key: &str) -> Arc<dyn ResourceFactory> {
     }
 }
 
-fn action_factory(key: &str) -> Arc<dyn ActionFactory> {
+/// One fixture action type per key: a key is its type's `KEY`.
+fn action_factory_at<const INDEX: usize>() -> Arc<dyn ActionFactory> {
     Arc::new(
-        InstanceFactory::new(
-            ActionMetadataDraft::new(
-                ActionKey::new(key).expect("test action key must be valid"),
-                nebula_action::MetadataName::try_from(key).expect("fixture display name"),
-                "test action",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            MetadataAction,
-        )
-        .expect("test action metadata admits through its structural factory"),
+        InstanceFactory::new(MetadataAction::<INDEX>)
+            .expect("test action metadata admits through its structural factory"),
     )
 }
 
-struct MetadataAction;
+fn action_factory(key: &str) -> Arc<dyn ActionFactory> {
+    match key {
+        "alpha.run" => action_factory_at::<0>(),
+        "alpha.execute" => action_factory_at::<1>(),
+        "alpha.internal_action" => action_factory_at::<2>(),
+        "acme.storage.run" => action_factory_at::<3>(),
+        "acme.storage.copy" => action_factory_at::<4>(),
+        "acme.storage.move" => action_factory_at::<5>(),
+        _ => panic!("action factory fixture key `{key}` is not declared"),
+    }
+}
 
-impl Action for MetadataAction {
+struct MetadataAction<const INDEX: usize>;
+
+impl<const INDEX: usize> Action for MetadataAction<INDEX> {
+    const KEY: &'static str = match INDEX {
+        0 => "alpha.run",
+        1 => "alpha.execute",
+        2 => "alpha.internal_action",
+        3 => "acme.storage.run",
+        4 => "acme.storage.copy",
+        5 => "acme.storage.move",
+        _ => panic!("action metadata fixture index is not declared"),
+    };
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            nebula_core::action_key!("fixture.metadata"),
-            nebula_action::metadata_name!("Fixture metadata"),
-            "Plugin metadata fixture",
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            nebula_action::MetadataName::try_from(Self::KEY).expect("fixture display name"),
+            "test action",
         )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -124,7 +138,7 @@ impl Action for MetadataAction {
     }
 }
 
-impl StatelessAction for MetadataAction {
+impl<const INDEX: usize> StatelessAction for MetadataAction<INDEX> {
     async fn execute(
         &self,
         input: serde_json::Value,
@@ -140,13 +154,13 @@ static OBSERVED_ACTION_DEPENDENCY_READS: AtomicUsize = AtomicUsize::new(0);
 struct ObservedAction;
 
 impl Action for ObservedAction {
+    const KEY: &'static str = "alpha.run";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
+    fn metadata() -> ActionMetadata {
         OBSERVED_ACTION_METADATA_READS.fetch_add(1, Ordering::Relaxed);
-        ActionMetadataDraft::new(
-            nebula_core::action_key!("alpha.run"),
+        ActionMetadata::new(
             nebula_action::metadata_name!("Run"),
             "Observed action admission fixture",
         )
@@ -174,7 +188,7 @@ fn observed_action_factory() -> Arc<dyn ActionFactory> {
     OBSERVED_ACTION_METADATA_READS.store(0, Ordering::Relaxed);
     OBSERVED_ACTION_DEPENDENCY_READS.store(0, Ordering::Relaxed);
     Arc::new(
-        InstanceFactory::new(ObservedAction::metadata(), ObservedAction)
+        InstanceFactory::new(ObservedAction)
             .expect("observed action metadata admits through its structural factory"),
     )
 }
@@ -908,7 +922,7 @@ fn freeze_admits_overlapping_plugin_namespaces_with_distinct_keys() {
     let owner = |key: &str| {
         frozen
             .all_actions()
-            .map(|(plugin, action)| (plugin, action.metadata().base().key().to_string()))
+            .map(|(plugin, action)| (plugin, action.definition().base().key().to_string()))
             .chain(
                 frozen
                     .all_credentials()

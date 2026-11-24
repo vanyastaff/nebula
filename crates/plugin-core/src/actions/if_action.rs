@@ -85,7 +85,6 @@ use nebula_action::{
     port::{OutputPort, default_input_ports},
     port_key,
 };
-use nebula_core::action_key;
 use nebula_schema::{HasSchema, Schema, ValidSchema, ValidationReport, field_key};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -161,12 +160,12 @@ impl HasSchema for IfInput {
 pub struct CoreIf;
 
 impl nebula_action::action::Action for CoreIf {
+    const KEY: &'static str = "core.if";
     type Input = IfInput;
     type Output = Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("core.if"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("If"),
             "Routes execution to 'true' or 'false' port based on a field condition",
         )

@@ -23,7 +23,7 @@ use crate::{
     error::ActionError,
     handle::StatelessHandle,
     input::{ActionInputContract, PreparedActionInput},
-    metadata::ActionMetadata,
+    metadata::ActionDefinition,
     result::ActionResult,
 };
 
@@ -73,7 +73,7 @@ pub trait StatelessAction: Action {
 /// strongly-typed Rust.
 pub struct StatelessActionAdapter<A> {
     action: A,
-    meta: Arc<ActionMetadata>,
+    meta: Arc<ActionDefinition>,
     input_contract: ActionInputContract,
 }
 
@@ -111,7 +111,7 @@ impl<A> StatelessHandle for StatelessActionAdapter<A>
 where
     A: StatelessAction + Send + Sync + 'static,
 {
-    fn metadata(&self) -> &Arc<ActionMetadata> {
+    fn definition(&self) -> &Arc<ActionDefinition> {
         &self.meta
     }
 
@@ -200,15 +200,12 @@ mod tests {
     struct AddAction;
 
     impl Action for AddAction {
+        const KEY: &'static str = "math.add";
         type Input = AddInput;
         type Output = AddOutput;
 
-        fn metadata() -> crate::ActionMetadataDraft {
-            crate::ActionMetadataDraft::new(
-                nebula_core::action_key!("math.add"),
-                crate::metadata_name!("Add"),
-                "Adds two numbers",
-            )
+        fn metadata() -> crate::ActionMetadata {
+            crate::ActionMetadata::new(crate::metadata_name!("Add"), "Adds two numbers")
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -263,7 +260,7 @@ mod tests {
         let adapter =
             StatelessActionAdapter::new(AddAction).expect("valid test catalog definition");
         assert_eq!(
-            adapter.metadata().base().key().clone(),
+            adapter.definition().base().key().clone(),
             nebula_core::action_key!("math.add")
         );
     }
@@ -299,7 +296,7 @@ mod tests {
     fn stateless_adapter_into_inner_returns_action() {
         let adapter =
             StatelessActionAdapter::new(AddAction).expect("valid test catalog definition");
-        let key = adapter.metadata().base().key().clone();
+        let key = adapter.definition().base().key().clone();
         let _action = adapter.into_inner();
         assert_eq!(key, nebula_core::action_key!("math.add"));
     }

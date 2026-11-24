@@ -243,7 +243,7 @@ fn action_key_is_core_switch() {
     let factory = nebula_action::GenericControlFactory::<CoreSwitch>::new()
         .expect("switch metadata must admit");
     assert_eq!(
-        ActionFactory::metadata(&factory).base().key().as_str(),
+        ActionFactory::definition(&factory).base().key().as_str(),
         "core.switch"
     );
 }
@@ -252,7 +252,7 @@ fn action_key_is_core_switch() {
 fn metadata_has_one_dynamic_output_port_with_source_field_cases() {
     let factory = nebula_action::GenericControlFactory::<CoreSwitch>::new()
         .expect("switch metadata must admit");
-    let metadata = ActionFactory::metadata(&factory);
+    let metadata = ActionFactory::definition(&factory);
     assert_eq!(
         metadata.outputs().len(),
         1,
@@ -283,7 +283,7 @@ fn action_kind_is_control_after_factory_stamp() {
     use nebula_action::factory::GenericControlFactory;
     let factory = GenericControlFactory::<CoreSwitch>::new().expect("switch metadata must admit");
     assert_eq!(
-        factory.metadata().kind(),
+        factory.definition().kind(),
         nebula_action::metadata::ActionKind::Control,
         "GenericControlFactory must stamp ActionKind::Control on CoreSwitch"
     );

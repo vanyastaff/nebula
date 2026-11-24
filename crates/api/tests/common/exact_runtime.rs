@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use nebula_action::{Action, ActionMetadataDraft, ActionResult, InstanceFactory, StatelessAction};
+use nebula_action::{Action, ActionMetadata, ActionResult, InstanceFactory, StatelessAction};
 use nebula_engine::{
     PlanFlavorRevisionInstaller, PlanFlavorRevisionLoader, WorkflowActivationService,
     WorkflowStartService, WorkflowStores,
@@ -15,16 +15,13 @@ use nebula_storage_port::store::WorkflowVersionStore;
 struct Echo;
 
 impl Action for Echo {
+    const KEY: &'static str = "core.echo";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            nebula_core::action_key!("core.echo"),
-            nebula_action::metadata_name!("Echo"),
-            "HTTP fixture echo",
-        )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(nebula_action::metadata_name!("Echo"), "HTTP fixture echo")
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static nebula_core::Dependencies {
@@ -57,17 +54,11 @@ impl Plugin for FixturePlugin {
 
     fn actions(&self) -> Vec<Arc<dyn nebula_action::ActionFactory>> {
         vec![
+            Arc::new(InstanceFactory::new(Echo).expect("valid test catalog definition")),
             Arc::new(
-                InstanceFactory::new(Echo::metadata(), Echo)
-                    .expect("valid test catalog definition"),
-            ),
-            Arc::new(
-                InstanceFactory::new(
-                    super::engine_seam::SlowAction::metadata(),
-                    super::engine_seam::SlowAction {
-                        started: Arc::clone(&self.slow_started),
-                    },
-                )
+                InstanceFactory::new(super::engine_seam::SlowAction {
+                    started: Arc::clone(&self.slow_started),
+                })
                 .expect("valid test catalog definition"),
             ),
         ]
@@ -155,7 +146,7 @@ pub(super) fn catalog() -> (
 ) {
     let actions = nebula_engine::ActionRegistry::new();
     actions.register_factory(Arc::new(
-        InstanceFactory::new(Echo::metadata(), Echo).expect("valid test catalog definition"),
+        InstanceFactory::new(Echo).expect("valid test catalog definition"),
     ));
     let mut plugins = PluginRegistry::new();
     plugins

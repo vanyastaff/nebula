@@ -62,11 +62,12 @@ use crate::{action::Action, context::ActionContext, error::ActionError};
 /// struct SumStream;
 ///
 /// impl Action for SumStream {
+///     const KEY: &'static str = "demo.sum_stream";
 ///     type Input  = serde_json::Value;
 ///     type Output = u64;
 ///
-///     fn metadata() -> nebula_action::ActionMetadataDraft {
-///         nebula_action::ActionMetadataDraft::new(action_key!("demo.sum_stream"), nebula_action::metadata_name!("SumStream"), "Sums a chunk stream")
+///     fn metadata() -> nebula_action::ActionMetadata {
+///         nebula_action::ActionMetadata::new(nebula_action::metadata_name!("SumStream"), "Sums a chunk stream")
 ///     }
 ///     fn dependencies() -> &'static Dependencies {
 ///         static D: OnceLock<Dependencies> = OnceLock::new();

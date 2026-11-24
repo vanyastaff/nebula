@@ -12,7 +12,7 @@ use std::{any::Any, fmt, future::Future};
 use serde_json::Value;
 
 use crate::{
-    action::Action, context::ActionContext, error::ActionError, metadata::ActionMetadata,
+    action::Action, context::ActionContext, error::ActionError, metadata::ActionDefinition,
     resource_produces::ResourceProduces,
 };
 
@@ -73,7 +73,7 @@ pub trait ResourceAction: Action<Output = ResourceProduces<Self::Resource>> {
 #[async_trait::async_trait]
 pub trait ResourceHandler: crate::handle::sealed::Resource + Send + Sync + 'static {
     /// Action metadata (key, version, capabilities).
-    fn metadata(&self) -> &ActionMetadata;
+    fn definition(&self) -> &ActionDefinition;
 
     /// Build the resource for this scope.
     ///
@@ -118,12 +118,13 @@ pub trait ResourceHandler: crate::handle::sealed::Resource + Send + Sync + 'stat
 /// struct StringPool;
 ///
 /// impl Action for StringPool {
+///     const KEY: &'static str = "demo.string_pool";
 ///     type Input = serde_json::Value;
 ///     // ResourceAction constrains `Output` to `ResourceProduces<Self::Resource>`.
 ///     type Output = ResourceProduces<String>;
 ///
-///     fn metadata() -> nebula_action::ActionMetadataDraft {
-///         nebula_action::ActionMetadataDraft::new(action_key!("demo.string_pool"), nebula_action::metadata_name!("StringPool"), "A pooled String")
+///     fn metadata() -> nebula_action::ActionMetadata {
+///         nebula_action::ActionMetadata::new(nebula_action::metadata_name!("StringPool"), "A pooled String")
 ///     }
 ///     fn dependencies() -> &'static Dependencies {
 ///         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -152,11 +153,11 @@ pub trait ResourceHandler: crate::handle::sealed::Resource + Send + Sync + 'stat
 ///
 /// // The typed action erases to a `dyn ResourceHandler` the engine can store.
 /// let handler: Arc<dyn ResourceHandler> = Arc::new(ResourceActionAdapter::new(StringPool).expect("valid metadata"));
-/// assert_eq!(handler.metadata().base().key(), &action_key!("demo.string_pool"));
+/// assert_eq!(handler.definition().base().key(), &action_key!("demo.string_pool"));
 /// ```
 pub struct ResourceActionAdapter<A> {
     action: A,
-    meta: ActionMetadata,
+    meta: ActionDefinition,
 }
 
 impl<A> crate::handle::sealed::Resource for ResourceActionAdapter<A> {}
@@ -187,7 +188,7 @@ impl<A> ResourceHandler for ResourceActionAdapter<A>
 where
     A: ResourceAction + Send + Sync + 'static,
 {
-    fn metadata(&self) -> &ActionMetadata {
+    fn definition(&self) -> &ActionDefinition {
         &self.meta
     }
 
@@ -263,14 +264,14 @@ mod tests {
     }
 
     impl Action for MockResourceAction {
+        const KEY: &'static str = "test.resource_action";
         type Input = Value;
         // ResourceAction requires Output = ResourceProduces<Self::Resource>.
         // MockResourceAction::Resource = String, so Output = ResourceProduces<String>.
         type Output = ResourceProduces<String>;
 
-        fn metadata() -> crate::ActionMetadataDraft {
-            crate::ActionMetadataDraft::new(
-                nebula_core::action_key!("test.resource_action"),
+        fn metadata() -> crate::ActionMetadata {
+            crate::ActionMetadata::new(
                 crate::metadata_name!("MockResource"),
                 "Creates a string pool",
             )
@@ -353,7 +354,7 @@ mod tests {
     fn resource_adapter_into_inner_returns_action() {
         let adapter = ResourceActionAdapter::new(MockResourceAction::new())
             .expect("valid test catalog definition");
-        let key = adapter.metadata().base().key().clone();
+        let key = adapter.definition().base().key().clone();
         let _action = adapter.into_inner();
         assert_eq!(key, nebula_core::action_key!("test.resource_action"));
     }

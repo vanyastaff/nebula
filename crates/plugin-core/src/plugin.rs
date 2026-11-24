@@ -138,7 +138,7 @@ mod tests {
             .action(&key)
             .expect("core.array must be registered");
         assert_eq!(
-            factory.metadata().kind(),
+            factory.definition().kind(),
             ActionKind::Stateless,
             "core.array must be stamped ActionKind::Stateless"
         );
@@ -207,12 +207,12 @@ mod tests {
             .action(&key)
             .expect("core.delay must be registered");
         assert_eq!(
-            factory.metadata().kind(),
+            factory.definition().kind(),
             ActionKind::Stateless,
             "core.delay must be stamped ActionKind::Stateless"
         );
         assert_eq!(
-            factory.metadata().base().schema().kind(),
+            factory.definition().base().schema().kind(),
             nebula_schema::SchemaKind::Record,
             "core.delay must expose its typed conditional input contract"
         );

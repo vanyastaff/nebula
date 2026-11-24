@@ -111,7 +111,7 @@ fn main() {
             .validate(nebula_sdk::params! { data; () }.unwrap())
             .is_err()
     );
-    let _: ActionMetadataDraft = ScalarAction::metadata();
+    let _: ActionMetadata = ScalarAction::metadata();
 
     ValidatedPayload {
         name: "valid".to_owned(),
@@ -126,7 +126,7 @@ fn main() {
     );
     assert!(schema.find_property(&field_key!("name")).is_some());
     let _: CredentialMetadata = ContractCredential::metadata();
-    let _: ActionMetadataDraft = <ContractAction as Action>::metadata();
+    let _: ActionMetadata = <ContractAction as Action>::metadata();
     let _ = ContractPlugin.manifest();
     let _ = ContractConfig { enabled: true }.fingerprint();
     let config = schema_of::<ContractConfig>().expect("named config declares its fields");

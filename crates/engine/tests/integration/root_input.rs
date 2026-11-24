@@ -9,10 +9,10 @@ use std::{
 };
 
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionMetadataDraft, ActionResult, ConnectionFilter,
-    InputPort, StatelessAction, SupportPort,
+    Action, ActionContext, ActionError, ActionMetadata, ActionResult, ConnectionFilter, InputPort,
+    StatelessAction, SupportPort,
 };
-use nebula_core::{Dependencies, action_key, node_key, port_key};
+use nebula_core::{Dependencies, node_key, port_key};
 use nebula_engine::{ActionRegistry, ExecutionResult};
 use nebula_execution::context::ExecutionBudget;
 use nebula_schema::HasSchema;
@@ -31,12 +31,12 @@ impl<T> Action for RootEcho<T>
 where
     T: HasSchema + DeserializeOwned + Serialize + Send + Sync + 'static,
 {
+    const KEY: &'static str = "test.root_echo";
     type Input = T;
     type Output = T;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            action_key!("test.root_echo"),
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
             nebula_action::metadata_name!("Root echo"),
             "Preserve root input data",
         )
@@ -79,19 +79,29 @@ struct RequiredExpressionInput {
     value: i64,
 }
 
+thread_local! {
+    /// Support port the [`SupportEcho`] under admission declares.
+    static SUPPORT_PORT: std::cell::RefCell<Option<SupportPort>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 struct SupportEcho;
 
 impl Action for SupportEcho {
+    const KEY: &'static str = "test.support_echo";
     type Input = ();
     type Output = Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            action_key!("test.support_echo"),
+    fn metadata() -> ActionMetadata {
+        let metadata = ActionMetadata::new(
             nebula_action::metadata_name!("Support echo"),
             "Return support input data",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly);
+        match SUPPORT_PORT.with(|port| port.borrow().clone()) {
+            Some(port) => metadata.add_input(InputPort::Support(port)),
+            None => metadata,
+        }
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -114,20 +124,14 @@ impl StatelessAction for SupportEcho {
 fn support_registry(port: SupportPort) -> Arc<ActionRegistry> {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            RootEcho::<Value>::metadata(),
-            RootEcho::<Value> {
-                calls: Arc::new(AtomicUsize::new(0)),
-                marker: PhantomData,
-            },
-        )
+        .register_stateless_instance(RootEcho::<Value> {
+            calls: Arc::new(AtomicUsize::new(0)),
+            marker: PhantomData,
+        })
         .unwrap();
-    registry
-        .register_stateless_instance(
-            SupportEcho::metadata().add_input(InputPort::Support(port)),
-            SupportEcho,
-        )
-        .unwrap();
+    SUPPORT_PORT.with(|installed| *installed.borrow_mut() = Some(port));
+    registry.register_stateless_instance(SupportEcho).unwrap();
+    SUPPORT_PORT.with(|installed| *installed.borrow_mut() = None);
     registry
 }
 
@@ -142,20 +146,17 @@ fn support_port(required: bool, multi: bool, filter: ConnectionFilter) -> Suppor
     }
 }
 
-pub(super) fn registry<T>(metadata: ActionMetadataDraft) -> (Arc<ActionRegistry>, Arc<AtomicUsize>)
+pub(super) fn registry<T>() -> (Arc<ActionRegistry>, Arc<AtomicUsize>)
 where
     T: HasSchema + DeserializeOwned + Serialize + Send + Sync + 'static,
 {
     let calls = Arc::new(AtomicUsize::new(0));
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            metadata,
-            RootEcho::<T> {
-                calls: Arc::clone(&calls),
-                marker: PhantomData,
-            },
-        )
+        .register_stateless_instance(RootEcho::<T> {
+            calls: Arc::clone(&calls),
+            marker: PhantomData,
+        })
         .unwrap();
     (registry, calls)
 }
@@ -164,7 +165,7 @@ async fn execute<T>(wire: Value, parameter: Option<Value>) -> (ExecutionResult, 
 where
     T: HasSchema + DeserializeOwned + Serialize + Send + Sync + 'static,
 {
-    let (registry, calls) = registry::<T>(RootEcho::<T>::metadata());
+    let (registry, calls) = registry::<T>();
     let (engine, _) = make_engine(registry);
     let mut node =
         NodeDefinition::new(node_key!("root"), "Root", "test", "test.root_echo").unwrap();
@@ -247,8 +248,7 @@ async fn integer_dispatch_uses_prepared_values_and_rejects_out_of_range_input() 
 
 #[tokio::test]
 async fn required_expression_parameter_reaches_typed_action() {
-    let (registry, calls) =
-        registry::<RequiredExpressionInput>(RootEcho::<RequiredExpressionInput>::metadata());
+    let (registry, calls) = registry::<RequiredExpressionInput>();
     let (engine, _) = make_engine(registry);
     let node = NodeDefinition::new(node_key!("root"), "Root", "test", "test.root_echo")
         .unwrap()
@@ -283,7 +283,7 @@ async fn named_parameters_cannot_be_discarded_for_scalar_roots() {
 
 #[tokio::test]
 async fn default_flow_connection_passes_the_whole_scalar_root() {
-    let (registry, calls) = registry::<String>(RootEcho::<String>::metadata());
+    let (registry, calls) = registry::<String>();
     let (engine, _) = make_engine(registry);
     let source = node_key!("source");
     let target = node_key!("target");
@@ -313,7 +313,7 @@ async fn default_flow_connection_passes_the_whole_scalar_root() {
 async fn named_flow_port_is_rejected_before_scalar_input_can_be_lost() {
     use nebula_error::Classify;
 
-    let (registry, calls) = registry::<String>(RootEcho::<String>::metadata());
+    let (registry, calls) = registry::<String>();
     let (engine, _) = make_engine(registry);
     let source = node_key!("source");
     let target = node_key!("target");

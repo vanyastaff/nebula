@@ -36,13 +36,13 @@ struct PoolAction {
 }
 
 impl Action for PoolAction {
+    const KEY: &'static str = "test.resource.pool";
     type Input = serde_json::Value;
     // ResourceAction requires Output = ResourceProduces<Self::Resource>.
     type Output = ResourceProduces<PoolHandle>;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            nebula_core::action_key!("test.resource.pool"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Pool"),
             "Typed pool resource",
         )

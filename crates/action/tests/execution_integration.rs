@@ -11,7 +11,7 @@ use nebula_action::{
     StatefulActionAdapter, StatefulHandle, StatelessAction, TriggerAction, TriggerSource,
     testing::TestContextBuilder,
 };
-use nebula_core::{Dependencies, action_key};
+use nebula_core::Dependencies;
 
 // ── TestSource — generic trigger source for test fixtures ───────────────────
 
@@ -31,12 +31,12 @@ fn empty_deps() -> &'static Dependencies {
 struct EchoAction;
 
 impl Action for EchoAction {
+    const KEY: &'static str = "test.echo";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("test.echo"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Echo"),
             "Echo input to output",
         )
@@ -86,12 +86,12 @@ impl nebula_schema::HasSchema for U32Out {
 struct CounterAction;
 
 impl Action for CounterAction {
+    const KEY: &'static str = "test.counter";
     type Input = ();
     type Output = U32Out;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("test.counter"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Counter"),
             "Count then break",
         )
@@ -172,12 +172,12 @@ async fn stateful_action_continue_then_break() {
 struct NoOpTrigger;
 
 impl Action for NoOpTrigger {
+    const KEY: &'static str = "test.noop_trigger";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("test.noop_trigger"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("NoOp Trigger"),
             "Start/stop no-op",
         )
@@ -236,12 +236,12 @@ struct MigratableState {
 struct MigratableAction;
 
 impl Action for MigratableAction {
+    const KEY: &'static str = "test.migratable";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("test.migratable"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Migratable"),
             "Migrates v1 state",
         )

@@ -10,7 +10,7 @@ use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
 use http::{HeaderName, Method, StatusCode};
-use nebula_core::{Dependencies, action_key};
+use nebula_core::Dependencies;
 use nebula_error::decode::value_free_decode_summary;
 use subtle::ConstantTimeEq;
 use tracing::debug;
@@ -101,12 +101,12 @@ impl GenericWebhookAction {
 }
 
 impl Action for GenericWebhookAction {
+    const KEY: &'static str = "nebula.webhook.generic";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> crate::ActionMetadataDraft {
-        crate::ActionMetadataDraft::new(
-            action_key!("nebula.webhook.generic"),
+    fn metadata() -> crate::ActionMetadata {
+        crate::ActionMetadata::new(
             crate::metadata_name!("Generic Webhook"),
             "Provider-agnostic HMAC-signed webhook trigger.",
         )

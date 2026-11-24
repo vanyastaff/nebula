@@ -189,3 +189,96 @@ macro_rules! assert_cancelled {
         }
     };
 }
+
+/// Declare another catalog entry that runs an existing stateless action.
+///
+/// An action's key and metadata belong to its type, so one type is one catalog
+/// entry. To register the same behavior under a second key, or with other
+/// ports or another version, declare a new type for that entry. This macro
+/// writes that type: a newtype over `$inner` with its own `KEY` and metadata,
+/// whose `execute` runs `$inner`'s. `Input`, `Output` and the dependencies are
+/// `$inner`'s.
+///
+/// The metadata is an expression evaluated in the generated `metadata()`, so
+/// it cannot refer to local variables.
+///
+/// # Examples
+///
+/// ```rust
+/// use std::sync::OnceLock;
+/// use nebula_action::{
+///     Action, ActionContext, ActionError, ActionMetadata, ActionResult, Dependencies,
+///     StatelessAction, metadata_name, stateless_entry,
+/// };
+///
+/// struct Echo;
+///
+/// impl Action for Echo {
+///     const KEY: &'static str = "demo.echo";
+///     type Input = serde_json::Value;
+///     type Output = serde_json::Value;
+///
+///     fn metadata() -> ActionMetadata {
+///         ActionMetadata::new(metadata_name!("Echo"), "Echoes its input")
+///     }
+///
+///     fn dependencies() -> &'static Dependencies {
+///         static D: OnceLock<Dependencies> = OnceLock::new();
+///         D.get_or_init(Dependencies::new)
+///     }
+/// }
+///
+/// impl StatelessAction for Echo {
+///     async fn execute(
+///         &self,
+///         input: serde_json::Value,
+///         _ctx: &(impl ActionContext + ?Sized),
+///     ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+///         Ok(ActionResult::success(input))
+///     }
+/// }
+///
+/// stateless_entry!(Mirror(Echo) = "demo.mirror", ActionMetadata::new(metadata_name!("Mirror"), ""));
+///
+/// assert_eq!(nebula_action::key_of::<Mirror>().as_str(), "demo.mirror");
+/// let _entry = Mirror(Echo);
+/// ```
+#[macro_export]
+macro_rules! stateless_entry {
+    (
+        $(#[$attr:meta])*
+        $vis:vis $name:ident($inner:ty) = $key:literal, $metadata:expr $(,)?
+    ) => {
+        $(#[$attr])*
+        $vis struct $name(pub $inner);
+
+        impl $crate::Action for $name {
+            const KEY: &'static str = $key;
+            type Input = <$inner as $crate::Action>::Input;
+            type Output = <$inner as $crate::Action>::Output;
+
+            fn metadata() -> $crate::ActionMetadata {
+                $metadata
+            }
+
+            fn dependencies() -> &'static $crate::Dependencies {
+                <$inner as $crate::Action>::dependencies()
+            }
+        }
+
+        impl $crate::StatelessAction for $name {
+            fn execute(
+                &self,
+                input: <Self as $crate::Action>::Input,
+                ctx: &(impl $crate::ActionContext + ?Sized),
+            ) -> impl ::core::future::Future<
+                Output = ::core::result::Result<
+                    $crate::ActionResult<<Self as $crate::Action>::Output>,
+                    $crate::ActionError,
+                >,
+            > + Send {
+                <$inner as $crate::StatelessAction>::execute(&self.0, input, ctx)
+            }
+        }
+    };
+}

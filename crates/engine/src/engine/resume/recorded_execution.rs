@@ -121,7 +121,7 @@ impl WorkflowEngine {
                     .registry()
                     .resolve_action(&node.action_key)
                     .ok_or(EngineError::ExactFactoryUnavailable)?;
-                let metadata = factory.metadata();
+                let metadata = factory.definition();
                 if node.interface_version.as_ref() != Some(metadata.base().version()) {
                     return Err(EngineError::ExactFactoryUnavailable);
                 }

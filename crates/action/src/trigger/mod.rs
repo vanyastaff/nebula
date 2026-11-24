@@ -44,7 +44,7 @@ use serde_json::Value;
 pub use source::TriggerSource;
 
 use crate::{
-    action::Action, context::TriggerContext, error::ActionError, metadata::ActionMetadata,
+    action::Action, context::TriggerContext, error::ActionError, metadata::ActionDefinition,
 };
 
 // ── Core trait ──────────────────────────────────────────────────────────────
@@ -142,17 +142,18 @@ pub trait TriggerAction: Action {
     /// ```rust
     /// # use std::sync::OnceLock;
     /// use nebula_action::trigger::{TriggerAction, TriggerEventOutcome, TriggerSource};
-    /// use nebula_action::{Action, ActionError, ActionMetadata, TriggerContext};
+    /// use nebula_action::{Action, ActionError, ActionDefinition, TriggerContext};
     /// # use nebula_core::{Dependencies, action_key};
     ///
     /// struct CronTrigger;
     /// # struct CronSource;
     /// # impl TriggerSource for CronSource { type Event = serde_json::Value; }
     /// # impl Action for CronTrigger {
+    /// const KEY: &'static str = "example.cron";
     /// #     type Input = serde_json::Value;
     /// #     type Output = serde_json::Value;
-    /// #     fn metadata() -> nebula_action::ActionMetadataDraft {
-    /// #         nebula_action::ActionMetadataDraft::new(action_key!("example.cron"), nebula_action::metadata_name!("Cron"), "Schedule-driven")
+    /// #     fn metadata() -> nebula_action::ActionMetadata {
+    /// #         nebula_action::ActionMetadata::new(nebula_action::metadata_name!("Cron"), "Schedule-driven")
     /// #     }
     /// #     fn dependencies() -> &'static Dependencies {
     /// #         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -395,7 +396,7 @@ impl TriggerEventOutcome {
 #[async_trait::async_trait]
 pub trait TriggerHandler: crate::handle::sealed::Trigger + Send + Sync + 'static {
     /// Action metadata (key, version, capabilities).
-    fn metadata(&self) -> &ActionMetadata;
+    fn definition(&self) -> &ActionDefinition;
 
     /// Start the trigger.
     ///
@@ -500,16 +501,17 @@ pub trait TriggerHandler: crate::handle::sealed::Trigger + Send + Sync + 'static
 /// ```rust
 /// # use std::sync::{Arc, OnceLock};
 /// # use nebula_action::trigger::{TriggerAction, TriggerActionAdapter, TriggerEventOutcome, TriggerHandler, TriggerSource};
-/// # use nebula_action::{Action, ActionError, ActionMetadata, TriggerContext};
+/// # use nebula_action::{Action, ActionError, ActionDefinition, TriggerContext};
 /// # use nebula_core::{Dependencies, action_key};
 /// # struct CronTrigger;
 /// # struct CronSource;
 /// # impl TriggerSource for CronSource { type Event = serde_json::Value; }
 /// # impl Action for CronTrigger {
+/// const KEY: &'static str = "example.cron";
 /// #     type Input = serde_json::Value;
 /// #     type Output = serde_json::Value;
-/// #     fn metadata() -> nebula_action::ActionMetadataDraft {
-/// #         nebula_action::ActionMetadataDraft::new(action_key!("example.cron"), nebula_action::metadata_name!("Cron"), "Schedule-driven")
+/// #     fn metadata() -> nebula_action::ActionMetadata {
+/// #         nebula_action::ActionMetadata::new(nebula_action::metadata_name!("Cron"), "Schedule-driven")
 /// #     }
 /// #     fn dependencies() -> &'static Dependencies {
 /// #         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -528,12 +530,12 @@ pub trait TriggerHandler: crate::handle::sealed::Trigger + Send + Sync + 'static
 /// # }
 /// // Erase the typed trigger behind the dyn handler contract the runtime stores.
 /// let handler: Arc<dyn TriggerHandler> = Arc::new(TriggerActionAdapter::new(CronTrigger).expect("valid metadata"));
-/// assert_eq!(handler.metadata().base().key(), &action_key!("example.cron"));
+/// assert_eq!(handler.definition().base().key(), &action_key!("example.cron"));
 /// assert!(!handler.accepts_events());
 /// ```
 pub struct TriggerActionAdapter<A> {
     action: A,
-    meta: ActionMetadata,
+    meta: ActionDefinition,
 }
 
 impl<A> crate::handle::sealed::Trigger for TriggerActionAdapter<A> {}
@@ -565,7 +567,7 @@ where
     A: TriggerAction + Send + Sync + 'static,
     A::Error: Into<ActionError>,
 {
-    fn metadata(&self) -> &ActionMetadata {
+    fn definition(&self) -> &ActionDefinition {
         &self.meta
     }
 
@@ -673,15 +675,12 @@ mod tests {
     }
 
     impl Action for MockTriggerAction {
+        const KEY: &'static str = "test.trigger_action";
         type Input = Value;
         type Output = Value;
 
-        fn metadata() -> crate::ActionMetadataDraft {
-            crate::ActionMetadataDraft::new(
-                nebula_core::action_key!("test.trigger_action"),
-                crate::metadata_name!("MockTrigger"),
-                "Tracks start/stop",
-            )
+        fn metadata() -> crate::ActionMetadata {
+            crate::ActionMetadata::new(crate::metadata_name!("MockTrigger"), "Tracks start/stop")
         }
         fn dependencies() -> &'static nebula_core::Dependencies {
             use std::sync::OnceLock;
@@ -743,7 +742,7 @@ mod tests {
     fn trigger_adapter_into_inner_returns_action() {
         let adapter = TriggerActionAdapter::new(MockTriggerAction::new())
             .expect("valid test catalog definition");
-        let key = adapter.metadata().base().key().clone();
+        let key = adapter.definition().base().key().clone();
         let _action = adapter.into_inner();
         assert_eq!(key, nebula_core::action_key!("test.trigger_action"));
     }

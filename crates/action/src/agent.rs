@@ -107,7 +107,7 @@ use crate::{
     action::Action,
     context::ActionContext,
     error::{ActionError, ValidationReason},
-    metadata::ActionMetadata,
+    metadata::ActionDefinition,
     result::ActionResult,
 };
 
@@ -147,11 +147,12 @@ use crate::{
 /// struct SummariserTurn { attempts: u32 }
 ///
 /// impl Action for Summariser {
+///     const KEY: &'static str = "demo.summariser";
 ///     type Input  = String;
 ///     type Output = String;
 ///
-///     fn metadata() -> nebula_action::ActionMetadataDraft {
-///         nebula_action::ActionMetadataDraft::new(action_key!("demo.summariser"), nebula_action::metadata_name!("Summariser"), "Summarises input")
+///     fn metadata() -> nebula_action::ActionMetadata {
+///         nebula_action::ActionMetadata::new(nebula_action::metadata_name!("Summariser"), "Summarises input")
 ///     }
 ///     fn dependencies() -> &'static Dependencies {
 ///         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -272,7 +273,7 @@ pub trait AgentAction: Action {
 #[async_trait::async_trait]
 pub trait AgentHandle: crate::handle::sealed::Agent + Send + Sync + 'static {
     /// Action metadata (key, version, ports, schemas), with `ActionKind::Agent` stamped.
-    fn metadata(&self) -> &Arc<ActionMetadata>;
+    fn definition(&self) -> &Arc<ActionDefinition>;
 
     /// Maximum turns the engine is allowed to call `step` for this handle.
     fn max_turns(&self) -> u32;
@@ -327,7 +328,7 @@ pub trait AgentHandle: crate::handle::sealed::Agent + Send + Sync + 'static {
 /// `ERROR` level so the checkpoint loss is observable.
 pub struct AgentActionAdapter<A> {
     action: A,
-    meta: Arc<ActionMetadata>,
+    meta: Arc<ActionDefinition>,
     input_contract: crate::input::ActionInputContract,
 }
 
@@ -353,7 +354,7 @@ impl<A> AgentActionAdapter<A> {
         })
     }
 
-    pub(crate) fn with_metadata(action: A, meta: Arc<ActionMetadata>) -> Self {
+    pub(crate) fn with_metadata(action: A, meta: Arc<ActionDefinition>) -> Self {
         let input_contract = crate::input::ActionInputContract::new(meta.base().schema());
         Self {
             action,
@@ -377,7 +378,7 @@ where
     A::Output: Serialize + Send + Sync,
     A::Turn: Serialize + DeserializeOwned + Clone + Send + Sync,
 {
-    fn metadata(&self) -> &Arc<ActionMetadata> {
+    fn definition(&self) -> &Arc<ActionDefinition> {
         &self.meta
     }
 

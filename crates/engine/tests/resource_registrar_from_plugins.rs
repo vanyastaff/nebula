@@ -34,7 +34,7 @@ use std::{
 use nebula_action::{
     ActionError, action::Action, result::ActionResult, stateless::StatelessAction,
 };
-use nebula_core::{Dependencies, action_key, node_key};
+use nebula_core::{Dependencies, node_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, KindActivator, Plugin,
     PluginManifest, PluginRegistry, ResolvedPlugin, ResourceActivatorRegistry, WorkflowEngine,
@@ -220,16 +220,13 @@ fn a_kind_contributed_twice_fails_composition() {
 struct NoopHandler;
 
 impl Action for NoopHandler {
+    const KEY: &'static str = "test.noop";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("test.noop.static"),
-            nebula_action::metadata_name!("Noop"),
-            "static",
-        )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(nebula_action::metadata_name!("Noop"), "noop")
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
     fn dependencies() -> &'static Dependencies {
         use std::sync::OnceLock;
@@ -251,15 +248,7 @@ impl StatelessAction for NoopHandler {
 fn build_engine(registrars: ResourceActivatorRegistry) -> WorkflowEngine {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("test.noop"),
-                nebula_action::metadata_name!("Noop"),
-                "noop",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            NoopHandler,
-        )
+        .register_stateless_instance(NoopHandler)
         .expect("valid test catalog definition");
     let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();

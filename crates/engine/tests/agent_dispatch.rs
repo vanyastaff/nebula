@@ -23,7 +23,7 @@ use nebula_action::{
     result::{ActionResult, BreakReason, WaitCondition},
     testing::TestContextBuilder,
 };
-use nebula_core::{Dependencies, action_key};
+use nebula_core::Dependencies;
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, RuntimeError,
 };
@@ -58,12 +58,12 @@ struct TurnCounter {
 }
 
 impl Action for TwoTurnAgent {
+    const KEY: &'static str = "test.agent.two_turn";
     type Input = Value;
     type Output = Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("test.agent.two_turn"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("TwoTurnAgent"),
             "continues twice then breaks",
         )
@@ -143,12 +143,12 @@ struct StubbornTurn {
 }
 
 impl Action for StubbornContinueAgent {
+    const KEY: &'static str = "test.agent.stubborn_continue";
     type Input = Value;
     type Output = Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("test.agent.stubborn_continue"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("StubbornContinueAgent"),
             "continues N times without mutating turn state, then breaks",
         )
@@ -219,12 +219,12 @@ struct LoopTurn {
 }
 
 impl Action for LoopForeverAgent {
+    const KEY: &'static str = "test.agent.loop_forever";
     type Input = Value;
     type Output = Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("test.agent.loop_forever"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("LoopForeverAgent"),
             "loops until budget is exceeded",
         )
@@ -288,12 +288,12 @@ struct SlowTurn {
 }
 
 impl Action for SlowTurnAgent {
+    const KEY: &'static str = "test.agent.slow_turn";
     type Input = Value;
     type Output = Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("test.agent.slow_turn"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("SlowTurnAgent"),
             "sleeps per turn to exercise the per-turn timeout",
         )
@@ -346,12 +346,12 @@ impl AgentAction for SlowTurnAgent {
 struct FastTurnAgent;
 
 impl Action for FastTurnAgent {
+    const KEY: &'static str = "test.agent.fast_turn";
     type Input = Value;
     type Output = Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("test.agent.fast_turn"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("FastTurnAgent"),
             "completes instantly — per-turn timeout must NOT fire",
         )
@@ -409,12 +409,12 @@ struct WaitReturningAgent;
 struct WaitTurn;
 
 impl Action for WaitReturningAgent {
+    const KEY: &'static str = "test.agent.wait_returning";
     type Input = Value;
     type Output = Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("test.agent.wait_returning"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("WaitReturningAgent"),
             "returns Wait — engine must reject with AgentWaitNotSupported",
         )

@@ -21,7 +21,7 @@ use std::{
 use nebula_action::{
     ActionError, action::Action, result::ActionResult, stateless::StatelessAction,
 };
-use nebula_core::{Dependencies, PluginKey, action_key, node_key};
+use nebula_core::{Dependencies, PluginKey, node_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, ResourceFanoutCoordinator,
     WorkflowEngine, WorkflowStartService,
@@ -590,16 +590,13 @@ struct EchoHandler {
 }
 
 impl Action for EchoHandler {
+    const KEY: &'static str = "test.echo.worker";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("test.echo.worker"),
-            nebula_action::metadata_name!("Echo"),
-            "echo",
-        )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(nebula_action::metadata_name!("Echo"), "echo")
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -640,17 +637,9 @@ async fn make_engine_with_plugins(
     let count = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("test.echo.worker"),
-                nebula_action::metadata_name!("Echo"),
-                "echo",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            EchoHandler {
-                count: count.clone(),
-            },
-        )
+        .register_stateless_instance(EchoHandler {
+            count: count.clone(),
+        })
         .expect("valid test catalog definition");
     // `InProcessRunner` + `executor` are structural boilerplate required by
     // `ActionRuntime::try_new` but are NOT the code path exercised by this test.
@@ -1109,12 +1098,9 @@ fn frozen_fixture(
         fn actions(&self) -> Vec<Arc<dyn nebula_action::ActionFactory>> {
             if self.0.key().as_str() == TEST_PLUGIN_KEY {
                 vec![Arc::new(
-                    nebula_action::factory::InstanceFactory::new(
-                        EchoHandler::metadata(),
-                        EchoHandler {
-                            count: self.1.clone(),
-                        },
-                    )
+                    nebula_action::factory::InstanceFactory::new(EchoHandler {
+                        count: self.1.clone(),
+                    })
                     .expect("valid test catalog definition"),
                 )]
             } else {

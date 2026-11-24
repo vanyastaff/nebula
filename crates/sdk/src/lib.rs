@@ -1,7 +1,7 @@
 //! # nebula-sdk — Integration Author SDK
 //!
 //! Single-crate façade for writing Nebula integrations. External one-dependency
-//! contracts cover draft-based action authoring, `WorkflowBuilder`, credential `TestResult`,
+//! contracts cover keyless-metadata action authoring, `WorkflowBuilder`, credential `TestResult`,
 //! and representative Action, Credential, Plugin, Resource, Schema, and
 //! Validator derives; other manual/prelude workflows require focused proofs.
 //!
@@ -16,17 +16,13 @@
 //! ```rust,no_run
 //! use nebula_sdk::prelude::*;
 //!
-//! let metadata = ActionMetadataDraft::new(
-//!     action_key!("example.greet"),
-//!     metadata_name!("Greet"),
-//!     "A simple greeting action",
-//! );
+//! let metadata = ActionMetadata::new(metadata_name!("Greet"), "A simple greeting action");
 //!
 //! let workflow = WorkflowBuilder::new("example_workflow")
 //!.add_node("greet", "core", "example_greet")
 //!.build();
 //!
-//! let _: ActionMetadataDraft = metadata;
+//! let _: ActionMetadata = metadata;
 //! assert!(workflow.is_ok());
 //! # Ok::<(), nebula_sdk::Error>(())
 //! ```
@@ -36,7 +32,7 @@
 //! - `prelude` — one-stop import for common types and traits.
 //! - `client` — secret-free public product-state contracts.
 //! - `integration` — curated contracts for integration authors.
-//! - `action` — draft metadata and typed action authoring contracts.
+//! - `action` — keyless action metadata and typed action authoring contracts.
 //! - `workflow` — `WorkflowBuilder` for programmatic workflow construction.
 //! - `runtime` — `TestRuntime`, `RunReport` — in-process test harness.
 //! - `testing` (feature `testing`) — test helpers and fixtures.
@@ -76,7 +72,7 @@ pub mod __private {
     pub mod action {
         pub use nebula_action::{
             Action, ActionContext, ActionContextExt, ActionEffectContract, ActionError,
-            ActionMetadataDraft, ActionResult, FromWorkflowNode, MetadataVersion, StatelessAction,
+            ActionMetadata, ActionResult, FromWorkflowNode, MetadataVersion, StatelessAction,
             metadata_name,
         };
     }
@@ -86,7 +82,7 @@ pub mod __private {
     pub mod core {
         pub use nebula_core::{
             ActionKey, CredentialKey, DeclaresDependencies, Dependencies, ResourceKey, SlotField,
-            SlotKind, action_key,
+            SlotKind,
         };
 
         pub mod auth {
@@ -419,7 +415,7 @@ macro_rules! workflow {
 /// Macro for defining a simple stateless action with a unit struct.
 ///
 /// Generates a unit `struct $name`, implements [`Action`](prelude::Action)
-/// with draft metadata and slot-binding [`Dependencies`](prelude::Dependencies),
+/// with keyless metadata and slot-binding [`Dependencies`](prelude::Dependencies),
 /// and implements
 /// [`StatelessAction`](prelude::StatelessAction) over the supplied
 /// `input` / `output` types.
@@ -449,8 +445,8 @@ macro_rules! workflow {
 ///     }
 /// }
 ///
-/// // The generated type carries author-owned draft metadata; admission is runtime-owned.
-/// let _: ActionMetadataDraft = <GreetAction as Action>::metadata();
+/// // The generated type declares its key and carries keyless metadata; admission is runtime-owned.
+/// let _: ActionMetadata = <GreetAction as Action>::metadata();
 /// ```
 #[macro_export]
 macro_rules! simple_action {
@@ -463,13 +459,18 @@ macro_rules! simple_action {
     ) => {
         pub struct $name;
 
+        const _: () = ::core::assert!(
+            $crate::__private::core::ActionKey::is_valid_key_const($key),
+            "invalid action key literal"
+        );
+
         impl $crate::__private::action::Action for $name {
+            const KEY: &'static str = $key;
             type Input = $input;
             type Output = $output;
 
-            fn metadata() -> $crate::__private::action::ActionMetadataDraft {
-                $crate::__private::action::ActionMetadataDraft::new(
-                    $crate::__private::core::action_key!($key),
+            fn metadata() -> $crate::__private::action::ActionMetadata {
+                $crate::__private::action::ActionMetadata::new(
                     $crate::__private::action::metadata_name!(stringify!($name)),
                     stringify!($name),
                 )

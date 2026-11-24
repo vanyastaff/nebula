@@ -123,7 +123,7 @@ fn main() {
             .validate(nebula::params! { data; () }.unwrap())
             .is_err()
     );
-    let _: ActionMetadataDraft = ScalarAction::metadata();
+    let _: ActionMetadata = ScalarAction::metadata();
 
     let payload = ValidatedPayload {
         name: "valid".to_owned(),
@@ -166,7 +166,7 @@ fn main() {
     assert_eq!(properties.token.expose_secret(), "sdk-property-secret");
     assert!(!format!("{properties:?}").contains("sdk-property-secret"));
     let _: CredentialMetadata = ContractCredential::metadata();
-    let _: ActionMetadataDraft = <ContractAction as Action>::metadata();
+    let _: ActionMetadata = <ContractAction as Action>::metadata();
     let _ = ContractPlugin.manifest();
     let _ = ContractConfig { enabled: true }.fingerprint();
     let config = schema_of::<ContractConfig>().expect("named config declares its fields");

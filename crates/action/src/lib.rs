@@ -20,8 +20,8 @@
 //!
 //! ## Key metadata and result types
 //!
-//! - `ActionMetadataDraft` — author-owned metadata intent without schemas or kind.
-//! - `ActionMetadata` — immutable factory-admitted metadata with typed schemas and kind.
+//! - `ActionMetadata` — author-owned metadata intent without schemas or kind.
+//! - `ActionDefinition` — immutable factory-admitted metadata with typed schemas and kind.
 //! - `ActionResult` — execution result with flow-control intent.
 //! - `ActionError` — typed error distinguishing retryable from fatal.
 //!
@@ -109,7 +109,7 @@ pub mod webhook;
 
 // ── Public re-exports ───────────────────────────────────────────────────────
 
-pub use action::Action;
+pub use action::{Action, key_of};
 pub use agent::{AgentAction, AgentActionAdapter};
 pub use capability::{ExecutionEmitter, TriggerHealth, TriggerHealthSnapshot, TriggerScheduler};
 pub use context::{
@@ -142,9 +142,9 @@ pub use handle::{
 pub use idempotency::IdempotencyKey;
 pub use input::{ActionInput, PreparedActionInput};
 pub use metadata::{
-    ActionKind, ActionMetadata, ActionMetadataAdmissionError, ActionMetadataDraft,
+    ActionDefinition, ActionKind, ActionMetadata, ActionMetadataAdmissionError,
     ActionMetadataReadmissionError, IsolationLevel, MetadataCompatibilityError,
-    RecordedActionMetadata,
+    RecordedActionDefinition,
 };
 pub use nebula_action_macros::{Action, action_phantom};
 pub use nebula_core::{BranchKey, KeyValidationError, KeyValidationErrorKind, PortKey};

@@ -30,7 +30,7 @@ pub enum PluginError {
     /// An action could not produce a checked catalog definition.
     #[classify(category = "validation", code = "PLUGIN:INVALID_METADATA")]
     #[error("plugin component metadata admission failed")]
-    ActionMetadata(#[from] nebula_action::ActionMetadataAdmissionError),
+    ActionDefinition(#[from] nebula_action::ActionMetadataAdmissionError),
     /// A resource could not produce an admitted catalog definition.
     #[classify(category = "validation", code = "PLUGIN:INVALID_RESOURCE_METADATA")]
     #[error("plugin resource metadata admission failed")]

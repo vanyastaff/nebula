@@ -64,7 +64,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use nebula_action::{ActionContext, ActionError, ActionResult, StatelessAction};
-use nebula_core::action_key;
 use nebula_schema::{HasSchema, Property, Schema, ValidSchema, ValidationReport, field_key};
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
@@ -993,12 +992,12 @@ fn group_and_accumulate<'a>(
 pub struct Aggregate;
 
 impl nebula_action::action::Action for Aggregate {
+    const KEY: &'static str = "core.aggregate";
     type Input = AggregateInput;
     type Output = Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("core.aggregate"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Aggregate"),
             "Reduce an array of objects to grouped/scalar summaries \
              (sum/count/avg/min/max/collect/join)",

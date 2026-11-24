@@ -40,7 +40,7 @@ use crate::{
         TriggerHandle,
     },
     input::{ActionInput, ActionInputContract, PreparedActionInput},
-    metadata::{ActionKind, ActionMetadata, ActionMetadataAdmissionError, ActionMetadataDraft},
+    metadata::{ActionDefinition, ActionKind, ActionMetadata, ActionMetadataAdmissionError},
     resource::ResourceAction,
     result::ActionResult,
     stateful::{StatefulAction, StatefulActionAdapter},
@@ -50,10 +50,10 @@ use crate::{
 };
 
 fn admit_metadata<A: Action>(
-    draft: ActionMetadataDraft,
+    metadata: ActionMetadata,
     kind: ActionKind,
-) -> Result<Arc<ActionMetadata>, ActionMetadataAdmissionError> {
-    draft.admit_for::<A>(kind).map(Arc::new)
+) -> Result<Arc<ActionDefinition>, ActionMetadataAdmissionError> {
+    metadata.admit_for::<A>(kind).map(Arc::new)
 }
 
 /// Decode prepared input through the admitted contract, execute one stateless
@@ -98,7 +98,7 @@ mod sealed {
 /// otherwise cannot construct an executable action for this dispatch.
 pub trait ActionFactory: sealed::Sealed + Send + Sync + 'static {
     /// Static metadata describing the action this factory produces.
-    fn metadata(&self) -> &Arc<ActionMetadata>;
+    fn definition(&self) -> &Arc<ActionDefinition>;
 
     /// Declared resource and credential dependencies for the produced action.
     fn dependencies(&self) -> &Dependencies;
@@ -125,7 +125,7 @@ pub trait ActionFactory: sealed::Sealed + Send + Sync + 'static {
 /// Generic factory that produces [`ActionHandle::Stateless`] for any type
 /// implementing [`StatelessAction`] + [`FromWorkflowNode`].
 pub struct GenericStatelessFactory<A> {
-    meta: Arc<ActionMetadata>,
+    meta: Arc<ActionDefinition>,
     _phantom: PhantomData<fn() -> A>,
 }
 
@@ -156,7 +156,7 @@ where
         <A as Action>::dependencies()
     }
 
-    fn metadata(&self) -> &Arc<ActionMetadata> {
+    fn definition(&self) -> &Arc<ActionDefinition> {
         &self.meta
     }
 
@@ -176,14 +176,14 @@ where
 
 struct StatelessHandleImpl<A> {
     action: A,
-    meta: Arc<ActionMetadata>,
+    meta: Arc<ActionDefinition>,
     input_contract: ActionInputContract,
 }
 
 impl<A> crate::handle::sealed::Stateless for StatelessHandleImpl<A> {}
 
 impl<A> StatelessHandleImpl<A> {
-    fn new(action: A, meta: Arc<ActionMetadata>) -> Self {
+    fn new(action: A, meta: Arc<ActionDefinition>) -> Self {
         let input_contract = ActionInputContract::new(meta.base().schema());
         Self {
             action,
@@ -200,7 +200,7 @@ where
     <A as Action>::Input: DeserializeOwned + Send + Sync,
     <A as Action>::Output: Serialize + Send + Sync,
 {
-    fn metadata(&self) -> &Arc<ActionMetadata> {
+    fn definition(&self) -> &Arc<ActionDefinition> {
         &self.meta
     }
 
@@ -220,7 +220,7 @@ where
 // ── InstanceFactory (instance-backed stateless factory) ─────────────────────
 
 /// Stateless [`ActionFactory`] backed by a pre-built action **instance** plus
-/// caller-supplied [`ActionMetadataDraft`], instead of building the action from the
+/// caller-supplied [`ActionMetadata`], instead of building the action from the
 /// workflow node like [`GenericStatelessFactory`].
 ///
 /// This is the `useValue` half of the dependency-injection dichotomy
@@ -245,30 +245,26 @@ where
 /// factory spine, not a wrapper around a separate dispatch path.
 pub struct InstanceFactory<A> {
     action: Arc<A>,
-    meta: Arc<ActionMetadata>,
+    meta: Arc<ActionDefinition>,
 }
 
 impl<A> sealed::Sealed for InstanceFactory<A> {}
 
 impl<A: Action> InstanceFactory<A> {
-    /// Wrap a pre-built action instance with explicit metadata intent.
+    /// Wrap a pre-built action instance.
     ///
-    /// The metadata's [`kind`](ActionMetadata::kind) is stamped to
-    /// [`ActionKind::Stateless`] and `output_schema` is stamped from
-    /// `<A::Output as HasSchema>::schema()` — the factory is the single writer
-    /// of both fields — while every other field is preserved as the caller
-    /// supplied it.
+    /// The key is [`A::KEY`](Action::KEY) and the metadata is
+    /// [`A::metadata()`](Action::metadata), as for every other factory: a type
+    /// is one catalog entry. The instance adds only shared state across
+    /// dispatches. The factory stamps the kind [`ActionKind::Stateless`] and
+    /// derives both schemas from the associated types.
     ///
     /// # Errors
     /// Returns a typed catalog error if metadata or an associated schema is invalid.
-    #[tracing::instrument(name = "action.metadata.admit", skip_all, err)]
-    pub fn new(
-        metadata: ActionMetadataDraft,
-        action: A,
-    ) -> Result<Self, ActionMetadataAdmissionError> {
+    pub fn new(action: A) -> Result<Self, ActionMetadataAdmissionError> {
         Ok(Self {
             action: Arc::new(action),
-            meta: admit_metadata::<A>(metadata, ActionKind::Stateless)?,
+            meta: admit_metadata::<A>(A::metadata(), ActionKind::Stateless)?,
         })
     }
 }
@@ -283,7 +279,7 @@ where
         <A as Action>::dependencies()
     }
 
-    fn metadata(&self) -> &Arc<ActionMetadata> {
+    fn definition(&self) -> &Arc<ActionDefinition> {
         &self.meta
     }
 
@@ -309,7 +305,7 @@ where
 /// this factory.
 pub struct RemoteEffectInstanceFactory<A: Action> {
     action: A,
-    meta: Arc<ActionMetadata>,
+    meta: Arc<ActionDefinition>,
     input_contract: ActionInputContract,
 }
 
@@ -323,13 +319,14 @@ where
     ///
     /// # Errors
     ///
+    /// The key and metadata are the type's own, [`A::KEY`](Action::KEY) and
+    /// [`A::metadata()`](Action::metadata); the metadata must declare the
+    /// remote contract that the instance's descriptor matches.
+    ///
     /// Returns a typed admission failure for invalid metadata, a missing
     /// remote contract, or a descriptor mismatch.
-    pub fn new(
-        metadata: ActionMetadataDraft,
-        action: A,
-    ) -> Result<Self, ActionMetadataAdmissionError> {
-        let meta = admit_metadata::<A>(metadata, ActionKind::Stateless)?;
+    pub fn new(action: A) -> Result<Self, ActionMetadataAdmissionError> {
+        let meta = admit_metadata::<A>(A::metadata(), ActionKind::Stateless)?;
         let ActionEffectContract::Remote(descriptor) = meta.effect_contract() else {
             return Err(ActionMetadataAdmissionError::RemoteEffectContractRequired);
         };
@@ -349,7 +346,7 @@ impl<A> ActionFactory for RemoteEffectInstanceFactory<A>
 where
     A: RemoteEffectAction,
 {
-    fn metadata(&self) -> &Arc<ActionMetadata> {
+    fn definition(&self) -> &Arc<ActionDefinition> {
         &self.meta
     }
 
@@ -388,7 +385,7 @@ where
         self.action.descriptor()
     }
 
-    fn metadata(&self) -> &Arc<ActionMetadata> {
+    fn definition(&self) -> &Arc<ActionDefinition> {
         &self.meta
     }
 
@@ -410,7 +407,7 @@ where
 
 struct InstanceStatelessHandle<A> {
     action: Arc<A>,
-    meta: Arc<ActionMetadata>,
+    meta: Arc<ActionDefinition>,
     input_contract: ActionInputContract,
 }
 
@@ -423,7 +420,7 @@ where
     <A as Action>::Input: DeserializeOwned + Send + Sync,
     <A as Action>::Output: Serialize + Send + Sync,
 {
-    fn metadata(&self) -> &Arc<ActionMetadata> {
+    fn definition(&self) -> &Arc<ActionDefinition> {
         &self.meta
     }
 
@@ -445,7 +442,7 @@ where
 /// Generic factory that produces [`ActionHandle::Stateful`] for any type
 /// implementing [`StatefulAction`] + [`FromWorkflowNode`].
 pub struct GenericStatefulFactory<A> {
-    meta: Arc<ActionMetadata>,
+    meta: Arc<ActionDefinition>,
     _phantom: PhantomData<fn() -> A>,
 }
 
@@ -477,7 +474,7 @@ where
         <A as Action>::dependencies()
     }
 
-    fn metadata(&self) -> &Arc<ActionMetadata> {
+    fn definition(&self) -> &Arc<ActionDefinition> {
         &self.meta
     }
 
@@ -499,7 +496,7 @@ where
 /// Generic factory that produces [`ActionHandle::Trigger`] for any type
 /// implementing [`TriggerAction`] + [`FromWorkflowNode`].
 pub struct GenericTriggerFactory<A> {
-    meta: Arc<ActionMetadata>,
+    meta: Arc<ActionDefinition>,
     _phantom: PhantomData<fn() -> A>,
 }
 
@@ -529,7 +526,7 @@ where
         <A as Action>::dependencies()
     }
 
-    fn metadata(&self) -> &Arc<ActionMetadata> {
+    fn definition(&self) -> &Arc<ActionDefinition> {
         &self.meta
     }
 
@@ -548,13 +545,13 @@ where
 
 struct TriggerHandleImpl<A> {
     action: A,
-    meta: Arc<ActionMetadata>,
+    meta: Arc<ActionDefinition>,
 }
 
 impl<A> crate::handle::sealed::Trigger for TriggerHandleImpl<A> {}
 
 impl<A> TriggerHandleImpl<A> {
-    fn new(action: A, meta: Arc<ActionMetadata>) -> Self {
+    fn new(action: A, meta: Arc<ActionDefinition>) -> Self {
         Self { action, meta }
     }
 }
@@ -565,7 +562,7 @@ where
     A: TriggerAction + Send + Sync + 'static,
     <A as TriggerAction>::Error: Into<ActionError>,
 {
-    fn metadata(&self) -> &Arc<ActionMetadata> {
+    fn definition(&self) -> &Arc<ActionDefinition> {
         &self.meta
     }
 
@@ -608,7 +605,7 @@ where
 /// Generic factory that produces [`ActionHandle::Resource`] for any type
 /// implementing [`ResourceAction`] + [`FromWorkflowNode`].
 pub struct GenericResourceFactory<A> {
-    meta: Arc<ActionMetadata>,
+    meta: Arc<ActionDefinition>,
     _phantom: PhantomData<fn() -> A>,
 }
 
@@ -637,7 +634,7 @@ where
         <A as Action>::dependencies()
     }
 
-    fn metadata(&self) -> &Arc<ActionMetadata> {
+    fn definition(&self) -> &Arc<ActionDefinition> {
         &self.meta
     }
 
@@ -656,13 +653,13 @@ where
 
 struct ResourceActionHandleImpl<A> {
     action: A,
-    meta: Arc<ActionMetadata>,
+    meta: Arc<ActionDefinition>,
 }
 
 impl<A> crate::handle::sealed::Resource for ResourceActionHandleImpl<A> {}
 
 impl<A> ResourceActionHandleImpl<A> {
-    fn new(action: A, meta: Arc<ActionMetadata>) -> Self {
+    fn new(action: A, meta: Arc<ActionDefinition>) -> Self {
         Self { action, meta }
     }
 }
@@ -672,7 +669,7 @@ impl<A> ResourceActionHandle for ResourceActionHandleImpl<A>
 where
     A: ResourceAction + Send + Sync + 'static,
 {
-    fn metadata(&self) -> &Arc<ActionMetadata> {
+    fn definition(&self) -> &Arc<ActionDefinition> {
         &self.meta
     }
 
@@ -706,7 +703,7 @@ where
 /// Generic factory that produces [`ActionHandle::Control`] for any type
 /// implementing [`ControlAction`] + [`FromWorkflowNode`].
 pub struct GenericControlFactory<A> {
-    meta: Arc<ActionMetadata>,
+    meta: Arc<ActionDefinition>,
     _phantom: PhantomData<fn() -> A>,
 }
 
@@ -735,7 +732,7 @@ where
         <A as Action>::dependencies()
     }
 
-    fn metadata(&self) -> &Arc<ActionMetadata> {
+    fn definition(&self) -> &Arc<ActionDefinition> {
         &self.meta
     }
 
@@ -754,14 +751,14 @@ where
 
 struct ControlHandleImpl<A> {
     action: A,
-    meta: Arc<ActionMetadata>,
+    meta: Arc<ActionDefinition>,
     input_contract: ActionInputContract,
 }
 
 impl<A> crate::handle::sealed::Control for ControlHandleImpl<A> {}
 
 impl<A> ControlHandleImpl<A> {
-    fn new(action: A, meta: Arc<ActionMetadata>) -> Self {
+    fn new(action: A, meta: Arc<ActionDefinition>) -> Self {
         let input_contract = ActionInputContract::new(meta.base().schema());
         Self {
             action,
@@ -776,7 +773,7 @@ impl<A> ControlHandle for ControlHandleImpl<A>
 where
     A: ControlAction + Send + Sync + 'static,
 {
-    fn metadata(&self) -> &Arc<ActionMetadata> {
+    fn definition(&self) -> &Arc<ActionDefinition> {
         &self.meta
     }
 
@@ -808,7 +805,7 @@ where
 /// stream fully in-process and delivers a single folded value — identical to
 /// stateless from the engine's perspective.
 pub struct GenericStreamFactory<A> {
-    meta: Arc<ActionMetadata>,
+    meta: Arc<ActionDefinition>,
     _phantom: PhantomData<fn() -> A>,
 }
 
@@ -839,7 +836,7 @@ where
         <A as Action>::dependencies()
     }
 
-    fn metadata(&self) -> &Arc<ActionMetadata> {
+    fn definition(&self) -> &Arc<ActionDefinition> {
         &self.meta
     }
 
@@ -858,14 +855,14 @@ where
 
 struct StreamHandleImpl<A> {
     action: A,
-    meta: Arc<ActionMetadata>,
+    meta: Arc<ActionDefinition>,
     input_contract: ActionInputContract,
 }
 
 impl<A> crate::handle::sealed::Stream for StreamHandleImpl<A> {}
 
 impl<A> StreamHandleImpl<A> {
-    fn new(action: A, meta: Arc<ActionMetadata>) -> Self {
+    fn new(action: A, meta: Arc<ActionDefinition>) -> Self {
         let input_contract = ActionInputContract::new(meta.base().schema());
         Self {
             action,
@@ -882,7 +879,7 @@ where
     <A as Action>::Input: DeserializeOwned + Send + Sync,
     <A as Action>::Output: Serialize + Send + Sync,
 {
-    fn metadata(&self) -> &Arc<ActionMetadata> {
+    fn definition(&self) -> &Arc<ActionDefinition> {
         &self.meta
     }
 
@@ -932,7 +929,7 @@ where
 /// on the stored metadata. The adapter inside the handle drives the turn loop
 /// in the engine, deserializing/serializing turn state on each call to `step`.
 pub struct GenericAgentFactory<A> {
-    meta: Arc<ActionMetadata>,
+    meta: Arc<ActionDefinition>,
     _phantom: PhantomData<fn() -> A>,
 }
 
@@ -964,7 +961,7 @@ where
         <A as Action>::dependencies()
     }
 
-    fn metadata(&self) -> &Arc<ActionMetadata> {
+    fn definition(&self) -> &Arc<ActionDefinition> {
         &self.meta
     }
 

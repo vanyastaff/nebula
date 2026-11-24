@@ -109,16 +109,18 @@ pub enum ActionMetadataReadmissionError {
     DefinitionMismatch,
 }
 
-/// Author-owned action metadata before schemas and structural kind are bound.
+/// What an action's author says about it for the catalog, before admission.
 ///
-/// This type intentionally has no input-schema, output-schema, or action-kind
-/// setters. A factory derives both schemas from [`Action::Input`](crate::Action::Input)
-/// and [`Action::Output`](crate::Action::Output), stamps its structural kind,
-/// and consumes the draft through the crate-private admission boundary.
+/// It carries no key: the key is [`Action::KEY`](crate::Action::KEY), declared
+/// once on the type, and the factory stamps it at admission. It has no
+/// input-schema, output-schema, or action-kind setters either: a factory
+/// derives both schemas from [`Action::Input`](crate::Action::Input) and
+/// [`Action::Output`](crate::Action::Output), stamps its structural kind, and
+/// consumes the metadata through the crate-private admission boundary, which
+/// yields an [`ActionDefinition`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[must_use = "an action metadata draft must be admitted by a factory"]
-pub struct ActionMetadataDraft {
-    key: ActionKey,
+#[must_use = "action metadata must be admitted by a factory"]
+pub struct ActionMetadata {
     base: Metadata,
     inputs: Vec<InputPort>,
     outputs: Vec<OutputPort>,
@@ -127,32 +129,25 @@ pub struct ActionMetadataDraft {
     max_concurrent: Option<NonZeroU32>,
 }
 
-impl ActionMetadataDraft {
-    /// Construct a draft after checking a dynamic display name.
+impl ActionMetadata {
+    /// Construct metadata after checking a dynamic display name.
     ///
     /// # Errors
     ///
     /// Returns a metadata error when the display name is invalid.
     pub fn try_new(
-        key: ActionKey,
         name: impl Into<String>,
         description: impl Into<String>,
     ) -> Result<Self, nebula_metadata::MetadataError> {
         Ok(Self::new(
-            key,
             nebula_metadata::MetadataName::try_from(name.into())?,
             description,
         ))
     }
 
-    /// Construct an action definition draft.
-    pub fn new(
-        key: ActionKey,
-        name: nebula_metadata::MetadataName,
-        description: impl Into<String>,
-    ) -> Self {
+    /// Construct action metadata with default ports and policies.
+    pub fn new(name: nebula_metadata::MetadataName, description: impl Into<String>) -> Self {
         Self {
-            key,
             base: Metadata::new(name, description),
             inputs: port::default_input_ports(),
             outputs: port::default_output_ports(),
@@ -299,7 +294,8 @@ impl ActionMetadataDraft {
         self
     }
 
-    /// Derive both schemas, stamp the factory's kind, and validate the package.
+    /// Stamp [`A::KEY`](crate::Action::KEY), derive both schemas, stamp the
+    /// factory's kind, and validate the package.
     ///
     /// This is the sole transition from authored intent to executable metadata.
     /// Factory and adapter constructors call it exactly once and retain the
@@ -312,7 +308,8 @@ impl ActionMetadataDraft {
     pub(crate) fn admit_for<A: crate::Action>(
         self,
         kind: ActionKind,
-    ) -> Result<ActionMetadata, ActionMetadataAdmissionError> {
+    ) -> Result<ActionDefinition, ActionMetadataAdmissionError> {
+        let key = crate::key_of::<A>();
         let input_schema =
             nebula_schema::schema_of::<A::Input>().map_err(MetadataBuildError::from)?;
         let output_schema =
@@ -320,8 +317,8 @@ impl ActionMetadataDraft {
         output_schema
             .ensure_current_semantics()
             .map_err(MetadataBuildError::from)?;
-        let metadata = ActionMetadata {
-            base: self.base.bind(self.key, input_schema)?,
+        let metadata = ActionDefinition {
+            base: self.base.bind(key, input_schema)?,
             inputs: self.inputs.into_boxed_slice(),
             outputs: self.outputs.into_boxed_slice(),
             isolation_level: self.isolation_level,
@@ -341,19 +338,19 @@ impl ActionMetadataDraft {
 ///
 /// ```compile_fail
 /// fn requires_deserialize<T: serde::de::DeserializeOwned>() {}
-/// requires_deserialize::<nebula_action::ActionMetadata>();
+/// requires_deserialize::<nebula_action::ActionDefinition>();
 /// ```
 ///
 /// Per-action checkpoint cadence is not an executable metadata capability.
 ///
 /// ```compile_fail
-/// fn inspect(metadata: &nebula_action::ActionMetadata) {
+/// fn inspect(metadata: &nebula_action::ActionDefinition) {
 ///     let _ = metadata.checkpoint_policy();
 /// }
 /// ```
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct ActionMetadata {
+pub struct ActionDefinition {
     base: BaseDefinition<ActionKey>,
     inputs: Box<[InputPort]>,
     outputs: Box<[OutputPort]>,
@@ -366,7 +363,7 @@ pub struct ActionMetadata {
     output_schema: ValidSchema,
 }
 
-impl Definition for ActionMetadata {
+impl Definition for ActionDefinition {
     type Key = ActionKey;
 
     fn base(&self) -> &BaseDefinition<ActionKey> {
@@ -374,7 +371,7 @@ impl Definition for ActionMetadata {
     }
 }
 
-impl ActionMetadata {
+impl ActionDefinition {
     /// Shared admitted metadata and canonical input schema.
     #[must_use]
     pub fn base(&self) -> &BaseDefinition<ActionKey> {
@@ -463,7 +460,7 @@ impl ActionMetadata {
 /// externally bounded transport.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct RecordedActionMetadata {
+pub struct RecordedActionDefinition {
     base: RecordedBaseDefinition<ActionKey>,
     inputs: Box<[InputPort]>,
     outputs: Box<[OutputPort]>,
@@ -476,7 +473,7 @@ pub struct RecordedActionMetadata {
     output_schema: ValidSchema,
 }
 
-impl<'de> Deserialize<'de> for RecordedActionMetadata {
+impl<'de> Deserialize<'de> for RecordedActionDefinition {
     #[tracing::instrument(name = "action.metadata.decode_recorded", skip_all)]
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
@@ -513,7 +510,7 @@ impl<'de> Deserialize<'de> for RecordedActionMetadata {
     }
 }
 
-impl RecordedActionMetadata {
+impl RecordedActionDefinition {
     /// Decode recorded evidence within the selected whole-envelope byte limit.
     ///
     /// # Errors
@@ -549,8 +546,8 @@ impl RecordedActionMetadata {
     #[tracing::instrument(name = "action.metadata.readmit_recorded", skip_all, err)]
     pub fn readmit_against(
         &self,
-        fresh_definition: &ActionMetadata,
-    ) -> Result<ActionMetadata, ActionMetadataReadmissionError> {
+        fresh_definition: &ActionDefinition,
+    ) -> Result<ActionDefinition, ActionMetadataReadmissionError> {
         self.base.readmit_against(&fresh_definition.base)?;
         if self.inputs.as_ref() == fresh_definition.inputs()
             && self.outputs.as_ref() == fresh_definition.outputs()
@@ -576,7 +573,7 @@ impl RecordedActionMetadata {
 mod tests {
     use std::sync::OnceLock;
 
-    use nebula_core::{Dependencies, action_key};
+    use nebula_core::Dependencies;
     use nebula_schema::{HasSchema, PropertyCollector, Schema, field_key};
 
     use super::*;
@@ -611,15 +608,12 @@ mod tests {
     struct ExampleAction;
 
     impl Action for ExampleAction {
+        const KEY: &'static str = "test.example";
         type Input = ExampleInput;
         type Output = ExampleOutput;
 
-        fn metadata() -> ActionMetadataDraft {
-            ActionMetadataDraft::new(
-                action_key!("test.example"),
-                crate::metadata_name!("Example"),
-                "Example action",
-            )
+        fn metadata() -> ActionMetadata {
+            ActionMetadata::new(crate::metadata_name!("Example"), "Example action")
         }
 
         fn dependencies() -> &'static Dependencies {
@@ -628,7 +622,7 @@ mod tests {
         }
     }
 
-    fn admitted() -> ActionMetadata {
+    fn admitted() -> ActionDefinition {
         ExampleAction::metadata()
             .admit_for::<ExampleAction>(ActionKind::Control)
             .expect("valid definition")
@@ -663,17 +657,14 @@ mod tests {
     fn recorded_metadata_requires_exact_fresh_definition() {
         let fresh = admitted();
         let encoded = serde_json::to_vec(&fresh).expect("serialize admitted metadata");
-        let recorded: RecordedActionMetadata =
+        let recorded: RecordedActionDefinition =
             serde_json::from_slice(&encoded).expect("decode recorded evidence");
         assert_eq!(recorded.readmit_against(&fresh).unwrap(), fresh);
 
-        let different = ActionMetadataDraft::new(
-            action_key!("test.example"),
-            crate::metadata_name!("Example"),
-            "Changed description",
-        )
-        .admit_for::<ExampleAction>(ActionKind::Control)
-        .expect("valid changed definition");
+        let different =
+            ActionMetadata::new(crate::metadata_name!("Example"), "Changed description")
+                .admit_for::<ExampleAction>(ActionKind::Control)
+                .expect("valid changed definition");
         assert!(recorded.readmit_against(&different).is_err());
     }
 
@@ -702,7 +693,7 @@ mod tests {
                 .as_object_mut()
                 .unwrap()
                 .remove("policy_version");
-            let recorded: RecordedActionMetadata = serde_json::from_value(wire.clone()).unwrap();
+            let recorded: RecordedActionDefinition = serde_json::from_value(wire.clone()).unwrap();
             assert_eq!(serde_json::to_value(&recorded).unwrap(), wire);
             assert!(recorded.readmit_against(&current).is_err());
         }

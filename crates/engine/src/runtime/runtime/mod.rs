@@ -8,7 +8,7 @@ use std::{sync::Arc, time::Instant};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use nebula_action::{
-    ActionContext, ActionError, ActionFactory, ActionHandle, ActionMetadata, AgentHandle,
+    ActionContext, ActionDefinition, ActionError, ActionFactory, ActionHandle, AgentHandle,
     IsolationLevel, StreamHandle,
     output::{ActionOutput, DataReference},
     result::ActionResult,
@@ -423,7 +423,7 @@ impl ActionRuntime {
         context: &dyn ActionContext,
         admission: crate::effect_driver::JournalAdmission,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
-        let metadata = factory.metadata();
+        let metadata = factory.definition();
         if !matches!(
             metadata.effect_contract(),
             nebula_action::effect::ActionEffectContract::Journaled(_)
@@ -509,7 +509,7 @@ impl ActionRuntime {
         factory: &dyn ActionFactory,
         handle: &ActionHandle,
     ) -> Result<(), RuntimeError> {
-        if !Arc::ptr_eq(factory.metadata(), handle.metadata()) {
+        if !Arc::ptr_eq(factory.definition(), handle.definition()) {
             self.observe_rejected("factory_handle_metadata_mismatch");
             tracing::error!(
                 error_code = "RUNTIME:FACTORY_HANDLE_METADATA_MISMATCH",
@@ -520,18 +520,18 @@ impl ActionRuntime {
                 key: action_key.to_owned(),
             });
         }
-        if handle.kind() != factory.metadata().kind() {
+        if handle.kind() != factory.definition().kind() {
             self.observe_rejected("factory_handle_kind_mismatch");
             tracing::error!(
                 error_code = "RUNTIME:FACTORY_HANDLE_KIND_MISMATCH",
                 action_key,
-                expected = ?factory.metadata().kind(),
+                expected = ?factory.definition().kind(),
                 actual = ?handle.kind(),
                 "sealed action factory returned a handle with the wrong structural kind"
             );
             return Err(RuntimeError::FactoryHandleKindMismatch {
                 key: action_key.to_owned(),
-                expected: factory.metadata().kind(),
+                expected: factory.definition().kind(),
                 actual: handle.kind(),
             });
         }
@@ -554,7 +554,7 @@ impl ActionRuntime {
         iteration_gate: Option<&dyn crate::effect_driver::IterationGate>,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         let error_counter = &self.action_failures_total;
-        let metadata = factory.metadata();
+        let metadata = factory.definition();
         if metadata.kind() == nebula_action::ActionKind::Trigger {
             self.observe_rejected(dispatch_reject_reason::TRIGGER_NOT_EXECUTABLE);
             return Err(RuntimeError::TriggerNotExecutable {
@@ -718,7 +718,7 @@ impl ActionRuntime {
     /// dispatch routes through [`ActionRunner`] using the same `metadata`).
     async fn execute_stateless_handle(
         &self,
-        metadata: &ActionMetadata,
+        metadata: &ActionDefinition,
         handle: Box<dyn nebula_action::StatelessHandle>,
         input: nebula_action::ActionInput,
         context: &dyn ActionContext,
@@ -764,7 +764,7 @@ impl ActionRuntime {
     )]
     async fn execute_stream_handle(
         &self,
-        metadata: &ActionMetadata,
+        metadata: &ActionDefinition,
         handle: Box<dyn StreamHandle>,
         input: nebula_action::ActionInput,
         context: &dyn ActionContext,
@@ -820,7 +820,7 @@ impl ActionRuntime {
     /// a `Continue` delay is skipped: the next iteration already ran once.
     async fn execute_stateful_handle(
         &self,
-        metadata: &ActionMetadata,
+        metadata: &ActionDefinition,
         handle: Box<dyn nebula_action::StatefulHandle>,
         input: nebula_action::ActionInput,
         context: &dyn ActionContext,
@@ -1049,7 +1049,7 @@ impl ActionRuntime {
     /// provider call.
     async fn execute_control_handle(
         &self,
-        metadata: &ActionMetadata,
+        metadata: &ActionDefinition,
         handle: Box<dyn nebula_action::ControlHandle>,
         input: nebula_action::ActionInput,
         context: &dyn ActionContext,
@@ -1133,7 +1133,7 @@ impl ActionRuntime {
     )]
     async fn execute_agent_handle(
         &self,
-        metadata: &ActionMetadata,
+        metadata: &ActionDefinition,
         handle: Box<dyn AgentHandle>,
         input: nebula_action::ActionInput,
         context: &dyn ActionContext,

@@ -31,10 +31,9 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, ActionMetadataDraft, action::Action, result::ActionResult,
-    stateless::StatelessAction,
+    ActionError, ActionMetadata, action::Action, result::ActionResult, stateless::StatelessAction,
 };
-use nebula_core::{Dependencies, NodeKey, action_key, id::ExecutionId, node_key};
+use nebula_core::{Dependencies, NodeKey, id::ExecutionId, node_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, EngineError, ExecutionEvent, InProcessRunner,
     RuntimeError, WorkflowEngine,
@@ -84,12 +83,12 @@ enum FailureMode {
 struct LeakyProviderAction(FailureMode);
 
 impl Action for LeakyProviderAction {
+    const KEY: &'static str = "core.leaky_provider";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            action_key!("core.leaky_provider"),
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
             nebula_action::metadata_name!("LeakyProvider"),
             "always fails quoting a provider payload",
         )
@@ -227,7 +226,7 @@ struct RedactionFixture {
 async fn leaky_provider_fixture(mode: FailureMode) -> RedactionFixture {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(LeakyProviderAction::metadata(), LeakyProviderAction(mode))
+        .register_stateless_instance(LeakyProviderAction(mode))
         .expect("valid test catalog definition");
     let frozen = exact_fixture::freeze_registry(&registry, &[("core", "core.leaky_provider")]);
 

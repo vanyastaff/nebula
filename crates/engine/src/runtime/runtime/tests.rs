@@ -2,11 +2,11 @@ use std::sync::OnceLock;
 
 use nebula_action::{
     ActionRuntimeContext, FromWorkflowNode, InstanceFactory, TriggerRuntimeContext, action::Action,
-    context::CredentialContextExt, error::ActionError, metadata::ActionMetadataDraft,
+    context::CredentialContextExt, error::ActionError, metadata::ActionMetadata,
     stateful::StatefulAction, stateless::StatelessAction,
 };
 use nebula_core::{
-    BaseContext, Dependencies, action_key,
+    BaseContext, Dependencies,
     context::Context,
     id::{ExecutionId, WorkflowId},
     node_key,
@@ -17,13 +17,8 @@ use crate::runtime::runner::InProcessRunner;
 
 use super::*;
 
-fn pure_metadata(
-    key: nebula_core::ActionKey,
-    name: &str,
-    description: &str,
-) -> ActionMetadataDraft {
-    ActionMetadataDraft::new(
-        key,
+fn pure_metadata(name: &str, description: &str) -> ActionMetadata {
+    ActionMetadata::new(
         nebula_action::MetadataName::try_from(name).expect("fixture display name"),
         description,
     )
@@ -64,24 +59,64 @@ impl ActionRunner for CountingRunner {
     }
 }
 
-/// Echo fixture — Variant A unit struct. Per-test metadata is supplied
-/// via [`ActionRegistry::register_stateless_instance`] (the
-/// R-NEW-7 test escape), so the static `<Self as Action>::metadata()`
-/// is only consulted when the test escape is bypassed.
+/// Echo fixture — Variant A unit struct. Tests that need it under another key
+/// register a `stateless_entry!` type wrapping it.
 struct EchoAction;
 
 impl Action for EchoAction {
+    const KEY: &'static str = "test.left";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        pure_metadata(action_key!("test.echo.static"), "Echo", "echoes input")
+    fn metadata() -> ActionMetadata {
+        pure_metadata("Left", "left contract")
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
     }
 }
+
+nebula_action::stateless_entry!(
+    TestRightEntry(EchoAction) = "test.right",
+    pure_metadata("Right", "right contract"),
+);
+
+nebula_action::stateless_entry!(
+    TestEchoEntry(EchoAction) = "test.echo",
+    pure_metadata("Echo", "echoes input"),
+);
+
+nebula_action::stateless_entry!(
+    TestBigEntry(EchoAction) = "test.big",
+    pure_metadata("Big", "returns big output"),
+);
+
+nebula_action::stateless_entry!(
+    TestTeleEntry(EchoAction) = "test.tele",
+    pure_metadata("Tele", "test"),
+);
+
+nebula_action::stateless_entry!(
+    TestGatedEntry(EchoAction) = "test.gated",
+    pure_metadata("Gated", "capability gated")
+        .with_isolation_level(IsolationLevel::CapabilityGated),
+);
+
+nebula_action::stateless_entry!(
+    TestSpillEntry(EchoAction) = "test.spill",
+    pure_metadata("Spill", "large output"),
+);
+
+nebula_action::stateless_entry!(
+    TestSpillOkEntry(EchoAction) = "test.spill_ok",
+    pure_metadata("SpillOk", "large output with storage",),
+);
+
+nebula_action::stateless_entry!(
+    TestDispatchedEntry(EchoAction) = "test.dispatched",
+    pure_metadata("Disp", "dispatched"),
+);
 
 impl StatelessAction for EchoAction {
     async fn execute(
@@ -96,11 +131,12 @@ impl StatelessAction for EchoAction {
 struct FailAction;
 
 impl Action for FailAction {
+    const KEY: &'static str = "test.fail";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        pure_metadata(action_key!("test.fail.static"), "Fail", "always fails")
+    fn metadata() -> ActionMetadata {
+        pure_metadata("Fail", "always fails")
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -178,18 +214,28 @@ async fn dispatch_counted_contract(
 ) {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    thread_local! {
+        /// Effect contract the fixture under admission declares.
+        static CONTRACT: std::cell::RefCell<Option<nebula_action::effect::ActionEffectContract>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
     struct CountedAction(Arc<AtomicUsize>);
 
     impl Action for CountedAction {
+        const KEY: &'static str = "test.owner_required";
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadataDraft {
-            ActionMetadataDraft::new(
-                action_key!("test.owner_required"),
-                nebula_action::metadata_name!("Guard"),
-                "effect gate",
-            )
+        fn metadata() -> ActionMetadata {
+            let contract = CONTRACT.with(|contract| {
+                contract
+                    .borrow()
+                    .clone()
+                    .expect("contract is installed during fixture admission")
+            });
+            ActionMetadata::new(nebula_action::metadata_name!("Guard"), "effect gate")
+                .with_effect_contract(contract)
         }
 
         fn dependencies() -> &'static Dependencies {
@@ -210,18 +256,12 @@ async fn dispatch_counted_contract(
     }
 
     let executions = Arc::new(AtomicUsize::new(0));
+    CONTRACT.with(|installed| *installed.borrow_mut() = Some(contract));
     let factory: Arc<dyn ActionFactory> = Arc::new(
-        InstanceFactory::new(
-            ActionMetadataDraft::new(
-                action_key!("test.owner_required"),
-                nebula_action::metadata_name!("Guard"),
-                "effect gate",
-            )
-            .with_effect_contract(contract),
-            CountedAction(Arc::clone(&executions)),
-        )
-        .expect("typed fixture metadata admits"),
+        InstanceFactory::new(CountedAction(Arc::clone(&executions)))
+            .expect("typed fixture metadata admits"),
     );
+    CONTRACT.with(|installed| *installed.borrow_mut() = None);
     let (runtime, metrics) = make_runtime_with_metrics(Arc::new(ActionRegistry::new()));
     let node = NodeDefinition::new(node_key!("test"), "Guard", "test", "owner_required").unwrap();
     let result = runtime
@@ -330,25 +370,14 @@ async fn generic_dispatch_rejects_a_remote_effect_without_capability_before_acti
 
 #[tokio::test]
 async fn runtime_rejects_a_handle_from_an_equal_schema_foreign_factory() {
-    let left: Arc<dyn ActionFactory> = Arc::new(
-        InstanceFactory::new(
-            pure_metadata(action_key!("test.left"), "Left", "left contract"),
-            EchoAction,
-        )
-        .unwrap(),
-    );
-    let right: Arc<dyn ActionFactory> = Arc::new(
-        InstanceFactory::new(
-            pure_metadata(action_key!("test.right"), "Right", "right contract"),
-            EchoAction,
-        )
-        .unwrap(),
-    );
+    let left: Arc<dyn ActionFactory> = Arc::new(InstanceFactory::new(EchoAction).unwrap());
+    let right: Arc<dyn ActionFactory> =
+        Arc::new(InstanceFactory::new(TestRightEntry(EchoAction)).unwrap());
     assert_eq!(
-        left.metadata().base().schema(),
-        right.metadata().base().schema()
+        left.definition().base().schema(),
+        right.definition().base().schema()
     );
-    assert!(!Arc::ptr_eq(left.metadata(), right.metadata()));
+    assert!(!Arc::ptr_eq(left.definition(), right.definition()));
 
     let node = NodeDefinition::new(node_key!("test"), "Right", "test", "right").unwrap();
     let handle = right.instantiate(&node, &test_context()).await.unwrap();
@@ -364,10 +393,7 @@ async fn runtime_rejects_a_handle_from_an_equal_schema_foreign_factory() {
 async fn max_total_execution_bytes_across_dispatches() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(action_key!("test.echo"), "Echo", "echoes input"),
-            EchoAction,
-        )
+        .register_stateless_instance(TestEchoEntry(EchoAction))
         .expect("valid test catalog definition");
     let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
@@ -423,10 +449,7 @@ async fn max_total_execution_bytes_across_dispatches() {
 async fn execute_trusted_action() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(action_key!("test.echo"), "Echo", "echoes input"),
-            EchoAction,
-        )
+        .register_stateless_instance(TestEchoEntry(EchoAction))
         .expect("valid test catalog definition");
 
     let rt = make_runtime(registry);
@@ -457,10 +480,7 @@ async fn execute_unknown_action_returns_error() {
 async fn execute_failing_action_propagates_error() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(action_key!("test.fail"), "Fail", "always fails"),
-            FailAction,
-        )
+        .register_stateless_instance(FailAction)
         .expect("valid test catalog definition");
 
     let rt = make_runtime(registry);
@@ -475,10 +495,7 @@ async fn execute_failing_action_propagates_error() {
 async fn data_limit_enforcement() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(action_key!("test.big"), "Big", "returns big output"),
-            EchoAction,
-        )
+        .register_stateless_instance(TestBigEntry(EchoAction))
         .expect("valid test catalog definition");
     let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
@@ -506,10 +523,7 @@ async fn data_limit_enforcement() {
 async fn metrics_recorded_on_execution() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(action_key!("test.tele"), "Tele", "test"),
-            EchoAction,
-        )
+        .register_stateless_instance(TestTeleEntry(EchoAction))
         .expect("valid test catalog definition");
     let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
@@ -569,11 +583,7 @@ async fn execute_uses_runner_for_capability_gated() {
 
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(action_key!("test.gated"), "Gated", "capability gated")
-                .with_isolation_level(IsolationLevel::CapabilityGated),
-            EchoAction,
-        )
+        .register_stateless_instance(TestGatedEntry(EchoAction))
         .expect("valid test catalog definition");
 
     let metrics = MetricsRegistry::new();
@@ -598,10 +608,7 @@ async fn execute_uses_runner_for_capability_gated() {
 async fn spill_to_blob_rejects_when_no_storage() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(action_key!("test.spill"), "Spill", "large output"),
-            EchoAction,
-        )
+        .register_stateless_instance(TestSpillEntry(EchoAction))
         .expect("valid test catalog definition");
     let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
@@ -651,14 +658,7 @@ async fn spill_to_blob_succeeds_with_storage() {
 
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("test.spill_ok"),
-                "SpillOk",
-                "large output with storage",
-            ),
-            EchoAction,
-        )
+        .register_stateless_instance(TestSpillOkEntry(EchoAction))
         .expect("valid test catalog definition");
     let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
@@ -710,15 +710,12 @@ async fn multi_output_fanout_port_respects_reject_limit() {
 
     struct MultiOutAction;
     impl Action for MultiOutAction {
+        const KEY: &'static str = "test.multi_out";
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadataDraft {
-            pure_metadata(
-                action_key!("test.multi_out.static"),
-                "MultiOut",
-                "multi-port fan-out",
-            )
+        fn metadata() -> ActionMetadata {
+            pure_metadata("MultiOut", "multi-port fan-out")
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -750,14 +747,7 @@ async fn multi_output_fanout_port_respects_reject_limit() {
 
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("test.multi_out"),
-                "MultiOut",
-                "multi-port fan-out",
-            ),
-            MultiOutAction,
-        )
+        .register_stateless_instance(MultiOutAction)
         .expect("valid test catalog definition");
     let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
@@ -794,11 +784,12 @@ async fn branch_alternatives_respect_reject_limit() {
 
     struct BranchAction;
     impl Action for BranchAction {
+        const KEY: &'static str = "test.branch";
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadataDraft {
-            pure_metadata(action_key!("test.branch.static"), "Branch", "static")
+        fn metadata() -> ActionMetadata {
+            pure_metadata("Branch", "branch with alts")
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -829,10 +820,7 @@ async fn branch_alternatives_respect_reject_limit() {
 
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(action_key!("test.branch"), "Branch", "branch with alts"),
-            BranchAction,
-        )
+        .register_stateless_instance(BranchAction)
         .expect("valid test catalog definition");
     let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
@@ -863,11 +851,12 @@ async fn collection_children_respect_reject_limit() {
 
     struct CollectionAction;
     impl Action for CollectionAction {
+        const KEY: &'static str = "test.collection";
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadataDraft {
-            pure_metadata(action_key!("test.collection.static"), "Coll", "static")
+        fn metadata() -> ActionMetadata {
+            pure_metadata("Collection", "nested values")
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -891,14 +880,7 @@ async fn collection_children_respect_reject_limit() {
 
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(
-                action_key!("test.collection"),
-                "Collection",
-                "nested values",
-            ),
-            CollectionAction,
-        )
+        .register_stateless_instance(CollectionAction)
         .expect("valid test catalog definition");
     let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
@@ -932,11 +914,12 @@ async fn binary_inline_respects_reject_limit() {
 
     struct BinaryAction;
     impl Action for BinaryAction {
+        const KEY: &'static str = "test.binary";
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadataDraft {
-            pure_metadata(action_key!("test.binary.static"), "Bin", "static")
+        fn metadata() -> ActionMetadata {
+            pure_metadata("Binary", "inline bytes")
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -964,10 +947,7 @@ async fn binary_inline_respects_reject_limit() {
 
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(action_key!("test.binary"), "Binary", "inline bytes"),
-            BinaryAction,
-        )
+        .register_stateless_instance(BinaryAction)
         .expect("valid test catalog definition");
     let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
@@ -998,11 +978,12 @@ async fn reference_metadata_respects_reject_limit() {
 
     struct RefAction;
     impl Action for RefAction {
+        const KEY: &'static str = "test.ref";
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadataDraft {
-            pure_metadata(action_key!("test.ref.static"), "Ref", "static")
+        fn metadata() -> ActionMetadata {
+            pure_metadata("Reference", "large metadata")
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -1028,10 +1009,7 @@ async fn reference_metadata_respects_reject_limit() {
 
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(action_key!("test.ref"), "Reference", "large metadata"),
-            RefAction,
-        )
+        .register_stateless_instance(RefAction)
         .expect("valid test catalog definition");
     let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
@@ -1076,12 +1054,12 @@ async fn trigger_rejection_does_not_observe_histogram() {
     }
 
     impl Action for FakeTrigger {
+        const KEY: &'static str = "test.trigger_reject";
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadataDraft {
-            ActionMetadataDraft::new(
-                action_key!("test.trigger_reject"),
+        fn metadata() -> ActionMetadata {
+            ActionMetadata::new(
                 nebula_action::metadata_name!("FakeTrigger"),
                 "rejection fixture",
             )
@@ -1196,13 +1174,13 @@ async fn resource_rejection_does_not_increment_execution_metrics() {
     struct FakeResource;
 
     impl Action for FakeResource {
+        const KEY: &'static str = "test.resource_reject";
         type Input = serde_json::Value;
         // ResourceAction requires Output = ResourceProduces<Self::Resource>.
         type Output = ResourceProduces<serde_json::Value>;
 
-        fn metadata() -> ActionMetadataDraft {
-            ActionMetadataDraft::new(
-                action_key!("test.resource_reject"),
+        fn metadata() -> ActionMetadata {
+            ActionMetadata::new(
                 nebula_action::metadata_name!("FakeResource"),
                 "rejection fixture",
             )
@@ -1299,10 +1277,7 @@ async fn resource_rejection_does_not_increment_execution_metrics() {
 async fn dispatched_stateless_observes_histogram_and_counter() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            pure_metadata(action_key!("test.dispatched"), "Disp", "dispatched"),
-            EchoAction,
-        )
+        .register_stateless_instance(TestDispatchedEntry(EchoAction))
         .expect("valid test catalog definition");
     let (rt, metrics) = make_runtime_with_metrics(registry);
 
@@ -1356,15 +1331,12 @@ async fn stream_action_dispatch_yields_folded_value() {
     struct CountingStream;
 
     impl Action for CountingStream {
+        const KEY: &'static str = "test.stream.counting";
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadataDraft {
-            pure_metadata(
-                action_key!("test.stream.counting"),
-                "CountingStream",
-                "yields 1,2,3 and sums",
-            )
+        fn metadata() -> ActionMetadata {
+            pure_metadata("CountingStream", "yields 1,2,3 and sums")
         }
 
         fn dependencies() -> &'static Dependencies {
@@ -1441,15 +1413,12 @@ async fn stream_output_respects_data_limit() {
     struct BigStream;
 
     impl Action for BigStream {
+        const KEY: &'static str = "test.stream.big";
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadataDraft {
-            pure_metadata(
-                action_key!("test.stream.big"),
-                "BigStream",
-                "produces an oversized folded value",
-            )
+        fn metadata() -> ActionMetadata {
+            pure_metadata("BigStream", "produces an oversized folded value")
         }
 
         fn dependencies() -> &'static Dependencies {
@@ -1554,11 +1523,12 @@ fn counting_step(state: &mut JsonValue, target: u32) -> ActionResult<JsonValue> 
 struct CountingTo3;
 
 impl Action for CountingTo3 {
+    const KEY: &'static str = "test.count";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        pure_metadata(action_key!("test.count"), "CountTo3", "counts to 3")
+    fn metadata() -> ActionMetadata {
+        pure_metadata("CountTo3", "counts to 3")
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -1594,11 +1564,12 @@ impl FromWorkflowNode for CountingTo3 {
 struct CountingTo5;
 
 impl Action for CountingTo5 {
+    const KEY: &'static str = "test.count5";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        pure_metadata(action_key!("test.count5"), "CountTo5", "counts to 5")
+    fn metadata() -> ActionMetadata {
+        pure_metadata("CountTo5", "counts to 5")
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -1634,11 +1605,12 @@ impl FromWorkflowNode for CountingTo5 {
 struct CountingTo2;
 
 impl Action for CountingTo2 {
+    const KEY: &'static str = "test.count2";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        pure_metadata(action_key!("test.count2"), "CountTo2", "counts to 2")
+    fn metadata() -> ActionMetadata {
+        pure_metadata("CountTo2", "counts to 2")
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -1675,15 +1647,12 @@ impl FromWorkflowNode for CountingTo2 {
 struct SleepyStateful;
 
 impl Action for SleepyStateful {
+    const KEY: &'static str = "test.sleepy";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        pure_metadata(
-            action_key!("test.sleepy"),
-            "SleepyStateful",
-            "hangs in execute",
-        )
+    fn metadata() -> ActionMetadata {
+        pure_metadata("SleepyStateful", "hangs in execute")
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -1936,15 +1905,12 @@ async fn execute_stateful_load_failure_falls_back_to_init_state() {
 struct NoProgressStateful;
 
 impl Action for NoProgressStateful {
+    const KEY: &'static str = "test.stuck";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        pure_metadata(
-            action_key!("test.stuck"),
-            "NoProgress",
-            "never advances state",
-        )
+    fn metadata() -> ActionMetadata {
+        pure_metadata("NoProgress", "never advances state")
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -2015,15 +1981,12 @@ async fn execute_stateful_stuck_surfaces_typed_variant() {
 struct EndlessStateful;
 
 impl Action for EndlessStateful {
+    const KEY: &'static str = "test.endless";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        pure_metadata(
-            action_key!("test.endless"),
-            "EndlessStateful",
-            "never breaks",
-        )
+    fn metadata() -> ActionMetadata {
+        pure_metadata("EndlessStateful", "never breaks")
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -2265,15 +2228,12 @@ impl crate::effect_driver::IterationGate for ScriptedGate {
 struct DelayedStateful;
 
 impl Action for DelayedStateful {
+    const KEY: &'static str = "test.delayed";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        pure_metadata(
-            action_key!("test.delayed"),
-            "DelayedStateful",
-            "continues after a delay",
-        )
+    fn metadata() -> ActionMetadata {
+        pure_metadata("DelayedStateful", "continues after a delay")
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -2317,15 +2277,12 @@ impl FromWorkflowNode for DelayedStateful {
 struct DelayedCountingTo4;
 
 impl Action for DelayedCountingTo4 {
+    const KEY: &'static str = "test.delayed_count";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        pure_metadata(
-            action_key!("test.delayed_count"),
-            "DelayedCountingTo4",
-            "counts to 4, an hour apart",
-        )
+    fn metadata() -> ActionMetadata {
+        pure_metadata("DelayedCountingTo4", "counts to 4, an hour apart")
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -2611,15 +2568,12 @@ async fn a_cancellation_before_the_first_iteration_closes_admission() {
 struct NeverBuilt;
 
 impl Action for NeverBuilt {
+    const KEY: &'static str = "test.never_built";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        pure_metadata(
-            action_key!("test.never_built"),
-            "NeverBuilt",
-            "never finishes building",
-        )
+    fn metadata() -> ActionMetadata {
+        pure_metadata("NeverBuilt", "never finishes building")
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -2966,15 +2920,12 @@ async fn a_refused_checkpoint_stops_the_loop() {
 struct CountingAgent;
 
 impl Action for CountingAgent {
+    const KEY: &'static str = "test.agent_count";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        pure_metadata(
-            action_key!("test.agent_count"),
-            "CountingAgent",
-            "counts its turns",
-        )
+    fn metadata() -> ActionMetadata {
+        pure_metadata("CountingAgent", "counts its turns")
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -3024,15 +2975,12 @@ static IDLE_STEPS: AtomicU32 = AtomicU32::new(0);
 struct IdleAgent;
 
 impl Action for IdleAgent {
+    const KEY: &'static str = "test.agent_idle";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        pure_metadata(
-            action_key!("test.agent_idle"),
-            "IdleAgent",
-            "makes no progress twice",
-        )
+    fn metadata() -> ActionMetadata {
+        pure_metadata("IdleAgent", "makes no progress twice")
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -3075,15 +3023,12 @@ impl FromWorkflowNode for IdleAgent {
 struct HungAgent;
 
 impl Action for HungAgent {
+    const KEY: &'static str = "test.agent_hung";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        pure_metadata(
-            action_key!("test.agent_hung"),
-            "HungAgent",
-            "a turn that never ends",
-        )
+    fn metadata() -> ActionMetadata {
+        pure_metadata("HungAgent", "a turn that never ends")
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -3123,15 +3068,12 @@ impl FromWorkflowNode for HungAgent {
 struct BoundlessAgent;
 
 impl Action for BoundlessAgent {
+    const KEY: &'static str = "test.agent_boundless";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        pure_metadata(
-            action_key!("test.agent_boundless"),
-            "BoundlessAgent",
-            "too many turns",
-        )
+    fn metadata() -> ActionMetadata {
+        pure_metadata("BoundlessAgent", "too many turns")
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();

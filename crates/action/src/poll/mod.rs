@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 pub use source::PollSource;
 
 use crate::{
-    action::Action, context::TriggerContext, error::ActionError, metadata::ActionMetadata,
+    action::Action, context::TriggerContext, error::ActionError, metadata::ActionDefinition,
     trigger::TriggerHandler,
 };
 
@@ -810,7 +810,7 @@ impl<K: Hash + Eq + Clone, C> DeduplicatingCursor<K, C> {
 /// use std::time::Duration;
 /// use nebula_action::{PollAction, PollConfig, PollCursor, PollResult, TriggerContext};
 /// # use std::sync::OnceLock;
-/// # use nebula_action::{Action, ActionError, ActionMetadata};
+/// # use nebula_action::{Action, ActionError, ActionDefinition};
 /// # use nebula_core::{Dependencies, action_key};
 ///
 /// struct RssPoll {
@@ -818,10 +818,11 @@ impl<K: Hash + Eq + Clone, C> DeduplicatingCursor<K, C> {
 /// }
 ///
 /// # impl Action for RssPoll {
+/// const KEY: &'static str = "rss.poll";
 /// #     type Input = serde_json::Value;
 /// #     type Output = serde_json::Value;
-/// #     fn metadata() -> nebula_action::ActionMetadataDraft {
-/// #         nebula_action::ActionMetadataDraft::new(action_key!("rss.poll"), nebula_action::metadata_name!("RSS Poll"), "Poll an RSS feed")
+/// #     fn metadata() -> nebula_action::ActionMetadata {
+/// #         nebula_action::ActionMetadata::new(nebula_action::metadata_name!("RSS Poll"), "Poll an RSS feed")
 /// #     }
 /// #     fn dependencies() -> &'static Dependencies {
 /// #         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -1119,7 +1120,7 @@ struct CycleOutcome<C> {
 /// - **`Err`**: cursor = pre-poll position. No events dispatched.
 pub struct PollTriggerAdapter<A: PollAction> {
     action: A,
-    meta: ActionMetadata,
+    meta: ActionDefinition,
     started: AtomicBool,
     poll_warn: WarnThrottle,
     serialize_warn: WarnThrottle,
@@ -1374,7 +1375,7 @@ where
     A::Cursor: Send + Sync,
     A::Event: Send + Sync,
 {
-    fn metadata(&self) -> &ActionMetadata {
+    fn definition(&self) -> &ActionDefinition {
         &self.meta
     }
 

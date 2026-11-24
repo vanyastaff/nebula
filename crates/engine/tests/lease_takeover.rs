@@ -37,12 +37,12 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, ActionMetadataDraft,
+    ActionError, ActionMetadata,
     action::Action,
     result::{ActionResult, WaitCondition},
     stateless::StatelessAction,
 };
-use nebula_core::{ActionKey, Dependencies, action_key, id::WorkflowId, node_key};
+use nebula_core::{Dependencies, id::WorkflowId, node_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, ControlConsumer, ControlDispatch, DataPassingPolicy,
     EngineControlDispatch, ExecutionEvent, InProcessRunner, WorkflowEngine,
@@ -184,17 +184,17 @@ impl LeaseStores {
 // Test handlers
 // ---------------------------------------------------------------------------
 
-/// Macro to emit Variant A `impl Action` with placeholder static metadata.
-/// Real per-instance metadata flows through `register_stateless_instance`.
-macro_rules! placeholder_action_impl {
-    ($ty:ty, $key:expr, $name:expr, $desc:expr) => {
+/// Macro to emit a fixture's `impl Action` with its key and metadata: one
+/// fixture type is one catalog entry.
+macro_rules! fixture_action_impl {
+    ($ty:ty, $key:expr, $metadata:expr $(,)?) => {
         impl Action for $ty {
+            const KEY: &'static str = $key;
             type Input = serde_json::Value;
             type Output = serde_json::Value;
 
-            fn metadata() -> ActionMetadataDraft {
-                ActionMetadataDraft::new($key, nebula_action::metadata_name!($name), $desc)
-                    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
+            fn metadata() -> ActionMetadata {
+                $metadata
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -211,11 +211,11 @@ struct CountingEchoHandler {
     invocations: Arc<AtomicU32>,
 }
 
-placeholder_action_impl!(
-    CountingEchoHandler,
-    action_key!("placeholder.counting_echo"),
-    "CountingEchoPlaceholder",
-    "placeholder"
+fixture_action_impl!(CountingEchoHandler, "core.echo", meta("core.echo"),);
+
+nebula_action::stateless_entry!(
+    CoreParkEntry(CountingEchoHandler) = "core.park",
+    meta("core.park"),
 );
 
 impl StatelessAction for CountingEchoHandler {
@@ -239,12 +239,7 @@ struct ParkHandler {
     invocations: Arc<AtomicU32>,
 }
 
-placeholder_action_impl!(
-    ParkHandler,
-    action_key!("placeholder.park"),
-    "ParkPlaceholder",
-    "placeholder"
-);
+fixture_action_impl!(ParkHandler, "core.park", meta("core.park"),);
 
 impl StatelessAction for ParkHandler {
     async fn execute(
@@ -263,12 +258,7 @@ impl StatelessAction for ParkHandler {
 /// execution within the test.
 struct FarTimerHandler;
 
-placeholder_action_impl!(
-    FarTimerHandler,
-    action_key!("placeholder.far_timer"),
-    "FarTimerPlaceholder",
-    "placeholder"
-);
+fixture_action_impl!(FarTimerHandler, "core.far_timer", meta("core.far_timer"),);
 
 impl StatelessAction for FarTimerHandler {
     async fn execute(
@@ -290,9 +280,9 @@ impl StatelessAction for FarTimerHandler {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn meta(key: ActionKey) -> ActionMetadataDraft {
-    let name = key.clone().into();
-    ActionMetadataDraft::new(key, name, "lease-takeover test handler")
+fn meta(name: &str) -> ActionMetadata {
+    ActionMetadata::try_new(name, "lease-takeover test handler")
+        .expect("fixture display name")
         .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
 }
 
@@ -372,40 +362,28 @@ async fn engine_b_takes_over_after_engine_a_runner_dies() {
     // Runner A — has a parking handler for "park" so it holds the lease.
     let registry_a = Arc::new(ActionRegistry::new());
     registry_a
-        .register_stateless_instance(
-            meta(action_key!("core.echo")),
-            CountingEchoHandler {
-                invocations: Arc::clone(&echo_invocations),
-            },
-        )
+        .register_stateless_instance(CountingEchoHandler {
+            invocations: Arc::clone(&echo_invocations),
+        })
         .expect("valid test catalog definition");
     registry_a
-        .register_stateless_instance(
-            meta(action_key!("core.park")),
-            ParkHandler {
-                started: Arc::clone(&started_a),
-                invocations: Arc::clone(&park_invocations),
-            },
-        )
+        .register_stateless_instance(ParkHandler {
+            started: Arc::clone(&started_a),
+            invocations: Arc::clone(&park_invocations),
+        })
         .expect("valid test catalog definition");
     // Runner B — same action_keys, but "park" is a fast-completing
     // handler so the resumed workflow can finish.
     let registry_b = Arc::new(ActionRegistry::new());
     registry_b
-        .register_stateless_instance(
-            meta(action_key!("core.echo")),
-            CountingEchoHandler {
-                invocations: Arc::clone(&echo_invocations),
-            },
-        )
+        .register_stateless_instance(CountingEchoHandler {
+            invocations: Arc::clone(&echo_invocations),
+        })
         .expect("valid test catalog definition");
     registry_b
-        .register_stateless_instance(
-            meta(action_key!("core.park")),
-            CountingEchoHandler {
-                invocations: Arc::clone(&park_invocations),
-            },
-        )
+        .register_stateless_instance(CoreParkEntry(CountingEchoHandler {
+            invocations: Arc::clone(&park_invocations),
+        }))
         .expect("valid test catalog definition");
 
     // Event bus on engine_a — used to capture the execution_id without
@@ -626,41 +604,29 @@ async fn engine_b_cancels_execution_after_runner_a_death_via_reclaim_redeliver()
     // engine_a — parking Y so it holds the lease.
     let registry_a = Arc::new(ActionRegistry::new());
     registry_a
-        .register_stateless_instance(
-            meta(action_key!("core.echo")),
-            CountingEchoHandler {
-                invocations: Arc::clone(&echo_invocations),
-            },
-        )
+        .register_stateless_instance(CountingEchoHandler {
+            invocations: Arc::clone(&echo_invocations),
+        })
         .expect("valid test catalog definition");
     registry_a
-        .register_stateless_instance(
-            meta(action_key!("core.park")),
-            ParkHandler {
-                started: Arc::clone(&started_a),
-                invocations: Arc::clone(&park_invocations),
-            },
-        )
+        .register_stateless_instance(ParkHandler {
+            started: Arc::clone(&started_a),
+            invocations: Arc::clone(&park_invocations),
+        })
         .expect("valid test catalog definition");
 
     // engine_b — also parking Y so the cancel signal has somewhere to land.
     let registry_b = Arc::new(ActionRegistry::new());
     registry_b
-        .register_stateless_instance(
-            meta(action_key!("core.echo")),
-            CountingEchoHandler {
-                invocations: Arc::clone(&echo_invocations),
-            },
-        )
+        .register_stateless_instance(CountingEchoHandler {
+            invocations: Arc::clone(&echo_invocations),
+        })
         .expect("valid test catalog definition");
     registry_b
-        .register_stateless_instance(
-            meta(action_key!("core.park")),
-            ParkHandler {
-                started: Arc::clone(&started_b),
-                invocations: Arc::clone(&park_invocations),
-            },
-        )
+        .register_stateless_instance(ParkHandler {
+            started: Arc::clone(&started_b),
+            invocations: Arc::clone(&park_invocations),
+        })
         .expect("valid test catalog definition");
     let frozen_a = exact_fixture::freeze_registry(
         &registry_a,
@@ -905,21 +871,15 @@ async fn a_cancel_drained_on_another_worker_reaches_the_lease_holder() {
 
     let registry_a = Arc::new(ActionRegistry::new());
     registry_a
-        .register_stateless_instance(
-            meta(action_key!("core.echo")),
-            CountingEchoHandler {
-                invocations: Arc::clone(&echo_invocations),
-            },
-        )
+        .register_stateless_instance(CountingEchoHandler {
+            invocations: Arc::clone(&echo_invocations),
+        })
         .expect("valid test catalog definition");
     registry_a
-        .register_stateless_instance(
-            meta(action_key!("core.park")),
-            ParkHandler {
-                started: Arc::clone(&started_a),
-                invocations: Arc::clone(&park_invocations),
-            },
-        )
+        .register_stateless_instance(ParkHandler {
+            started: Arc::clone(&started_a),
+            invocations: Arc::clone(&park_invocations),
+        })
         .expect("valid test catalog definition");
     let frozen_a = exact_fixture::freeze_registry(
         &registry_a,
@@ -1036,7 +996,7 @@ async fn a_recorded_cancel_reaches_a_parked_execution_whose_holder_died() {
     let stores = LeaseStores::new();
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(meta(action_key!("core.far_timer")), FarTimerHandler)
+        .register_stateless_instance(FarTimerHandler)
         .expect("valid test catalog definition");
     let frozen = exact_fixture::freeze_registry(&registry, &[("core", "core.far_timer")]);
     let lease_ttl = Duration::from_secs(3);
@@ -1161,21 +1121,15 @@ async fn replay_does_not_contend_for_held_lease() {
     // engine_a — parking workflow to hold the lease.
     let registry_a = Arc::new(ActionRegistry::new());
     registry_a
-        .register_stateless_instance(
-            meta(action_key!("core.echo")),
-            CountingEchoHandler {
-                invocations: Arc::clone(&echo_invocations),
-            },
-        )
+        .register_stateless_instance(CountingEchoHandler {
+            invocations: Arc::clone(&echo_invocations),
+        })
         .expect("valid test catalog definition");
     registry_a
-        .register_stateless_instance(
-            meta(action_key!("core.park")),
-            ParkHandler {
-                started: Arc::clone(&started_a),
-                invocations: Arc::clone(&park_invocations),
-            },
-        )
+        .register_stateless_instance(ParkHandler {
+            started: Arc::clone(&started_a),
+            invocations: Arc::clone(&park_invocations),
+        })
         .expect("valid test catalog definition");
     let frozen_a = exact_fixture::freeze_registry(
         &registry_a,
@@ -1185,12 +1139,9 @@ async fn replay_does_not_contend_for_held_lease() {
     // engine_b — only needs the echo handler for its replay workflow.
     let registry_b = Arc::new(ActionRegistry::new());
     registry_b
-        .register_stateless_instance(
-            meta(action_key!("core.echo")),
-            CountingEchoHandler {
-                invocations: Arc::clone(&echo_invocations),
-            },
-        )
+        .register_stateless_instance(CountingEchoHandler {
+            invocations: Arc::clone(&echo_invocations),
+        })
         .expect("valid test catalog definition");
 
     let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);

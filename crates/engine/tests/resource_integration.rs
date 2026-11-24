@@ -17,10 +17,9 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, ActionMetadataDraft, action::Action, result::ActionResult,
-    stateless::StatelessAction,
+    ActionError, ActionMetadata, action::Action, result::ActionResult, stateless::StatelessAction,
 };
-use nebula_core::{ActionKey, Dependencies, action_key, id::WorkflowId, node_key};
+use nebula_core::{Dependencies, id::WorkflowId, node_key};
 use nebula_core::{OrgId, ResourceKey, ScopeLevel, WorkspaceId};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, WorkflowEngine,
@@ -52,16 +51,12 @@ mod exact_fixture;
 struct ResourceConsumerHandler;
 
 impl Action for ResourceConsumerHandler {
+    const KEY: &'static str = "resource-consumer";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            action_key!("test.resource_consumer.static"),
-            nebula_action::metadata_name!("ResourceConsumer"),
-            "static",
-        )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
+    fn metadata() -> ActionMetadata {
+        meta("resource-consumer")
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -143,9 +138,9 @@ fn make_workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
     }
 }
 
-fn meta(key: ActionKey) -> ActionMetadataDraft {
-    let name = key.clone().into();
-    ActionMetadataDraft::new(key, name, "resource integration test")
+fn meta(name: &str) -> ActionMetadata {
+    ActionMetadata::try_new(name, "resource integration test")
+        .expect("fixture display name")
         .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
 }
 
@@ -165,10 +160,7 @@ async fn action_acquires_resource_through_engine() {
     // 2. Build the action registry
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            meta(action_key!("resource-consumer")),
-            ResourceConsumerHandler,
-        )
+        .register_stateless_instance(ResourceConsumerHandler)
         .expect("valid test catalog definition");
 
     // 3. Build the engine with the resource manager attached
@@ -223,10 +215,7 @@ async fn full_resource_lifecycle_with_shutdown() {
     // 2. Build the action registry
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            meta(action_key!("resource-consumer")),
-            ResourceConsumerHandler,
-        )
+        .register_stateless_instance(ResourceConsumerHandler)
         .expect("valid test catalog definition");
 
     // 3. Build the engine with the resource manager attached
@@ -345,16 +334,12 @@ impl ResidentProvider for IntegrationProbeResource {
 struct IntegrationAcquireHandler;
 
 impl Action for IntegrationAcquireHandler {
+    const KEY: &'static str = "engine-integration-acquire";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            action_key!("test.engine_integration.acquire"),
-            nebula_action::metadata_name!("IntegrationAcquire"),
-            "static",
-        )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
+    fn metadata() -> ActionMetadata {
+        meta("engine-integration-acquire")
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -362,6 +347,11 @@ impl Action for IntegrationAcquireHandler {
         D.get_or_init(Dependencies::new)
     }
 }
+
+nebula_action::stateless_entry!(
+    CoreResourceProbeEntry(IntegrationAcquireHandler) = "core.resource_probe",
+    meta("core.resource_probe"),
+);
 
 impl StatelessAction for IntegrationAcquireHandler {
     async fn execute(
@@ -419,10 +409,7 @@ async fn engine_acquires_org_scoped_resource_through_accessor() {
 
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            meta(action_key!("engine-integration-acquire")),
-            IntegrationAcquireHandler,
-        )
+        .register_stateless_instance(IntegrationAcquireHandler)
         .expect("valid test catalog definition");
     let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
@@ -504,10 +491,7 @@ async fn workspaces_with_different_binding_shapes_each_reach_their_own_row() {
 
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            meta(action_key!("engine-integration-acquire")),
-            IntegrationAcquireHandler,
-        )
+        .register_stateless_instance(IntegrationAcquireHandler)
         .expect("valid test catalog definition");
     let runtime = Arc::new(
         ActionRuntime::try_new(
@@ -581,10 +565,7 @@ async fn durable_turn_acquires_the_executions_workspace_row() {
 
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            meta(action_key!("core.resource_probe")),
-            IntegrationAcquireHandler,
-        )
+        .register_stateless_instance(CoreResourceProbeEntry(IntegrationAcquireHandler))
         .expect("valid test catalog definition");
     let execution = Arc::new(nebula_storage::InMemoryExecutionStore::new());
     let stores = nebula_engine::ExecutionStores {

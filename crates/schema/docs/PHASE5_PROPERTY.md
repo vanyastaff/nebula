@@ -811,7 +811,7 @@ records plus negative dependency-closure, candidate drift and readmission tests.
 **Current:** shared setters and factory/registry schema admission already exist.
 **Target, unshipped:** issue 1018 closes constructor/SDK parity; Metadata Evolution
 below adds substantive catalog contracts.
-Keep concrete ActionMetadataDraft, CredentialMetadataDraft, ResourceMetadataDraft.
+Keep concrete ActionMetadata, CredentialMetadataDraft, ResourceMetadataDraft.
 Their target signatures (uncompiled):
 
 ```rust

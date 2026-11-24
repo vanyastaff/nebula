@@ -726,12 +726,12 @@ struct ChargeAction {
 }
 
 impl Action for ChargeAction {
+    const KEY: &'static str = "journal.charge";
     type Input = Value;
     type Output = Value;
 
-    fn metadata() -> nebula_action::ActionMetadataDraft {
-        nebula_action::ActionMetadataDraft::new(
-            action_key!("journal.charge"),
+    fn metadata() -> nebula_action::ActionMetadata {
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Charge"),
             "Journaled test action",
         )
@@ -1204,12 +1204,9 @@ pub(super) enum Kind {
 fn frozen_plugin(kind: Kind, controls: &Arc<Controls>) -> Arc<FrozenPluginRegistry> {
     let factory: Arc<dyn ActionFactory> = match kind {
         Kind::Stateless => Arc::new(
-            InstanceFactory::new(
-                ChargeAction::metadata(),
-                ChargeAction {
-                    controls: Arc::clone(controls),
-                },
-            )
+            InstanceFactory::new(ChargeAction {
+                controls: Arc::clone(controls),
+            })
             .expect("action metadata is admitted"),
         ),
         Kind::Stateful => {

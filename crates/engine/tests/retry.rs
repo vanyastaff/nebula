@@ -21,7 +21,7 @@ use nebula_action::{
     ActionError, AgentAction, action::Action, from_workflow_node::FromWorkflowNode,
     output::ActionOutput, result::ActionResult, stateless::StatelessAction,
 };
-use nebula_core::{Dependencies, action_key, id::WorkflowId, node_key};
+use nebula_core::{Dependencies, id::WorkflowId, node_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, EngineError, ExecutionEvent, InProcessRunner,
     WorkflowEngine,
@@ -37,27 +37,21 @@ use nebula_workflow::{
 mod exact_fixture;
 
 // ---------------------------------------------------------------------------
-// Test handlers — Variant A trait shape with placeholder static metadata.
-// Real per-instance metadata (varying action_key per test) flows through
-// `register_stateless_instance` test escape (R-NEW-7).
+// Test handlers — each type declares its key and metadata; a handler that a
+// test registers under another key gets a `stateless_entry!` type for it.
 // ---------------------------------------------------------------------------
 
-/// Macro to emit Variant A `impl Action` with placeholder static metadata.
-/// Placeholder is never used at runtime — `legacy_register_*_with_metadata`
-/// supplies the real metadata at registration time.
-macro_rules! placeholder_action_impl {
-    ($ty:ty, $key:expr, $name:expr, $desc:expr) => {
+/// Macro to emit a fixture's `impl Action` with its key and metadata: one
+/// fixture type is one catalog entry.
+macro_rules! fixture_action_impl {
+    ($ty:ty, $key:expr, $metadata:expr $(,)?) => {
         impl Action for $ty {
+            const KEY: &'static str = $key;
             type Input = serde_json::Value;
             type Output = serde_json::Value;
 
-            fn metadata() -> nebula_action::ActionMetadataDraft {
-                nebula_action::ActionMetadataDraft::new(
-                    $key,
-                    nebula_action::metadata_name!($name),
-                    $desc,
-                )
-                .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
+            fn metadata() -> nebula_action::ActionMetadata {
+                $metadata
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -75,11 +69,40 @@ struct FlakyHandler {
     invocations: Arc<AtomicU32>,
 }
 
-placeholder_action_impl!(
+fixture_action_impl!(
     FlakyHandler,
-    action_key!("placeholder.flaky"),
-    "FlakyPlaceholder",
-    "placeholder"
+    "direct_start",
+    nebula_action::ActionMetadata::new(nebula_action::metadata_name!("DirectStart"),
+        "test action",
+    )
+    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+);
+
+nebula_action::stateless_entry!(
+    FlakyEntry(FlakyHandler) = "flaky",
+    nebula_action::ActionMetadata::new(nebula_action::metadata_name!("Flaky"), "fails once",)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+);
+
+nebula_action::stateless_entry!(
+    CoreFlakyIdemEntry(FlakyHandler) = "core.flaky_idem",
+    nebula_action::ActionMetadata::new(nebula_action::metadata_name!("FlakyIdem"), "fails once",)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+);
+
+nebula_action::stateless_entry!(
+    FlakyOEntry(FlakyHandler) = "flaky_o",
+    nebula_action::ActionMetadata::new(
+        nebula_action::metadata_name!("FlakyO"),
+        "fails twice then succeeds",
+    )
+    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+);
+
+nebula_action::stateless_entry!(
+    FlakyDEntry(FlakyHandler) = "flaky_d",
+    nebula_action::ActionMetadata::new(nebula_action::metadata_name!("FlakyD"), "fails once",)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
 );
 
 impl StatelessAction for FlakyHandler {
@@ -102,11 +125,37 @@ struct AlwaysFailingHandler {
     invocations: Arc<AtomicU32>,
 }
 
-placeholder_action_impl!(
+fixture_action_impl!(
     AlwaysFailingHandler,
-    action_key!("placeholder.doomed"),
-    "AlwaysFailingPlaceholder",
-    "placeholder"
+    "doomed",
+    nebula_action::ActionMetadata::new(nebula_action::metadata_name!("Doomed"), "always fails",)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+);
+
+nebula_action::stateless_entry!(
+    FlakyLongEntry(AlwaysFailingHandler) = "flaky_long",
+    nebula_action::ActionMetadata::new(nebula_action::metadata_name!("FlakyLong"),
+        "fails forever",
+    )
+    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+);
+
+nebula_action::stateless_entry!(
+    FlakyTEntry(AlwaysFailingHandler) = "flaky_t",
+    nebula_action::ActionMetadata::new(nebula_action::metadata_name!("FlakyT"), "fails forever",)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+);
+
+nebula_action::stateless_entry!(
+    DoomedGEntry(AlwaysFailingHandler) = "doomed_g",
+    nebula_action::ActionMetadata::new(nebula_action::metadata_name!("DoomedG"), "always fails",)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+);
+
+nebula_action::stateless_entry!(
+    OneshotEntry(AlwaysFailingHandler) = "oneshot",
+    nebula_action::ActionMetadata::new(nebula_action::metadata_name!("OneShot"), "fails",)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
 );
 
 impl StatelessAction for AlwaysFailingHandler {
@@ -124,11 +173,11 @@ impl StatelessAction for AlwaysFailingHandler {
 /// while a sibling is parked in WaitingRetry.
 struct TerminateHandler;
 
-placeholder_action_impl!(
+fixture_action_impl!(
     TerminateHandler,
-    action_key!("placeholder.terminate"),
-    "TerminatePlaceholder",
-    "placeholder"
+    "term",
+    nebula_action::ActionMetadata::new(nebula_action::metadata_name!("Term"), "terminates",)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
 );
 
 impl StatelessAction for TerminateHandler {
@@ -154,11 +203,14 @@ static AGENT_STEP_CALLS: AtomicU32 = AtomicU32::new(0);
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct EmptyTurn;
 
-placeholder_action_impl!(
+fixture_action_impl!(
     BudgetExhaustingAgent,
-    action_key!("placeholder.budget_agent"),
-    "BudgetAgentPlaceholder",
-    "placeholder"
+    "placeholder.budget_agent",
+    nebula_action::ActionMetadata::new(
+        nebula_action::metadata_name!("BudgetAgentPlaceholder"),
+        "placeholder",
+    )
+    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
 );
 
 impl FromWorkflowNode for BudgetExhaustingAgent {
@@ -245,18 +297,10 @@ fn make_workflow(
 async fn persistent_engine_refuses_a_direct_fresh_start() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("direct_start"),
-                nebula_action::metadata_name!("DirectStart"),
-                "test action",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            FlakyHandler {
-                fail_count: 0,
-                invocations: Arc::new(AtomicU32::new(0)),
-            },
-        )
+        .register_stateless_instance(FlakyHandler {
+            fail_count: 0,
+            invocations: Arc::new(AtomicU32::new(0)),
+        })
         .expect("valid test catalog definition");
     let execution = Arc::new(nebula_storage::InMemoryExecutionStore::new());
     let stores = nebula_engine::ExecutionStores {
@@ -306,18 +350,10 @@ async fn retry_succeeds_on_attempt_2() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("flaky"),
-                nebula_action::metadata_name!("Flaky"),
-                "fails once",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            FlakyHandler {
-                fail_count: 1,
-                invocations: Arc::clone(&invocations),
-            },
-        )
+        .register_stateless_instance(FlakyEntry(FlakyHandler {
+            fail_count: 1,
+            invocations: Arc::clone(&invocations),
+        }))
         .expect("valid test catalog definition");
 
     let engine = make_engine(registry);
@@ -348,17 +384,9 @@ async fn retry_exhausts_max_attempts() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("doomed"),
-                nebula_action::metadata_name!("Doomed"),
-                "always fails",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            AlwaysFailingHandler {
-                invocations: Arc::clone(&invocations),
-            },
-        )
+        .register_stateless_instance(AlwaysFailingHandler {
+            invocations: Arc::clone(&invocations),
+        })
         .expect("valid test catalog definition");
 
     let engine = make_engine(registry);
@@ -440,17 +468,9 @@ async fn cancel_during_retry_wait() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("flaky_long"),
-                nebula_action::metadata_name!("FlakyLong"),
-                "fails forever",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            AlwaysFailingHandler {
-                invocations: Arc::clone(&invocations),
-            },
-        )
+        .register_stateless_instance(FlakyLongEntry(AlwaysFailingHandler {
+            invocations: Arc::clone(&invocations),
+        }))
         .expect("valid test catalog definition");
 
     let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
@@ -525,28 +545,12 @@ async fn terminate_during_retry_wait() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("flaky_t"),
-                nebula_action::metadata_name!("FlakyT"),
-                "fails forever",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            AlwaysFailingHandler {
-                invocations: Arc::clone(&invocations),
-            },
-        )
+        .register_stateless_instance(FlakyTEntry(AlwaysFailingHandler {
+            invocations: Arc::clone(&invocations),
+        }))
         .expect("valid test catalog definition");
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("term"),
-                nebula_action::metadata_name!("Term"),
-                "terminates",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            TerminateHandler,
-        )
+        .register_stateless_instance(TerminateHandler)
         .expect("valid test catalog definition");
 
     let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
@@ -614,17 +618,9 @@ async fn execution_budget_max_total_retries_caps_globally() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("doomed_g"),
-                nebula_action::metadata_name!("DoomedG"),
-                "always fails",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            AlwaysFailingHandler {
-                invocations: Arc::clone(&invocations),
-            },
-        )
+        .register_stateless_instance(DoomedGEntry(AlwaysFailingHandler {
+            invocations: Arc::clone(&invocations),
+        }))
         .expect("valid test catalog definition");
 
     let engine = make_engine(registry);
@@ -660,18 +656,10 @@ async fn idempotency_key_differentiates_attempts() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("core.flaky_idem"),
-                nebula_action::metadata_name!("FlakyIdem"),
-                "fails once",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            FlakyHandler {
-                fail_count: 1,
-                invocations: Arc::clone(&invocations),
-            },
-        )
+        .register_stateless_instance(CoreFlakyIdemEntry(FlakyHandler {
+            fail_count: 1,
+            invocations: Arc::clone(&invocations),
+        }))
         .expect("valid test catalog definition");
 
     // Spec-16 port bundle (the engine threads the test scope; this test
@@ -759,18 +747,10 @@ async fn per_node_retry_policy_overrides_workflow_default() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("flaky_o"),
-                nebula_action::metadata_name!("FlakyO"),
-                "fails twice then succeeds",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            FlakyHandler {
-                fail_count: 2,
-                invocations: Arc::clone(&invocations),
-            },
-        )
+        .register_stateless_instance(FlakyOEntry(FlakyHandler {
+            fail_count: 2,
+            invocations: Arc::clone(&invocations),
+        }))
         .expect("valid test catalog definition");
 
     let engine = make_engine(registry);
@@ -808,18 +788,10 @@ async fn workflow_default_applies_when_node_has_none() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("flaky_d"),
-                nebula_action::metadata_name!("FlakyD"),
-                "fails once",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            FlakyHandler {
-                fail_count: 1,
-                invocations: Arc::clone(&invocations),
-            },
-        )
+        .register_stateless_instance(FlakyDEntry(FlakyHandler {
+            fail_count: 1,
+            invocations: Arc::clone(&invocations),
+        }))
         .expect("valid test catalog definition");
 
     let engine = make_engine(registry);
@@ -857,17 +829,9 @@ async fn no_retry_policy_means_one_shot_failure() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("oneshot"),
-                nebula_action::metadata_name!("OneShot"),
-                "fails",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            AlwaysFailingHandler {
-                invocations: Arc::clone(&invocations),
-            },
-        )
+        .register_stateless_instance(OneshotEntry(AlwaysFailingHandler {
+            invocations: Arc::clone(&invocations),
+        }))
         .expect("valid test catalog definition");
 
     let engine = make_engine(registry);
@@ -900,11 +864,14 @@ struct HintedHandler {
     starts: Arc<std::sync::Mutex<Vec<std::time::Instant>>>,
 }
 
-placeholder_action_impl!(
+fixture_action_impl!(
     HintedHandler,
-    action_key!("placeholder.hinted"),
-    "HintedPlaceholder",
-    "placeholder"
+    "hinted",
+    nebula_action::ActionMetadata::new(
+        nebula_action::metadata_name!("Hinted"),
+        "asks for a delay once",
+    )
+    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
 );
 
 impl StatelessAction for HintedHandler {
@@ -936,18 +903,10 @@ async fn run_hinted(
     let starts = Arc::new(std::sync::Mutex::new(Vec::new()));
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(
-            nebula_action::ActionMetadataDraft::new(
-                action_key!("hinted"),
-                nebula_action::metadata_name!("Hinted"),
-                "asks for a delay once",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
-            HintedHandler {
-                hint,
-                starts: Arc::clone(&starts),
-            },
-        )
+        .register_stateless_instance(HintedHandler {
+            hint,
+            starts: Arc::clone(&starts),
+        })
         .expect("valid test catalog definition");
     let engine = make_engine(registry);
     let n = node_key!("hinted");

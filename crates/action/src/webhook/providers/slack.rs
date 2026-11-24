@@ -13,7 +13,7 @@ use std::{
 
 use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
-use nebula_core::{Dependencies, action_key};
+use nebula_core::Dependencies;
 use nebula_error::decode::value_free_decode_summary;
 use serde::Deserialize;
 use tracing::debug;
@@ -60,12 +60,12 @@ impl SlackWebhookAction {
 }
 
 impl Action for SlackWebhookAction {
+    const KEY: &'static str = "nebula.webhook.slack";
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> crate::ActionMetadataDraft {
-        crate::ActionMetadataDraft::new(
-            action_key!("nebula.webhook.slack"),
+    fn metadata() -> crate::ActionMetadata {
+        crate::ActionMetadata::new(
             crate::metadata_name!("Slack Webhook"),
             "Slack-flavoured signed webhook trigger.",
         )

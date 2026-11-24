@@ -45,7 +45,7 @@ fn no_resources_in_dependencies() {
 fn metadata_key_matches_attribute() {
     let factory = nebula_action::GenericStatelessFactory::<NoCredAction>::new()
         .expect("valid test catalog definition");
-    let meta = factory.metadata();
+    let meta = factory.definition();
     assert_eq!(meta.base().key().as_str(), "test.no_cred");
     assert_eq!(meta.base().name().to_owned(), "No Cred");
     assert_eq!(meta.base().description().to_owned(), "no credentials");
@@ -79,11 +79,11 @@ fn effect_contract_defaults_to_journaled_unless_read_only_is_attested() {
         .expect("valid no-effect definition");
 
     assert_eq!(
-        journaled.metadata().effect_contract(),
+        journaled.definition().effect_contract(),
         &ActionEffectContract::Journaled(nebula_action::JournalProtocol::V1)
     );
     assert_eq!(
-        declared.metadata().effect_contract(),
+        declared.definition().effect_contract(),
         &ActionEffectContract::ReadOnly
     );
 }
@@ -124,7 +124,7 @@ impl StatelessAction for DefaultsAction {
 fn name_defaults_to_struct_name() {
     let factory = nebula_action::GenericStatelessFactory::<DefaultsAction>::new()
         .expect("valid test catalog definition");
-    let meta = factory.metadata();
+    let meta = factory.definition();
     assert_eq!(meta.base().name().to_owned(), "DefaultsAction");
     assert_eq!(meta.base().description(), "Default action description.");
 }
@@ -155,7 +155,7 @@ impl StatelessAction for VersionedAction {
 fn explicit_version_is_propagated() {
     let factory = nebula_action::GenericStatelessFactory::<VersionedAction>::new()
         .expect("valid test catalog definition");
-    let meta = factory.metadata();
+    let meta = factory.definition();
     assert_eq!(meta.base().version().major, 2);
     assert_eq!(meta.base().version().minor, 5);
     assert_eq!(meta.base().version().patch, 0);
@@ -182,25 +182,24 @@ impl StatelessAction for FullSemverAction {
     }
 }
 
+nebula_action::stateless_entry!(
+    /// The same entry as [`FullSemverAction`], with hand-written metadata.
+    ManualFullSemverAction(FullSemverAction) = "test.full-semver",
+    nebula_action::ActionMetadata::try_new("Full SemVer", "Full version fixture")
+        .expect("valid name")
+        .with_version("2.5.0-rc.7+build.009".parse().expect("valid full SemVer")),
+);
+
 #[test]
 fn macro_and_manual_metadata_preserve_the_exact_full_semver() {
     let generated = nebula_action::GenericStatelessFactory::<FullSemverAction>::new()
         .expect("valid generated definition");
     let version: MetadataVersion = "2.5.0-rc.7+build.009".parse().expect("valid full SemVer");
-    let manual = nebula_action::InstanceFactory::new(
-        nebula_action::ActionMetadataDraft::try_new(
-            nebula_core::action_key!("test.full-semver"),
-            "Full SemVer",
-            "Full version fixture",
-        )
-        .expect("valid name")
-        .with_version(version.clone()),
-        FullSemverAction,
-    )
-    .expect("valid manual definition");
+    let manual = nebula_action::InstanceFactory::new(ManualFullSemverAction(FullSemverAction))
+        .expect("valid manual definition");
 
-    assert_eq!(generated.metadata().base().version(), &version);
-    assert_eq!(**generated.metadata(), **manual.metadata());
+    assert_eq!(generated.definition().base().version(), &version);
+    assert_eq!(**generated.definition(), **manual.definition());
 }
 
 // -- Resource handle fields -------------------------------------------------

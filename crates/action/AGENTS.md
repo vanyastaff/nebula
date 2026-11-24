@@ -2,7 +2,7 @@
 > Local guide for `crates/action/`. Read [root AGENTS.md](../../AGENTS.md) first;
 > this guide adds crate-specific rules. Design and status: [README.md](README.md).
 
-**Purpose:** Defines the typed action trait family (`StatelessAction`/`StatefulAction`/`TriggerAction`/`ResourceAction` + DX specializations) and `ActionMetadata` the engine uses for discovery, validation, and dispatch.
+**Purpose:** Defines the typed action trait family (`StatelessAction`/`StatefulAction`/`TriggerAction`/`ResourceAction` + DX specializations) and `ActionDefinition` the engine uses for discovery, validation, and dispatch.
 **Layer:** Business — depends only downward (root AGENTS.md → Layered Dependency Map).
 
 ## Common Tasks

@@ -589,7 +589,7 @@ fn action_key_is_core_dot_datetime() {
     let factory = nebula_action::GenericStatelessFactory::<DateTimeAction>::new()
         .expect("datetime metadata must admit");
     assert_eq!(
-        nebula_action::ActionFactory::metadata(&factory)
+        nebula_action::ActionFactory::definition(&factory)
             .base()
             .key()
             .as_str(),
@@ -602,7 +602,7 @@ fn action_display_name_is_datetime() {
     let factory = nebula_action::GenericStatelessFactory::<DateTimeAction>::new()
         .expect("datetime metadata must admit");
     assert_eq!(
-        nebula_action::ActionFactory::metadata(&factory)
+        nebula_action::ActionFactory::definition(&factory)
             .base()
             .name()
             .to_owned(),

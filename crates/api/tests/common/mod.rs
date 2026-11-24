@@ -1260,12 +1260,12 @@ pub(crate) mod engine_seam {
     }
 
     impl nebula_action::action::Action for SlowAction {
+        const KEY: &'static str = "core.slow";
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> nebula_action::metadata::ActionMetadataDraft {
-            nebula_action::metadata::ActionMetadataDraft::new(
-                nebula_core::action_key!("core.slow"),
+        fn metadata() -> nebula_action::metadata::ActionMetadata {
+            nebula_action::metadata::ActionMetadata::new(
                 nebula_action::metadata_name!("SlowAction"),
                 "static",
             )
