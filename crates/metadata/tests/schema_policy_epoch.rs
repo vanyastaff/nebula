@@ -1,13 +1,13 @@
-use nebula_metadata::{MetadataBuildError, MetadataDraft, RecordedBaseMetadata};
+use nebula_metadata::{Metadata, MetadataBuildError, RecordedBaseDefinition};
 use nebula_schema::{Property, Schema, ValidSchema, field_key};
 use serde_json::json;
 
 #[test]
 fn historical_schema_cannot_bind_fresh_metadata() {
     let schema = serde_json::from_value::<ValidSchema>(json!({"fields": []})).unwrap();
-    let error = MetadataDraft::try_new("example", "Example", "description")
+    let error = Metadata::try_new("Example", "description")
         .unwrap()
-        .bind_schema(schema)
+        .bind("example", schema)
         .expect_err("historical schema cannot acquire catalog authority");
     let MetadataBuildError::Schema(report) = error else {
         panic!("expected schema admission rejection");
@@ -51,9 +51,9 @@ fn unknown_declarations_cannot_bind_fresh_metadata_even_when_inactive() {
         let wire = serde_json::to_value(&schema).unwrap();
         let decoded: ValidSchema = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(serde_json::to_value(&decoded).unwrap(), wire);
-        let result = MetadataDraft::try_new("example", "Example", "description")
+        let result = Metadata::try_new("Example", "description")
             .unwrap()
-            .bind_schema(decoded);
+            .bind("example", decoded);
         std::assert_matches!(result, Err(MetadataBuildError::Schema(report))
             if report.errors().any(|error| error.code() == "schema.unsupported_property_kind"
                 && error.path().to_string() == path)
@@ -63,13 +63,13 @@ fn unknown_declarations_cannot_bind_fresh_metadata_even_when_inactive() {
 
 #[test]
 fn recorded_legacy_schema_cannot_readmit_against_identical_current_root() {
-    let fresh = MetadataDraft::try_new("example".to_owned(), "Example", "description")
+    let fresh = Metadata::try_new("Example", "description")
         .unwrap()
-        .bind_schema(ValidSchema::empty())
+        .bind("example".to_owned(), ValidSchema::empty())
         .unwrap();
     let mut wire = serde_json::to_value(&fresh).unwrap();
     wire["schema"] = json!({"fields": []});
-    let recorded: RecordedBaseMetadata<String> = serde_json::from_value(wire.clone()).unwrap();
+    let recorded: RecordedBaseDefinition<String> = serde_json::from_value(wire.clone()).unwrap();
     assert_eq!(serde_json::to_value(&recorded).unwrap(), wire);
     assert!(recorded.readmit_against(&fresh).is_err());
 }

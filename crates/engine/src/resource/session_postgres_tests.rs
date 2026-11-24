@@ -97,9 +97,7 @@ impl Provider for PgRow {
     type Instance = PgConnection;
     type Topology = Pooled<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("activation.pg")
-    }
+    const KEY: &'static str = "activation.pg";
 
     async fn create(
         &self,
@@ -142,9 +140,8 @@ impl Provider for PgRow {
         }
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("activation.pg"),
             String::new(),
         )

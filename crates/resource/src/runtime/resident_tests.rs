@@ -3,12 +3,12 @@ use std::{
     time::Duration,
 };
 
-use nebula_core::{ExecutionId, ResourceKey, resource_key};
+use nebula_core::ExecutionId;
 
 use super::*;
 use crate::{
     context::ResourceContext,
-    resource::{ResourceConfig, ResourceMetadataDraft},
+    resource::{ResourceConfig, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
 
@@ -46,9 +46,7 @@ impl Provider for MockResident {
     type Instance = u32;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("mock-resident")
-    }
+    const KEY: &'static str = "mock-resident";
 
     async fn create(&self, _config: &bool, _ctx: &ResourceContext) -> Result<u32, Error> {
         let count = self.create_count.fetch_add(1, Ordering::Relaxed);
@@ -60,8 +58,8 @@ impl Provider for MockResident {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("mock-resident"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("mock-resident"), "")
     }
 }
 
@@ -228,9 +226,7 @@ impl Provider for HangingResident {
     type Instance = u32;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("hanging-resident")
-    }
+    const KEY: &'static str = "hanging-resident";
 
     async fn create(&self, _config: &bool, _ctx: &ResourceContext) -> Result<u32, Error> {
         tokio::time::sleep(Duration::from_hours(1)).await;
@@ -241,8 +237,8 @@ impl Provider for HangingResident {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("hanging-resident"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("hanging-resident"), "")
     }
 }
 
@@ -308,9 +304,7 @@ impl Provider for SlotReadResident {
     type Instance = u32;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("slot-read-resident")
-    }
+    const KEY: &'static str = "slot-read-resident";
 
     async fn create(&self, _config: &bool, _ctx: &ResourceContext) -> Result<u32, Error> {
         self.entered_before_read.notify_one();
@@ -329,8 +323,8 @@ impl Provider for SlotReadResident {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("slot-read-resident"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("slot-read-resident"), "")
     }
 }
 
@@ -516,9 +510,7 @@ impl Provider for MeetingResident {
     type Instance = u32;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("meeting-resident")
-    }
+    const KEY: &'static str = "meeting-resident";
 
     async fn create(&self, _config: &bool, _ctx: &ResourceContext) -> Result<u32, Error> {
         Ok(1)
@@ -530,8 +522,8 @@ impl Provider for MeetingResident {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("meeting-resident"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("meeting-resident"), "")
     }
 }
 

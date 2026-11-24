@@ -395,6 +395,35 @@ impl<S: Zeroize + Send + Sync + 'static> fmt::Debug for CredentialGuard<S>
 impl<S: Zeroize> Deref for CredentialGuard<S>
 impl<S: Zeroize> Drop for CredentialGuard<S>
 
+## struct nebula_metadata::base::Metadata
+exported as nebula_sdk::prelude::ResourceMetadata (through the alias)
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Metadata {
+    /* private fields */
+}
+impl Metadata {
+    pub fn new(name: MetadataName, description: impl Into<String>) -> Self;
+    pub fn try_new(name: impl Into<String>, description: impl Into<String>) -> Result<Self, MetadataError>;
+    pub fn with_version(mut self, version: Version) -> Self;
+    pub fn with_version_literal(mut self, version: &'static str) -> Self; [hidden]
+    pub fn with_description(mut self, description: impl Into<String>) -> Self;
+    pub fn with_categories(mut self, categories: impl IntoIterator<Item = CatalogCategoryKey>) -> Self;
+    pub fn with_links(mut self, links: impl IntoIterator<Item = CatalogLink>) -> Self;
+    pub fn add_link(mut self, link: CatalogLink) -> Self;
+    pub fn with_icon(mut self, icon: Icon) -> Self;
+    pub fn with_inline_icon(self, name: impl Into<String>) -> Self;
+    pub fn with_url_icon(self, url: impl Into<String>) -> Self;
+    pub fn with_documentation_url(mut self, url: impl Into<String>) -> Self;
+    pub fn with_tags<I, S>(mut self, tags: I) -> Self where I: IntoIterator<Item = S>, S: Into<String>;
+    pub fn add_tag(mut self, tag: impl Into<String>) -> Self;
+    pub fn mark_experimental(mut self) -> Self;
+    pub fn mark_beta(mut self) -> Self;
+    pub fn mark_stable(mut self) -> Self;
+    pub fn with_deprecation(mut self, notice: DeprecationNotice) -> Self;
+    pub fn bind<K>(mut self, key: K, schema: ValidSchema) -> Result<BaseDefinition<K>, MetadataBuildError> where K: Serialize;
+}
+
 ## struct nebula_resilience::rate_limiter::gcra::Rate
 exported as nebula_sdk::integration::resource::Rate
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -716,32 +745,6 @@ impl ResourceLimiter {
     pub async fn penalize_for(&self, dimension: &str, value: impl fmt::Display, retry_after: Duration) -> Result<(), Error>;
 }
 impl fmt::Debug for ResourceLimiter
-
-## struct nebula_resource::resource::ResourceMetadataDraft
-exported as nebula_sdk::integration::resource::ResourceMetadataDraft
-exported as nebula_sdk::prelude::ResourceMetadataDraft
-#[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResourceMetadataDraft {
-    /* private fields */
-}
-impl ResourceMetadataDraft {
-    pub fn new(key: ResourceKey, name: nebula_metadata::MetadataName, description: impl Into<String>) -> Self;
-    pub fn try_new(key: ResourceKey, name: impl Into<String>, description: impl Into<String>) -> Result<Self, nebula_metadata::MetadataError>;
-    pub fn with_version(mut self, version: Version) -> Self;
-    pub fn with_icon(mut self, icon: nebula_metadata::Icon) -> Self;
-    pub fn with_inline_icon(mut self, name: impl Into<String>) -> Self;
-    pub fn with_url_icon(mut self, url: impl Into<String>) -> Self;
-    pub fn with_documentation_url(mut self, url: impl Into<String>) -> Self;
-    pub fn with_categories(mut self, categories: impl IntoIterator<Item = nebula_metadata::CatalogCategoryKey>) -> Self;
-    pub fn add_link(mut self, link: nebula_metadata::CatalogLink) -> Self;
-    pub fn with_tags<I, S>(mut self, tags: I) -> Self where I: IntoIterator<Item = S>, S: Into<String>;
-    pub fn add_tag(mut self, tag: impl Into<String>) -> Self;
-    pub fn mark_experimental(mut self) -> Self;
-    pub fn mark_beta(mut self) -> Self;
-    pub fn mark_stable(mut self) -> Self;
-    pub fn with_deprecation(mut self, notice: nebula_metadata::DeprecationNotice) -> Self;
-}
 
 ## struct nebula_resource::resource::TeardownCx
 exported as nebula_sdk::integration::resource::TeardownCx
@@ -1182,7 +1185,7 @@ pub trait Provider: HasCredentialSlots + Send + Sync + Sized + 'static {
     type Config: ResourceConfig;
     type Instance: Send + Sync + 'static;
     type Topology: crate::topology::Topology<Self>;
-    fn key() -> ResourceKey;
+    const KEY: &'static str;
     async fn create(&self, config: &Self::Config, ctx: &ResourceContext) -> Result<Self::Instance, crate::Error>;
     async fn on_credential_refresh(&self, slot_name: &str, instance: &Self::Instance) -> Result<(), crate::Error> { .. }
     async fn on_credential_revoke(&self, slot_name: &str, instance: &Self::Instance) -> Result<(), crate::Error> { .. }
@@ -1191,8 +1194,15 @@ pub trait Provider: HasCredentialSlots + Send + Sync + Sized + 'static {
     fn teardown_budget(&self) -> std::time::Duration { .. }
     fn max_hold_duration() -> Option<std::time::Duration> { .. }
     async fn destroy(&self, instance: Self::Instance, cx: TeardownCx) -> Result<(), crate::Error> { .. }
-    fn metadata() -> ResourceMetadataDraft;
+    fn metadata() -> ResourceMetadata;
     fn resilience() -> crate::rate_limit::ResiliencePolicy { .. }
+}
+
+## trait nebula_resource::resource::ProviderKey
+exported as nebula_sdk::integration::resource::ProviderKey
+exported as nebula_sdk::prelude::ProviderKey
+pub trait ProviderKey: Provider {
+    fn key() -> ResourceKey;
 }
 
 ## trait nebula_resource::topology::bounded::BoundedProvider
@@ -1271,6 +1281,11 @@ pub trait Method: sealed::Sealed + Send + 'static {
 ## type nebula_resource::call::session::SessionFuture
 exported as nebula_sdk::integration::resource::SessionFuture
 pub type SessionFuture<'s, T> = Pin<Box<dyn Future<Output = Result<T, OperationError>> + Send + 's>>;
+
+## type nebula_resource::resource::ResourceMetadata
+exported as nebula_sdk::integration::resource::ResourceMetadata
+exported as nebula_sdk::prelude::ResourceMetadata
+pub type ResourceMetadata = nebula_metadata::Metadata;
 
 ## type nebula_resource::slot::CredentialSlot
 exported as nebula_sdk::integration::resource::CredentialSlot

@@ -7,6 +7,7 @@
 //!          `ActionContextExt::resource_handle_by_id`)
 //!         -> submits a unit, which checks out the instance per attempt
 
+use nebula_resource::ProviderKey;
 use std::{
     collections::HashMap,
     sync::{
@@ -20,7 +21,7 @@ use nebula_action::{
     stateless::StatelessAction,
 };
 use nebula_core::{ActionKey, Dependencies, action_key, id::WorkflowId, node_key};
-use nebula_core::{OrgId, ResourceKey, ScopeLevel, WorkspaceId, resource_key};
+use nebula_core::{OrgId, ResourceKey, ScopeLevel, WorkspaceId};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, WorkflowEngine,
 };
@@ -30,7 +31,7 @@ use nebula_resource::Resident;
 use nebula_resource::{
     Manager, RegistrationSpec, ResidentConfig, ResourceContext, SlotIdentity,
     error::Error as ResourceError,
-    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
 use nebula_workflow::{
@@ -314,9 +315,7 @@ impl Provider for IntegrationProbeResource {
     type Instance = Arc<AtomicU64>;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("test.engine_integration.probe")
-    }
+    const KEY: &'static str = "test.engine_integration.probe";
 
     async fn create(
         &self,
@@ -326,9 +325,8 @@ impl Provider for IntegrationProbeResource {
         Ok(Arc::new(AtomicU64::new(7)))
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("test.engine_integration.probe"),
             "",
         )
@@ -743,17 +741,18 @@ async fn action_resource_fails_without_manager() {
 // `create_lock` mutex that double-checks after wakeup.
 
 mod shared_resource {
+    use nebula_resource::ProviderKey;
     use std::sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     };
 
-    use nebula_core::{ExecutionId, OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
+    use nebula_core::{ExecutionId, OrgId, ScopeLevel, scope::Scope};
     use nebula_resource::{
         AcquireOptions, Manager, RegistrationSpec, Resident, ResidentConfig, ResourceContext,
         SlotIdentity,
         error::Error,
-        resource::{Provider, ResourceConfig, ResourceMetadataDraft},
+        resource::{Provider, ResourceConfig, ResourceMetadata},
         topology::resident::ResidentProvider,
     };
     use tokio_util::sync::CancellationToken;
@@ -844,9 +843,7 @@ mod shared_resource {
         type Instance = Arc<TelegramBotInner>;
         type Topology = Resident<Self>;
 
-        fn key() -> ResourceKey {
-            resource_key!("telegram-bot")
-        }
+        const KEY: &'static str = "telegram-bot";
 
         async fn create(
             &self,
@@ -869,12 +866,8 @@ mod shared_resource {
             Ok(())
         }
 
-        fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::new(
-                Self::key(),
-                nebula_resource::metadata_name!("telegram-bot"),
-                "",
-            )
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(nebula_resource::metadata_name!("telegram-bot"), "")
         }
     }
 
@@ -911,9 +904,7 @@ mod shared_resource {
         type Instance = Arc<TelegramBotInner>;
         type Topology = Resident<Self>;
 
-        fn key() -> ResourceKey {
-            resource_key!("telegram-bot-alt")
-        }
+        const KEY: &'static str = "telegram-bot-alt";
 
         async fn create(
             &self,
@@ -935,12 +926,8 @@ mod shared_resource {
             Ok(())
         }
 
-        fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::new(
-                Self::key(),
-                nebula_resource::metadata_name!("telegram-bot-alt"),
-                "",
-            )
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(nebula_resource::metadata_name!("telegram-bot-alt"), "")
         }
     }
 
@@ -1361,16 +1348,10 @@ mod resource_handle {
         type Instance = Arc<Calls>;
         type Topology = Resident<Self>;
 
-        fn key() -> ResourceKey {
-            resource_key!("test.resource_handle.svc")
-        }
+        const KEY: &'static str = "test.resource_handle.svc";
 
-        fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::new(
-                Self::key(),
-                nebula_resource::metadata_name!("ResourceHandleSvc"),
-                "",
-            )
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(nebula_resource::metadata_name!("ResourceHandleSvc"), "")
         }
 
         async fn create(&self, (): &(), _: &ResourceContext) -> Result<Arc<Calls>, ResourceError> {
@@ -1449,16 +1430,10 @@ mod resource_handle {
         type Instance = Conn;
         type Topology = Pooled<Self>;
 
-        fn key() -> ResourceKey {
-            resource_key!("test.resource_handle.ledger")
-        }
+        const KEY: &'static str = "test.resource_handle.ledger";
 
-        fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::new(
-                Self::key(),
-                nebula_resource::metadata_name!("ResourceHandleLedger"),
-                "",
-            )
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(nebula_resource::metadata_name!("ResourceHandleLedger"), "")
         }
 
         async fn create(&self, (): &(), _: &ResourceContext) -> Result<Conn, ResourceError> {

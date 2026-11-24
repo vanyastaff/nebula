@@ -16,20 +16,21 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-use nebula_core::{ResourceKey, ScopeLevel, resource_key};
+use nebula_core::{ResourceKey, ScopeLevel};
 use nebula_credential::CredentialGuard;
 use nebula_resource::Resident;
 use nebula_resource::{
     Manager, ManagerConfig, Provider, RegisterOptions, RegistrationSpec, ResidentConfig,
     ResourceConfig, ResourceContext, SlotCell,
     error::Error,
-    resource::{HasCredentialSlots, ResourceMetadataDraft},
+    resource::{HasCredentialSlots, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
 use zeroize::Zeroize;
 
 mod counting {
     use super::*;
+    use nebula_resource::ProviderKey;
 
     /// Sentinel stamped on the test `Runtime` so the refresh hook can
     /// prove it received *this* live runtime by reference.
@@ -117,9 +118,7 @@ mod counting {
         type Instance = CountingRuntime;
         type Topology = Resident<Self>;
 
-        fn key() -> ResourceKey {
-            resource_key!("counting-resident")
-        }
+        const KEY: &'static str = "counting-resident";
 
         async fn create(
             &self,
@@ -168,12 +167,8 @@ mod counting {
             Ok(())
         }
 
-        fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::new(
-                Self::key(),
-                nebula_resource::metadata_name!("counting-resident"),
-                "",
-            )
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(nebula_resource::metadata_name!("counting-resident"), "")
         }
     }
 
@@ -1395,19 +1390,20 @@ async fn drain_timeout_still_runs_revoke_hook_single_budget_owner() {
 // ===========================================================================
 
 mod u9_gate {
+    use nebula_resource::ProviderKey;
     use std::assert_matches;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
 
-    use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
+    use nebula_core::{ScopeLevel, scope::Scope};
     use nebula_credential::CredentialGuard;
     use nebula_resource::{
         AcquireOptions, Manager, Provider, RegistrationSpec, Resident, ResidentConfig,
         ResourceConfig, ResourceContext, SlotCell, SlotIdentity,
         error::Error,
-        resource::{HasCredentialSlots, ResourceMetadataDraft},
+        resource::{HasCredentialSlots, ResourceMetadata},
         topology::resident::ResidentProvider,
     };
     use tokio_util::sync::CancellationToken;
@@ -1458,9 +1454,7 @@ mod u9_gate {
         type Instance = GateRuntime;
         type Topology = Resident<Self>;
 
-        fn key() -> ResourceKey {
-            resource_key!("u9-gate-resident")
-        }
+        const KEY: &'static str = "u9-gate-resident";
 
         async fn create(
             &self,
@@ -1489,12 +1483,8 @@ mod u9_gate {
             Ok(())
         }
 
-        fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::new(
-                Self::key(),
-                nebula_resource::metadata_name!("u9-gate-resident"),
-                "",
-            )
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(nebula_resource::metadata_name!("u9-gate-resident"), "")
         }
     }
 
@@ -1647,12 +1637,12 @@ mod u9_gate {
 // ===========================================================================
 
 mod reload_deferral {
-    use nebula_core::{ResourceKey, ScopeLevel, resource_key};
+    use nebula_core::ScopeLevel;
     use nebula_resource::{
         Manager, PoolConfig, Provider, RegistrationSpec, ReloadOutcome, ResidentConfig,
         ResourceConfig, ResourceContext, SlotIdentity,
         error::Error,
-        resource::ResourceMetadataDraft,
+        resource::ResourceMetadata,
         topology::{Pooled, Resident, pooled::PoolProvider, resident::ResidentProvider},
     };
 
@@ -1687,9 +1677,7 @@ mod reload_deferral {
                 type Instance = u32;
                 type Topology = $topo;
 
-                fn key() -> ResourceKey {
-                    resource_key!($key)
-                }
+                const KEY: &'static str = $key;
 
                 async fn create(
                     &self,
@@ -1707,12 +1695,8 @@ mod reload_deferral {
                     Ok(())
                 }
 
-                fn metadata() -> ResourceMetadataDraft {
-                    ResourceMetadataDraft::new(
-                        Self::key(),
-                        nebula_resource::metadata_name!(stringify!($name)),
-                        "",
-                    )
+                fn metadata() -> ResourceMetadata {
+                    ResourceMetadata::new(nebula_resource::metadata_name!(stringify!($name)), "")
                 }
             }
 

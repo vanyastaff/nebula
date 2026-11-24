@@ -14,7 +14,7 @@ use super::*;
 use crate::{
     Manager, Resident, ScopeLevel,
     error::Error as ResourceError,
-    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::resident::{self, ResidentProvider},
 };
 
@@ -79,9 +79,7 @@ impl Provider for TestRes {
     type Instance = Arc<AtomicU64>;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("test-factory-res")
-    }
+    const KEY: &'static str = "test-factory-res";
 
     async fn create(
         &self,
@@ -92,12 +90,8 @@ impl Provider for TestRes {
         Ok(Arc::new(AtomicU64::new(id)))
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            crate::metadata_name!("test-factory-res"),
-            String::new(),
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("test-factory-res"), String::new())
     }
 }
 
@@ -158,13 +152,11 @@ impl Provider for BoundTestRes {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("BoundTestRes"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("BoundTestRes"), "")
     }
 
-    fn key() -> ResourceKey {
-        resource_key!("test-factory-bound-res")
-    }
+    const KEY: &'static str = "test-factory-bound-res";
 
     async fn create(
         &self,
@@ -300,8 +292,8 @@ impl ResourceFactory for DivergentIdentityFactory {
         self.inner.resource_type_id()
     }
 
-    fn metadata(&self) -> Result<&ResourceMetadata, crate::MetadataBuildError> {
-        self.inner.metadata()
+    fn definition(&self) -> Result<&ResourceDefinition, crate::MetadataBuildError> {
+        self.inner.definition()
     }
 
     fn validate(&self, config_json: serde_json::Value) -> Result<(), ResourceError> {
@@ -414,7 +406,7 @@ fn key_coherence_law() {
     assert_eq!(
         factory.key(),
         TestRes::key(),
-        "factory.key() must equal <R as Provider>::key() (key-coherence law)"
+        "factory.key() must equal <R as ProviderKey>::key() (key-coherence law)"
     );
 }
 
@@ -448,7 +440,7 @@ fn factory_exposes_exact_resource_contract() {
 fn metadata_schema_matches_provider_schema() {
     let create_counter = Arc::new(AtomicU64::new(0));
     let factory = test_factory(create_counter);
-    let md = factory.metadata().expect("valid test catalog definition");
+    let md = factory.definition().expect("valid test catalog definition");
     let expected =
         nebula_schema::schema_of::<TestConfig>().expect("test configuration has a valid schema");
     assert_eq!(

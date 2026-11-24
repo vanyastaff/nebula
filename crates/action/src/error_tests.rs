@@ -293,12 +293,12 @@ fn ext_chaining_preserves_error_chain() {
 // ── Managed call units ─────────────────────────────────────────────────
 
 mod managed_unit {
-    use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
+    use nebula_core::{ScopeLevel, scope::Scope};
     use nebula_resource::{
         CredentialUnavailableReason, ErrorKind, Manager, RegistrationSpec, Resident,
         ResidentConfig, ResourceConfig, ResourceContext, SlotIdentity,
         call::{Cost, Operation, OperationCx, OperationError},
-        resource::{Provider, ResourceMetadataDraft},
+        resource::{Provider, ResourceMetadata},
         topology::ResidentProvider,
     };
 
@@ -324,12 +324,10 @@ mod managed_unit {
         type Instance = ();
         type Topology = Resident<Self>;
 
-        fn key() -> ResourceKey {
-            resource_key!("action.ledger")
-        }
+        const KEY: &'static str = "action.ledger";
 
-        fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::new(Self::key(), nebula_resource::metadata_name!("ledger"), "")
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(nebula_resource::metadata_name!("ledger"), "")
         }
 
         async fn create(

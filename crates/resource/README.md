@@ -33,7 +33,7 @@ pub trait Provider: HasCredentialSlots + Send + Sync + Sized + 'static {
     // Pooled<Self> | Resident<Self> | Bounded<Self> | custom Topology<R>
     type Topology: Topology<Self>;
 
-    fn key() -> ResourceKey;
+    const KEY: &'static str;
 
     /// Slot cells are populated on `&self` BEFORE create runs; read the
     /// resolved guard via the derive-emitted `<field>_slot()` accessor.
@@ -72,16 +72,18 @@ pub trait Provider: HasCredentialSlots + Send + Sync + Sized + 'static {
 
     /// Schema-free author intent. The factory derives and binds `Config`'s
     /// canonical schema exactly once.
-    fn metadata() -> ResourceMetadataDraft;
+    fn metadata() -> ResourceMetadata;
 }
 ```
 
 `HasSchema::schema()` and `schema_of::<T>()` admit definitions through
-`Result<ValidSchema, ValidationReport>`. `ResourceFactory::metadata()` performs
-the only resource metadata admission, caches the resulting immutable
-`ResourceMetadata`, and returns it by reference. Schema failures and a draft key
-that differs from `Provider::key()` propagate as `MetadataBuildError`; registry
-insertion fails before mutation. Catalog enumeration must not drop a failing entry.
+`Result<ValidSchema, ValidationReport>`. `ResourceFactory::definition()` performs
+the only resource admission, caches the resulting immutable
+`ResourceDefinition`, and returns it by reference. The author's `ResourceMetadata`
+carries neither a key nor a schema: the factory stamps `Provider::KEY` and derives the schema from
+`Config`, so an admitted definition cannot name another resource. Schema and
+catalog failures propagate as `MetadataBuildError`; registry insertion fails
+before mutation. Catalog enumeration must not drop a failing entry.
 `ResourceFactory` is sealed: plugins can store and invoke the erased contract but
 cannot implement it. They must use a typed `KindActivator`; derive-emitted
 `<Name>Factory` wrappers yield that crate-issued capability through
@@ -90,9 +92,11 @@ therefore share one concrete `Provider` type instead of being caller attestation
 Metadata names are checked
 `MetadataName` values (`metadata_name!("HTTP client")` for static definitions),
 and invariant-bearing base fields are read through accessors.
-`Provider::metadata` is required. Replace removed `ResourceMetadataDraft::from_key`
-calls with `new(key, metadata_name!("Display name"), description)` or checked
-`try_new(key, name, description)`; names are never inferred from keys. Typed
+`Provider::KEY` is the one declaration of a resource's identity; `R::key()`
+(`ProviderKey`, implemented for every provider) is its typed `ResourceKey`, and
+an invalid literal fails the build. `Provider::metadata` is required and returns
+`ResourceMetadata::new(metadata_name!("Display name"), description)` or the checked
+`try_new(name, description)`; names are never inferred from keys. Typed
 icons use `with_icon`, `with_inline_icon`, or `with_url_icon`; there is no
 separate `icon_url` field. Typed categories and links use `with_categories` and
 `add_link`; the documentation URL convenience authors the Overview link. Tags
@@ -241,8 +245,8 @@ recovery gate. `ResourceEvent` publishes `RateLimitEngaged` / `Cleared` /
 `Penalized` / `StoreUnavailable` / `StoreRecovered` on transitions only, never
 per call.
 
-Admitted `ResourceMetadata` has private fields, getters, and `Serialize` only.
-Persisted catalog bytes deserialize as `RecordedResourceMetadata`; callers must
+Admitted `ResourceDefinition` has private fields, getters, and `Serialize` only.
+Persisted catalog bytes deserialize as `RecordedResourceDefinition`; callers must
 explicitly call `readmit_against` with a freshly admitted factory definition.
 The catalog record nests shared fields under `base` with required
 `metadata_wire_version: 2`. Flat/unversioned legacy records are rejected. Use
@@ -292,9 +296,9 @@ impl Provider for Postgres {
     type Instance  = PgPool;
     type Topology  = Pooled<Self>;
 
-    fn key() -> ResourceKey { resource_key!("postgres") }
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(Self::key(), metadata_name!("Postgres"), "Database pool")
+    const KEY: &'static str = "postgres";
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(metadata_name!("Postgres"), "Database pool")
     }
 
     async fn create(&self, config: &PostgresConfig, _ctx: &ResourceContext)
@@ -891,9 +895,10 @@ is not SDK-exported.
 - `SlotIdentity`, `DedupKey` — structural resolved-credential identity (`Unbound` / `Structural`) and the `(key, scope, slot_identity)` registry dedup key; neither is tenant authority.
 - `ManagerConfig`, `RegisterOptions` — configuration surface.
 - `Registry`, `LookupOutcome`, `ManagedResourceView` — type-erased storage with read-only diagnostic lookup; lifecycle authority remains inside `Manager`.
-- `ResourceMetadataDraft` — schema-free resource author intent returned by `Provider::metadata`.
-- `ResourceMetadata` — immutable factory-admitted descriptor with getter-only key, name, description, schema, version, and tags; serializable but not deserializable.
-- `RecordedResourceMetadata` — deserialized catalog evidence requiring explicit readmission against a fresh factory definition.
+- `ResourceMetadata` — key-free and schema-free author intent returned by `Provider::metadata` (an alias of `nebula_metadata::Metadata`).
+- `ProviderKey` — `R::key()`, the typed `ResourceKey` derived from `Provider::KEY`; implemented for every provider.
+- `ResourceDefinition` — immutable factory-admitted descriptor with getter-only key, name, description, schema, version, and tags; serializable but not deserializable.
+- `RecordedResourceDefinition` — deserialized catalog evidence requiring explicit readmission against a fresh factory definition.
 - `ResourceConfig` — operational config trait (no secrets); supertype `HasSchema`.
 - `SlotCell` — lock-free `ArcSwap`-based credential slot cell the framework populates/rotates.
 - `TeardownCx`, `TeardownReason` — deadline + cause handed to `Provider::destroy` (ADR-0093 teardown contract).

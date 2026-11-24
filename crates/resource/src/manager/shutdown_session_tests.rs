@@ -1,5 +1,6 @@
 //! Fault injection at the private publisher seam; public behavior uses real leases.
 
+use crate::resource::ProviderKey;
 use std::{
     sync::{
         Arc,
@@ -16,7 +17,7 @@ use super::{
 use crate::{
     Error, ResourceContext, ResourceGuard, RetainStatus, RetainedStore, ScopeLevel, SlotIdentity,
     TeardownCx,
-    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::{CreatedEntry, Ticket, Topology, Unavailable, store::StoreView},
 };
 
@@ -82,15 +83,9 @@ impl Provider for LeasedResource {
     type Config = Config;
     type Instance = AtomicUsize;
     type Topology = QuiescingTopology;
-    fn key() -> nebula_core::ResourceKey {
-        nebula_core::resource_key!("shutdown-session-lease")
-    }
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            crate::metadata_name!("shutdown-session-lease"),
-            "",
-        )
+    const KEY: &'static str = "shutdown-session-lease";
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("shutdown-session-lease"), "")
     }
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<AtomicUsize, Error> {
         Ok(AtomicUsize::new(7))
@@ -604,15 +599,9 @@ impl Provider for ParentResource {
     type Config = Config;
     type Instance = ResourceGuard<LeasedResource>;
     type Topology = crate::Resident<Self>;
-    fn key() -> nebula_core::ResourceKey {
-        nebula_core::resource_key!("shutdown-session-parent")
-    }
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            crate::metadata_name!("shutdown-session-parent"),
-            "",
-        )
+    const KEY: &'static str = "shutdown-session-parent";
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("shutdown-session-parent"), "")
     }
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<Self::Instance, Error> {
         self.child

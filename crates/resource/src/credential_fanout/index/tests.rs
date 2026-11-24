@@ -829,6 +829,7 @@ async fn dispatch_refresh_empty_is_noop() {
 // slot-identity-pinned ports the fan-out calls.
 // ────────────────────────────────────────────────────────────────────
 mod fanout_dispatch {
+    use crate::resource::ProviderKey;
     use std::collections::HashMap;
     use std::future::Future;
     use std::sync::{
@@ -842,11 +843,11 @@ mod fanout_dispatch {
         ResourceContext, ResourceEvent,
         error::Error as ResourceError,
         release_queue::{ReleaseQueue, SubmissionOutcome},
-        resource::{HasCredentialSlots, ResourceMetadataDraft},
+        resource::{HasCredentialSlots, ResourceMetadata},
         topology::resident::ResidentProvider,
     };
     use futures::FutureExt;
-    use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
+    use nebula_core::{OrgId, ScopeLevel, resource_key, scope::Scope};
     use nebula_credential::{CredentialEvent, CredentialId};
     use nebula_eventbus::EventBus;
     use tokio_util::sync::CancellationToken;
@@ -951,9 +952,7 @@ mod fanout_dispatch {
         type Instance = Runtime;
         type Topology = Resident<Self>;
 
-        fn key() -> ResourceKey {
-            resource_key!("fanout-ctl")
-        }
+        const KEY: &'static str = "fanout-ctl";
 
         async fn create(
             &self,
@@ -1020,8 +1019,8 @@ mod fanout_dispatch {
             }
         }
 
-        fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("fanout-ctl"), "")
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(crate::metadata_name!("fanout-ctl"), "")
         }
     }
 

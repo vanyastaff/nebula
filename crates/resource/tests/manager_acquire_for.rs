@@ -16,6 +16,7 @@
 //! `refresh_slot_for_identity` / `revoke_slot_for_identity`
 //! (the ports the engine rotation fan-out drives) are covered directly.
 
+use nebula_resource::ProviderKey;
 use std::{
     assert_matches,
     sync::{
@@ -24,14 +25,14 @@ use std::{
     },
 };
 
-use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
+use nebula_core::{OrgId, ScopeLevel, scope::Scope};
 use nebula_resource::Pooled;
 use nebula_resource::topology::{pooled::PoolProvider, resident::ResidentProvider};
 use nebula_resource::{
     AcquireOptions, Manager, Provider, RegisterOptions, RegistrationSpec, ResourceConfig,
     ResourceContext, SlotIdentity,
     error::Error,
-    resource::{HasCredentialSlots, ResourceMetadataDraft},
+    resource::{HasCredentialSlots, ResourceMetadata},
     topology::{Resident, pooled::BrokenCheck},
 };
 use tokio_util::sync::CancellationToken;
@@ -71,9 +72,7 @@ impl Provider for PoolRes {
     type Instance = u64;
     type Topology = Pooled<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("acquire-for-pool")
-    }
+    const KEY: &'static str = "acquire-for-pool";
 
     async fn create(&self, _config: &CountingConfig, _ctx: &ResourceContext) -> Result<u64, Error> {
         Ok(self.create_counter.fetch_add(1, Ordering::SeqCst))
@@ -83,12 +82,8 @@ impl Provider for PoolRes {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("acquire-for-pool"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("acquire-for-pool"), "")
     }
 }
 
@@ -240,9 +235,7 @@ impl Provider for ResRes {
     type Instance = u64;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("acquire-for-resident")
-    }
+    const KEY: &'static str = "acquire-for-resident";
 
     async fn create(&self, _config: &CountingConfig, _ctx: &ResourceContext) -> Result<u64, Error> {
         Ok(self.create_counter.fetch_add(1, Ordering::SeqCst))
@@ -263,12 +256,8 @@ impl Provider for ResRes {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("acquire-for-resident"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("acquire-for-resident"), "")
     }
 }
 

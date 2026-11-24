@@ -228,6 +228,7 @@ pub fn slot_identities_for_key(
 
 #[cfg(test)]
 mod tests {
+    use nebula_resource::ProviderKey;
     use std::{
         fmt,
         sync::{
@@ -240,7 +241,7 @@ mod tests {
         Manager, RegistrationSpec, Resident, ResidentConfig, ResourceContext, ScopeLevel,
         SlotIdentity,
         error::Error,
-        resource::{Provider, ResourceConfig, ResourceMetadataDraft},
+        resource::{Provider, ResourceConfig, ResourceMetadata},
         topology::resident::ResidentProvider,
     };
 
@@ -282,9 +283,7 @@ mod tests {
         type Instance = Arc<AtomicU64>;
         type Topology = Resident<Self>;
 
-        fn key() -> ResourceKey {
-            ResourceKey::new("test.engine_accessor.acc").expect("valid resource key in test")
-        }
+        const KEY: &'static str = "test.engine_accessor.acc";
 
         async fn create(
             &self,
@@ -294,9 +293,8 @@ mod tests {
             Ok(Arc::new(AtomicU64::new(42)))
         }
 
-        fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::new(
-                Self::key(),
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(
                 nebula_resource::metadata_name!("test.engine_accessor.acc"),
                 "",
             )

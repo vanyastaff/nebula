@@ -1,6 +1,7 @@
 //! Credential suspension: a bound credential denying use at its current
 //! material stops a row admitting work, closes every lease admitted before,
 //! and keeps the row's physical owners for reuse when it reopens.
+use crate::resource::ProviderKey;
 use std::{
     sync::{
         Arc,
@@ -9,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-use nebula_core::{CredentialId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
+use nebula_core::{CredentialId, ScopeLevel, scope::Scope};
 use nebula_credential::{CredentialGuard, CredentialGuardMetadata, ErasedCredentialGuard};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -23,7 +24,7 @@ use crate::{
     Provider, Resident, ResidentConfig, ResourceConfig, ResourceContext, ResourceEvent,
     ResourceGuard, SlotCell, SlotIdentity, SlotInstallError, SlotUpdate,
     recovery::{GateState, RecoveryGate, RecoveryGateConfig},
-    resource::{HasCredentialSlots, ResourceMetadataDraft},
+    resource::{HasCredentialSlots, ResourceMetadata},
     runtime::managed::ManagedResource,
     topology::{
         BoundedProvider, PoolProvider, ResidentProvider,
@@ -101,12 +102,10 @@ macro_rules! credential_bound_provider {
             type Instance = u64;
             type Topology = $topology;
 
-            fn key() -> ResourceKey {
-                resource_key!($key)
-            }
+            const KEY: &'static str = $key;
 
-            fn metadata() -> ResourceMetadataDraft {
-                ResourceMetadataDraft::new(Self::key(), crate::metadata_name!($key), "")
+            fn metadata() -> ResourceMetadata {
+                ResourceMetadata::new(crate::metadata_name!($key), "")
             }
 
             async fn create(&self, _: &Config, _: &ResourceContext) -> Result<u64, Error> {
@@ -209,12 +208,10 @@ impl Provider for Unbound {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("suspension-unbound")
-    }
+    const KEY: &'static str = "suspension-unbound";
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("suspension-unbound"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("suspension-unbound"), "")
     }
 
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<(), Error> {

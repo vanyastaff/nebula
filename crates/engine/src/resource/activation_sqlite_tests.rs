@@ -101,9 +101,7 @@ impl Provider for BearerRow {
     type Instance = Arc<AtomicU64>;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("activation.bearer")
-    }
+    const KEY: &'static str = "activation.bearer";
 
     async fn create(
         &self,
@@ -113,9 +111,8 @@ impl Provider for BearerRow {
         Ok(Arc::new(AtomicU64::new(1)))
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("activation.bearer"),
             String::new(),
         )

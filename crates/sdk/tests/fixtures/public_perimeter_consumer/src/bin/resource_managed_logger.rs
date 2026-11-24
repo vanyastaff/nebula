@@ -8,9 +8,9 @@ use std::{
 };
 
 use nebula_sdk::integration::resource::{
-    Cost, Effect, Error, ErrorKind, Operation, OperationCx, OperationError, PinSlots, Provider,
-    Resident, ResidentProvider, ResourceContext, ResourceHandle, ResourceKey,
-    ResourceMetadataDraft, SentState, TeardownCx, no_credential_slots, resource_key,
+    Cost, Effect, Error, ErrorKind, ResourceMetadata, Operation, OperationCx, OperationError,
+    PinSlots, Provider, Resident, ResidentProvider, ResourceContext, ResourceHandle, SentState,
+    TeardownCx, no_credential_slots,
 };
 use nebula_sdk::prelude::{Deserialize, Serialize};
 
@@ -47,16 +47,10 @@ impl Provider for Logger {
     type Instance = LogSink;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("example.managed-logger")
-    }
+    const KEY: &'static str = "example.managed-logger";
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_sdk::prelude::metadata_name!("Logger"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_sdk::prelude::metadata_name!("Logger"), "")
     }
 
     async fn create(&self, _: &(), _: &ResourceContext) -> Result<LogSink, Error> {

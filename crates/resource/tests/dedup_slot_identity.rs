@@ -18,16 +18,17 @@
 //! its `0` default to prove the separation does **not** rely on the author
 //! overriding it (a discipline-based defence, explicitly rejected).
 
+use nebula_resource::ProviderKey;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
 
-use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
+use nebula_core::{OrgId, ScopeLevel, scope::Scope};
 use nebula_resource::Resident;
 use nebula_resource::{
     AcquireOptions, Manager, Provider, RegisterOptions, RegistrationSpec, ResidentConfig,
-    ResourceConfig, ResourceContext, SlotIdentity, error::Error, resource::ResourceMetadataDraft,
+    ResourceConfig, ResourceContext, SlotIdentity, error::Error, resource::ResourceMetadata,
     topology::resident::ResidentProvider,
 };
 use tokio_util::sync::CancellationToken;
@@ -76,9 +77,7 @@ impl Provider for CountingResource {
     type Instance = CountingRuntime;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("dedup-slot-ident")
-    }
+    const KEY: &'static str = "dedup-slot-ident";
 
     async fn create(
         &self,
@@ -97,12 +96,8 @@ impl Provider for CountingResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("dedup-slot-ident"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("dedup-slot-ident"), "")
     }
 }
 
@@ -427,10 +422,8 @@ impl Provider for SiblingResidentResource {
     type Instance = CountingRuntime;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        // SAME string as `CountingResource::key()` on purpose.
-        resource_key!("dedup-slot-ident")
-    }
+    // SAME string as `CountingResource::KEY` on purpose.
+    const KEY: &'static str = "dedup-slot-ident";
 
     async fn create(
         &self,
@@ -450,12 +443,8 @@ impl Provider for SiblingResidentResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("dedup-slot-ident"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("dedup-slot-ident"), "")
     }
 }
 

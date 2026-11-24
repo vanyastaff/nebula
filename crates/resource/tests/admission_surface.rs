@@ -8,14 +8,15 @@
 //! - A resident resource always reports `AdmissionPhase::Ready` and `None` load.
 //! - `Unavailable::into_error` maps each variant to the expected `ErrorKind`.
 
+use nebula_resource::ProviderKey;
 use std::sync::Arc;
 
-use nebula_core::{ExecutionId, ResourceKey, resource_key, scope::Scope};
+use nebula_core::{ExecutionId, resource_key, scope::Scope};
 use nebula_resource::topology::{pooled::PoolProvider, resident::ResidentProvider};
 use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResourceContext, ScopeLevel, SlotIdentity,
     error::{Error, ErrorKind},
-    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::{AdmissionPhase, Load, Pooled, Resident, Unavailable},
 };
 use tokio_util::sync::CancellationToken;
@@ -52,17 +53,14 @@ impl Provider for TinyPool {
     type Instance = ();
     type Topology = Pooled<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("test.admission.tiny_pool")
-    }
+    const KEY: &'static str = "test.admission.tiny_pool";
 
     async fn create(&self, _config: &MinCfg, _ctx: &ResourceContext) -> Result<(), Error> {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("test.admission.tiny_pool"),
             "",
         )
@@ -84,17 +82,14 @@ impl Provider for SimpleResident {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("test.admission.simple_resident")
-    }
+    const KEY: &'static str = "test.admission.simple_resident";
 
     async fn create(&self, _config: &MinCfg, _ctx: &ResourceContext) -> Result<(), Error> {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("test.admission.simple_resident"),
             "",
         )

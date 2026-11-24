@@ -50,6 +50,7 @@
 //! [`AdmissionLink`](super::AdmissionLink), with the unit's credential pin
 //! checked under the same lock (`call::strict`).
 
+use crate::resource::ProviderKey;
 use std::time::Duration;
 
 use nebula_core::ResourceKey;

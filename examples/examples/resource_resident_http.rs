@@ -40,13 +40,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
+use nebula_core::{ScopeLevel, scope::Scope};
 use nebula_resource::Resident;
 use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResidentConfig, ResourceContext,
     dedup::SlotIdentity,
     error::Error as ResourceError,
-    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
 use parking_lot::RwLock;
@@ -315,9 +315,7 @@ impl Provider for GoogleSheets {
     type Instance = GoogleSheetsClient;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("demo.google.sheets")
-    }
+    const KEY: &'static str = "demo.google.sheets";
 
     async fn create(
         &self,
@@ -347,12 +345,8 @@ impl Provider for GoogleSheets {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("demo.google.sheets"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("demo.google.sheets"), "")
     }
 }
 

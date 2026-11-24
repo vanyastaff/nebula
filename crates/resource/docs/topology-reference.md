@@ -44,7 +44,7 @@ those leases return.
 
 ```rust,ignore
 use nebula_resource::{
-    Provider, ResourceContext, ResourceMetadataDraft, TeardownCx,
+    Provider, ResourceContext, ResourceMetadata, TeardownCx,
     error::Error, resource::ResourceConfig,
     topology::{Pooled, PoolProvider, BrokenCheck, InstanceMetrics, RecycleDecision},
 };
@@ -55,7 +55,7 @@ impl Provider for Postgres {
     type Instance = PgConnection;
     type Topology = Pooled<Self>;          // ← static topology choice
 
-    fn key() -> ResourceKey { resource_key!("demo.postgres") }
+    const KEY: &'static str = "demo.postgres";
 
     async fn create(&self, config: &Self::Config, ctx: &ResourceContext)
         -> Result<Self::Instance, Error> { /* … */ }
@@ -63,7 +63,7 @@ impl Provider for Postgres {
     async fn destroy(&self, instance: Self::Instance, cx: TeardownCx)
         -> Result<(), Error> { /* flush/close before drop; cx.deadline bounds it */ }
 
-    fn metadata() -> ResourceMetadataDraft { ResourceMetadataDraft::new(Self::key(), nebula_resource::metadata_name!("Postgres"), "") }
+    fn metadata() -> ResourceMetadata { ResourceMetadata::new(nebula_resource::metadata_name!("Postgres"), "") }
 }
 
 impl PoolProvider for Postgres {
@@ -134,7 +134,7 @@ impl Provider for GoogleSheets {
     type Instance = GoogleSheetsClient;    // no universal Clone bound
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey { resource_key!("demo.google.sheets") }
+    const KEY: &'static str = "demo.google.sheets";
 
     async fn create(&self, config: &Self::Config, ctx: &ResourceContext)
         -> Result<Self::Instance, Error> { /* … */ }
@@ -142,7 +142,7 @@ impl Provider for GoogleSheets {
     async fn destroy(&self, instance: Self::Instance, cx: TeardownCx)
         -> Result<(), Error> { Ok(()) }
 
-    fn metadata() -> ResourceMetadataDraft { ResourceMetadataDraft::new(Self::key(), nebula_resource::metadata_name!("GoogleSheets"), "") }
+    fn metadata() -> ResourceMetadata { ResourceMetadata::new(nebula_resource::metadata_name!("GoogleSheets"), "") }
 }
 
 impl ResidentProvider for GoogleSheets {
@@ -231,7 +231,7 @@ impl Provider for SerialPort {
     type Instance = PortHandle;
     type Topology = Bounded<Self>;
 
-    fn key() -> ResourceKey { resource_key!("demo.serial") }
+    const KEY: &'static str = "demo.serial";
 
     async fn create(&self, config: &Self::Config, ctx: &ResourceContext)
         -> Result<Self::Instance, Error> { /* open the port */ }
@@ -239,7 +239,7 @@ impl Provider for SerialPort {
     async fn destroy(&self, instance: Self::Instance, cx: TeardownCx)
         -> Result<(), Error> { /* close */ }
 
-    fn metadata() -> ResourceMetadataDraft { ResourceMetadataDraft::new(Self::key(), nebula_resource::metadata_name!("SerialPort"), "") }
+    fn metadata() -> ResourceMetadata { ResourceMetadata::new(nebula_resource::metadata_name!("SerialPort"), "") }
 }
 
 // Only Exclusive reuses its instance and therefore resets; Capped / Unbounded

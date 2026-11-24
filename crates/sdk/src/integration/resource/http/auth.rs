@@ -57,7 +57,7 @@ impl BearerMaterial for OAuth2Token {}
 /// use nebula_sdk::integration::credential::BearerTokenCredential;
 /// use nebula_sdk::integration::resource::{
 ///     CredentialSlot, Error, OperationError, Provider, Resident, ResidentProvider, Resource,
-///     ResourceContext, ResourceKey, ResourceMetadataDraft, resource_key,
+///     ResourceMetadata, ResourceContext,
 ///     http::{Authorize, HttpApi, HttpConfig, HttpTransport},
 /// };
 ///
@@ -73,16 +73,10 @@ impl BearerMaterial for OAuth2Token {}
 ///     type Instance = HttpTransport;
 ///     type Topology = Resident<Self>;
 ///
-///     fn key() -> ResourceKey {
-///         resource_key!("example.github")
-///     }
+///     const KEY: &'static str = "example.github";
 ///
-///     fn metadata() -> ResourceMetadataDraft {
-///         ResourceMetadataDraft::new(
-///             Self::key(),
-///             nebula_sdk::prelude::metadata_name!("GitHub"),
-///             "",
-///         )
+///     fn metadata() -> ResourceMetadata {
+///         ResourceMetadata::new(nebula_sdk::prelude::metadata_name!("GitHub"), "")
 ///     }
 ///
 ///     async fn create(&self, config: &HttpConfig, _: &ResourceContext) -> Result<HttpTransport, Error> {

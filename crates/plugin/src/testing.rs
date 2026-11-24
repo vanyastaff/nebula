@@ -407,13 +407,10 @@ impl nebula_resource::Provider for FixtureResource {
     type Instance = ();
     type Topology = nebula_resource::Resident<Self>;
 
-    fn key() -> nebula_core::ResourceKey {
-        "provider.resident".parse().unwrap()
-    }
+    const KEY: &'static str = "provider.resident";
 
-    fn metadata() -> nebula_resource::ResourceMetadataDraft {
-        nebula_resource::ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> nebula_resource::ResourceMetadata {
+        nebula_resource::ResourceMetadata::new(
             nebula_resource::metadata_name!("Resident"),
             "Admission-only resource",
         )

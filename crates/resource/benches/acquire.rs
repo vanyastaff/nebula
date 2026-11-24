@@ -22,9 +22,8 @@ use std::hint::black_box;
 use criterion::{Criterion, criterion_group, criterion_main};
 use nebula_resource::{
     AcquireOptions, Error, Manager, PoolConfig, Pooled, Provider, RegistrationSpec, Resident,
-    ResidentConfig, ResourceConfig, ResourceContext, ResourceKey, ScopeLevel, SlotIdentity,
-    resource::ResourceMetadataDraft,
-    resource_key,
+    ResidentConfig, ResourceConfig, ResourceContext, ScopeLevel, SlotIdentity,
+    resource::ResourceMetadata,
     topology::pooled::{PoolProvider, RecycleDecision},
     topology::resident::ResidentProvider,
 };
@@ -54,20 +53,14 @@ impl Provider for KeepPool {
     type Instance = u64;
     type Topology = Pooled<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("bench-pool-keep")
-    }
+    const KEY: &'static str = "bench-pool-keep";
 
     async fn create(&self, _config: &BenchCfg, _ctx: &ResourceContext) -> Result<u64, Error> {
         Ok(0xBEEF)
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("bench-pool-keep"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("bench-pool-keep"), "")
     }
 }
 
@@ -86,20 +79,14 @@ impl Provider for DiscardPool {
     type Instance = u64;
     type Topology = Pooled<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("bench-pool-discard")
-    }
+    const KEY: &'static str = "bench-pool-discard";
 
     async fn create(&self, _config: &BenchCfg, _ctx: &ResourceContext) -> Result<u64, Error> {
         Ok(0xDEAD)
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("bench-pool-discard"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("bench-pool-discard"), "")
     }
 }
 
@@ -125,20 +112,14 @@ impl Provider for SharedResident {
     type Instance = u64;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("bench-resident")
-    }
+    const KEY: &'static str = "bench-resident";
 
     async fn create(&self, _config: &BenchCfg, _ctx: &ResourceContext) -> Result<u64, Error> {
         Ok(0xF00D)
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("bench-resident"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("bench-resident"), "")
     }
 }
 
@@ -285,20 +266,14 @@ impl Provider for BoundResident {
     type Instance = u64;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("bench-bound-resident")
-    }
+    const KEY: &'static str = "bench-bound-resident";
 
     async fn create(&self, _config: &BenchCfg, _ctx: &ResourceContext) -> Result<u64, Error> {
         Ok(0xCAFE)
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("bench-bound-resident"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("bench-bound-resident"), "")
     }
 }
 

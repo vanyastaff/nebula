@@ -12,12 +12,12 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
-use nebula_core::{ExecutionId, ResourceKey, resource_key};
+use nebula_core::ExecutionId;
 use nebula_resource::{
     Manager, ManagerConfig, Pooled, RegistrationSpec, Resident, ResourceContext, ScopeLevel,
     SlotIdentity,
     error::Error,
-    resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadataDraft},
+    resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
     topology::{
         pooled::{BrokenCheck, PoolProvider},
         resident::ResidentProvider,
@@ -85,9 +85,7 @@ impl Provider for PoolTestResource {
     type Instance = Arc<AtomicU64>;
     type Topology = Pooled<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("test-pool")
-    }
+    const KEY: &'static str = "test-pool";
 
     async fn create(
         &self,
@@ -107,12 +105,8 @@ impl Provider for PoolTestResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("test-pool"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("test-pool"), "")
     }
 }
 
@@ -153,9 +147,7 @@ impl Provider for ResidentTestResource {
     type Instance = Arc<AtomicU64>;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("test-resident")
-    }
+    const KEY: &'static str = "test-resident";
 
     async fn create(
         &self,
@@ -174,12 +166,8 @@ impl Provider for ResidentTestResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("test-resident"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("test-resident"), "")
     }
 }
 

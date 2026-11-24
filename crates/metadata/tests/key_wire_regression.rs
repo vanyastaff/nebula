@@ -3,17 +3,17 @@
 use std::{assert_matches, cell::Cell, fmt::Debug, str::FromStr};
 
 use nebula_metadata::{
-    MAX_SHARED_METADATA_BYTES, MetadataBuildError, MetadataDecodeLimits, MetadataDraft,
-    MetadataError, RecordedBaseMetadata, decode_json_reader, decode_json_slice,
+    MAX_SHARED_METADATA_BYTES, Metadata, MetadataBuildError, MetadataDecodeLimits, MetadataError,
+    RecordedBaseDefinition, decode_json_reader, decode_json_slice,
 };
 use nebula_schema::ValidSchema;
 use serde::{Serialize, Serializer, ser::SerializeSeq as _};
 
 #[test]
 fn admission_rejects_numeric_key_serialization() {
-    let admitted = MetadataDraft::try_new(42_u64, "Example", "")
+    let admitted = Metadata::try_new("Example", "")
         .unwrap()
-        .bind_schema(ValidSchema::empty());
+        .bind(42_u64, ValidSchema::empty());
     assert_matches!(
         admitted,
         Err(MetadataBuildError::Metadata(MetadataError::InvalidKey))
@@ -23,21 +23,21 @@ fn admission_rejects_numeric_key_serialization() {
 #[test]
 fn recorded_ingress_rejects_key_that_reserializes_as_number() {
     let wire = r#"{"metadata_wire_version":2,"key":"42","name":"Example","description":"","schema":{"fields":[]}}"#;
-    assert!(serde_json::from_str::<RecordedBaseMetadata<u64>>(wire).is_err());
-    assert!(serde_json::from_reader::<_, RecordedBaseMetadata<u64>>(wire.as_bytes()).is_err());
+    assert!(serde_json::from_str::<RecordedBaseDefinition<u64>>(wire).is_err());
+    assert!(serde_json::from_reader::<_, RecordedBaseDefinition<u64>>(wire.as_bytes()).is_err());
     assert!(
-        serde_json::from_value::<RecordedBaseMetadata<u64>>(serde_json::from_str(wire).unwrap())
+        serde_json::from_value::<RecordedBaseDefinition<u64>>(serde_json::from_str(wire).unwrap())
             .is_err()
     );
     assert!(
-        decode_json_slice::<RecordedBaseMetadata<u64>>(
+        decode_json_slice::<RecordedBaseDefinition<u64>>(
             wire.as_bytes(),
             MetadataDecodeLimits::default()
         )
         .is_err()
     );
     assert!(
-        decode_json_reader::<RecordedBaseMetadata<u64>>(
+        decode_json_reader::<RecordedBaseDefinition<u64>>(
             wire.as_bytes(),
             MetadataDecodeLimits::default()
         )
@@ -49,20 +49,20 @@ fn assert_key_roundtrip<K>(key: K)
 where
     K: Serialize + FromStr + Clone + PartialEq + Debug,
 {
-    let admitted = MetadataDraft::try_new(key, "Example", "")
+    let admitted = Metadata::try_new("Example", "")
         .unwrap()
-        .bind_schema(ValidSchema::empty())
+        .bind(key, ValidSchema::empty())
         .unwrap();
     let wire = serde_json::to_value(&admitted).unwrap();
     assert!(wire["key"].is_string());
     let bytes = serde_json::to_vec(&admitted).unwrap();
-    let slice: RecordedBaseMetadata<K> =
+    let slice: RecordedBaseDefinition<K> =
         decode_json_slice(&bytes, MetadataDecodeLimits::default()).unwrap();
     assert_eq!(slice.readmit_against(&admitted).unwrap(), admitted);
-    let reader: RecordedBaseMetadata<K> =
+    let reader: RecordedBaseDefinition<K> =
         decode_json_reader(bytes.as_slice(), MetadataDecodeLimits::default()).unwrap();
     assert_eq!(reader.readmit_against(&admitted).unwrap(), admitted);
-    let owned: RecordedBaseMetadata<K> = serde_json::from_value(wire).unwrap();
+    let owned: RecordedBaseDefinition<K> = serde_json::from_value(wire).unwrap();
     assert_eq!(owned.readmit_against(&admitted).unwrap(), admitted);
 }
 
@@ -112,9 +112,9 @@ fn key_capture_enforces_its_own_limit_when_serializer_output_changes() {
         calls: Cell::new(0),
         entries: &entries,
     };
-    let admitted = MetadataDraft::try_new(key, "Example", "")
+    let admitted = Metadata::try_new("Example", "")
         .unwrap()
-        .bind_schema(ValidSchema::empty());
+        .bind(key, ValidSchema::empty());
     assert_matches!(
         admitted,
         Err(MetadataBuildError::Metadata(MetadataError::InvalidKey))

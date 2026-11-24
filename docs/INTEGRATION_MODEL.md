@@ -28,16 +28,16 @@ Every concept in Nebula's integration layer is described by two things:
 
 | Piece | Role |
 |---|---|
-| `*MetadataDraft` | Author-owned UI/catalog intent: key, checked display name, version, lifecycle, and concept-specific declarations. A draft cannot supply a schema or claim admission. |
+| authored metadata | Author-owned UI/catalog intent: checked display name, version, lifecycle, and concept-specific declarations. `ResourceMetadata` carries no key (identity is `Provider::KEY`); `ActionMetadataDraft` and `CredentialMetadataDraft` still take one until they move to the same shape. None can supply a schema or claim admission. |
 | Associated Rust type | The schema source of truth: `Action::{Input, Output}`, `Credential::Properties`, or `Provider::Config`. |
-| admitted `*Metadata` | Immutable catalog definition produced only by the owning factory/registry after deriving schemas and checking identity/package invariants. |
-| `Recorded*Metadata` | Deserialized evidence. It regains admitted status only by exact comparison with a fresh definition from the currently selected factory/registry. |
+| admitted definition | `ResourceDefinition`, and for now `ActionMetadata` / `CredentialMetadata`. Immutable catalog definition produced only by the owning factory/registry after deriving schemas and checking identity/package invariants. |
+| `Recorded*` | Deserialized evidence (`RecordedResourceDefinition`, `RecordedActionMetadata`, `RecordedCredentialMetadata`). It regains admitted status only by exact comparison with a fresh definition from the currently selected factory/registry. |
 
 This is the canon's `*Metadata + Schema` contract expressed as a one-way
 lifecycle, not permission for authors to construct terminal metadata. Action
 factories derive both schemas and stamp the action kind; `CredentialRegistry`
 derives the properties schema; `ResourceFactory` derives and caches the config
-schema. `BaseMetadata` and admitted leaf metadata expose getters and serialize
+schema. `BaseDefinition` and admitted leaf metadata expose getters and serialize
 for catalogs, but have no setters or `Deserialize` implementation. Only the
 recorded DTOs deserialize, and readmission returns the fresh definition rather
 than promoting recorded fields. `PluginManifest` remains the bundle descriptor
@@ -45,10 +45,13 @@ and uses its own checked builder; it is not a catalog-leaf admission bypass.
 
 #### Catalog construction and wire migration
 
-The three concrete drafts each provide `new(key, MetadataName, description)` and
-`try_new(key, name, description)`. Resource authors must implement
-`Provider::metadata`; `ResourceMetadataDraft::from_key` and inferred display names
-are removed. Credential drafts no longer take or expose an auth pattern:
+`ActionMetadataDraft` and `CredentialMetadataDraft` each provide `new(key, MetadataName, description)`
+and `try_new(key, name, description)`. A resource declares its identity once, as
+`Provider::KEY`, and `Provider::metadata` returns the key-free
+`ResourceMetadata::new(MetadataName, description)` (the shared
+`nebula_metadata::Metadata`); the factory stamps the key at
+admission, so a resource's catalog entry cannot name another resource. Action
+and credential move to the same shape next. Inferred display names are removed. Credential metadata no longer takes or exposes an auth pattern:
 admission derives it from `<C::Scheme as AuthScheme>::pattern()`. Action macros
 preserve the full SemVer, including prerelease and build metadata.
 
@@ -85,7 +88,7 @@ and deadlines belong to the host. Decoder failures discard raw parser/I/O causes
 
 These records are not the plugin compiler's durable execution records. The
 compiler projects selected identity, schema, dependency, and execution fields;
-it does not serialize `BaseMetadata` or `DeprecationNotice`. This catalog migration
+it does not serialize `BaseDefinition` or `DeprecationNotice`. This catalog migration
 does not change compiler epochs, durable hashes, or historical frozen plan bytes.
 
 ### Phase-5 authoring target
@@ -98,7 +101,7 @@ explicit associated data types.
 `#[property(display(...), input(...), validate(...))]` and still accept the
 existing `#[field(...)]` / `#[validate(...)]` helpers for in-workspace
 declarations. Integration fields use `#[credential(...)]` / `#[resource(...)]`
-for slots. The schema-free draft/admission lifecycle above already exists.
+for slots. The schema-free authoring/admission lifecycle above already exists.
 Fresh schemas carry policy v2: presentation visibility never suppresses value
 requirements. Historical schemas retain their original wire representation but
 cannot grant fresh input, metadata or plan authority. Phase-indexed value trees
@@ -196,9 +199,9 @@ presentation identity or rewrite existing schema or plan bytes.
 entity-specific admission. Property display hints belong to schema authoring,
 not to a new catalog-leaf metadata type. SDK personas curate these contracts.
 
-| Shared concern | `ActionMetadataDraft` | `CredentialMetadataDraft` | `ResourceMetadataDraft` |
+| Shared concern | `ActionMetadataDraft` | `CredentialMetadataDraft` | `ResourceMetadata` |
 |---|---|---|---|
-| Identity and text | `new(ActionKey, MetadataName, description)` / `try_new` | `new(CredentialKey, MetadataName, description)` / `try_new` | `new(ResourceKey, MetadataName, description)` / `try_new` |
+| Identity and text | `new(ActionKey, MetadataName, description)` / `try_new` | `new(CredentialKey, MetadataName, description)` / `try_new` | `new(MetadataName, description)` / `try_new`; identity is `Provider::KEY` |
 | Revision | `with_version(MetadataVersion)` | `with_version(MetadataVersion)` | `with_version(MetadataVersion)` |
 | Icon | `with_icon`, `with_inline_icon`, `with_url_icon` | `with_icon`, `with_inline_icon`, `with_url_icon` | `with_icon`, `with_inline_icon`, `with_url_icon` |
 | Documentation and discovery | `with_documentation_url`, `with_categories`, `add_link`, `with_tags`, `add_tag` | `with_documentation_url`, `with_categories`, `add_link`, `with_tags`, `add_tag` | `with_documentation_url`, `with_categories`, `add_link`, `with_tags`, `add_tag` |
@@ -213,7 +216,8 @@ trait implementations; resources add no catalog fields beyond the shared base,
 while topology and live instances remain resource runtime contracts.
 
 The exact common constructor contract is the following, with `K` replaced by
-`ActionKey`, `CredentialKey`, or `ResourceKey` on each concrete leaf draft:
+`ActionKey` or `CredentialKey` on the action and credential types (`ResourceMetadata`
+takes no key):
 
 ```rust,ignore
 pub fn new(key: K, name: MetadataName, description: impl Into<String>) -> Self;
@@ -224,15 +228,15 @@ pub fn try_new(
 ) -> Result<Self, MetadataError>;
 ```
 
-All three drafts retain the existing `with_*`, `add_tag`, and `mark_*` names above,
+All three retain the existing `with_*`, `add_tag`, and `mark_*` names above,
 with the existing typed arguments and consuming `Self` returns. `with_tags`
-replaces tags; `add_tag` appends. Drafts remain private-field, `#[must_use]`,
+replaces tags; `add_tag` appends. They remain private-field, `#[must_use]`,
 schema-free, and non-deserializable. Only the owning factory/registry binds leaf
-schemas and creates admitted metadata; recorded DTOs still require readmission
+schemas and creates admitted definitions; recorded DTOs still require readmission
 against a fresh definition. No public leaf `build()` or schema setter is added.
 
 Issue 1018 locked this programmatic surface: no public leaf `build()` or schema
-setter is added, all three leaves use the same shared draft vocabulary, and all
+setter is added, all three leaves use the same shared authoring vocabulary, and all
 three delegate typed icons and shared `with_*` methods to `nebula-metadata`.
 
 **Further metadata evolution, proposed:** the
@@ -243,7 +247,7 @@ catalog protocol. Leaf facts are projected from existing factories/registries,
 not authored capability flags. Plugin packaging retains package/SDK constraints;
 tenant availability and future locale overlays remain separate host projections.
 These additions require their own checked admission, exact evidence and revision
-compatibility cases. The shared lower draft's `bind_schema` becomes fallible to
+compatibility cases. The shared `Metadata::bind` is fallible to
 enforce those bounds; leaf factories propagate its error without exposing a leaf
 `build()` method. These changes are not implemented by this documentation change.
 
@@ -372,7 +376,7 @@ does not canonicalize, replace, or silently migrate a historical record.
 
 `nebula-sdk` is the sole supported and branded Rust dependency. Integration
 authors use its persona modules, derives, associated Rust types, and
-`*MetadataDraft` values. Admitted metadata, validated/resolved value proof
+authored metadata values. Admitted metadata, validated/resolved value proof
 wrappers, erased or prepared action inputs, registries/factories, persistence
 ports, and runtime authority types stay outside the curated perimeter. Workspace
 crates may expose those technical seams so first-party composition can function,
@@ -388,7 +392,7 @@ These are **schema-level** links: metadata and parameter types declare a closed 
 
 **Resource** — `[ ResourceMetadata + Schema ]` — **may depend on Credential and/or other Resource types.**
 
-Long-lived managed object: connection pool, SDK client, file handle. Resource lifecycle owns init, health-check, hot-reload via **ReloadOutcome**, bindings, per-slot credential-rotation fan-out, and scope-aware teardown. Authors return `ResourceMetadataDraft`; the selected `ResourceFactory` derives and caches the exact `R::Config` schema, and validation/registration consume that one definition before typed manager admission. A Resource may declare typed Credential slots and may build on other Resource types, but the resource dependency subgraph must remain acyclic and activation-validated. The author declares what the Resource **is**; the runtime provides it **healthy** or fails loudly. **Concrete shape:** see §3.6 (`nebula-resource`).
+Long-lived managed object: connection pool, SDK client, file handle. Resource lifecycle owns init, health-check, hot-reload via **ReloadOutcome**, bindings, per-slot credential-rotation fan-out, and scope-aware teardown. Authors declare `Provider::KEY` and return key-free `ResourceMetadata`; the selected `ResourceFactory` derives and caches the exact `R::Config` schema, and validation/registration consume that one definition before typed manager admission. A Resource may declare typed Credential slots and may build on other Resource types, but the resource dependency subgraph must remain acyclic and activation-validated. The author declares what the Resource **is**; the runtime provides it **healthy** or fails loudly. **Concrete shape:** see §3.6 (`nebula-resource`).
 
 **Action** — `[ ActionMetadata + Schema ]` — **declares zero or more Resource and/or Credential kinds it needs** (by stable id / type reference in the **integration schema**, not ad hoc runtime lookup).
 

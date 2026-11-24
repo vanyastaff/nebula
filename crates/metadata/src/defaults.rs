@@ -1,6 +1,6 @@
 //! Shared `serde` default/`skip_serializing_if` helpers.
 //!
-//! `BaseMetadata` (`base.rs`) and `PluginManifest` (`manifest.rs`) both carry
+//! `BaseDefinition` (`base.rs`) and `PluginManifest` (`manifest.rs`) both carry
 //! a `version: Version` field defaulting to `1.0.0` and a `maturity:
 //! MaturityLevel` field defaulting to [`MaturityLevel::default()`], each
 //! wired through identical `#[serde(default = "...", skip_serializing_if =

@@ -3,9 +3,9 @@
 use std::assert_matches;
 
 use nebula_metadata::{
-    CatalogReference, DeprecationNotice, MAX_METADATA_JSON_BYTES, MetadataBuildError,
-    MetadataDecodeLimits, MetadataDraft, MetadataError, PluginDependency, PluginManifest,
-    RecordedBaseMetadata, check_json_record, decode_json_reader, decode_json_slice,
+    CatalogReference, DeprecationNotice, MAX_METADATA_JSON_BYTES, Metadata, MetadataBuildError,
+    MetadataDecodeLimits, MetadataError, PluginDependency, PluginManifest, RecordedBaseDefinition,
+    check_json_record, decode_json_reader, decode_json_slice,
 };
 use nebula_schema::{Property, Rule, Schema, ValidSchema, field_key};
 use semver::{Version, VersionReq};
@@ -22,7 +22,7 @@ fn reject_positional<T: DeserializeOwned>(wire: &str) {
 
 #[test]
 fn recorded_base_rejects_positional_arrays() {
-    reject_positional::<RecordedBaseMetadata<String>>(
+    reject_positional::<RecordedBaseDefinition<String>>(
         r#"[2,"example.action","Example","",{"fields":[]}]"#,
     );
 }
@@ -78,9 +78,9 @@ fn schema_with_64_nested_objects_cannot_admit_undecodable_json() {
     let schema = Schema::builder().property(field).build().unwrap();
     let wire = serde_json::to_vec(&json!({"schema": schema})).unwrap();
     assert!(serde_json::from_slice::<serde_json::Value>(&wire).is_err());
-    let admitted = MetadataDraft::try_new("example".to_owned(), "Example", "")
+    let admitted = Metadata::try_new("Example", "")
         .unwrap()
-        .bind_schema(schema);
+        .bind("example".to_owned(), schema);
     assert!(
         admitted.is_err(),
         "admission must reject JSON exceeding decoder depth"
@@ -104,12 +104,12 @@ fn replacement_with_33_comparators_cannot_admit_undecodable_json() {
         key: "replacement".parse().unwrap(),
         version_requirement: Some(requirement),
     };
-    let admitted = MetadataDraft::try_new("example".to_owned(), "Example", "")
+    let admitted = Metadata::try_new("Example", "")
         .unwrap()
         .with_deprecation(
             DeprecationNotice::new(Version::new(1, 0, 0)).with_replacement(replacement),
         )
-        .bind_schema(ValidSchema::empty());
+        .bind("example".to_owned(), ValidSchema::empty());
     assert!(
         admitted.is_err(),
         "admission must reject unparseable replacement requirements"
@@ -126,27 +126,27 @@ fn nested_value(depth: usize) -> serde_json::Value {
 
 fn verify_schema_roundtrip(schema: ValidSchema) -> bool {
     let mut wire = serde_json::to_value(
-        MetadataDraft::try_new("example".to_owned(), "Example", "")
+        Metadata::try_new("Example", "")
             .unwrap()
-            .bind_schema(ValidSchema::empty())
+            .bind("example".to_owned(), ValidSchema::empty())
             .unwrap(),
     )
     .unwrap();
     wire["schema"] = serde_json::to_value(&schema).unwrap();
     let bytes = serde_json::to_vec(&wire).unwrap();
     let parser_accepts = serde_json::from_slice::<serde_json::Value>(&bytes).is_ok();
-    let admitted = MetadataDraft::try_new("example".to_owned(), "Example", "")
+    let admitted = Metadata::try_new("Example", "")
         .unwrap()
-        .bind_schema(schema);
+        .bind("example".to_owned(), schema);
     if parser_accepts {
         let admitted = admitted.unwrap();
-        let recorded: RecordedBaseMetadata<String> =
+        let recorded: RecordedBaseDefinition<String> =
             decode_json_slice(&bytes, MetadataDecodeLimits::default()).unwrap();
         assert_eq!(recorded.readmit_against(&admitted).unwrap(), admitted);
-        let reader: RecordedBaseMetadata<String> =
+        let reader: RecordedBaseDefinition<String> =
             decode_json_reader(bytes.as_slice(), MetadataDecodeLimits::default()).unwrap();
         assert_eq!(reader.readmit_against(&admitted).unwrap(), admitted);
-        let owned: RecordedBaseMetadata<String> = serde_json::from_value(wire).unwrap();
+        let owned: RecordedBaseDefinition<String> = serde_json::from_value(wire).unwrap();
         assert_eq!(owned.readmit_against(&admitted).unwrap(), admitted);
     } else {
         assert_matches!(
@@ -155,9 +155,9 @@ fn verify_schema_roundtrip(schema: ValidSchema) -> bool {
                 MetadataError::RecordNotDecodable
             ))
         );
-        assert!(serde_json::from_value::<RecordedBaseMetadata<String>>(wire).is_err());
+        assert!(serde_json::from_value::<RecordedBaseDefinition<String>>(wire).is_err());
         assert!(
-            decode_json_reader::<RecordedBaseMetadata<String>>(
+            decode_json_reader::<RecordedBaseDefinition<String>>(
                 bytes.as_slice(),
                 MetadataDecodeLimits::default()
             )
@@ -309,7 +309,7 @@ fn positional_errors_never_echo_supplied_values() {
     const CANARY: &str = "private_positional_value";
     let wire = format!(r#"["{CANARY}"]"#);
     for error in [
-        serde_json::from_str::<RecordedBaseMetadata<String>>(&wire).unwrap_err(),
+        serde_json::from_str::<RecordedBaseDefinition<String>>(&wire).unwrap_err(),
         serde_json::from_str::<PluginManifest>(&wire).unwrap_err(),
         serde_json::from_str::<DeprecationNotice>(&wire).unwrap_err(),
         serde_json::from_str::<PluginDependency>(&wire).unwrap_err(),

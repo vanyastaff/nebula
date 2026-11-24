@@ -1,0 +1,7 @@
+error[E0080]: evaluation panicked: `Provider::KEY` is not a valid resource key
+ --> tests/probes/provider_key_literal_is_checked.rs:6:1
+  |
+6 | nebula_resource::no_credential_slots!(Misnamed);
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `_` failed here
+  |
+  = note: this error originates in the macro `$crate::panic::panic_2021` which comes from the expansion of the macro `nebula_resource::no_credential_slots` (in Nightly builds, run with -Z macro-backtrace for more info)

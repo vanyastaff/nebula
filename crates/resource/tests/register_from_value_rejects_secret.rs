@@ -17,16 +17,17 @@
 //!     schema's declared fields) registers OK, so the rejection is attributable
 //!     to the extra secret-shaped field and the test is not vacuous.
 
+use nebula_resource::ProviderKey;
 use std::sync::Arc;
 
-use nebula_core::{DeclaresDependencies, Dependencies, ResourceKey, ScopeLevel, resource_key};
+use nebula_core::{DeclaresDependencies, Dependencies, ScopeLevel};
 use nebula_expression::ExpressionEngine;
 use nebula_resource::Resident;
 use nebula_resource::{
     KindActivator, Manager, RegisterRequest, ResidentConfig, ResourceConfigInput, ResourceContext,
     ResourceFactory,
     error::Error,
-    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
 use nebula_schema::{HasSchema, Property, Schema, ValidSchema, field_key};
@@ -89,9 +90,7 @@ impl Provider for Db {
     type Instance = Arc<()>;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("secret-config-guard-db")
-    }
+    const KEY: &'static str = "secret-config-guard-db";
 
     async fn create(&self, _config: &DbConfig, _ctx: &ResourceContext) -> Result<Arc<()>, Error> {
         Ok(Arc::new(()))
@@ -105,9 +104,8 @@ impl Provider for Db {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("secret-config-guard-db"),
             "",
         )

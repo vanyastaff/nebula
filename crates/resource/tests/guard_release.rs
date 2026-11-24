@@ -8,6 +8,7 @@
 //! Split out of the former monolithic `basic_integration.rs` (pure move, no
 //! test-body changes) — shared mocks/helpers live in `tests/common/mod.rs`.
 
+use nebula_resource::ProviderKey;
 mod common;
 
 #[derive(Clone)]
@@ -28,17 +29,11 @@ impl Provider for NestedCleanupResource {
     type Instance = u64;
     type Topology = nebula_resource::Bounded<Self>;
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("NestedCleanupResource"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("NestedCleanupResource"), "")
     }
 
-    fn key() -> ResourceKey {
-        resource_key!("nested-cleanup")
-    }
+    const KEY: &'static str = "nested-cleanup";
 
     async fn create(&self, _: &TestConfig, _: &ResourceContext) -> Result<u64, Error> {
         Ok(self.next_id.fetch_add(1, Ordering::SeqCst))
@@ -231,13 +226,13 @@ use common::{
     pool_manager_with_metrics, register_pool, test_config, test_ctx, wait_count_at_least,
     wait_idle_count,
 };
-use nebula_core::{ResourceKey, resource_key};
+use nebula_core::resource_key;
 use nebula_resource::{
     AcquireOptions, Manager, Pooled, RegistrationSpec, ReleaseOutcome, Resident, ResidentConfig,
     ResourceContext, ScopeLevel, ShutdownConfig, SlotIdentity,
     error::Error,
     guard::ResourceGuard,
-    resource::{HasCredentialSlots, Provider, ResourceMetadataDraft},
+    resource::{HasCredentialSlots, Provider, ResourceMetadata},
     topology::pooled::{PoolProvider, RecycleDecision},
 };
 
@@ -259,17 +254,14 @@ impl Provider for ResidentLifecycleResource {
     type Instance = UniqueResident;
     type Topology = Resident<Self>;
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("ResidentLifecycleResource"),
             "",
         )
     }
 
-    fn key() -> ResourceKey {
-        resource_key!("resident-lifecycle")
-    }
+    const KEY: &'static str = "resident-lifecycle";
 
     async fn create(&self, _: &TestConfig, _: &ResourceContext) -> Result<UniqueResident, Error> {
         if self.fail_create.load(Ordering::SeqCst) {
@@ -631,9 +623,7 @@ impl Provider for SlowDestroyPoolResource {
     type Instance = ();
     type Topology = Pooled<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("slow-destroy-pool")
-    }
+    const KEY: &'static str = "slow-destroy-pool";
 
     async fn create(&self, _config: &TestConfig, _ctx: &ResourceContext) -> Result<(), Error> {
         self.create_counter.fetch_add(1, Ordering::Relaxed);
@@ -647,12 +637,8 @@ impl Provider for SlowDestroyPoolResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("slow-destroy-pool"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("slow-destroy-pool"), "")
     }
 }
 
@@ -754,9 +740,7 @@ impl Provider for HangingDestroyPoolResource {
     type Instance = ();
     type Topology = Pooled<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("hanging-destroy-pool")
-    }
+    const KEY: &'static str = "hanging-destroy-pool";
 
     async fn create(&self, _config: &TestConfig, _ctx: &ResourceContext) -> Result<(), Error> {
         self.create_counter.fetch_add(1, Ordering::Relaxed);
@@ -770,12 +754,8 @@ impl Provider for HangingDestroyPoolResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("hanging-destroy-pool"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("hanging-destroy-pool"), "")
     }
 }
 
@@ -806,9 +786,7 @@ impl Provider for PanickingDestroyPoolResource {
     type Instance = ();
     type Topology = Pooled<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("panicking-destroy-pool")
-    }
+    const KEY: &'static str = "panicking-destroy-pool";
 
     async fn create(&self, _config: &TestConfig, _ctx: &ResourceContext) -> Result<(), Error> {
         self.create_counter.fetch_add(1, Ordering::Relaxed);
@@ -819,9 +797,8 @@ impl Provider for PanickingDestroyPoolResource {
         panic!("author Provider::destroy panics on purpose");
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("panicking-destroy-pool"),
             "",
         )
@@ -934,9 +911,7 @@ impl Provider for PanickingCreatePoolResource {
     type Instance = ();
     type Topology = Pooled<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("panicking-create-pool")
-    }
+    const KEY: &'static str = "panicking-create-pool";
 
     async fn create(&self, _config: &TestConfig, _ctx: &ResourceContext) -> Result<(), Error> {
         panic!("author Provider::create panics on purpose during warmup");
@@ -946,12 +921,8 @@ impl Provider for PanickingCreatePoolResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("panicking-create-pool"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("panicking-create-pool"), "")
     }
 }
 
@@ -1269,9 +1240,7 @@ impl Provider for DropOnRecycleResource {
     type Instance = Arc<AtomicU64>;
     type Topology = Pooled<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("drop-on-recycle")
-    }
+    const KEY: &'static str = "drop-on-recycle";
 
     async fn create(
         &self,
@@ -1291,12 +1260,8 @@ impl Provider for DropOnRecycleResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("drop-on-recycle"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("drop-on-recycle"), "")
     }
 }
 
@@ -1379,9 +1344,7 @@ impl Provider for CredentialedDefaultPoolResource {
     type Instance = Arc<AtomicU64>;
     type Topology = Pooled<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("cred-pool-default")
-    }
+    const KEY: &'static str = "cred-pool-default";
 
     async fn create(
         &self,
@@ -1401,12 +1364,8 @@ impl Provider for CredentialedDefaultPoolResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("cred-pool-default"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("cred-pool-default"), "")
     }
 }
 
@@ -1448,9 +1407,7 @@ impl Provider for CredentialedKeepPoolResource {
     type Instance = Arc<AtomicU64>;
     type Topology = Pooled<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("cred-pool-keep")
-    }
+    const KEY: &'static str = "cred-pool-keep";
 
     async fn create(
         &self,
@@ -1461,12 +1418,8 @@ impl Provider for CredentialedKeepPoolResource {
         Ok(Arc::new(AtomicU64::new(id)))
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("cred-pool-keep"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("cred-pool-keep"), "")
     }
 }
 

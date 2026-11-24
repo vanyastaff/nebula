@@ -1,17 +1,18 @@
 //! `Manager::acquire_any` exercises the registry-stored acquire dispatch hook.
 
+use nebula_resource::ProviderKey;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
 
-use nebula_core::{ExecutionId, OrgId, ResourceKey, scope::Scope};
+use nebula_core::{ExecutionId, OrgId, scope::Scope};
 use nebula_resource::topology::pooled::PoolProvider;
 use nebula_resource::topology::resident::ResidentProvider;
 use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResourceContext, ScopeLevel, SlotIdentity,
     error::Error,
-    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
 };
 use nebula_resource::{Pooled, Resident, ResidentConfig};
 use tokio_util::sync::CancellationToken;
@@ -45,9 +46,7 @@ impl Provider for ProbeResource {
     type Instance = Arc<AtomicU64>;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        nebula_core::resource_key!("test.acquire_erased.probe")
-    }
+    const KEY: &'static str = "test.acquire_erased.probe";
 
     async fn create(
         &self,
@@ -59,9 +58,8 @@ impl Provider for ProbeResource {
         Ok(counter)
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("test.acquire_erased.probe"),
             "",
         )
@@ -298,9 +296,7 @@ mod pool_parity {
         type Instance = u64;
         type Topology = Pooled<Self>;
 
-        fn key() -> ResourceKey {
-            nebula_core::resource_key!("test.ae4.pool")
-        }
+        const KEY: &'static str = "test.ae4.pool";
 
         async fn create(
             &self,
@@ -318,12 +314,8 @@ mod pool_parity {
             Ok(())
         }
 
-        fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::new(
-                Self::key(),
-                nebula_resource::metadata_name!("test.ae4.pool"),
-                "",
-            )
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(nebula_resource::metadata_name!("test.ae4.pool"), "")
         }
     }
 
@@ -431,9 +423,7 @@ mod resident_erased_reuses_runtime {
         type Instance = Arc<AtomicU64>;
         type Topology = Resident<Self>;
 
-        fn key() -> ResourceKey {
-            nebula_core::resource_key!("test.ae4.resident_reuse")
-        }
+        const KEY: &'static str = "test.ae4.resident_reuse";
 
         async fn create(
             &self,
@@ -444,9 +434,8 @@ mod resident_erased_reuses_runtime {
             Ok(Arc::clone(&self.create_count))
         }
 
-        fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::new(
-                Self::key(),
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(
                 nebula_resource::metadata_name!("test.ae4.resident_reuse"),
                 "",
             )
@@ -555,9 +544,7 @@ mod pool_erased_distinct_instances {
         type Instance = u64;
         type Topology = Pooled<Self>;
 
-        fn key() -> ResourceKey {
-            nebula_core::resource_key!("test.ae4.pool_erased")
-        }
+        const KEY: &'static str = "test.ae4.pool_erased";
 
         async fn create(
             &self,
@@ -567,12 +554,8 @@ mod pool_erased_distinct_instances {
             Ok(self.create_count.fetch_add(1, Ordering::SeqCst))
         }
 
-        fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::new(
-                Self::key(),
-                nebula_resource::metadata_name!("test.ae4.pool_erased"),
-                "",
-            )
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::new(nebula_resource::metadata_name!("test.ae4.pool_erased"), "")
         }
     }
 

@@ -7,6 +7,7 @@
 //! The managed call facade's quota waits (`Manager::handle`) are covered in
 //! the crate's `call_tests.rs` and `call_row_tests.rs`.
 
+use nebula_resource::ProviderKey;
 mod common;
 
 use std::{num::NonZeroU32, sync::Arc, time::Duration};

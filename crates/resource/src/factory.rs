@@ -43,7 +43,7 @@
 //!    use.
 //! 2. **Removal-funnel** — raw `Manager` mutation is the caller's concern;
 //!    teardown must route through a `PluginHandle` (engine-side).
-//! 3. **Key-coherence** — `factory.key() == <R as Provider>::key()`.
+//! 3. **Key-coherence** — `factory.key() == <R as ProviderKey>::key()`.
 //! 4. **Factory provenance** — downstream code cannot implement
 //!    `ResourceFactory`; metadata, `TypeId`, and registration identity are
 //!    projections of one crate-issued typed activator.
@@ -65,7 +65,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use crate::resource::{ResourceMetadata, ResourceMetadataDraft};
+use crate::resource::{ProviderKey, ResourceDefinition, ResourceMetadata};
 use crate::topology::{ConfigurableTopology, Topology};
 use crate::{Manager, ScopeLevel, SlotIdentity, recovery::RecoveryGate, resource::Provider};
 use nebula_core::{CredentialId, Dependencies, SlotKind};
@@ -475,17 +475,17 @@ pub trait ResourceFactory: private::Sealed + Send + Sync + 'static {
     /// never a durable or transport identity.
     fn resource_type_id(&self) -> TypeId;
 
-    /// Resource metadata for catalog display, schema introspection, and
-    /// install-from-repo pre-install enumeration.
+    /// The admitted resource definition for catalog display, schema
+    /// introspection, and install-from-repo pre-install enumeration.
     ///
-    /// The first call admits the schema-free author draft by deriving the
+    /// The first call admits the author's schema-free metadata by deriving the
     /// canonical schema from `R::Config`; later calls return that immutable,
     /// cached definition. `validate` and `register` consume its schema rather
     /// than deriving another copy (schema-single-source law).
     ///
     /// # Errors
     /// Returns a typed catalog error if the definition or configuration schema is invalid.
-    fn metadata(&self) -> Result<&ResourceMetadata, crate::MetadataBuildError>;
+    fn definition(&self) -> Result<&ResourceDefinition, crate::MetadataBuildError>;
 
     /// Validate `config_json` against this resource's `R::Config` schema
     /// **without registering anything**.
@@ -669,8 +669,8 @@ where
     topology_factory: FTopo,
     topology_schema: Option<TopologySchemaFn>,
     dependencies: Dependencies,
-    metadata_draft: Option<ResourceMetadataDraft>,
-    metadata: OnceLock<Result<ResourceMetadata, crate::MetadataBuildError>>,
+    metadata: Option<ResourceMetadata>,
+    definition: OnceLock<Result<ResourceDefinition, crate::MetadataBuildError>>,
     // Zero-sized marker — `R` is not stored but bounds the `impl`.
     _marker: std::marker::PhantomData<fn() -> R>,
 }
@@ -687,7 +687,7 @@ where
         // `Debug` and neither should be invoked just to print it. Identify
         // the activator by the resource key it constructs instead.
         f.debug_struct("KindActivator")
-            .field("key", &<R as Provider>::key())
+            .field("key", &<R as ProviderKey>::key())
             .finish_non_exhaustive()
     }
 }
@@ -714,18 +714,18 @@ where
             topology_factory,
             topology_schema: None,
             dependencies: R::dependencies(),
-            metadata_draft: None,
-            metadata: OnceLock::new(),
+            metadata: None,
+            definition: OnceLock::new(),
             _marker: std::marker::PhantomData,
         }
     }
 
     /// Builds an activator from explicit schema-free resource author intent.
     ///
-    /// The supplied draft cannot carry a schema. Admission still derives the
+    /// The supplied metadata cannot carry a schema. Admission still derives the
     /// canonical schema from `R::Config` at this factory boundary.
     pub fn with_metadata(
-        metadata_draft: ResourceMetadataDraft,
+        metadata: ResourceMetadata,
         resource_factory: FRes,
         topology_factory: FTopo,
     ) -> Self {
@@ -734,28 +734,16 @@ where
             topology_factory,
             topology_schema: None,
             dependencies: R::dependencies(),
-            metadata_draft: Some(metadata_draft),
-            metadata: OnceLock::new(),
+            metadata: Some(metadata),
+            definition: OnceLock::new(),
             _marker: std::marker::PhantomData,
         }
     }
 
-    fn admit_metadata(&self) -> Result<ResourceMetadata, crate::MetadataBuildError> {
+    fn admit_definition(&self) -> Result<ResourceDefinition, crate::MetadataBuildError> {
         let schema = nebula_schema::schema_of::<R::Config>()?;
-        let draft = self.metadata_draft.clone().unwrap_or_else(R::metadata);
-        let metadata = draft.admit(schema)?;
-        let expected = R::key();
-        if metadata.base().key() != &expected {
-            let actual = metadata.base().key().clone();
-            tracing::warn!(
-                error_code = "RESOURCE:METADATA_KEY_MISMATCH",
-                expected_key = %expected,
-                actual_key = %actual,
-                "resource metadata admission rejected"
-            );
-            return Err(crate::MetadataBuildError::KeyMismatch { expected, actual });
-        }
-        Ok(metadata)
+        let metadata = self.metadata.clone().unwrap_or_else(R::metadata);
+        ResourceDefinition::admit(R::key(), metadata, schema)
     }
 }
 
@@ -790,12 +778,9 @@ where
 
     /// [`configurable`](Self::configurable) with explicit schema-free resource
     /// author intent (see [`with_metadata`](Self::with_metadata)).
-    pub fn configurable_with_metadata(
-        metadata_draft: ResourceMetadataDraft,
-        resource_factory: FRes,
-    ) -> Self {
+    pub fn configurable_with_metadata(metadata: ResourceMetadata, resource_factory: FRes) -> Self {
         Self::with_metadata(
-            metadata_draft,
+            metadata,
             resource_factory,
             <R::Topology as ConfigurableTopology<R>>::from_registration,
         )
@@ -830,7 +815,7 @@ where
         Fn(Option<&serde_json::Value>) -> Result<R::Topology, crate::Error> + Send + Sync + 'static,
 {
     fn key(&self) -> nebula_core::ResourceKey {
-        <R as Provider>::key()
+        <R as ProviderKey>::key()
     }
 
     fn dependencies(&self) -> &Dependencies {
@@ -848,9 +833,9 @@ where
         fields(resource_key = %R::key()),
         err
     )]
-    fn metadata(&self) -> Result<&ResourceMetadata, crate::MetadataBuildError> {
-        self.metadata
-            .get_or_init(|| self.admit_metadata())
+    fn definition(&self) -> Result<&ResourceDefinition, crate::MetadataBuildError> {
+        self.definition
+            .get_or_init(|| self.admit_definition())
             .as_ref()
             .map_err(Clone::clone)
     }
@@ -860,11 +845,11 @@ where
         // a function of the config JSON and the monomorphized `R::Config`
         // schema — exactly the live path's pre-register checks, minus template
         // resolution and typed-runtime construction.
-        let metadata = self.metadata().map_err(|source| {
-            crate::Error::permanent("resource factory metadata admission failed")
+        let definition = self.definition().map_err(|source| {
+            crate::Error::permanent("resource factory definition admission failed")
                 .with_source(source)
         })?;
-        Manager::validate_config_value_against::<R>(metadata.base().schema(), config_json)
+        Manager::validate_config_value_against::<R>(definition.base().schema(), config_json)
             .map(|_| ())
     }
 
@@ -908,8 +893,8 @@ where
         registration_bindings: RegistrationBindings<'a>,
     ) -> BoxFut<'a, Result<SlotIdentity, crate::Error>> {
         Box::pin(async move {
-            let metadata = self.metadata().map_err(|source| {
-                crate::Error::permanent("resource factory metadata admission failed")
+            let definition = self.definition().map_err(|source| {
+                crate::Error::permanent("resource factory definition admission failed")
                     .with_source(source)
             })?;
             let topology = (self.topology_factory)(request.topology.as_ref())
@@ -1003,7 +988,7 @@ where
             }
             manager
                 .register_resolved::<R>(
-                    metadata.base().schema(),
+                    definition.base().schema(),
                     request.config,
                     request.expr_engine,
                     slot_keys,
@@ -1071,7 +1056,7 @@ impl ResourceActivatorRegistry {
         kind: impl Into<String>,
         factory: Arc<dyn ResourceFactory>,
     ) -> Result<Option<Arc<dyn ResourceFactory>>, crate::MetadataBuildError> {
-        factory.metadata()?;
+        factory.definition()?;
         Ok(self.factories.insert(kind.into(), factory))
     }
 

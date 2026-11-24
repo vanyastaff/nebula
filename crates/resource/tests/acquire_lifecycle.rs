@@ -18,13 +18,13 @@ use common::{
     pool_manager_with_metrics, register_pool, register_resident, test_config, test_ctx,
     wait_count_at_least, wait_idle_count,
 };
-use nebula_core::{ResourceKey, resource_key};
+use nebula_core::resource_key;
 use nebula_resource::{
     AcquireOptions, Manager, ManagerConfig, Pooled, RegistrationSpec, Resident, ResidentConfig,
     ResourceContext, ScopeLevel, ShutdownConfig, SlotIdentity, TopologyTag,
     error::{Error, ErrorKind},
     guard::ResourceGuard,
-    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::pooled::{BrokenCheck, PoolProvider},
 };
 
@@ -622,9 +622,7 @@ impl Provider for SlowCreatePoolResource {
     type Instance = Arc<AtomicU64>;
     type Topology = Pooled<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("slow-create-pool")
-    }
+    const KEY: &'static str = "slow-create-pool";
 
     async fn create(
         &self,
@@ -650,12 +648,8 @@ impl Provider for SlowCreatePoolResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("slow-create-pool"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("slow-create-pool"), "")
     }
 }
 

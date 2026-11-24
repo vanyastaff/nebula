@@ -25,6 +25,7 @@
 //! assert_eq!(produced.topology(), TopologyTag::Resident);
 //! ```
 
+use nebula_resource::ProviderKey;
 use std::{fmt, marker::PhantomData};
 
 use nebula_core::ResourceKey;

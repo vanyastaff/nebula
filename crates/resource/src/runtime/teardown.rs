@@ -7,6 +7,7 @@
 //!
 //! Topology policy transfers ownership; only the framework invokes destruction.
 
+use crate::resource::ProviderKey;
 use std::time::{Duration, Instant};
 
 use crate::{

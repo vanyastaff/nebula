@@ -21,10 +21,11 @@ for direct use.
 ## Supported surface
 
 - `prelude` — curated authoring types and traits.
-- Metadata authoring is draft-only. `ActionMetadataDraft`, `CredentialMetadataDraft`, and
-  `ResourceMetadataDraft` share curated author vocabulary (`MetadataName`, `MetadataVersion`,
-  `Icon`, `DeprecationNotice`) without exposing `MetadataDraft` or any admitted/recorded form.
-  Runtime factories alone bind schemas and create terminal metadata.
+- Authors write metadata; they never build an admitted definition. `ActionMetadataDraft`,
+  `CredentialMetadataDraft`, and the key-free `ResourceMetadata` a resource returns share
+  curated author vocabulary (`MetadataName`, `MetadataVersion`, `Icon`, `DeprecationNotice`)
+  without exposing any admitted/recorded form. A resource's identity is `Provider::KEY`, not
+  a metadata field. Runtime factories alone bind schemas and create terminal definitions.
 - `integration` — narrow integration contracts; credential integrations expose
   `ResolveResult`, `StaticResolveResult`, `TestFailureCode`, and `TestResult` here.
 - `action::ActionMetadataDraft` and `workflow::WorkflowBuilder` — programmatic authoring.
@@ -94,7 +95,7 @@ adapters, runtime constructors, and unscoped resolvers are not reachable, and as
 compiler diagnostic rather than accepting an unrelated failure.
 This fixture does not prove procedural-derive authoring. The independent
 `derive_external_contract` fixture covers SDK-only and renamed-leaf derives,
-  including typed credential properties and draft metadata. `foundation_contract` executes the
+  including typed credential properties and authored metadata. `foundation_contract` executes the
   authored-value, schema-shape, typed action, credential, and macro laws.
 
 ## Invariants

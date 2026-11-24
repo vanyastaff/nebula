@@ -16,6 +16,7 @@
 //! `CredentialReads`); this link is held by the manager and by every row
 //! facade, strict or not.
 
+use crate::resource::ProviderKey;
 use std::{sync::Arc, time::Duration, time::Instant};
 
 use nebula_core::context::Context as _;
@@ -324,8 +325,7 @@ impl AcquireLink {
         ctx: &ResourceContext,
         options: &AcquireOptions,
     ) {
-        // Resolve the resource key once: `R::key()` re-validates and re-interns
-        // the literal on each call, and the error path emits up to two events.
+        // Resolve the resource key once: the error path emits up to two events.
         let key = R::key();
         let elapsed = started.elapsed();
         match result {

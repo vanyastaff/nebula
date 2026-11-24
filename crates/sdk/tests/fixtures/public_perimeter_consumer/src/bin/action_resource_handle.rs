@@ -4,9 +4,9 @@
 //! unit's `OperationError` into `ActionError` — all through `nebula_sdk`.
 
 use nebula_sdk::integration::resource::{
-    Cost, Effect, Error, Operation, OperationCx, OperationError, PoolProvider, Pooled, Provider,
-    Resident, ResidentProvider, ResourceContext, ResourceHandle, ResourceKey,
-    ResourceMetadataDraft, no_credential_slots, resource_key,
+    Cost, Effect, Error, ResourceMetadata, Operation, OperationCx, OperationError, PoolProvider,
+    Pooled, Provider, Resident, ResidentProvider, ResourceContext, ResourceHandle,
+    no_credential_slots,
 };
 use nebula_sdk::prelude::{
     Action, ActionContext, ActionError, ActionResult, Deserialize, Serialize, StatelessAction,
@@ -24,12 +24,10 @@ impl Provider for Directory {
     type Instance = u64;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("example.directory")
-    }
+    const KEY: &'static str = "example.directory";
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(Self::key(), metadata_name!("Directory"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(metadata_name!("Directory"), "")
     }
 
     async fn create(&self, (): &(), _: &ResourceContext) -> Result<u64, Error> {
@@ -67,12 +65,10 @@ impl Provider for Ledger {
     type Instance = Conn;
     type Topology = Pooled<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("example.ledger")
-    }
+    const KEY: &'static str = "example.ledger";
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(Self::key(), metadata_name!("Ledger"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(metadata_name!("Ledger"), "")
     }
 
     async fn create(&self, (): &(), _: &ResourceContext) -> Result<Conn, Error> {

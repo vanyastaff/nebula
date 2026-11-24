@@ -16,20 +16,21 @@
 //! yield-budget guessing; the ordering is enforced by a barrier and the
 //! resident `create_lock`.
 
+use nebula_resource::ProviderKey;
 use std::assert_matches;
 use std::sync::{
     Arc,
     atomic::{AtomicU32, AtomicUsize, Ordering},
 };
 
-use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
+use nebula_core::{ResourceKey, ScopeLevel, scope::Scope};
 use nebula_credential::CredentialGuard;
 use nebula_resource::Resident;
 use nebula_resource::{
     AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
     ResourceContext, SlotCell, SlotIdentity,
     error::Error,
-    resource::{HasCredentialSlots, ResourceMetadataDraft},
+    resource::{HasCredentialSlots, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
 use tokio::sync::Notify;
@@ -120,9 +121,7 @@ impl Provider for RaceResource {
     type Instance = RaceRuntime;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("race-resident")
-    }
+    const KEY: &'static str = "race-resident";
 
     async fn create(
         &self,
@@ -184,12 +183,8 @@ impl Provider for RaceResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("race-resident"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("race-resident"), "")
     }
 }
 

@@ -14,7 +14,7 @@
 ## Key files
 
 - `src/lib.rs` — crate facade + re-exports
-- `src/resource.rs` — `Provider` trait (`Config`/`Instance` assoc types, slot-rotation hooks), `HasCredentialSlots`, `ResourceConfig`, `ResourceMetadata`; `Resource` is the derive macro (slot plumbing only)
+- `src/resource.rs` — `Provider` trait (`Config`/`Instance` assoc types, slot-rotation hooks), `HasCredentialSlots`, `ResourceConfig`, `ResourceDefinition`; `Resource` is the derive macro (slot plumbing only)
 - `src/slot.rs` — public, generation-stamped `SlotCell`; retained resource ownership lives in `runtime/resident.rs`, not credential slots
 - `src/registry.rs` — type-erased registry, scope-aware lookup, `(key, scope, slot_identity)` row identity
 - `src/manager/` — `Manager::register(RegistrationSpec)` funnel, acquire dispatch, shutdown/drain

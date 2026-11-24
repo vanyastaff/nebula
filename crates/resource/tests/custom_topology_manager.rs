@@ -19,6 +19,7 @@
 //!    shutdown destroys it through framework-owned cleanup. The author writes
 //!    no store, fence, or destroy dispatch code.
 
+use nebula_resource::ProviderKey;
 use std::{
     assert_matches,
     sync::{
@@ -27,12 +28,12 @@ use std::{
     },
 };
 
-use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
+use nebula_core::{ScopeLevel, scope::Scope};
 use nebula_resource::{
     AcquireOptions, HasCredentialSlots, Manager, RegistrationSpec, ResourceContext, ShutdownConfig,
     SlotIdentity,
     error::{Error, ErrorKind},
-    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::{StoreView, Ticket, Topology, Unavailable},
 };
 use tokio::sync::Semaphore;
@@ -81,9 +82,7 @@ impl Provider for Ffmpeg {
     type Instance = Transcoder;
     type Topology = FfmpegPool;
 
-    fn key() -> ResourceKey {
-        resource_key!("custom.ffmpeg")
-    }
+    const KEY: &'static str = "custom.ffmpeg";
 
     async fn create(
         &self,
@@ -103,12 +102,8 @@ impl Provider for Ffmpeg {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("custom.ffmpeg"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("custom.ffmpeg"), "")
     }
 }
 

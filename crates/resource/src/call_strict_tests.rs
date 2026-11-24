@@ -4,6 +4,7 @@
 //! unit's pin is taken at its first grant and a superseded pin refuses
 //! later attempts `Rebinding`.
 
+use crate::resource::ProviderKey;
 use std::{num::NonZeroU32, sync::Arc, time::Duration};
 
 use nebula_core::ScopeLevel;

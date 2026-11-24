@@ -1,6 +1,7 @@
 //! Fan-out reconciliation of credential availability: a same-material block
 //! suspends a bound row, a usable credential reopens it, and a material
 //! advance installs (and reopens) through the ordinary projection path.
+use crate::resource::ProviderKey;
 use std::{
     future::Future,
     pin::Pin,
@@ -11,7 +12,7 @@ use std::{
     time::Duration,
 };
 
-use nebula_core::{CredentialKey, ResourceKey, ScopeLevel, resource_key, scope::Scope};
+use nebula_core::{CredentialKey, ScopeLevel, scope::Scope};
 use nebula_credential::{
     Capabilities, CredentialAvailability, CredentialAvailabilityObservation,
     CredentialAvailabilityObserver, CredentialBlock, CredentialEvent, CredentialGuard,
@@ -28,7 +29,7 @@ use crate::{
     AcquireOptions, CredentialUnavailableReason, Error, ErrorKind, Manager, Provider,
     RegistrationSpec, Resident, ResidentConfig, ResourceConfig, ResourceContext, ResourceEvent,
     ResourceGuard, SlotCell, SlotIdentity, SlotInstallError, SlotUpdate,
-    resource::{HasCredentialSlots, ResourceMetadataDraft},
+    resource::{HasCredentialSlots, ResourceMetadata},
     topology::ResidentProvider,
 };
 
@@ -66,12 +67,10 @@ impl Provider for Bound {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("fanout-suspension")
-    }
+    const KEY: &'static str = "fanout-suspension";
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("fanout-suspension"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("fanout-suspension"), "")
     }
 
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<(), Error> {
@@ -615,12 +614,10 @@ impl Provider for Slotless {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("fanout-slotless")
-    }
+    const KEY: &'static str = "fanout-slotless";
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("fanout-slotless"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("fanout-slotless"), "")
     }
 
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<(), Error> {

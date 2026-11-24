@@ -14,6 +14,7 @@
 //!
 //! [`Topology<R>`]: crate::topology::Topology
 
+use crate::resource::ProviderKey;
 use std::{
     marker::PhantomData,
     sync::{

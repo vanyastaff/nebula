@@ -1,12 +1,13 @@
 //! Queue rejection must not consume the installed epoch's hook admission.
 use super::{EpochRefreshOutcome, Manager, ManagerConfig, RegistrationSpec};
-use crate::resource::{HasCredentialSlots, ResourceMetadataDraft};
+use crate::resource::ProviderKey;
+use crate::resource::{HasCredentialSlots, ResourceMetadata};
 use crate::topology::resident::ResidentProvider;
 use crate::{
     AcquireOptions, Error, Provider, Resident, ResidentConfig, ResourceConfig, ResourceContext,
     SlotCell, SlotIdentity, SlotInstallError, SlotUpdate,
 };
-use nebula_core::{CredentialId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
+use nebula_core::{CredentialId, ScopeLevel, scope::Scope};
 use nebula_credential::{CredentialGuard, CredentialGuardMetadata, ErasedCredentialGuard};
 use std::sync::{
     Arc,
@@ -41,15 +42,9 @@ impl Provider for ProjectionResource {
     type Config = Config;
     type Instance = ();
     type Topology = Resident<Self>;
-    fn key() -> ResourceKey {
-        resource_key!("projection-admission")
-    }
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            crate::metadata_name!("projection-admission"),
-            "",
-        )
+    const KEY: &'static str = "projection-admission";
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("projection-admission"), "")
     }
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<(), Error> {
         Ok(())
