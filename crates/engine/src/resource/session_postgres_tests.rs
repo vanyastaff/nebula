@@ -105,6 +105,12 @@ impl Component for PgRow {
             String::new(),
         )
     }
+
+    fn dependencies() -> nebula_resource::Dependencies {
+        nebula_resource::Dependencies::none().slot(nebula_resource::Slot::of::<
+            nebula_resource::CredentialSlot<BasicAuthCredential>,
+        >(AUTH_SLOT))
+    }
 }
 
 #[async_trait::async_trait]
@@ -151,23 +157,6 @@ impl Provider for PgRow {
             // Dropped past the deadline: the socket closes with it.
             Err(_elapsed) => Ok(()),
         }
-    }
-}
-
-impl DeclaresDependencies for PgRow {
-    fn dependencies() -> Dependencies {
-        Dependencies::new().slot_field(SlotField {
-            slot_key: AUTH_SLOT,
-            default_id: AUTH_SLOT,
-            kind: SlotKind::Credential {
-                type_id: std::any::TypeId::of::<BasicAuthCredential>(),
-                type_name: "basic_auth",
-                key: CredentialKey::new(BasicAuthCredential::KEY).expect("valid credential key"),
-            },
-            required: true,
-            lazy: false,
-            purpose: None,
-        })
     }
 }
 

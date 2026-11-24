@@ -19,7 +19,7 @@
 
 use std::sync::Arc;
 
-use nebula_core::{DeclaresDependencies, Dependencies, ScopeLevel};
+use nebula_core::ScopeLevel;
 use nebula_expression::ExpressionEngine;
 use nebula_resource::Resident;
 use nebula_resource::{
@@ -121,15 +121,6 @@ nebula_resource::no_credential_slots!(Db);
 impl ResidentProvider for Db {
     fn is_alive_sync(&self, _runtime: &Arc<()>) -> bool {
         true
-    }
-}
-
-impl DeclaresDependencies for Db {
-    fn dependencies() -> Dependencies {
-        // No credential slots: the only legitimate way to wire a secret would
-        // be a typed slot, and this resource declares none — so a secret in
-        // `config` has no honest place to go and must be refused outright.
-        Dependencies::new()
     }
 }
 

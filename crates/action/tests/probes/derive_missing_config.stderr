@@ -1,4 +1,4 @@
-error: missing required attribute `config = SomeType` — the action's `Component::Config` must be specified
+error: missing required attribute `config = SomeType` in #[action(...)] — it is the component's `Component::Config`; use `()` for none
  --> tests/probes/derive_missing_config.rs:7:8
   |
 7 | struct MissingConfig;

@@ -2,7 +2,7 @@
 
 use std::{
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicU32, Ordering},
     },
     time::Duration,
@@ -12,7 +12,7 @@ use nebula_action::{
     Action, ActionOutput, ActionResult, Component, StatelessAction, effect::ActionEffectContract,
     kind, result::WaitCondition,
 };
-use nebula_core::{Dependencies, ExecutionId, WorkflowId, action_key, node_key};
+use nebula_core::{ExecutionId, WorkflowId, action_key, node_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, ControlDispatch, DataPassingPolicy, EngineControlDispatch,
     ExecutionStores, InProcessRunner, PlanFlavorRevisionInstaller, PlanFlavorRevisionLoader,
@@ -68,11 +68,6 @@ impl Action for Echo {
     type Output = serde_json::Value;
 
     const EFFECT_CONTRACT: ActionEffectContract = ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
-    }
 }
 impl StatelessAction for Echo {
     async fn execute(
@@ -105,10 +100,6 @@ impl Action for Park {
     type Output = serde_json::Value;
 
     const EFFECT_CONTRACT: ActionEffectContract = ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        Echo::dependencies()
-    }
 }
 impl StatelessAction for Park {
     async fn execute(

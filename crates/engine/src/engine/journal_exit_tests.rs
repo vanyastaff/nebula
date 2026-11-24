@@ -58,10 +58,6 @@ impl Component for JournaledProbe {
 
 impl Action for JournaledProbe {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        EchoHandler::dependencies()
-    }
 }
 
 impl StatelessAction for JournaledProbe {

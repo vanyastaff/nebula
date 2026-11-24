@@ -10,7 +10,7 @@ use nebula_action::{
     },
     kind,
 };
-use nebula_core::{ActionKey, ArtifactSetDigest, Dependencies, WorkflowVersionId, node_key};
+use nebula_core::{ActionKey, ArtifactSetDigest, WorkflowVersionId, node_key};
 use nebula_metadata::PluginManifest;
 use nebula_plugin::{
     FrozenPluginRegistry, PlanActionEffectContract, Plugin, PluginRegistry, ResolvedPlugin,
@@ -63,11 +63,6 @@ impl Component for RemoteAction {
 
 impl Action for RemoteAction {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
-    }
 }
 
 impl RemoteEffectAction for RemoteAction {

@@ -104,13 +104,14 @@ pub use nebula_action::{
 // DX codegen macros — re-exported so authors can write `impl_paginated_action!(...)`
 // without reaching into `nebula_action::`.
 pub use nebula_action::{impl_batch_action, impl_paginated_action};
-// The contract every component implements: key, config, catalog metadata.
-pub use nebula_component::{Component, kind};
+// The contract every component implements: key, config, catalog metadata and
+// the slots it declares.
+pub use nebula_component::{Component, Dependencies, Slot, kind};
 pub use nebula_core::AuthScheme as AuthSchemeContract;
 pub use nebula_core::auth::NoAuthFamily;
 pub use nebula_core::{
-    ActionKey, AuthPattern, CredentialKey, Dependencies, ExecutionId, NodeKey, OperationCallId,
-    PluginKey, ResourceKey, ScopeLevel, WorkflowId, action_key, credential_key, resource_key,
+    ActionKey, AuthPattern, CredentialKey, ExecutionId, NodeKey, OperationCallId, PluginKey,
+    ResourceKey, ScopeLevel, WorkflowId, action_key, credential_key, resource_key,
 };
 // Credential types (v2)
 pub use nebula_credential::{

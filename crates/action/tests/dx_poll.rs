@@ -4,7 +4,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicU32, Ordering},
     },
     time::Duration,
@@ -15,7 +15,7 @@ use nebula_action::{
     HasTriggerScheduling, PollAction, PollConfig, PollCursor, PollOutcome, PollResult,
     PollTriggerAdapter, TestContextBuilder, TriggerHandler, kind,
 };
-use nebula_core::{Dependencies, ExecutionId, context::Context, node_key};
+use nebula_core::{ExecutionId, context::Context, node_key};
 
 // ── TickPoller ────────────────────────────────────────────────────────────
 
@@ -39,11 +39,6 @@ impl Component for TickPoller {
 
 impl Action for TickPoller {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl PollAction for TickPoller {
@@ -191,11 +186,6 @@ impl Component for ZeroIntervalPoller {
 
 impl Action for ZeroIntervalPoller {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl PollAction for ZeroIntervalPoller {
@@ -479,11 +469,6 @@ impl Component for FailingValidator {
 
 impl Action for FailingValidator {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl PollAction for FailingValidator {
@@ -546,11 +531,6 @@ impl Component for StartFromNowPoller {
 
 impl Action for StartFromNowPoller {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl PollAction for StartFromNowPoller {
@@ -661,11 +641,6 @@ impl Component for ReadyPoller {
 
 impl Action for ReadyPoller {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl PollAction for ReadyPoller {
@@ -786,11 +761,6 @@ impl Component for DropPoller {
 
 impl Action for DropPoller {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl PollAction for DropPoller {
@@ -888,11 +858,6 @@ impl Component for HugeOverridePoller {
 
 impl Action for HugeOverridePoller {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl PollAction for HugeOverridePoller {
@@ -976,11 +941,6 @@ impl Component for EmptyPartialPoller {
 
 impl Action for EmptyPartialPoller {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl PollAction for EmptyPartialPoller {
@@ -1065,11 +1025,6 @@ impl Component for SlowPoller {
 
 impl Action for SlowPoller {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl PollAction for SlowPoller {
@@ -1225,11 +1180,6 @@ impl Component for WildConfigPoller {
 
 impl Action for WildConfigPoller {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl PollAction for WildConfigPoller {

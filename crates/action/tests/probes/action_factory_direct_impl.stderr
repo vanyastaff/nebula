@@ -1,13 +1,13 @@
 error[E0277]: the trait bound `ForgedFactory: nebula_action::factory::sealed::Sealed` is not satisfied
-  --> tests/probes/action_factory_direct_impl.rs:11:24
+  --> tests/probes/action_factory_direct_impl.rs:10:24
    |
-11 | impl ActionFactory for ForgedFactory {
+10 | impl ActionFactory for ForgedFactory {
    |                        ^^^^^^^^^^^^^ unsatisfied trait bound
    |
 help: the trait `nebula_action::factory::sealed::Sealed` is not implemented for `ForgedFactory`
-  --> tests/probes/action_factory_direct_impl.rs:9:1
+  --> tests/probes/action_factory_direct_impl.rs:8:1
    |
- 9 | struct ForgedFactory;
+ 8 | struct ForgedFactory;
    | ^^^^^^^^^^^^^^^^^^^^
    = note: `ForgedFactory` implements similarly named trait `unicode_width::private::Sealed`, but not `nebula_action::factory::sealed::Sealed`
    = help: the following other types implement trait `nebula_action::factory::sealed::Sealed`:

@@ -1,7 +1,7 @@
 //! Integration tests for WebhookAction DX trait + WebhookTriggerAdapter.
 
 use std::sync::{
-    Arc, OnceLock,
+    Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
@@ -10,7 +10,7 @@ use nebula_action::{
     TriggerEventOutcome, TriggerHandler, WebhookAction, WebhookRequest, WebhookResponse,
     WebhookTriggerAdapter, kind, webhook::webhook_request_for_test,
 };
-use nebula_core::{Dependencies, context::Context};
+use nebula_core::context::Context;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -42,11 +42,6 @@ impl Component for TestWebhook {
 
 impl Action for TestWebhook {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl WebhookAction for TestWebhook {
@@ -201,11 +196,6 @@ impl Component for CountingWebhook {
 
 impl Action for CountingWebhook {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl WebhookAction for CountingWebhook {
@@ -312,11 +302,6 @@ impl Component for ErroringWebhook {
 
 impl Action for ErroringWebhook {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl WebhookAction for ErroringWebhook {
@@ -389,11 +374,6 @@ impl Component for HangingWebhook {
 
 impl Action for HangingWebhook {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl WebhookAction for HangingWebhook {
@@ -530,11 +510,6 @@ impl Component for SlowWebhook {
 
 impl Action for SlowWebhook {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl WebhookAction for SlowWebhook {

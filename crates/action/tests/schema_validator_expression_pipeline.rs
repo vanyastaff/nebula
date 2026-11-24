@@ -17,13 +17,10 @@
 //! - expression evaluation rejects unevaluable templates before the typed `from_value` cast runs;
 //! - the action body never sees bad input.
 
-use std::sync::OnceLock;
-
 use nebula_action::{
     ActionContext, action::Action, error::ActionError, result::ActionResult,
     stateless::StatelessAction, testing::TestContextBuilder,
 };
-use nebula_core::Dependencies;
 use nebula_schema::{
     AuthoredValue, EngineExpressionContext, HasSchema, Property, Schema, ValidSchema, field_key,
 };
@@ -84,11 +81,6 @@ impl nebula_action::Component for PipelineProbe {
 
 impl Action for PipelineProbe {
     type Output = PipelineOutput;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl StatelessAction for PipelineProbe {

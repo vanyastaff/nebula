@@ -53,6 +53,7 @@ struct ContractAction;
 struct ContractPlugin;
 
 #[derive(Resource)]
+#[resource(key = "contract.resource", config = ())]
 struct ContractResource;
 
 #[derive(Clone, Schema, ResourceConfig)]
@@ -188,4 +189,5 @@ fn main() {
     );
     let _ = <ContractAuthScheme as AuthSchemeContract>::pattern();
     let _ = ContractResource;
+    assert!(<ContractResource as Component>::dependencies().is_empty());
 }

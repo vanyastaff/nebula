@@ -1,5 +1,5 @@
 use std::sync::{
-    Arc, OnceLock,
+    Arc,
     atomic::{AtomicUsize, Ordering},
 };
 
@@ -8,7 +8,7 @@ use nebula_action::{
     StatelessAction,
 };
 use nebula_core::{
-    ActionKey, ArtifactSetDigest, CredentialKey, Dependencies, PluginKey, ResourceKey, WorkflowId,
+    ActionKey, ArtifactSetDigest, CredentialKey, PluginKey, ResourceKey, WorkflowId,
     WorkflowVersionId, node_key,
 };
 use nebula_credential::{
@@ -37,8 +37,6 @@ impl<const INDEX: usize> nebula_resource::HasCredentialSlots for MetadataFixture
         false
     }
 }
-
-impl<const INDEX: usize> nebula_core::DeclaresDependencies for MetadataFixture<INDEX> {}
 
 impl<const INDEX: usize> Component for MetadataFixture<INDEX> {
     type Kind = kind::Resource;
@@ -139,11 +137,6 @@ impl<const INDEX: usize> Action for MetadataAction<INDEX> {
 
     const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
-    }
 }
 
 impl<const INDEX: usize> StatelessAction for MetadataAction<INDEX> {
@@ -174,6 +167,10 @@ impl Component for ObservedAction {
             "Observed action admission fixture",
         )
     }
+    fn dependencies() -> nebula_action::Dependencies {
+        OBSERVED_ACTION_DEPENDENCY_READS.fetch_add(1, Ordering::Relaxed);
+        nebula_action::Dependencies::none()
+    }
 }
 
 impl Action for ObservedAction {
@@ -181,12 +178,6 @@ impl Action for ObservedAction {
 
     const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        OBSERVED_ACTION_DEPENDENCY_READS.fetch_add(1, Ordering::Relaxed);
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
-    }
 }
 
 impl StatelessAction for ObservedAction {

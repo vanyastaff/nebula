@@ -323,7 +323,7 @@ Before sending the PR, verify:
       ensure that path is idempotent or cleaned up on cancel.
 - [ ] **Errors** classify via `nebula_resource::ClassifyError` (transient /
       permanent / exhausted / backpressure) — action authors retry on this.
-- [ ] **Credential slots** are declared as `#[credential(key = "...")]` fields.
+- [ ] **Credential slots** are declared as `#[slot]` fields of type `CredentialSlot<C>`.
 
 ---
 

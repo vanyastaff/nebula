@@ -1,4 +1,4 @@
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 #[test]
 fn public_adapter_stamps_agent_kind() {
@@ -6,7 +6,6 @@ fn public_adapter_stamps_agent_kind() {
     assert_eq!(adapter.definition().kind(), crate::ActionKind::Agent);
 }
 
-use nebula_core::Dependencies;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -51,11 +50,6 @@ impl crate::Component for CountingAgent {
 
 impl Action for CountingAgent {
     type Output = Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl AgentAction for CountingAgent {
@@ -114,11 +108,6 @@ impl crate::Component for NoMutationAgent {
 
 impl Action for NoMutationAgent {
     type Output = Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl AgentAction for NoMutationAgent {

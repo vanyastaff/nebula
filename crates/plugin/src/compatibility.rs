@@ -1,6 +1,6 @@
 //! Exact frozen-registry compatibility for integrity-checked Graph-v1 plans.
 
-use nebula_core::{CredentialKey, Dependencies, PluginSetId, ResourceKey, WorkerFlavorRevisionId};
+use nebula_core::{CredentialKey, PluginSetId, ResourceKey, WorkerFlavorRevisionId};
 use nebula_error::{ActivationDiagnostic, ActivationDiagnostics};
 
 use crate::{
@@ -223,39 +223,23 @@ fn validate_plugin(
 
 fn validate_dependency_coherence(
     owner: &nebula_core::PluginKey,
-    dependencies: &Dependencies,
+    dependencies: &nebula_component::Dependencies,
     registry: &FrozenPluginRegistry,
 ) -> Result<(), PlanRegistryCompatibilityError> {
-    for requirement in dependencies.resources() {
-        let (provider, snapshot) =
-            find_resource(registry, &requirement.key).ok_or_else(|| mismatch("resources"))?;
-        if snapshot.type_id() != requirement.type_id {
-            return Err(mismatch("dependencies.type"));
-        }
-        validate_plugin_edge(owner, provider.key(), registry)?;
-    }
-    for requirement in dependencies.credentials() {
-        let (provider, snapshot) =
-            find_credential(registry, &requirement.key).ok_or_else(|| mismatch("credentials"))?;
-        if snapshot.type_id() != requirement.type_id {
-            return Err(mismatch("dependencies.type"));
-        }
-        validate_plugin_edge(owner, provider.key(), registry)?;
-    }
-    for slot in dependencies.slot_fields() {
-        match &slot.kind {
-            nebula_core::SlotKind::Resource { key, type_id, .. } => {
+    for slot in dependencies.slots() {
+        match slot.target() {
+            nebula_component::SlotTarget::Resource(target) => {
                 let (provider, snapshot) =
-                    find_resource(registry, key).ok_or_else(|| mismatch("resources"))?;
-                if snapshot.type_id() != *type_id {
+                    find_resource(registry, target.key()).ok_or_else(|| mismatch("resources"))?;
+                if snapshot.type_id() != target.type_id() {
                     return Err(mismatch("dependencies.type"));
                 }
                 validate_plugin_edge(owner, provider.key(), registry)?;
             },
-            nebula_core::SlotKind::Credential { key, type_id, .. } => {
-                let (provider, snapshot) =
-                    find_credential(registry, key).ok_or_else(|| mismatch("credentials"))?;
-                if snapshot.type_id() != *type_id {
+            nebula_component::SlotTarget::Credential(target) => {
+                let (provider, snapshot) = find_credential(registry, target.key())
+                    .ok_or_else(|| mismatch("credentials"))?;
+                if snapshot.type_id() != target.type_id() {
                     return Err(mismatch("dependencies.type"));
                 }
                 validate_plugin_edge(owner, provider.key(), registry)?;

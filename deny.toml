@@ -329,9 +329,11 @@ deny = [
   { crate = "nebula-component", wrappers = [
     "nebula-action",
     "nebula-credential",
+    "nebula-engine",
+    "nebula-plugin",
     "nebula-resource",
     "nebula-sdk",
-  ], reason = "Component contract is Core; the kind crates built on it are listed" },
+  ], reason = "Component contract is Core; the kind crates built on it and the plugin compiler and engine that read component slots are listed" },
   { crate = "nebula-crypto", wrappers = [
     "nebula-credential",
     "nebula-server",

@@ -1,12 +1,10 @@
-use std::sync::OnceLock;
-
 use nebula_action::{
     ActionRuntimeContext, Component, FromWorkflowNode, InstanceFactory, Metadata,
     TriggerRuntimeContext, action::Action, context::CredentialContextExt, error::ActionError, kind,
     stateful::StatefulAction, stateless::StatelessAction,
 };
 use nebula_core::{
-    BaseContext, Dependencies,
+    BaseContext,
     context::Context,
     id::{ExecutionId, WorkflowId},
     node_key,
@@ -78,10 +76,6 @@ impl Action for EchoAction {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 nebula_action::stateless_entry!(
@@ -153,10 +147,6 @@ impl Action for FailAction {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl StatelessAction for FailAction {
@@ -244,11 +234,6 @@ async fn dispatch_counted_journaled(
 
     impl Action for CountedAction {
         type Output = serde_json::Value;
-
-        fn dependencies() -> &'static Dependencies {
-            static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-            DEPENDENCIES.get_or_init(Dependencies::new)
-        }
     }
 
     impl StatelessAction for CountedAction {
@@ -348,11 +333,6 @@ async fn generic_dispatch_rejects_a_remote_effect_without_capability_before_acti
 
     impl Action for CountedRemote {
         type Output = serde_json::Value;
-
-        fn dependencies() -> &'static Dependencies {
-            static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-            DEPENDENCIES.get_or_init(Dependencies::new)
-        }
     }
 
     impl RemoteEffectAction for CountedRemote {
@@ -778,10 +758,6 @@ async fn multi_output_fanout_port_respects_reject_limit() {
 
         const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
             nebula_action::effect::ActionEffectContract::ReadOnly;
-        fn dependencies() -> &'static Dependencies {
-            static D: OnceLock<Dependencies> = OnceLock::new();
-            D.get_or_init(Dependencies::new)
-        }
     }
     impl StatelessAction for MultiOutAction {
         async fn execute(
@@ -860,10 +836,6 @@ async fn branch_alternatives_respect_reject_limit() {
 
         const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
             nebula_action::effect::ActionEffectContract::ReadOnly;
-        fn dependencies() -> &'static Dependencies {
-            static D: OnceLock<Dependencies> = OnceLock::new();
-            D.get_or_init(Dependencies::new)
-        }
     }
     impl StatelessAction for BranchAction {
         async fn execute(
@@ -935,10 +907,6 @@ async fn collection_children_respect_reject_limit() {
 
         const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
             nebula_action::effect::ActionEffectContract::ReadOnly;
-        fn dependencies() -> &'static Dependencies {
-            static D: OnceLock<Dependencies> = OnceLock::new();
-            D.get_or_init(Dependencies::new)
-        }
     }
     impl StatelessAction for CollectionAction {
         async fn execute(
@@ -1006,10 +974,6 @@ async fn binary_inline_respects_reject_limit() {
 
         const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
             nebula_action::effect::ActionEffectContract::ReadOnly;
-        fn dependencies() -> &'static Dependencies {
-            static D: OnceLock<Dependencies> = OnceLock::new();
-            D.get_or_init(Dependencies::new)
-        }
     }
     impl StatelessAction for BinaryAction {
         async fn execute(
@@ -1078,10 +1042,6 @@ async fn reference_metadata_respects_reject_limit() {
 
         const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
             nebula_action::effect::ActionEffectContract::ReadOnly;
-        fn dependencies() -> &'static Dependencies {
-            static D: OnceLock<Dependencies> = OnceLock::new();
-            D.get_or_init(Dependencies::new)
-        }
     }
     impl StatelessAction for RefAction {
         async fn execute(
@@ -1162,10 +1122,6 @@ async fn trigger_rejection_does_not_observe_histogram() {
 
     impl Action for FakeTrigger {
         type Output = serde_json::Value;
-        fn dependencies() -> &'static Dependencies {
-            static D: OnceLock<Dependencies> = OnceLock::new();
-            D.get_or_init(Dependencies::new)
-        }
     }
 
     impl TriggerAction for FakeTrigger {
@@ -1288,10 +1244,6 @@ async fn resource_rejection_does_not_increment_execution_metrics() {
     impl Action for FakeResource {
         // ResourceAction requires Output = ResourceProduces<Self::Resource>.
         type Output = ResourceProduces<serde_json::Value>;
-        fn dependencies() -> &'static Dependencies {
-            static D: OnceLock<Dependencies> = OnceLock::new();
-            D.get_or_init(Dependencies::new)
-        }
     }
 
     impl ResourceAction for FakeResource {
@@ -1449,11 +1401,6 @@ async fn stream_action_dispatch_yields_folded_value() {
 
         const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
             nebula_action::effect::ActionEffectContract::ReadOnly;
-
-        fn dependencies() -> &'static Dependencies {
-            static D: OnceLock<Dependencies> = OnceLock::new();
-            D.get_or_init(Dependencies::new)
-        }
     }
 
     impl StreamAction for CountingStream {
@@ -1539,11 +1486,6 @@ async fn stream_output_respects_data_limit() {
 
         const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
             nebula_action::effect::ActionEffectContract::ReadOnly;
-
-        fn dependencies() -> &'static Dependencies {
-            static D: OnceLock<Dependencies> = OnceLock::new();
-            D.get_or_init(Dependencies::new)
-        }
     }
 
     impl StreamAction for BigStream {
@@ -1657,10 +1599,6 @@ impl Action for CountingTo3 {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 impl StatefulAction for CountingTo3 {
     type State = JsonValue;
@@ -1706,10 +1644,6 @@ impl Action for CountingTo5 {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 impl StatefulAction for CountingTo5 {
     type State = JsonValue;
@@ -1755,10 +1689,6 @@ impl Action for CountingTo2 {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 impl StatefulAction for CountingTo2 {
     type State = JsonValue;
@@ -1805,10 +1735,6 @@ impl Action for SleepyStateful {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 impl StatefulAction for SleepyStateful {
     type State = JsonValue;
@@ -2071,10 +1997,6 @@ impl Action for NoProgressStateful {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 impl StatefulAction for NoProgressStateful {
     type State = JsonValue;
@@ -2155,10 +2077,6 @@ impl Action for EndlessStateful {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 impl StatefulAction for EndlessStateful {
     type State = JsonValue;
@@ -2410,10 +2328,6 @@ impl Action for DelayedStateful {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 impl StatefulAction for DelayedStateful {
     type State = JsonValue;
@@ -2467,10 +2381,6 @@ impl Action for DelayedCountingTo4 {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 impl StatefulAction for DelayedCountingTo4 {
     type State = JsonValue;
@@ -2766,10 +2676,6 @@ impl Action for NeverBuilt {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 impl StatefulAction for NeverBuilt {
     type State = JsonValue;
@@ -3126,10 +3032,6 @@ impl Action for CountingAgent {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 impl nebula_action::AgentAction for CountingAgent {
     type Turn = u32;
@@ -3189,10 +3091,6 @@ impl Action for IdleAgent {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 impl nebula_action::AgentAction for IdleAgent {
     type Turn = serde_json::Value;
@@ -3245,10 +3143,6 @@ impl Action for HungAgent {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 impl nebula_action::AgentAction for HungAgent {
     type Turn = u32;
@@ -3298,10 +3192,6 @@ impl Action for BoundlessAgent {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 impl nebula_action::AgentAction for BoundlessAgent {
     type Turn = u32;

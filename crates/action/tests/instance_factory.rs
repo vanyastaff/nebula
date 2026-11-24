@@ -9,7 +9,7 @@
 //! `GenericStatelessFactory`: caller-supplied metadata, and a shared instance.
 
 use std::sync::{
-    Arc, OnceLock,
+    Arc,
     atomic::{AtomicUsize, Ordering},
 };
 
@@ -17,7 +17,7 @@ use nebula_action::{
     Action, ActionContext, ActionError, ActionFactory, ActionHandle, ActionKind, ActionResult,
     Component, InstanceFactory, StatelessAction, TestContextBuilder, kind,
 };
-use nebula_core::{Dependencies, action_key, node_key};
+use nebula_core::{action_key, node_key};
 use nebula_workflow::NodeDefinition;
 
 // ── TypedEcho — fixture with a named Output field ──────────────────────────
@@ -79,11 +79,6 @@ impl Component for TypedEcho {
 
 impl Action for TypedEcho {
     type Output = TypedEchoOutput;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl StatelessAction for TypedEcho {
@@ -122,11 +117,6 @@ impl Component for CountingEcho {
 
 impl Action for CountingEcho {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 nebula_action::stateless_entry!(

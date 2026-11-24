@@ -1,12 +1,13 @@
-//! Compile-fail probe: `#[credential]` on a field whose type is neither
-//! `SlotCell<CredentialGuard<C>>` nor `CredentialSlot<C>` is rejected at the
-//! field type span, naming both accepted shapes.
+//! Compile-fail probe: a `#[slot]` field whose type is not a resource slot
+//! value is rejected at the field type, through the `SlotValue` and
+//! `ResourceSlot` traits.
 
 use nebula_resource::Resource;
 
 #[derive(Resource)]
+#[resource(key = "probe.wrong-type", config = ())]
 struct Demo {
-    #[credential(key = "auth")]
+    #[slot]
     auth: String,
 }
 

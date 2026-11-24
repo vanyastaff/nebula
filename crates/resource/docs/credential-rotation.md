@@ -220,7 +220,7 @@ All of these counts are observability signals, not durable audit records.
   — see the [`manager`](../src/manager/mod.rs) module doc's "two-phase
   revoke / drain invariant" section for the canonical proof.
 - **A slot name that does not match one of the resource's declared
-  `#[credential]` slots is rejected before dispatch** (`Error::unknown_credential_slot`),
+  `#[slot]` fields is rejected before dispatch** (`Error::unknown_credential_slot`),
   so `on_credential_refresh` / `on_credential_revoke` never observe an
   undeclared slot.
 

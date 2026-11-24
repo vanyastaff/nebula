@@ -136,7 +136,6 @@ use crate::{
 /// # Example
 ///
 /// ```rust
-/// use std::sync::OnceLock;
 ///
 /// use nebula_action::prelude::*;
 /// use nebula_core::action_key;
@@ -159,10 +158,6 @@ use crate::{
 ///
 /// impl Action for Summariser {
 ///     type Output = String;
-///     fn dependencies() -> &'static Dependencies {
-///         static D: OnceLock<Dependencies> = OnceLock::new();
-///         D.get_or_init(Dependencies::new)
-///     }
 /// }
 ///
 /// impl AgentAction for Summariser {

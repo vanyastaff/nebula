@@ -52,7 +52,6 @@ use crate::{action::Action, context::ActionContext, error::ActionError};
 /// # Example
 ///
 /// ```rust
-/// use std::sync::OnceLock;
 ///
 /// use futures::stream;
 /// use nebula_action::prelude::*;
@@ -74,10 +73,6 @@ use crate::{action::Action, context::ActionContext, error::ActionError};
 ///
 /// impl Action for SumStream {
 ///     type Output = u64;
-///     fn dependencies() -> &'static Dependencies {
-///         static D: OnceLock<Dependencies> = OnceLock::new();
-///         D.get_or_init(Dependencies::new)
-///     }
 /// }
 ///
 /// impl StreamAction for SumStream {

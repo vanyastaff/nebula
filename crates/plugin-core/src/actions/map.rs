@@ -168,11 +168,6 @@ impl nebula_action::action::Action for MapAction {
 
     const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static nebula_action::Dependencies {
-        static DEPS: OnceLock<nebula_action::Dependencies> = OnceLock::new();
-        DEPS.get_or_init(nebula_action::Dependencies::new)
-    }
 }
 
 impl nebula_action::from_workflow_node::FromWorkflowNode for MapAction {

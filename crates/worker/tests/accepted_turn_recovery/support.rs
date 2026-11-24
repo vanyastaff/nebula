@@ -10,7 +10,7 @@ use nebula_action::{
     },
     kind,
 };
-use nebula_core::{Dependencies, ExecutionId, OperationId, WorkflowId, action_key, node_key};
+use nebula_core::{ExecutionId, OperationId, WorkflowId, action_key, node_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, ExecutionStores, InProcessRunner,
     PlanFlavorRevisionInstaller, PlanFlavorRevisionLoader, ResourceFanoutCoordinator,
@@ -36,7 +36,7 @@ use nebula_workflow::{Connection, NodeDefinition, WorkflowDefinition};
 use std::{
     collections::HashSet,
     sync::{
-        Arc, Mutex, OnceLock,
+        Arc, Mutex,
         atomic::{AtomicU32, Ordering},
     },
     time::Duration,
@@ -79,11 +79,6 @@ impl Component for RecoveryEffectAction {
 
 impl Action for RecoveryEffectAction {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
-    }
 }
 
 impl RemoteEffectAction for RecoveryEffectAction {
@@ -184,11 +179,6 @@ impl Action for Echo {
     type Output = serde_json::Value;
 
     const EFFECT_CONTRACT: ActionEffectContract = ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
-    }
 }
 impl StatelessAction for Echo {
     async fn execute(

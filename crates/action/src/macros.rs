@@ -214,7 +214,6 @@ macro_rules! assert_cancelled {
 /// # Examples
 ///
 /// ```rust
-/// use std::sync::OnceLock;
 /// use nebula_action::{
 ///     Action, ActionContext, ActionError, ActionResult, Component, Dependencies, Metadata,
 ///     StatelessAction, kind, metadata_name, stateless_entry,
@@ -235,11 +234,6 @@ macro_rules! assert_cancelled {
 ///
 /// impl Action for Echo {
 ///     type Output = serde_json::Value;
-///
-///     fn dependencies() -> &'static Dependencies {
-///         static D: OnceLock<Dependencies> = OnceLock::new();
-///         D.get_or_init(Dependencies::new)
-///     }
 /// }
 ///
 /// impl StatelessAction for Echo {
@@ -292,6 +286,10 @@ macro_rules! stateless_entry {
             fn metadata() -> $crate::Metadata {
                 $metadata
             }
+
+            fn dependencies() -> $crate::Dependencies {
+                <$inner as $crate::Component>::dependencies()
+            }
         }
 
         impl $crate::Action for $name {
@@ -314,10 +312,6 @@ macro_rules! stateless_entry {
 
             fn outputs() -> ::std::vec::Vec<$crate::OutputPort> {
                 $crate::__entry_or!($($outputs)?; <$inner as $crate::Action>::outputs())
-            }
-
-            fn dependencies() -> &'static $crate::Dependencies {
-                <$inner as $crate::Action>::dependencies()
             }
         }
 

@@ -26,7 +26,7 @@ use nebula_action::{
     TriggerContext, TriggerEventOutcome, TriggerHandler, WebhookAction, WebhookConfig,
     WebhookRequest, WebhookResponse, WebhookSource, WebhookTriggerAdapter, hmac_sha256_compute,
 };
-use nebula_core::{BaseContext, Dependencies, NodeKey, WorkflowId, node_key, scope::Principal};
+use nebula_core::{BaseContext, NodeKey, WorkflowId, node_key, scope::Principal};
 use nebula_storage::inmem::{
     InMemoryExecutionStore, InMemoryWebhookActivationStore, InMemoryWorkflowVersionStore,
 };
@@ -93,11 +93,6 @@ impl Action for FixtureStatelessAction {
 
     const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: std::sync::OnceLock<Dependencies> = std::sync::OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
-    }
 }
 
 impl StatelessAction for FixtureStatelessAction {
@@ -131,11 +126,6 @@ impl Action for FixtureTriggerAction {
 
     const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: std::sync::OnceLock<Dependencies> = std::sync::OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
-    }
 }
 
 impl TriggerAction for FixtureTriggerAction {
@@ -376,11 +366,6 @@ impl nebula_action::Component for ConfigurableWebhookAction {
 
 impl Action for ConfigurableWebhookAction {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: std::sync::OnceLock<Dependencies> = std::sync::OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl WebhookAction for ConfigurableWebhookAction {

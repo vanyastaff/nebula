@@ -87,6 +87,8 @@ const fn rule(
 // Scenario names identify executed inputs, not test names or submitted pass flags.
 // Repeated codes are intentional: the real workflow validator has both a
 // structural and a graph pass. Their independently raised events must survive.
+// Likewise a broken slot contract is raised where the dependency closure
+// reaches it and again at the node binding that selects it.
 const SCENARIOS: &[ScenarioRule] = &[
     rule("missing_action", Boundary::Compiler, &["MISSING_ACTION"]),
     rule("missing_plugin", Boundary::Compiler, &["MISSING_PLUGIN"]),
@@ -205,12 +207,15 @@ const SCENARIOS: &[ScenarioRule] = &[
     rule(
         "wrong_dependency_type",
         Boundary::Compiler,
-        &["DEPENDENCY_TYPE_MISMATCH"],
+        &["DEPENDENCY_TYPE_MISMATCH", "DEPENDENCY_TYPE_MISMATCH"],
     ),
     rule(
         "undeclared_dependency",
         Boundary::Compiler,
-        &["UNDECLARED_PLUGIN_DEPENDENCY"],
+        &[
+            "UNDECLARED_PLUGIN_DEPENDENCY",
+            "UNDECLARED_PLUGIN_DEPENDENCY",
+        ],
     ),
     rule(
         "schema_incompatible",

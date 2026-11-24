@@ -1,13 +1,13 @@
 //! Recorded action metadata is the only deserializable catalog representation.
 
-use std::{cell::RefCell, sync::OnceLock};
+use std::cell::RefCell;
 
 use nebula_action::{
     Action, ActionAdmissionError, ActionContext, ActionError, ActionFactory, ActionResult,
     Component, InstanceFactory, Metadata, MetadataVersion, RecordedActionDefinition,
     StatelessAction, kind, metadata_name,
 };
-use nebula_core::{Dependencies, action_key};
+use nebula_core::action_key;
 use nebula_metadata::{
     CatalogCategoryKey, CatalogLink, CatalogLinkRelation, CatalogReference, DeprecationNotice,
     Icon, MaturityLevel, MetadataDecodeError, MetadataDecodeLimits, MetadataError, MetadataField,
@@ -33,11 +33,6 @@ impl Component for CatalogAction {
 
 impl Action for CatalogAction {
     type Output = Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
-    }
 }
 
 impl StatelessAction for CatalogAction {
@@ -76,10 +71,6 @@ impl<A: Action> Component for WithMetadata<A> {
 
 impl<A: Action> Action for WithMetadata<A> {
     type Output = A::Output;
-
-    fn dependencies() -> &'static Dependencies {
-        A::dependencies()
-    }
 }
 
 /// `A` with a concurrency hint, which only the type can declare.
@@ -100,10 +91,6 @@ impl<A: Action> Action for Limited<A> {
     type Output = A::Output;
 
     const MAX_CONCURRENT: Option<std::num::NonZeroU32> = std::num::NonZeroU32::new(3);
-
-    fn dependencies() -> &'static Dependencies {
-        A::dependencies()
-    }
 }
 
 impl<A: StatelessAction> StatelessAction for Limited<A> {
@@ -468,9 +455,6 @@ impl Component for LargeCatalogAction {
 
 impl Action for LargeCatalogAction {
     type Output = LargeRecord;
-    fn dependencies() -> &'static Dependencies {
-        CatalogAction::dependencies()
-    }
 }
 
 impl StatelessAction for LargeCatalogAction {

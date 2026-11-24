@@ -143,9 +143,6 @@ pub(crate) fn validate_action_package(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::OnceLock;
-
-    use nebula_core::Dependencies;
 
     use super::*;
     use crate::{
@@ -169,11 +166,6 @@ mod tests {
 
     impl crate::Action for ValidationAction {
         type Output = serde_json::Value;
-
-        fn dependencies() -> &'static Dependencies {
-            static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-            DEPENDENCIES.get_or_init(Dependencies::new)
-        }
     }
 
     fn admit_as(

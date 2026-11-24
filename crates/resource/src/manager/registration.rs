@@ -183,18 +183,8 @@ impl Manager {
     /// // `Resource` emits the (here-empty) credential-slot plumbing; the
     /// // lifecycle itself is a hand-written `impl Provider`.
     /// #[derive(Resource, Clone)]
+    /// #[resource(key = "doctest.http_client", name = "HTTP client", config = ())]
     /// struct HttpClient;
-    ///
-    /// impl Component for HttpClient {
-    ///     type Kind = kind::Resource;
-    ///     type Config = ();
-    ///
-    ///     const KEY: &'static str = "doctest.http_client";
-    ///
-    ///     fn metadata() -> Metadata {
-    ///         Metadata::new(metadata_name!("HTTP client"), "")
-    ///     }
-    /// }
     ///
     /// #[async_trait]
     /// impl Provider for HttpClient {
@@ -737,6 +727,7 @@ impl Manager {
     pub(crate) async fn register_resolved<R>(
         &self,
         schema: &nebula_schema::ValidSchema,
+        dependencies: &nebula_component::Dependencies,
         config: ResourceConfigInput,
         expr_engine: &nebula_expression::ExpressionEngine,
         slot_bindings: std::collections::HashMap<String, nebula_core::CredentialKey>,
@@ -750,13 +741,13 @@ impl Manager {
         registration_bindings: RegistrationBindings<'_>,
     ) -> Result<crate::dedup::SlotIdentity, Error>
     where
-        R: Provider + nebula_core::DeclaresDependencies,
+        R: Provider,
         R::Config: serde::de::DeserializeOwned,
         R::Topology: Topology<R>,
     {
         // -1. Registration consistency check (belt to a future compile-time
         //     fold): `HasCredentialSlots::declares_credential_slots()` and
-        //     `DeclaresDependencies::dependencies().slot_fields()` are two
+        //     the admitted definition's dependencies are two
         //     independent self-reports a hand-written `Provider` impl can
         //     drift apart (e.g. override one and forget the other) — the
         //     `#[derive(Resource)]` derive keeps them consistent by
@@ -766,17 +757,11 @@ impl Manager {
         //     `ManagedHandle`, so a silent contradiction here would surface
         //     downstream as a confusing false-negative or false-positive at
         //     rotation time instead of a clear registration-time reject.
-        let deps = R::dependencies();
-        let declares_credential_slot_fields = deps.slot_fields().iter().any(|sf| {
-            matches!(
-                sf.kind,
-                nebula_core::dependencies::SlotKind::Credential { .. }
-            )
-        });
+        let declares_credential_slot_fields = dependencies.credential_slots().next().is_some();
         if R::declares_credential_slots() != declares_credential_slot_fields {
             return Err(Error::permanent(format!(
                 "register_resolved: `{ty}` HasCredentialSlots::declares_credential_slots() \
-                 = {epoch_flag} but DeclaresDependencies::dependencies() reports \
+                 = {epoch_flag} but Component::dependencies() reports \
                  {has_fields} credential slot field(s) declared — the two self-reported \
                  slot signals have drifted apart; fix whichever implementation is stale",
                 ty = std::any::type_name::<R>(),
@@ -814,13 +799,9 @@ impl Manager {
         //    JSON specified, so misconfiguration surfaces at register time
         //    rather than as a confusing rotation no-op later.
         for slot_name in slot_bindings.keys() {
-            let known = deps.slot_fields().iter().any(|sf| {
-                sf.slot_key == slot_name.as_str()
-                    && matches!(
-                        sf.kind,
-                        nebula_core::dependencies::SlotKind::Credential { .. }
-                    )
-            });
+            let known = dependencies
+                .credential_slots()
+                .any(|(slot, _)| slot.key() == slot_name.as_str());
             if !known {
                 return Err(Error::permanent(format!(
                     "register_resolved: slot binding `{slot_name}` does not match any declared credential slot on `{}`",

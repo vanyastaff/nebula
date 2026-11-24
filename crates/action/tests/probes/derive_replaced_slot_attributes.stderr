@@ -1,0 +1,11 @@
+error: `#[resource]` on a field was replaced by `#[slot]`; the field type already says what the slot points at
+  --> tests/probes/derive_replaced_slot_attributes.rs:14:5
+   |
+14 |     #[resource]
+   |     ^^^^^^^^^^^
+
+error: `#[credential]` on a field was replaced by `#[slot]`; the field type already says what the slot points at
+  --> tests/probes/derive_replaced_slot_attributes.rs:25:5
+   |
+25 |     #[credential(key = "auth")]
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^

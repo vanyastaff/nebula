@@ -1,6 +1,4 @@
-use std::sync::{Arc, OnceLock};
-
-use nebula_core::Dependencies;
+use std::sync::Arc;
 
 use super::*;
 use crate::{
@@ -35,10 +33,6 @@ impl crate::Component for CounterAction {
 
 impl Action for CounterAction {
     type Output = Value;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl StatefulAction for CounterAction {
@@ -196,10 +190,6 @@ impl crate::Component for MutateThenFailAction {
 
 impl Action for MutateThenFailAction {
     type Output = Value;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl StatefulAction for MutateThenFailAction {

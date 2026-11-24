@@ -475,15 +475,12 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
             pub mod action {
                 pub use nebula_action::{
                     Action, ActionContext, ActionContextExt, ActionEffectContract, ActionError,
-                    ActionResult, Component, FromWorkflowNode, Metadata, MetadataVersion,
-                    StatelessAction, kind, metadata_name,
+                    ActionResult, Component, Dependencies, FromSlot, FromWorkflowNode, Metadata,
+                    MetadataVersion, Slot, StatelessAction, kind, metadata_name,
                 };
             }
             pub mod core {
-                pub use nebula_core::{
-                    ActionKey, CredentialKey, DeclaresDependencies, Dependencies, ResourceKey,
-                    SlotField, SlotKind,
-                };
+                pub use nebula_core::{ActionKey, CredentialKey, ResourceKey};
                 pub mod auth {
                     pub use nebula_core::auth::{
                         AuthPattern, AuthScheme, ExternalScheme, PublicScheme, SensitiveScheme,
@@ -514,8 +511,9 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
             }
             pub mod resource {
                 pub use nebula_resource::{
-                    __assert_provider_key, ConfigFingerprint, Error, HasCredentialSlots, PinSlots,
-                    ResourceConfig, SlotInstallError, SlotUpdate, key_of,
+                    Component, ConfigFingerprint, Dependencies, Error, HasCredentialSlots, Metadata,
+                    PinSlots, ResourceConfig, ResourceSlot, Slot, SlotInstallError, SlotUpdate,
+                    key_of, kind, metadata_name,
                 };
                 pub mod contribution {
                     pub use crate::resource_contribution::{

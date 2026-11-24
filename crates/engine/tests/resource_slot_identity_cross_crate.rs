@@ -36,10 +36,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-use nebula_core::{
-    CredentialKey, DeclaresDependencies, Dependencies,
-    dependencies::{SlotField, SlotKind},
-};
+use nebula_core::CredentialKey;
 use nebula_engine::{
     KindActivator, RegisterRequest, ResourceActivatorRegistry, ResourceConfigInput, SlotBinding,
     resource_accessor::slot_identities_for_key,
@@ -120,6 +117,16 @@ impl nebula_resource::Component for XResource {
             String::new(),
         )
     }
+
+    fn dependencies() -> nebula_resource::Dependencies {
+        // One credential slot named `auth`. `register_resolved`'s
+        // slot-binding validation requires every `slot_bindings` key to
+        // match a declared credential slot, so a non-empty binding is only
+        // accepted because this slot is declared.
+        nebula_resource::Dependencies::none().slot(nebula_resource::Slot::of::<
+            nebula_resource::CredentialSlot<AuthCredential>,
+        >(SLOT_KEY))
+    }
 }
 
 #[async_trait::async_trait]
@@ -137,37 +144,49 @@ impl Provider for XResource {
     }
 }
 
-/// The slot key the resource declares (and the binding key the test uses).
-const SLOT_KEY: &str = "auth";
+/// The credential behind `XResource`'s `auth` slot.
+struct AuthCredential;
 
-impl DeclaresDependencies for XResource {
-    fn dependencies() -> Dependencies {
-        // One `#[credential]` slot named `auth`. `register_resolved`'s
-        // slot-binding validation requires every `slot_bindings` key to
-        // match a declared credential slot, so a non-empty binding is only
-        // accepted because this slot is declared.
-        Dependencies::new().slot_field(SlotField {
-            slot_key: SLOT_KEY,
-            default_id: SLOT_KEY,
-            kind: SlotKind::Credential {
-                type_id: std::any::TypeId::of::<()>(),
-                type_name: "test-credential",
-                key: CredentialKey::new("auth").expect("valid credential key"),
-            },
-            required: true,
-            lazy: false,
-            purpose: None,
-        })
+impl nebula_credential::Component for AuthCredential {
+    type Kind = nebula_credential::kind::Credential;
+    type Config = ();
+
+    const KEY: &'static str = "auth";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_credential::metadata_name!("auth"), "")
     }
 }
+
+impl nebula_credential::Credential for AuthCredential {
+    type Scheme = nebula_credential::scheme::SecretToken;
+    type State = nebula_credential::scheme::SecretToken;
+
+    fn project(state: &Self::State) -> Self::Scheme {
+        state.clone()
+    }
+
+    async fn resolve(
+        _properties: &(),
+        _ctx: &nebula_credential::CredentialContext,
+    ) -> Result<
+        nebula_credential::StaticResolveResult<Self::State>,
+        nebula_credential::CredentialError,
+    > {
+        Err(nebula_credential::CredentialError::NotInteractive)
+    }
+}
+
+/// The slot key the resource declares (and the binding key the test uses).
+const SLOT_KEY: &str = "auth";
 
 impl nebula_resource::HasCredentialSlots for XResource {
     fn credential_slot_epoch(&self) -> u64 {
         0
     }
 
-    // Must agree with `DeclaresDependencies::dependencies()` above (one
-    // real `#[credential]`-shaped slot, "auth") — nebula-resource's
+    // Must agree with `Component::dependencies()` above (one credential
+    // slot, "auth") — nebula-resource's
     // registration-time consistency check (A5') rejects a hand-written
     // `Provider` whose two self-reported slot signals disagree.
     fn declares_credential_slots() -> bool {

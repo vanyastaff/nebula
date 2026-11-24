@@ -18,9 +18,8 @@ use std::{
 use async_trait::async_trait;
 use nebula_core::ScopeLevel;
 use nebula_resource::{
-    AcquireOptions, Component, Error, ErrorKind, Manager, ManagerConfig, Metadata, PoolProvider,
-    Pooled, Provider, RegistrationSpec, Resource, ResourceContext, ResourceGuard, SlotIdentity,
-    TeardownCx, kind,
+    AcquireOptions, Error, ErrorKind, Manager, ManagerConfig, PoolProvider, Pooled, Provider,
+    RegistrationSpec, Resource, ResourceContext, ResourceGuard, SlotIdentity, TeardownCx,
     topology::pooled::{BrokenCheck, config::Config as PoolConfig},
 };
 
@@ -31,20 +30,10 @@ const STUCK_TEARDOWN: Duration = Duration::from_secs(30);
 /// A pooled resource whose every instance comes back broken and whose
 /// `destroy` waits on a backend that does not answer.
 #[derive(Resource, Clone)]
+#[resource(key = "isolation.stuck", name = "stuck", config = ())]
 struct Stuck {
     destroys_started: Arc<AtomicUsize>,
     destroys_finished: Arc<AtomicUsize>,
-}
-
-impl Component for Stuck {
-    type Kind = kind::Resource;
-    type Config = ();
-
-    const KEY: &'static str = "isolation.stuck";
-
-    fn metadata() -> Metadata {
-        Metadata::new(nebula_resource::metadata_name!("stuck"), "")
-    }
 }
 
 #[async_trait]
@@ -72,18 +61,8 @@ impl PoolProvider for Stuck {
 
 /// A healthy pooled resource with nothing to wait for on release.
 #[derive(Resource, Clone)]
+#[resource(key = "isolation.healthy", name = "healthy", config = ())]
 struct Healthy;
-
-impl Component for Healthy {
-    type Kind = kind::Resource;
-    type Config = ();
-
-    const KEY: &'static str = "isolation.healthy";
-
-    fn metadata() -> Metadata {
-        Metadata::new(nebula_resource::metadata_name!("healthy"), "")
-    }
-}
 
 #[async_trait]
 impl Provider for Healthy {

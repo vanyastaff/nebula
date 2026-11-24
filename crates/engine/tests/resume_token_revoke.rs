@@ -43,7 +43,7 @@ macro_rules! pure_action_metadata {
 use std::{
     collections::HashMap,
     sync::{
-        Arc, Mutex, OnceLock,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -58,7 +58,7 @@ use nebula_action::{
     result::{ActionResult, WaitCondition},
     stateless::StatelessAction,
 };
-use nebula_core::{Dependencies, id::ExecutionId, node_key};
+use nebula_core::{id::ExecutionId, node_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, ControlDispatch, DataPassingPolicy, EngineControlDispatch,
     InProcessRunner, WorkflowEngine,
@@ -331,11 +331,6 @@ impl Action for WebhookParkNode {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPS: OnceLock<Dependencies> = OnceLock::new();
-        DEPS.get_or_init(Dependencies::new)
-    }
 }
 
 impl StatelessAction for WebhookParkNode {
@@ -388,11 +383,6 @@ impl Action for EchoNode {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPS: OnceLock<Dependencies> = OnceLock::new();
-        DEPS.get_or_init(Dependencies::new)
-    }
 }
 
 impl StatelessAction for EchoNode {

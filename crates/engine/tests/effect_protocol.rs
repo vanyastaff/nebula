@@ -1,9 +1,6 @@
 //! Provider observations through real activation, start admission and durable turns.
 
-use std::{
-    marker::PhantomData,
-    sync::{Arc, OnceLock},
-};
+use std::{marker::PhantomData, sync::Arc};
 
 use nebula_action::{
     Action, ActionFactory, ActionResult, Component, RemoteEffectInstanceFactory,
@@ -17,8 +14,7 @@ use nebula_action::{
     kind,
 };
 use nebula_core::{
-    ArtifactSetDigest, Dependencies, OperationId, OrgId, WorkspaceId, accessor::SystemClock,
-    action_key, node_key,
+    ArtifactSetDigest, OperationId, OrgId, WorkspaceId, accessor::SystemClock, action_key, node_key,
 };
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, PlanFlavorRevisionInstaller,
@@ -141,11 +137,6 @@ where
     I: nebula_schema::HasSchema + DeserializeOwned + Send + Sync + 'static,
 {
     type Output = Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
-    }
 }
 
 impl<I> RemoteEffectAction for ProviderAction<I>

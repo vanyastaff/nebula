@@ -11,7 +11,7 @@
 
 use std::{
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicU32, Ordering},
     },
     time::Duration,
@@ -21,7 +21,7 @@ use nebula_action::{
     ActionError, AgentAction, Component, action::Action, from_workflow_node::FromWorkflowNode,
     kind, output::ActionOutput, result::ActionResult, stateless::StatelessAction,
 };
-use nebula_core::{Dependencies, id::WorkflowId, node_key};
+use nebula_core::{id::WorkflowId, node_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, EngineError, ExecutionEvent, InProcessRunner,
     WorkflowEngine,
@@ -61,10 +61,6 @@ macro_rules! fixture_action_impl {
 
             const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
                 nebula_action::effect::ActionEffectContract::ReadOnly;
-            fn dependencies() -> &'static Dependencies {
-                static D: OnceLock<Dependencies> = OnceLock::new();
-                D.get_or_init(Dependencies::new)
-            }
         }
     };
 }

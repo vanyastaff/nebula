@@ -68,7 +68,7 @@ use std::{
 use crate::resource::ResourceDefinition;
 use crate::topology::{ConfigurableTopology, Topology};
 use crate::{Manager, ScopeLevel, SlotIdentity, recovery::RecoveryGate, resource::Provider};
-use nebula_core::{CredentialId, Dependencies, SlotKind};
+use nebula_core::CredentialId;
 
 mod private {
     pub trait Sealed {}
@@ -466,9 +466,6 @@ pub trait ResourceFactory: private::Sealed + Send + Sync + 'static {
     /// Pure and side-effect-free — a `const`-ish accessor, not I/O.
     fn key(&self) -> nebula_core::ResourceKey;
 
-    /// Declared resource and credential dependencies for this resource type.
-    fn dependencies(&self) -> &Dependencies;
-
     /// Local process type identity of the concrete resource type.
     ///
     /// This value is used only for activation-time coherence checks. It is
@@ -552,14 +549,14 @@ pub trait ResourceFactory: private::Sealed + Send + Sync + 'static {
         &self,
         bindings: &BTreeMap<String, String>,
     ) -> Result<(), crate::Error> {
-        let declared: Vec<(&str, bool)> = self
+        let definition = self.definition().map_err(|error| {
+            crate::Error::permanent(format!("resource definition is not admitted: {error}"))
+                .with_resource_key(self.key())
+        })?;
+        let declared: Vec<(&str, bool)> = definition
             .dependencies()
-            .slot_fields()
-            .iter()
-            .filter_map(|field| match field.kind {
-                SlotKind::Credential { .. } => Some((field.slot_key, field.required)),
-                SlotKind::Resource { .. } => None,
-            })
+            .credential_slots()
+            .map(|(slot, _)| (slot.key(), slot.is_required()))
             .collect();
         let refuse = |message: String| -> Result<(), crate::Error> {
             Err(crate::Error::permanent(message).with_resource_key(self.key()))
@@ -660,7 +657,7 @@ pub trait ResourceFactory: private::Sealed + Send + Sync + 'static {
 /// internally by the `#[derive(Resource)]`-generated `<Name>Factory`.
 pub struct KindActivator<R, FRes, FTopo>
 where
-    R: Provider + nebula_core::DeclaresDependencies,
+    R: Provider,
     R::Config: serde::de::DeserializeOwned,
     FRes: Fn() -> R + Send + Sync,
     FTopo: Fn(Option<&serde_json::Value>) -> Result<R::Topology, crate::Error> + Send + Sync,
@@ -668,7 +665,6 @@ where
     resource_factory: FRes,
     topology_factory: FTopo,
     topology_schema: Option<TopologySchemaFn>,
-    dependencies: Dependencies,
     definition: OnceLock<Result<ResourceDefinition, crate::ResourceAdmissionError>>,
     // Zero-sized marker — `R` is not stored but bounds the `impl`.
     _marker: std::marker::PhantomData<fn() -> R>,
@@ -676,7 +672,7 @@ where
 
 impl<R, FRes, FTopo> std::fmt::Debug for KindActivator<R, FRes, FTopo>
 where
-    R: Provider + nebula_core::DeclaresDependencies,
+    R: Provider,
     R::Config: serde::de::DeserializeOwned,
     FRes: Fn() -> R + Send + Sync,
     FTopo: Fn(Option<&serde_json::Value>) -> Result<R::Topology, crate::Error> + Send + Sync,
@@ -693,7 +689,7 @@ where
 
 impl<R, FRes, FTopo> KindActivator<R, FRes, FTopo>
 where
-    R: Provider + nebula_core::DeclaresDependencies,
+    R: Provider,
     R::Config: serde::de::DeserializeOwned,
     FRes: Fn() -> R + Send + Sync,
     FTopo: Fn(Option<&serde_json::Value>) -> Result<R::Topology, crate::Error> + Send + Sync,
@@ -712,7 +708,6 @@ where
             resource_factory,
             topology_factory,
             topology_schema: None,
-            dependencies: R::dependencies(),
             definition: OnceLock::new(),
             _marker: std::marker::PhantomData,
         }
@@ -733,7 +728,7 @@ pub type SettingsTopologyFactory<T> =
 
 impl<R, FRes> KindActivator<R, FRes, SettingsTopologyFactory<R::Topology>>
 where
-    R: Provider + nebula_core::DeclaresDependencies,
+    R: Provider,
     R::Config: serde::de::DeserializeOwned,
     R::Topology: ConfigurableTopology<R>,
     FRes: Fn() -> R + Send + Sync,
@@ -761,7 +756,7 @@ where
 
 impl<R, FRes, FTopo> private::Sealed for KindActivator<R, FRes, FTopo>
 where
-    R: Provider + nebula_core::DeclaresDependencies,
+    R: Provider,
     R::Config: serde::de::DeserializeOwned,
     R::Topology: Topology<R>,
     FRes: Fn() -> R + Send + Sync + 'static,
@@ -772,7 +767,7 @@ where
 
 impl<R, FRes, FTopo> ResourceFactory for KindActivator<R, FRes, FTopo>
 where
-    R: Provider + nebula_core::DeclaresDependencies,
+    R: Provider,
     R::Config: serde::de::DeserializeOwned,
     R::Topology: Topology<R>,
     FRes: Fn() -> R + Send + Sync + 'static,
@@ -781,10 +776,6 @@ where
 {
     fn key(&self) -> nebula_core::ResourceKey {
         crate::key_of::<R>()
-    }
-
-    fn dependencies(&self) -> &Dependencies {
-        &self.dependencies
     }
 
     fn resource_type_id(&self) -> TypeId {
@@ -954,6 +945,7 @@ where
             manager
                 .register_resolved::<R>(
                     definition.base().schema(),
+                    definition.dependencies(),
                     request.config,
                     request.expr_engine,
                     slot_keys,

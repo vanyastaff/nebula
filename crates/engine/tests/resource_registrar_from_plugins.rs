@@ -34,7 +34,7 @@ use std::{
 use nebula_action::{
     ActionError, Component, action::Action, kind, result::ActionResult, stateless::StatelessAction,
 };
-use nebula_core::{Dependencies, node_key};
+use nebula_core::node_key;
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, KindActivator, Plugin,
     PluginManifest, PluginRegistry, ResolvedPlugin, ResourceActivatorRegistry, WorkflowEngine,
@@ -131,8 +131,6 @@ impl Provider for DemoResource {
         Ok(Arc::new(AtomicU64::new(id)))
     }
 }
-
-impl nebula_core::DeclaresDependencies for DemoResource {}
 
 nebula_resource::no_credential_slots!(DemoResource);
 
@@ -238,12 +236,6 @@ impl Action for NoopHandler {
 
     const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        use std::sync::OnceLock;
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl StatelessAction for NoopHandler {

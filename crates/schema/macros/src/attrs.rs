@@ -1292,9 +1292,9 @@ impl SchemaEntry {
                     return Err(syn::Error::new(name.span(), "duplicate named condition"));
                 }
                 crate::derive_schema::check_field_key(&name.to_string(), name.span())?;
-                nebula_macro_support::slot::validate_condition(
+                nebula_macro_support::condition::validate_condition(
                     &expression,
-                    nebula_macro_support::slot::ConditionScope::LocalRecord,
+                    nebula_macro_support::condition::ConditionScope::LocalRecord,
                 )?;
                 out.conditions.push((name, expression));
             },

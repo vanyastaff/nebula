@@ -2,15 +2,13 @@ use std::{
     any::TypeId,
     assert_matches,
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
 };
 
-use nebula_core::{
-    Dependencies, ExecutionId, ResourceRequirement, WorkflowId, node_key, resource_key,
-};
+use nebula_core::{ExecutionId, WorkflowId, node_key, resource_key};
 use nebula_workflow::NodeDefinition;
 use serde_json::Value;
 
@@ -49,11 +47,6 @@ impl crate::Component for InvalidMetadataAction {
 
 impl Action for InvalidMetadataAction {
     type Output = Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPS: OnceLock<Dependencies> = OnceLock::new();
-        DEPS.get_or_init(Dependencies::new)
-    }
 }
 
 impl StatelessAction for InvalidMetadataAction {
@@ -106,6 +99,25 @@ fn invalid_metadata_never_reaches_instantiation() {
 // positive counterpart to the two fatal-path tests above.
 
 struct FactoryDependency;
+
+impl crate::Component for FactoryDependency {
+    type Kind = crate::kind::Resource;
+    type Config = ();
+
+    const KEY: &'static str = "factory_dependency";
+
+    fn metadata() -> crate::Metadata {
+        crate::Metadata::new(crate::metadata_name!("Factory dependency"), "")
+    }
+}
+
+/// Stands in for a resource handle: the value a slot on the resource holds.
+struct FactoryDependencyHandle;
+
+impl crate::SlotValue for FactoryDependencyHandle {
+    type Target = FactoryDependency;
+}
+
 struct ValidMetadataAction;
 
 impl crate::Component for ValidMetadataAction {
@@ -120,21 +132,14 @@ impl crate::Component for ValidMetadataAction {
             "A production-shaped action fixture used to prove the metadata gate passes valid registrations.",
         )
     }
+
+    fn dependencies() -> crate::Dependencies {
+        crate::Dependencies::none().slot(crate::Slot::of::<FactoryDependencyHandle>("dependency"))
+    }
 }
 
 impl Action for ValidMetadataAction {
     type Output = Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPS: OnceLock<Dependencies> = OnceLock::new();
-        DEPS.get_or_init(|| {
-            Dependencies::new().resource(ResourceRequirement::new(
-                resource_key!("factory_dependency"),
-                TypeId::of::<FactoryDependency>(),
-                std::any::type_name::<FactoryDependency>(),
-            ))
-        })
-    }
 }
 
 impl StatelessAction for ValidMetadataAction {
@@ -159,30 +164,25 @@ impl FromWorkflowNode for ValidMetadataAction {
 }
 
 #[test]
-fn factory_exposes_exact_action_dependencies() {
+fn the_definition_carries_the_action_slots() {
     let factory = GenericStatelessFactory::<ValidMetadataAction>::new()
         .expect("valid test catalog definition");
-    let projected_dependencies = factory.dependencies();
-    let [resource_requirement] = projected_dependencies.resources() else {
-        panic!("factory must expose the action's one declared resource dependency");
+    let [slot] = factory.definition().dependencies().slots() else {
+        panic!("the definition must carry the action's one declared slot");
     };
 
+    assert_eq!(slot.key(), "dependency");
+    assert!(slot.is_required());
+    assert_eq!(slot.purpose(), None);
+    let nebula_component::SlotTarget::Resource(target) = slot.target() else {
+        panic!("the slot points at a resource");
+    };
+    assert_eq!(target.key(), &resource_key!("factory_dependency"));
+    assert_eq!(target.type_id(), TypeId::of::<FactoryDependency>());
     assert_eq!(
-        resource_requirement.key,
-        resource_key!("factory_dependency")
-    );
-    assert_eq!(
-        resource_requirement.type_id,
-        TypeId::of::<FactoryDependency>()
-    );
-    assert_eq!(
-        resource_requirement.type_name,
+        target.type_name(),
         std::any::type_name::<FactoryDependency>()
     );
-    assert!(resource_requirement.required);
-    assert_eq!(resource_requirement.purpose, None);
-    assert!(projected_dependencies.credentials().is_empty());
-    assert!(projected_dependencies.slot_fields().is_empty());
 }
 
 /// A factory with valid metadata (non-empty name, description, default
@@ -252,11 +252,6 @@ impl crate::Component for RemoteValueProbe {
 
 impl Action for RemoteValueProbe {
     type Output = Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
-    }
 }
 
 impl RemoteEffectAction for RemoteValueProbe {
@@ -291,10 +286,6 @@ impl crate::Component for RemoteBoolProbe {
 
 impl Action for RemoteBoolProbe {
     type Output = Value;
-
-    fn dependencies() -> &'static Dependencies {
-        RemoteValueProbe::dependencies()
-    }
 }
 
 impl RemoteEffectAction for RemoteBoolProbe {
@@ -408,10 +399,6 @@ impl Action for RemoteDeclaringReadOnly {
     type Output = Value;
 
     const EFFECT_CONTRACT: ActionEffectContract = ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        RemoteValueProbe::dependencies()
-    }
 }
 
 impl RemoteEffectAction for RemoteDeclaringReadOnly {
@@ -444,10 +431,6 @@ impl crate::Component for RemoteInvalidDescriptor {
 
 impl Action for RemoteInvalidDescriptor {
     type Output = Value;
-
-    fn dependencies() -> &'static Dependencies {
-        RemoteValueProbe::dependencies()
-    }
 }
 
 impl RemoteEffectAction for RemoteInvalidDescriptor {

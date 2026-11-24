@@ -4,26 +4,17 @@
 //! on ActionResult/ActionError. They do not test cancellation (that is the runtime's
 //! responsibility via tokio::select!).
 
-use std::sync::OnceLock;
-
 use nebula_action::{
     Action, ActionError, ActionInput, ActionOutput, ActionResult, BreakReason, Component,
     StatefulAction, StatefulActionAdapter, StatefulHandle, StatelessAction, TriggerAction,
     TriggerSource, kind, testing::TestContextBuilder,
 };
-use nebula_core::Dependencies;
 
 // ── TestSource — generic trigger source for test fixtures ───────────────────
 
 struct TestSource;
 impl TriggerSource for TestSource {
     type Event = serde_json::Value;
-}
-
-// Boilerplate helper used across fixtures.
-fn empty_deps() -> &'static Dependencies {
-    static D: OnceLock<Dependencies> = OnceLock::new();
-    D.get_or_init(Dependencies::new)
 }
 
 // ── StatelessAction ─────────────────────────────────────────────────────────
@@ -46,10 +37,6 @@ impl Component for EchoAction {
 
 impl Action for EchoAction {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        empty_deps()
-    }
 }
 
 impl StatelessAction for EchoAction {
@@ -103,10 +90,6 @@ impl Component for CounterAction {
 
 impl Action for CounterAction {
     type Output = U32Out;
-
-    fn dependencies() -> &'static Dependencies {
-        empty_deps()
-    }
 }
 
 impl StatefulAction for CounterAction {
@@ -194,10 +177,6 @@ impl Component for NoOpTrigger {
 
 impl Action for NoOpTrigger {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        empty_deps()
-    }
 }
 
 impl TriggerAction for NoOpTrigger {
@@ -263,10 +242,6 @@ impl Component for MigratableAction {
 
 impl Action for MigratableAction {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        empty_deps()
-    }
 }
 
 impl StatefulAction for MigratableAction {

@@ -18,7 +18,6 @@
 use std::{any::Any, future::Future, marker::PhantomData, pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
-use nebula_core::Dependencies;
 use nebula_workflow::NodeDefinition;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -99,9 +98,6 @@ pub trait ActionFactory: sealed::Sealed + Send + Sync + 'static {
     /// Static metadata describing the action this factory produces.
     fn definition(&self) -> &Arc<ActionDefinition>;
 
-    /// Declared resource and credential dependencies for the produced action.
-    fn dependencies(&self) -> &Dependencies;
-
     /// Separate preparation capability for an explicitly declared remote effect.
     ///
     /// Its descriptor must exactly match metadata before any instantiation.
@@ -151,10 +147,6 @@ where
     <A as crate::Component>::Config: DeserializeOwned + Send + Sync,
     <A as Action>::Output: Serialize + Send + Sync,
 {
-    fn dependencies(&self) -> &Dependencies {
-        <A as Action>::dependencies()
-    }
-
     fn definition(&self) -> &Arc<ActionDefinition> {
         &self.meta
     }
@@ -266,10 +258,6 @@ where
     <A as crate::Component>::Config: DeserializeOwned + Send + Sync,
     <A as Action>::Output: Serialize + Send + Sync,
 {
-    fn dependencies(&self) -> &Dependencies {
-        <A as Action>::dependencies()
-    }
-
     fn definition(&self) -> &Arc<ActionDefinition> {
         &self.meta
     }
@@ -338,10 +326,6 @@ where
 {
     fn definition(&self) -> &Arc<ActionDefinition> {
         &self.meta
-    }
-
-    fn dependencies(&self) -> &Dependencies {
-        A::dependencies()
     }
 
     fn remote_effect_factory(&self) -> Option<&dyn RemoteEffectFactory> {
@@ -460,10 +444,6 @@ where
     <A as Action>::Output: Serialize + Send + Sync,
     A::State: Serialize + DeserializeOwned + Clone + Send + Sync,
 {
-    fn dependencies(&self) -> &Dependencies {
-        <A as Action>::dependencies()
-    }
-
     fn definition(&self) -> &Arc<ActionDefinition> {
         &self.meta
     }
@@ -512,10 +492,6 @@ where
     A: TriggerAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
     <A as TriggerAction>::Error: Into<ActionError>,
 {
-    fn dependencies(&self) -> &Dependencies {
-        <A as Action>::dependencies()
-    }
-
     fn definition(&self) -> &Arc<ActionDefinition> {
         &self.meta
     }
@@ -620,10 +596,6 @@ impl<A> ActionFactory for GenericResourceFactory<A>
 where
     A: ResourceAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
 {
-    fn dependencies(&self) -> &Dependencies {
-        <A as Action>::dependencies()
-    }
-
     fn definition(&self) -> &Arc<ActionDefinition> {
         &self.meta
     }
@@ -718,10 +690,6 @@ impl<A> ActionFactory for GenericControlFactory<A>
 where
     A: ControlAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
 {
-    fn dependencies(&self) -> &Dependencies {
-        <A as Action>::dependencies()
-    }
-
     fn definition(&self) -> &Arc<ActionDefinition> {
         &self.meta
     }
@@ -822,10 +790,6 @@ where
     <A as crate::Component>::Config: DeserializeOwned + Send + Sync,
     <A as Action>::Output: Serialize + Send + Sync,
 {
-    fn dependencies(&self) -> &Dependencies {
-        <A as Action>::dependencies()
-    }
-
     fn definition(&self) -> &Arc<ActionDefinition> {
         &self.meta
     }
@@ -947,10 +911,6 @@ where
     <A as Action>::Output: Serialize + Send + Sync,
     A::Turn: Serialize + DeserializeOwned + Clone + Send + Sync,
 {
-    fn dependencies(&self) -> &Dependencies {
-        <A as Action>::dependencies()
-    }
-
     fn definition(&self) -> &Arc<ActionDefinition> {
         &self.meta
     }

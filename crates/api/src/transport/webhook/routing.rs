@@ -134,7 +134,6 @@ mod tests {
         Action, Component, Metadata, TriggerContext, TriggerEventOutcome, WebhookAction,
         WebhookRequest, WebhookResponse, WebhookTriggerAdapter, kind,
     };
-    use nebula_core::Dependencies;
     use uuid::Uuid;
 
     use super::{super::key::WebhookKey, *};
@@ -157,11 +156,6 @@ mod tests {
 
     impl Action for NoopWebhook {
         type Output = serde_json::Value;
-
-        fn dependencies() -> &'static Dependencies {
-            static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-            DEPENDENCIES.get_or_init(Dependencies::new)
-        }
     }
 
     impl WebhookAction for NoopWebhook {

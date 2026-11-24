@@ -487,17 +487,13 @@ pub enum SlotInstallError {
     ProjectionChanged,
 }
 
-/// Convenience alias for the standard credential slot field type.
+/// A slot holding credential `C`: the guard of its current scheme, swapped
+/// in place on rotation.
 ///
-/// `CredentialSlot<C>` stores `CredentialGuard<C::Scheme>` for credential
-/// definition `C`.
-/// Use this alias in your resource struct's `#[credential]` fields to reduce
-/// field-type noise — e.g. a `#[credential(key = "db")] iam: CredentialSlot<IamToken>`
-/// field. Both syntactic shapes — `SlotCell<CredentialGuard<C>>` and
-/// `CredentialSlot<C>` — are accepted by `#[derive(Resource)]`.
-///
-/// A `CredentialSlot<C>` is a [`SlotCell`] over the projected scheme guard, so
-/// it carries the same generation-stamped, lock-free cell mechanics:
+/// This is the one credential slot value. A resource holds it for its life
+/// and reads the current guard on each use; an action holds one bound for
+/// its run. The cell underneath is a [`SlotCell`], reached through `Deref`,
+/// so rotation keeps its generation-stamped, lock-free mechanics:
 ///
 /// ```
 /// use std::sync::Arc;
@@ -505,7 +501,7 @@ pub enum SlotInstallError {
 /// use nebula_resource::SlotCell;
 ///
 /// // The cell underlying a `CredentialSlot` (here over a plain `u32`; in a
-/// // resource the slot value is `CredentialGuard<C>`).
+/// // slot the value is `CredentialGuard<C::Scheme>`).
 /// let cell: SlotCell<u32> = SlotCell::empty();
 /// assert_eq!(cell.generation(), 0, "an unbound slot's epoch is 0");
 /// assert!(cell.load().is_none());
@@ -514,8 +510,136 @@ pub enum SlotInstallError {
 /// assert_eq!(cell.load().as_deref(), Some(&7));
 /// assert_eq!(cell.generation(), 1, "the first store lands at generation 1");
 /// ```
-pub type CredentialSlot<C> =
-    SlotCell<nebula_credential::CredentialGuard<<C as nebula_credential::Credential>::Scheme>>;
+pub struct CredentialSlot<C>
+where
+    C: nebula_credential::Credential,
+    C::Scheme: zeroize::Zeroize,
+{
+    cell: SlotCell<nebula_credential::CredentialGuard<C::Scheme>>,
+}
+
+impl<C> CredentialSlot<C>
+where
+    C: nebula_credential::Credential,
+    C::Scheme: zeroize::Zeroize,
+{
+    /// A slot nothing is bound to yet.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            cell: SlotCell::empty(),
+        }
+    }
+
+    /// A slot holding `guard`, as an action receives it for one run.
+    #[must_use]
+    pub fn bound(guard: nebula_credential::CredentialGuard<C::Scheme>) -> Self {
+        let slot = Self::empty();
+        slot.cell.store(Arc::new(guard));
+        slot
+    }
+
+    /// The current guard, or `None` while unbound or after a revoke.
+    #[must_use]
+    pub fn current(&self) -> Option<Arc<nebula_credential::CredentialGuard<C::Scheme>>> {
+        self.cell.load()
+    }
+}
+
+impl<C> std::ops::Deref for CredentialSlot<C>
+where
+    C: nebula_credential::Credential,
+    C::Scheme: zeroize::Zeroize,
+{
+    type Target = SlotCell<nebula_credential::CredentialGuard<C::Scheme>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.cell
+    }
+}
+
+impl<C> Default for CredentialSlot<C>
+where
+    C: nebula_credential::Credential,
+    C::Scheme: zeroize::Zeroize,
+{
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+impl<C> std::fmt::Debug for CredentialSlot<C>
+where
+    C: nebula_credential::Credential,
+    C::Scheme: zeroize::Zeroize,
+{
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CredentialSlot")
+            .field("credential", &C::KEY)
+            .field("generation", &self.cell.generation())
+            .field("bound", &self.cell.is_some())
+            .finish()
+    }
+}
+
+impl<C> nebula_component::SlotValue for CredentialSlot<C>
+where
+    C: nebula_credential::Credential,
+    C::Scheme: zeroize::Zeroize,
+{
+    type Target = C;
+}
+
+/// A slot value a resource can hold: a cell the framework installs into and
+/// rotates, read by the resource on each use.
+///
+/// `#[derive(Resource)]` calls it for every `#[slot]` field, so the derive
+/// never parses a field type. Only [`CredentialSlot`] implements it: a
+/// resource builds on credentials, and a resource slot never stays optional
+/// at the type level, since the cell itself is empty until bound.
+#[diagnostic::on_unimplemented(
+    message = "a resource cannot hold `{Self}` in a slot",
+    label = "not a resource slot value",
+    note = "a resource slot holds `CredentialSlot<C>`"
+)]
+pub trait ResourceSlot: nebula_component::SlotValue {
+    /// The value the cell holds and a call unit pins.
+    type Guard: Send + Sync + 'static;
+
+    /// The cell behind the slot.
+    fn cell(&self) -> &SlotCell<Self::Guard>;
+
+    /// The typed value of a guard the resolver projected for this slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SlotInstallError::CredentialTypeMismatch`] when the guard
+    /// holds another scheme.
+    fn typed_guard(
+        guard: nebula_credential::ErasedCredentialGuard,
+    ) -> Result<Self::Guard, SlotInstallError>;
+}
+
+impl<C> ResourceSlot for CredentialSlot<C>
+where
+    C: nebula_credential::Credential,
+    C::Scheme: zeroize::Zeroize,
+{
+    type Guard = nebula_credential::CredentialGuard<C::Scheme>;
+
+    fn cell(&self) -> &SlotCell<Self::Guard> {
+        &self.cell
+    }
+
+    fn typed_guard(
+        guard: nebula_credential::ErasedCredentialGuard,
+    ) -> Result<Self::Guard, SlotInstallError> {
+        guard
+            .into_typed::<C::Scheme>()
+            .map_err(|_| SlotInstallError::CredentialTypeMismatch)
+    }
+}
 
 impl<S> Default for SlotCell<S> {
     fn default() -> Self {

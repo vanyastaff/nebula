@@ -4,7 +4,7 @@
 |-------|-------|
 | **Status** | `frontier` — Variant A trait shape shipped (M6 / §M11, 2026-04-29) |
 | **Layer** | Contract / authoring (Ports & Adapters) — author programs to traits, engine wires adapters |
-| **Redesign role** | **Затронут как downstream-потребитель, НЕ как площадка редизайна.** Прямой потребитель credential/resource: `#[credential]`/`#[resource]` слоты, `CredentialGuard<Scheme>`, `FromWorkflowNode` = consumer-сторона bind-population (M12.4). |
+| **Redesign role** | **Затронут как downstream-потребитель, НЕ как площадка редизайна.** Прямой потребитель credential/resource: `#[slot]` поля (`Component::dependencies()`), `CredentialGuard<Scheme>`, `FromWorkflowNode` = consumer-сторона bind-population (M12.4). |
 | **Related** | ADR-0081 (M6 binding cascade ⊇ ADR-0042/0043/0044/0045), ADR-0091 (in-process, WASM non-goal), ADR-0092 (credential consolidation), PRODUCT_CANON §3.5/§11.3/§13.4/§13.5 |
 
 ---
@@ -87,14 +87,14 @@ Dev: `nebula-credential-macros`, `nebula-expression`, `trybuild`, `insta`, `rste
 - `context.rs` — capability-трейты контекстов + runtime-реализации.
 - `error.rs` / `result.rs` / `output.rs` — типизированные ошибки, flow-control результат, выходные данные.
 - `metadata.rs` / `port.rs` / `idempotency.rs` / `capability.rs` / `validation.rs` / `testing.rs` / `macros.rs` / `prelude.rs` — метаданные, порты, дедуп-ключ, Noop/default capability, валидация пакета, тест-утилиты, assert-макросы.
-- `macros/` (крейт `nebula-action-macros`) — derive `Action`, `#[action_phantom]`, field_slots-парсер `#[resource]`/`#[credential]`.
+- `macros/` (крейт `nebula-action-macros`) — derive `Action`, `#[action_phantom]`, разбор `#[slot]` полей (общий с derive `Resource`, `nebula-macro-support::slot`).
 
 ## 5. Инварианты и контракты
 
 - **`Action` не object-safe by construction.** `dyn Action` не компилируется; engine-диспатч идёт
   через `Arc<dyn ActionFactory>` + `ActionHandle` над per-variant `Box<dyn XxxHandle>`. Это структурный инвариант, не дисциплина.
 - **Slots-only на `Self`, form-data на `Self::Input`** (canon §3.5). Action-структура держит только
-  slot-поля (`#[resource]`/`#[credential]`); пользовательские данные — на отдельной `Self::Input: HasSchema`.
+  slot-поля (`#[slot]`); пользовательские данные — на отдельной `Self::Input: HasSchema`.
   Устраняет `self.text` vs `input.text`-неоднозначность на этапе компиляции.
 - **Routing по трейту, не по `ActionKind`** (canon §3.5). `ActionKind` — метаданные node-таксономии
   для UI/валидатора/аудита; движок маршрутизирует по семейству трейта (структурно, по хендлу, который
@@ -147,7 +147,7 @@ Dev: `nebula-credential-macros`, `nebula-expression`, `trybuild`, `insta`, `rste
 `nebula-action` — **consumer-сторона** обоих редизайнов, не их площадка. Его контракт авторинга прямо опирается
 на типы из credential/resource, поэтому консолидация затрагивает его dep-пути и типы guard'ов.
 
-- **Credential-слоты.** `#[credential(key = "…")]`-поле держит `CredentialGuard<C::Scheme>` —
+- **Credential-слоты.** `#[slot]`-поле типа `CredentialSlot<C>` держит `CredentialGuard<C::Scheme>` —
   **спроецированную auth-схему**, не сам тип credential. Фреймворк проецирует state→scheme до заполнения слота.
   Re-export `CredentialGuard`/`CredentialRef` живёт в `lib.rs:132`. После ADR-0092 credential схлопывается в
   ОДИН крейт (contract+runtime+`CredentialService`+builtin); крейты `credential-runtime`/`builtin`/`testutil`/`vault`
@@ -168,8 +168,8 @@ Dev: `nebula-credential-macros`, `nebula-expression`, `trybuild`, `insta`, `rste
   override через `node.slot_bindings`). Values-only persistence: схема приходит из зарегистрированных типов
   (`HasSchema` → `nebula-metadata` → API catalog), не из inline-значений.
 - **Что меняется:** dep-пути (всё credential — из одного крейта за sole-public-`nebula-sdk`), потенциально
-  упрощение re-export-блока в `lib.rs`. **Что остаётся:** сама форма слотов (`#[credential]`/`#[resource]`,
-  `CredentialGuard<Scheme>`, `ResourceHandle<R>`), `FromWorkflowNode`-seam, webhook «секрет не через dyn»-инвариант,
+  упрощение re-export-блока в `lib.rs`. **Что остаётся:** сама форма слотов (`#[slot]`,
+  `CredentialSlot<C>`, `ResourceHandle<R>`), `FromWorkflowNode`-seam, webhook «секрет не через dyn»-инвариант,
   routing-по-трейту. Lease — first-class на стороне credential; action видит его опосредованно через guard, не как
   собственный примитив. [Phase-5 authoring](../../schema/docs/PHASE5_PROPERTY.md) — target design,
   implementation pending; текущие field-атрибуты слотов остаются implementation baseline.

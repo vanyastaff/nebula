@@ -1,10 +1,10 @@
 error[E0616]: field `db` of struct `DemoPinnedSlots` is private
-  --> tests/probes/derive_pinned_slots_are_private.rs:68:24
+  --> tests/probes/derive_pinned_slots_are_private.rs:60:24
    |
-68 |     let _kept = pinned.db;
+60 |     let _kept = pinned.db;
    |                        ^^ private field
    |
 help: a method `db` also exists, call it with parentheses
    |
-68 |     let _kept = pinned.db();
+60 |     let _kept = pinned.db();
    |                          ++

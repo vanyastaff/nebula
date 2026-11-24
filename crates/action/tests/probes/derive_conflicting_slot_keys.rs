@@ -1,9 +1,7 @@
-//! Compile-fail probe: two `#[credential(key = "...")]` slots with the same
-//! key on different fields are rejected at macro expansion.
+//! Compile-fail probe: two `#[slot]` fields with the same key are rejected
+//! at macro expansion, before any field type is checked.
 
-use nebula_action::{Action, CredentialGuard};
-
-struct FakeCred;
+use nebula_action::Action;
 
 #[derive(Action)]
 #[action(
@@ -12,10 +10,10 @@ struct FakeCred;
     output = serde_json::Value,
 )]
 struct ConflictingSlotKeys {
-    #[credential(key = "shared")]
-    cred_a: CredentialGuard<FakeCred>,
-    #[credential(key = "shared")]
-    cred_b: CredentialGuard<FakeCred>,
+    #[slot(key = "shared")]
+    cred_a: u32,
+    #[slot(key = "shared")]
+    cred_b: u32,
 }
 
 fn main() {}

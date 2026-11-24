@@ -3,7 +3,7 @@
 use std::{
     future::pending,
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
@@ -55,11 +55,6 @@ impl Component for PendingActivation {
 
 impl Action for PendingActivation {
     type Output = Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
-    }
 }
 
 impl PollAction for PendingActivation {
@@ -183,11 +178,6 @@ impl Component for FailingWebhook {
 
 impl Action for FailingWebhook {
     type Output = Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
-    }
 }
 
 impl WebhookAction for FailingWebhook {

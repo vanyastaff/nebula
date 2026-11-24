@@ -33,7 +33,7 @@ pub struct ResourceContributionBridge<R, FResource, FTopology> {
 
 impl<R, FResource, FTopology> ResourceContributionBridge<R, FResource, FTopology>
 where
-    R: nebula_resource::Provider + nebula_core::DeclaresDependencies,
+    R: nebula_resource::Provider,
     R::Config: serde::de::DeserializeOwned,
     R::Topology: nebula_resource::Topology<R>,
     FResource: Fn() -> R + Send + Sync + 'static,
@@ -64,7 +64,7 @@ impl<R, FResource>
         nebula_resource::factory::SettingsTopologyFactory<R::Topology>,
     >
 where
-    R: nebula_resource::Provider + nebula_core::DeclaresDependencies,
+    R: nebula_resource::Provider,
     R::Config: serde::de::DeserializeOwned,
     R::Topology: nebula_resource::topology::ConfigurableTopology<R>,
     FResource: Fn() -> R + Send + Sync + 'static,

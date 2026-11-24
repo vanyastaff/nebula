@@ -1,10 +1,10 @@
-use std::{any::TypeId, fmt, sync::OnceLock};
+use std::fmt;
 
 use nebula_action::{
     Action, ActionContext, ActionError, ActionFactory, ActionResult, InstanceFactory, Metadata,
     StatelessAction,
 };
-use nebula_core::{ArtifactSetDigest, Dependencies, OrgId, WorkspaceId, node_key};
+use nebula_core::{ArtifactSetDigest, OrgId, WorkspaceId, node_key};
 use nebula_plugin::{Plugin, PluginManifest, PluginRegistry, ResolvedPlugin};
 use nebula_resource::{Component, kind};
 use nebula_resource::{KindActivator, Provider, Resident, ResidentConfig, ResourceFactory};
@@ -170,11 +170,6 @@ impl Action for FixtureAction {
 
     const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
-    }
 }
 
 impl StatelessAction for FixtureAction {
@@ -201,6 +196,11 @@ impl Component for ResourceBoundAction {
             "resource-bound start fixture",
         )
     }
+    fn dependencies() -> nebula_action::Dependencies {
+        nebula_action::Dependencies::none().slot(nebula_action::Slot::of::<
+            nebula_resource::call::ResourceHandle<FixtureResource>,
+        >("client"))
+    }
 }
 
 impl Action for ResourceBoundAction {
@@ -208,24 +208,6 @@ impl Action for ResourceBoundAction {
 
     const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(|| {
-            Dependencies::new().slot_field(nebula_core::SlotField {
-                slot_key: "client",
-                default_id: "primary",
-                kind: nebula_core::SlotKind::Resource {
-                    type_id: TypeId::of::<FixtureResource>(),
-                    type_name: "FixtureResource",
-                    key: nebula_resource::key_of::<FixtureResource>(),
-                },
-                required: true,
-                lazy: false,
-                purpose: None,
-            })
-        })
-    }
 }
 
 impl StatelessAction for ResourceBoundAction {
@@ -239,8 +221,6 @@ impl StatelessAction for ResourceBoundAction {
 }
 
 struct FixtureResource;
-
-impl nebula_core::DeclaresDependencies for FixtureResource {}
 
 impl nebula_resource::HasCredentialSlots for FixtureResource {
     fn credential_slot_epoch(&self) -> u64 {

@@ -21,6 +21,7 @@ nebula-core = { path = "../core" }
 nebula-error = { workspace = true, features = ["derive"] }
 nebula-metadata = { path = "../metadata" }
 nebula-action = { path = "../action" }
+nebula-component = { path = "../component" }
 nebula-credential = { path = "../credential" }
 nebula-resource = { path = "../resource" }
 nebula-schema = { path = "../schema" }

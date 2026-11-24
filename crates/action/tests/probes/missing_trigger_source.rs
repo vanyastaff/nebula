@@ -2,13 +2,11 @@
 //!
 //! Expected error: E0046 "not all trait items implemented, missing: Source".
 
-use std::sync::OnceLock;
 
 use nebula_action::context::TriggerContext;
 use nebula_action::{
     Action, ActionError, Component, TriggerAction, TriggerEventOutcome, TriggerSource, kind,
 };
-use nebula_core::Dependencies;
 
 struct BadTrigger;
 
@@ -25,10 +23,6 @@ impl Component for BadTrigger {
 
 impl Action for BadTrigger {
     type Output = serde_json::Value;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl TriggerAction for BadTrigger {

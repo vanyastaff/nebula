@@ -34,7 +34,7 @@ use nebula_action::{
     ActionError, Component, Metadata, action::Action, kind, result::ActionResult,
     stateless::StatelessAction,
 };
-use nebula_core::{Dependencies, NodeKey, id::ExecutionId, node_key};
+use nebula_core::{NodeKey, id::ExecutionId, node_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, EngineError, ExecutionEvent, InProcessRunner,
     RuntimeError, WorkflowEngine,
@@ -102,11 +102,6 @@ impl Action for LeakyProviderAction {
 
     const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
-    }
 }
 
 impl StatelessAction for LeakyProviderAction {

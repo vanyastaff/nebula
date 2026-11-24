@@ -14,7 +14,7 @@ mod workflow_fixture;
 use std::{
     collections::HashMap,
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicU32, Ordering},
     },
     time::Duration,
@@ -24,7 +24,7 @@ use nebula_action::{
     ActionError, Component, Metadata, action::Action, kind, result::ActionResult,
     stateless::StatelessAction,
 };
-use nebula_core::{Dependencies, id::ExecutionId, node_key};
+use nebula_core::{id::ExecutionId, node_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, ControlConsumer, ControlDispatch, ControlDispatchError,
     DataPassingPolicy, EngineControlDispatch, InProcessRunner, WorkflowEngine,
@@ -138,10 +138,6 @@ impl Action for CountingEchoHandler {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl StatelessAction for CountingEchoHandler {
@@ -178,10 +174,6 @@ impl Action for SlowCancellableHandler {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl StatelessAction for SlowCancellableHandler {

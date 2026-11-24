@@ -140,10 +140,9 @@ pub trait TriggerAction: Action {
     /// such triggers using `type Error = ActionError`:
     ///
     /// ```rust
-    /// # use std::sync::OnceLock;
     /// use nebula_action::trigger::{TriggerAction, TriggerEventOutcome, TriggerSource};
     /// use nebula_action::{Action, ActionError, ActionDefinition, TriggerContext};
-    /// # use nebula_core::{Dependencies, action_key};
+    /// # use nebula_core::action_key;
     ///
     /// struct CronTrigger;
     /// # struct CronSource;
@@ -158,10 +157,6 @@ pub trait TriggerAction: Action {
     /// # }
     /// # impl Action for CronTrigger {
     /// #     type Output = serde_json::Value;
-    /// #     fn dependencies() -> &'static Dependencies {
-    /// #         static D: OnceLock<Dependencies> = OnceLock::new();
-    /// #         D.get_or_init(Dependencies::new)
-    /// #     }
     /// # }
     ///
     /// impl TriggerAction for CronTrigger {
@@ -502,10 +497,10 @@ pub trait TriggerHandler: crate::handle::sealed::Trigger + Send + Sync + 'static
 /// # Example
 ///
 /// ```rust
-/// # use std::sync::{Arc, OnceLock};
+/// # use std::sync::Arc;
 /// # use nebula_action::trigger::{TriggerAction, TriggerActionAdapter, TriggerEventOutcome, TriggerHandler, TriggerSource};
 /// # use nebula_action::{Action, ActionError, ActionDefinition, TriggerContext};
-/// # use nebula_core::{Dependencies, action_key};
+/// # use nebula_core::action_key;
 /// # struct CronTrigger;
 /// # struct CronSource;
 /// # impl TriggerSource for CronSource { type Event = serde_json::Value; }
@@ -519,10 +514,6 @@ pub trait TriggerHandler: crate::handle::sealed::Trigger + Send + Sync + 'static
 /// # }
 /// # impl Action for CronTrigger {
 /// #     type Output = serde_json::Value;
-/// #     fn dependencies() -> &'static Dependencies {
-/// #         static D: OnceLock<Dependencies> = OnceLock::new();
-/// #         D.get_or_init(Dependencies::new)
-/// #     }
 /// # }
 /// # impl TriggerAction for CronTrigger {
 /// #     type Source = CronSource;
@@ -693,11 +684,6 @@ mod tests {
 
     impl Action for MockTriggerAction {
         type Output = Value;
-        fn dependencies() -> &'static nebula_core::Dependencies {
-            use std::sync::OnceLock;
-            static D: OnceLock<nebula_core::Dependencies> = OnceLock::new();
-            D.get_or_init(nebula_core::Dependencies::new)
-        }
     }
 
     impl TriggerAction for MockTriggerAction {

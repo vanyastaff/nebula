@@ -146,9 +146,8 @@ impl<A: Action> fmt::Debug for StatelessActionAdapter<A> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, OnceLock};
+    use std::sync::Arc;
 
-    use nebula_core::Dependencies;
     use nebula_schema::{HasSchema, ValidSchema};
     use serde::{Deserialize, Serialize};
 
@@ -213,10 +212,6 @@ mod tests {
 
     impl Action for AddAction {
         type Output = AddOutput;
-        fn dependencies() -> &'static Dependencies {
-            static D: OnceLock<Dependencies> = OnceLock::new();
-            D.get_or_init(Dependencies::new)
-        }
     }
 
     impl StatelessAction for AddAction {

@@ -380,7 +380,7 @@ pub fn derive_classify_error(input: TokenStream) -> TokenStream;
 ## proc_macro nebula_resource_macros::Resource
 exported as nebula_sdk::integration::resource::Resource
 exported as nebula_sdk::prelude::Resource
-#[proc_macro_derive(Resource, attributes(credential, topology))]
+#[proc_macro_derive(Resource, attributes(resource, slot, credential, topology))]
 pub fn derive_resource(input: TokenStream) -> TokenStream;
 
 ## proc_macro nebula_resource_macros::ResourceConfig
@@ -557,6 +557,7 @@ impl<R: Provider + PinSlots> ResourceHandle<R> {
 }
 impl<R: Provider> Clone for ResourceHandle<R>
 impl<R: Provider> fmt::Debug for ResourceHandle<R>
+impl<R: Provider> nebula_component::SlotValue for ResourceHandle<R>
 
 ## struct nebula_resource::call::session::SessionCx
 exported as nebula_sdk::integration::resource::SessionCx
@@ -842,6 +843,22 @@ impl<E> RetainedStore<E> {
     pub fn lease(&self, id: RetainedId) -> Option<RetainedLease<'_, E>> where E: Clone;
 }
 impl<E> std::fmt::Debug for RetainedStore<E>
+
+## struct nebula_resource::slot::CredentialSlot
+exported as nebula_sdk::integration::resource::CredentialSlot
+pub struct CredentialSlot<C> where C: nebula_credential::Credential, C::Scheme: zeroize::Zeroize {
+    /* private fields */
+}
+impl<C> CredentialSlot<C> where C: nebula_credential::Credential, C::Scheme: zeroize::Zeroize {
+    pub fn empty() -> Self;
+    pub fn bound(guard: nebula_credential::CredentialGuard<C::Scheme>) -> Self;
+    pub fn current(&self) -> Option<Arc<nebula_credential::CredentialGuard<C::Scheme>>>;
+}
+impl<C> Default for CredentialSlot<C> where C: nebula_credential::Credential, C::Scheme: zeroize::Zeroize
+impl<C> ResourceSlot for CredentialSlot<C> where C: nebula_credential::Credential, C::Scheme: zeroize::Zeroize
+impl<C> nebula_component::SlotValue for CredentialSlot<C> where C: nebula_credential::Credential, C::Scheme: zeroize::Zeroize
+impl<C> std::fmt::Debug for CredentialSlot<C> where C: nebula_credential::Credential, C::Scheme: zeroize::Zeroize
+impl<C> std::ops::Deref for CredentialSlot<C> where C: nebula_credential::Credential, C::Scheme: zeroize::Zeroize
 
 ## struct nebula_resource::slot::SlotCell
 exported as nebula_sdk::integration::resource::SlotCell
@@ -1133,6 +1150,7 @@ pub trait Component: Sized + Send + Sync + 'static {
     type Config: HasSchema + DeserializeOwned + Send + Sync + 'static;
     const KEY: &'static str;
     fn metadata() -> Metadata;
+    fn dependencies() -> Dependencies { .. }
 }
 
 ## trait nebula_resource::call::Operation
@@ -1288,7 +1306,3 @@ pub trait Method: sealed::Sealed + Send + 'static {
 ## type nebula_resource::call::session::SessionFuture
 exported as nebula_sdk::integration::resource::SessionFuture
 pub type SessionFuture<'s, T> = Pin<Box<dyn Future<Output = Result<T, OperationError>> + Send + 's>>;
-
-## type nebula_resource::slot::CredentialSlot
-exported as nebula_sdk::integration::resource::CredentialSlot
-pub type CredentialSlot<C> = SlotCell<nebula_credential::CredentialGuard<<C as nebula_credential::Credential>::Scheme>>;

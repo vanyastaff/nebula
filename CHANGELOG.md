@@ -11,6 +11,36 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **A component declares its slots on `Component`.** `Component::dependencies()`
+  (default: none) lists what an action or a resource needs, as `Slot`s whose
+  field type says what they point at. `nebula_core::{Dependencies,
+  DeclaresDependencies, SlotField, SlotKind, ResourceRequirement,
+  CredentialRequirement}` and the `dependencies()` methods on `Action`,
+  `ActionFactory` and `ResourceFactory` are removed; admission validates the
+  list into `ActionDefinition::dependencies()` and
+  `ResourceDefinition::dependencies()`, which the plan compiler, the engine and
+  registration read instead.
+
+  | Before | After |
+  |---|---|
+  | `impl DeclaresDependencies for R { fn dependencies() -> Dependencies { Dependencies::new().slot_field(SlotField { .. }) } }` | `fn dependencies() -> Dependencies { Dependencies::none().slot(Slot::of::<CredentialSlot<C>>("auth")) }` in `impl Component for R` |
+  | `fn dependencies() -> &'static Dependencies` on `Action` | `Component::dependencies() -> Dependencies` |
+  | `#[resource] db: ResourceHandle<Db>`, `#[credential(key = "auth")] token: CredentialGuard<S>` on a `#[derive(Action)]` field | `#[slot] db: ResourceHandle<Db>`, `#[slot(key = "auth")] token: CredentialSlot<C>` (the old attributes are refused with a hint) |
+  | `#[derive(Resource)]` plus a hand-written `impl Component` | `#[derive(Resource)] #[resource(key = "..", config = C)]`, which writes the `Component` impl (`name`, `description` and `version` are optional, as on `#[action(..)]`) |
+  | `#[credential(key = "auth")] auth: SlotCell<CredentialGuard<S>>` on a `#[derive(Resource)]` field | `#[slot(key = "auth")] auth: CredentialSlot<C>` |
+  | `dependencies.slot_fields()`, `slot.slot_key`, `slot.required` | `dependencies.slots()`, `slot.key()`, `slot.is_required()`; `slot.target()` is a `SlotTarget::{Resource, Credential}` |
+
+  The derives never parse a slot field's type: they write
+  `Slot::of::<FieldType>(key)`, and the `SlotValue` trait (implemented for
+  `ResourceHandle<R>`, `CredentialSlot<C>` and `Option` of either) refuses
+  anything else at the field. The slot key defaults to the field name and must
+  be 1 to 64 of `[a-z0-9_]`, starting with a letter. An action's credential
+  slot is now a `CredentialSlot<C>`, the same type a resource holds: the old
+  `CredentialGuard<C>` field could not compile against a resolver returning
+  `CredentialGuard<C::Scheme>`. A resource refuses resource slots at admission
+  until resource-to-resource dependencies land. The recorded plan format is
+  unchanged.
+
 - **An action is a `Component`.** `Action` now has
   `Component<Kind = kind::Action>` as its supertrait, like `Credential` and the
   resource `Provider`. The key, the form data type and the catalog metadata

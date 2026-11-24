@@ -130,10 +130,9 @@ pub struct PaginationState<C> {
 /// # Example
 ///
 /// ```rust
-/// use std::sync::OnceLock;
 /// use nebula_action::{Action, ActionContext, ActionError, ActionDefinition, StatefulAction, Component, kind};
 /// use nebula_action::stateful::{PageResult, PaginatedAction};
-/// use nebula_core::{Dependencies, action_key};
+/// use nebula_core::action_key;
 /// use serde_json::Value;
 ///
 /// struct ListItems;
@@ -152,10 +151,6 @@ pub struct PaginationState<C> {
 ///
 /// impl Action for ListItems {
 ///     type Output = Value;
-///     fn dependencies() -> &'static Dependencies {
-///         static D: OnceLock<Dependencies> = OnceLock::new();
-///         D.get_or_init(Dependencies::new)
-///     }
 /// }
 ///
 /// impl PaginatedAction for ListItems {
@@ -219,10 +214,9 @@ pub trait PaginatedAction: Action {
 /// # Example
 ///
 /// ```rust
-/// use std::sync::OnceLock;
 /// use nebula_action::{Action, ActionContext, ActionError, ActionDefinition, StatefulAction, Component, kind};
 /// use nebula_action::stateful::{PageResult, PaginatedAction};
-/// use nebula_core::{Dependencies, action_key};
+/// use nebula_core::action_key;
 /// use serde_json::Value;
 ///
 /// struct MyAction;
@@ -240,10 +234,6 @@ pub trait PaginatedAction: Action {
 ///
 /// impl Action for MyAction {
 ///     type Output = Value;
-///     fn dependencies() -> &'static Dependencies {
-///         static D: OnceLock<Dependencies> = OnceLock::new();
-///         D.get_or_init(Dependencies::new)
-///     }
 /// }
 ///
 /// impl PaginatedAction for MyAction {

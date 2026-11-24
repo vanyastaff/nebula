@@ -48,7 +48,7 @@
 use std::{sync::Arc, time::Duration};
 
 use dashmap::DashMap;
-use nebula_core::{CredentialId, ResourceId, ResourceKey, ScopeLevel, SlotKind, WorkspaceId};
+use nebula_core::{CredentialId, ResourceId, ResourceKey, ScopeLevel, WorkspaceId};
 use nebula_credential::{
     Capabilities, CredentialAvailability, CredentialAvailabilityObserver, CredentialBlock,
     CredentialObserveError, CredentialSlotResolveError, CredentialSlotResolver, TenantScope,
@@ -875,14 +875,18 @@ async fn register_row(
             kind: row.kind.clone(),
         }
     })?;
-    let declared: Vec<_> = factory
-        .dependencies()
-        .slot_fields()
-        .iter()
-        .filter_map(|field| match &field.kind {
-            SlotKind::Credential { key, .. } => Some((field.slot_key, key.clone(), field.required)),
-            SlotKind::Resource { .. } => None,
+    let definition = factory.definition().map_err(|error| {
+        StoredResourceActivationError::Register(RegistrarError::Register {
+            kind: row.kind.clone(),
+            source: nebula_resource::Error::permanent(format!(
+                "resource definition is not admitted: {error}"
+            )),
         })
+    })?;
+    let declared: Vec<_> = definition
+        .dependencies()
+        .credential_slots()
+        .map(|(slot, target)| (slot.key(), target.key().clone(), slot.is_required()))
         .collect();
     if let Some(slot) = row
         .credential_bindings

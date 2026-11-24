@@ -1,15 +1,10 @@
-use std::{
-    cell::RefCell,
-    sync::{Arc, OnceLock},
-};
+use std::{cell::RefCell, sync::Arc};
 
 use nebula_action::{
     Action, ActionContext, ActionError, ActionFactory, ActionResult, Component, InstanceFactory,
     Metadata, OutputPort, StatelessAction, kind,
 };
-use nebula_core::{
-    ActionKey, ArtifactSetDigest, Dependencies, WorkflowId, WorkflowVersionId, node_key,
-};
+use nebula_core::{ActionKey, ArtifactSetDigest, WorkflowId, WorkflowVersionId, node_key};
 use nebula_metadata::PluginManifest;
 use nebula_plugin::{
     ExecutablePlanRevision, PlanRegistryCompatibilityError, Plugin, PluginRegistry,
@@ -172,11 +167,6 @@ impl<const INDEX: usize, const READ_ONLY: bool> Action
                 .clone()
                 .unwrap_or_else(nebula_action::port::default_output_ports)
         })
-    }
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
     }
 }
 
@@ -692,11 +682,6 @@ impl Component for EchoAgent {
 
 impl Action for EchoAgent {
     type Output = Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
-    }
 }
 
 impl nebula_action::AgentAction for EchoAgent {

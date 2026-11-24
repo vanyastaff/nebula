@@ -1,5 +1,64 @@
-error: field with `#[credential]` must have type `SlotCell<CredentialGuard<C>>` or `CredentialSlot<C>` — got: Option < SlotCell < CredentialGuard < FakeCred > > >
-  --> tests/probes/derive_slot_option_wrapped.rs:16:9
+error[E0277]: a resource cannot hold `Option<CredentialSlot<FakeCred>>` in a slot
+  --> tests/probes/derive_slot_option_wrapped.rs:11:10
    |
-16 |     db: Option<SlotCell<CredentialGuard<FakeCred>>>,
-   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+11 | #[derive(Resource)]
+   |          ^^^^^^^^ not a resource slot value
+   |
+   = help: the trait `nebula_resource::ResourceSlot` is not implemented for `Option<CredentialSlot<FakeCred>>`
+   = note: a resource slot holds `CredentialSlot<C>`
+help: the trait `nebula_resource::ResourceSlot` is implemented for `CredentialSlot<C>`
+  --> src/slot.rs
+   |
+   | / impl<C> ResourceSlot for CredentialSlot<C>
+   | | where
+   | |     C: nebula_credential::Credential,
+   | |     C::Scheme: zeroize::Zeroize,
+   | |________________________________^
+   = note: this error originates in the derive macro `Resource` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: a resource cannot hold `Option<CredentialSlot<FakeCred>>` in a slot
+  --> tests/probes/derive_slot_option_wrapped.rs:11:10
+   |
+11 | #[derive(Resource)]
+   |          ^^^^^^^^ not a resource slot value
+   |
+   = help: within `DemoPinnedSlots`, the trait `nebula_resource::ResourceSlot` is not implemented for `Option<CredentialSlot<FakeCred>>`
+   = note: a resource slot holds `CredentialSlot<C>`
+help: the trait `nebula_resource::ResourceSlot` is implemented for `CredentialSlot<C>`
+  --> src/slot.rs
+   |
+   | / impl<C> ResourceSlot for CredentialSlot<C>
+   | | where
+   | |     C: nebula_credential::Credential,
+   | |     C::Scheme: zeroize::Zeroize,
+   | |________________________________^
+note: required because it appears within the type `DemoPinnedSlots`
+  --> tests/probes/derive_slot_option_wrapped.rs:11:10
+   |
+11 | #[derive(Resource)]
+   |          ^^^^^^^^
+note: required by a bound in `nebula_resource::PinSlots::Pinned`
+  --> src/call/pin.rs
+   |
+   | pub trait PinSlots: HasCredentialSlots {
+...
+   |     type Pinned: Send + Sync + 'static;
+   |                         ^^^^ required by this bound in `PinSlots::Pinned`
+   = note: this error originates in the derive macro `Resource` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: a resource cannot hold `Option<CredentialSlot<FakeCred>>` in a slot
+  --> tests/probes/derive_slot_option_wrapped.rs:15:9
+   |
+15 |     db: Option<CredentialSlot<FakeCred>>,
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not a resource slot value
+   |
+   = help: the trait `nebula_resource::ResourceSlot` is not implemented for `Option<CredentialSlot<FakeCred>>`
+   = note: a resource slot holds `CredentialSlot<C>`
+help: the trait `nebula_resource::ResourceSlot` is implemented for `CredentialSlot<C>`
+  --> src/slot.rs
+   |
+   | / impl<C> ResourceSlot for CredentialSlot<C>
+   | | where
+   | |     C: nebula_credential::Credential,
+   | |     C::Scheme: zeroize::Zeroize,
+   | |________________________________^

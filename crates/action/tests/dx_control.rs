@@ -15,14 +15,13 @@
 //! the goal of this test is to validate the trait/adapter infrastructure,
 //! not to ship batteries-included nodes.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use nebula_action::{
     Action, ActionError, ActionInput, ActionKind, ActionOutput, ActionResult, ActionRuntimeContext,
     BranchKey, Component, ControlAction, ControlActionAdapter, ControlHandle, ControlOutcome,
     OutputPort, TerminationReason, ValidationReason, kind, port_key, testing::TestContextBuilder,
 };
-use nebula_core::Dependencies;
 use nebula_schema::{HasSchema, PropertyCollector, Schema, StringBuilder, ValidSchema, field_key};
 
 // ── Test helpers ───────────────────────────────────────────────────────────
@@ -124,11 +123,6 @@ impl Action for DemoIf {
             OutputPort::flow(port_key!("true")),
             OutputPort::flow(port_key!("false")),
         ]
-    }
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -242,11 +236,6 @@ impl Action for DemoSwitch {
             OutputPort::flow(port_key!("default")),
         ]
     }
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl ControlAction for DemoSwitch {
@@ -345,11 +334,6 @@ impl Action for DemoRouter {
             OutputPort::flow(port_key!("low")),
         ]
     }
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl ControlAction for DemoRouter {
@@ -445,11 +429,6 @@ impl Action for NeverMatchRouter {
     fn outputs() -> Vec<OutputPort> {
         vec![OutputPort::flow(port_key!("out"))]
     }
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl ControlAction for NeverMatchRouter {
@@ -498,11 +477,6 @@ impl Action for DemoFilter {
 
     fn outputs() -> Vec<OutputPort> {
         vec![OutputPort::flow(port_key!("out"))]
-    }
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -578,11 +552,6 @@ impl Component for DemoNoOp {
 
 impl Action for DemoNoOp {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl ControlAction for DemoNoOp {
@@ -651,11 +620,6 @@ impl Action for DemoStop {
 
     fn outputs() -> Vec<OutputPort> {
         Vec::new()
-    }
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -736,11 +700,6 @@ impl Action for DemoFail {
 
     fn outputs() -> Vec<OutputPort> {
         Vec::new()
-    }
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -970,11 +929,6 @@ impl Action for DemoTypedBranch {
             OutputPort::flow(port_key!("true")),
             OutputPort::flow(port_key!("false")),
         ]
-    }
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
     }
 }
 

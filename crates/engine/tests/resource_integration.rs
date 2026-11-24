@@ -10,7 +10,7 @@
 use std::{
     collections::HashMap,
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -19,8 +19,8 @@ use nebula_action::{
     ActionError, Component, Metadata, action::Action, kind, result::ActionResult,
     stateless::StatelessAction,
 };
-use nebula_core::{Dependencies, id::WorkflowId, node_key};
 use nebula_core::{OrgId, ResourceKey, ScopeLevel, WorkspaceId};
+use nebula_core::{id::WorkflowId, node_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, WorkflowEngine,
 };
@@ -66,10 +66,6 @@ impl Action for ResourceConsumerHandler {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl StatelessAction for ResourceConsumerHandler {
@@ -102,7 +98,7 @@ impl StatelessAction for ResourceConsumerHandler {
     read_only
 )]
 struct ResourceProbeHandler {
-    #[resource]
+    #[slot]
     probe: nebula_resource::call::ResourceHandle<IntegrationProbeResource>,
 }
 
@@ -359,11 +355,6 @@ impl Action for IntegrationAcquireHandler {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 nebula_action::stateless_entry!(
@@ -1505,7 +1496,7 @@ mod resource_handle {
                                                     read_only
                                                 )]
             struct $ty {
-                #[resource]
+                #[slot]
                 $field: ResourceHandle<$provider>,
             }
         };
@@ -1521,7 +1512,7 @@ mod resource_handle {
         output = serde_json::Value
     )]
     struct JournaledRow {
-        #[resource]
+        #[slot]
         svc: ResourceHandle<Svc>,
     }
 
@@ -1640,7 +1631,7 @@ mod resource_handle {
         output = serde_json::Value
     )]
     struct JournaledAgent {
-        #[resource]
+        #[slot]
         svc: ResourceHandle<Svc>,
     }
 
@@ -1719,7 +1710,7 @@ mod resource_handle {
         read_only
     )]
     struct ReadOnlyWrite {
-        #[resource]
+        #[slot]
         svc: ResourceHandle<Svc>,
     }
 

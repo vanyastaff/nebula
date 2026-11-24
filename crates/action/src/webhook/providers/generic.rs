@@ -6,11 +6,10 @@
 //! SharePoint-style validation). On `POST`, emits the body as a JSON
 //! event into the workflow engine.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use bytes::Bytes;
 use http::{HeaderName, Method, StatusCode};
-use nebula_core::Dependencies;
 use nebula_error::decode::value_free_decode_summary;
 use subtle::ConstantTimeEq;
 use tracing::debug;
@@ -116,11 +115,6 @@ impl crate::Component for GenericWebhookAction {
 
 impl Action for GenericWebhookAction {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl WebhookAction for GenericWebhookAction {

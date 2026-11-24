@@ -2,7 +2,7 @@
 
 use std::sync::atomic::AtomicBool;
 
-use nebula_core::{DeclaresDependencies, ResourceId, WorkspaceId};
+use nebula_core::{ResourceId, WorkspaceId};
 use nebula_engine::resource::{
     ActivationContext, KindActivator, ResourceActivatorRegistry, StoredResourceActivator,
 };
@@ -23,12 +23,6 @@ use super::*;
 struct RetiredResource(Arc<Notify>);
 
 nebula_resource::no_credential_slots!(RetiredResource);
-
-impl DeclaresDependencies for RetiredResource {
-    fn dependencies() -> Dependencies {
-        Dependencies::new()
-    }
-}
 
 impl Component for RetiredResource {
     type Kind = kind::Resource;

@@ -280,23 +280,6 @@ mod tests {
     }
 
     #[test]
-    fn registry_invariant_from_dependency_error_maps_correctly() {
-        use crate::dependencies::DependencyError;
-        use nebula_error::Classify;
-
-        let dep_err = DependencyError::RegistryInvariant("duplicate registration");
-        let core_err = CoreError::from(dep_err);
-
-        assert!(
-            matches!(core_err, CoreError::RegistryInvariant(_)),
-            "RegistryInvariant DependencyError must map to CoreError::RegistryInvariant"
-        );
-        assert_eq!(core_err.code().as_str(), "CORE:REGISTRY_INVARIANT");
-        assert_eq!(core_err.category(), nebula_error::ErrorCategory::Internal);
-        assert!(!core_err.is_retryable());
-    }
-
-    #[test]
     fn resource_not_found_is_a_not_found_that_never_retries() {
         use nebula_error::Classify;
 

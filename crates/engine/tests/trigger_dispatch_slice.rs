@@ -33,7 +33,7 @@ use nebula_action::{
     ActionError, ExecutionEmitter, IdempotencyKey, action::Action, result::ActionResult,
     stateless::StatelessAction,
 };
-use nebula_core::{Dependencies, PluginKey, id::ExecutionId, node_key};
+use nebula_core::{PluginKey, id::ExecutionId, node_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, ResourceFanoutCoordinator,
     ResourceFanoutFailureKind, WorkflowEngine, WorkflowTriggerConsumerCodec, WorkflowTriggerTarget,
@@ -182,11 +182,6 @@ impl Action for SliceTrigger {
 
     const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
-    }
 }
 
 impl nebula_action::FromWorkflowNode for SliceTrigger {
@@ -247,11 +242,6 @@ impl Action for EchoHandler {
 
     const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl StatelessAction for EchoHandler {

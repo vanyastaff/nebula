@@ -23,12 +23,11 @@
 //! wraps and bridges to the dyn-compat handler contract. Registration:
 //!
 //! ```rust
-//! # use std::sync::OnceLock;
 //! # use nebula_action::{
 //! #     Action, ActionContext, ActionError, ActionKind, ActionDefinition,
 //! #     Component, ControlAction, ControlOutcome, branch_key, kind,
 //! # };
-//! # use nebula_core::{Dependencies, action_key};
+//! # use nebula_core::action_key;
 //! use std::sync::Arc;
 //! use nebula_action::{ControlActionAdapter, ControlHandle};
 //! # struct MyIf;
@@ -43,10 +42,6 @@
 //! # }
 //! # impl Action for MyIf {
 //! #     type Output = bool;
-//! #     fn dependencies() -> &'static Dependencies {
-//! #         static D: OnceLock<Dependencies> = OnceLock::new();
-//! #         D.get_or_init(Dependencies::new)
-//! #     }
 //! # }
 //! # impl ControlAction for MyIf {
 //! #     async fn evaluate(
@@ -68,7 +63,6 @@
 //! # Example: writing an `If` node
 //!
 //! ```rust
-//! use std::sync::OnceLock;
 //! use nebula_action::{
 //!     Action, ActionContext, ActionError, ActionInput, ActionResult,
 //!     ControlAction, ControlActionAdapter, ControlOutcome,
@@ -77,7 +71,7 @@
 //!     port::OutputPort,
 //! };
 //! use nebula_action::testing::TestContextBuilder;
-//! use nebula_core::{Dependencies, action_key};
+//! use nebula_core::action_key;
 //!
 //! pub struct MyIf;
 //!
@@ -102,11 +96,6 @@
 //!             OutputPort::flow(port_key!("true")),
 //!             OutputPort::flow(port_key!("false")),
 //!         ]
-//!     }
-//!
-//!     fn dependencies() -> &'static Dependencies {
-//!         static D: OnceLock<Dependencies> = OnceLock::new();
-//!         D.get_or_init(Dependencies::new)
 //!     }
 //! }
 //!
@@ -309,12 +298,11 @@ pub trait ControlAction: Action {
     /// these forms is fine:
     ///
     /// ```rust
-    /// # use std::sync::OnceLock;
     /// # use nebula_action::{
     /// #     Action, ActionContext, ActionError, ActionDefinition,
     /// #     ControlAction, ControlOutcome,
     /// # };
-    /// # use nebula_core::{Dependencies, action_key};
+    /// # use nebula_core::action_key;
     /// struct SugarPass;
     /// # impl nebula_action::Component for SugarPass {
     /// #     type Kind = nebula_action::kind::Action;
@@ -326,10 +314,6 @@ pub trait ControlAction: Action {
     /// # }
     /// # impl Action for SugarPass {
     /// #     type Output = bool;
-    /// #     fn dependencies() -> &'static Dependencies {
-    /// #         static D: OnceLock<Dependencies> = OnceLock::new();
-    /// #         D.get_or_init(Dependencies::new)
-    /// #     }
     /// # }
     /// impl ControlAction for SugarPass {
     ///     // Sugar form — `async fn` in trait impls is stable and
@@ -356,12 +340,11 @@ pub trait ControlAction: Action {
     ///
     /// ```rust
     /// # use std::future::Future;
-    /// # use std::sync::OnceLock;
     /// # use nebula_action::{
     /// #     Action, ActionContext, ActionError, ActionDefinition,
     /// #     ControlAction, ControlOutcome,
     /// # };
-    /// # use nebula_core::{Dependencies, action_key};
+    /// # use nebula_core::action_key;
     /// struct ExplicitPass;
     /// # impl nebula_action::Component for ExplicitPass {
     /// #     type Kind = nebula_action::kind::Action;
@@ -373,10 +356,6 @@ pub trait ControlAction: Action {
     /// # }
     /// # impl Action for ExplicitPass {
     /// #     type Output = bool;
-    /// #     fn dependencies() -> &'static Dependencies {
-    /// #         static D: OnceLock<Dependencies> = OnceLock::new();
-    /// #         D.get_or_init(Dependencies::new)
-    /// #     }
     /// # }
     /// impl ControlAction for ExplicitPass {
     ///     // Explicit form — use this if you want to spell out bounds
@@ -426,12 +405,11 @@ pub trait ControlAction: Action {
 /// # Example
 ///
 /// ```rust
-/// # use std::sync::OnceLock;
 /// # use nebula_action::{
 /// #     Action, ActionContext, ActionError, ActionKind, ActionDefinition,
 /// #     ControlAction, ControlOutcome,
 /// # };
-/// # use nebula_core::{Dependencies, action_key};
+/// # use nebula_core::action_key;
 /// use std::sync::Arc;
 /// use nebula_action::{ControlActionAdapter, ControlHandle};
 /// # struct MyIf;
@@ -446,10 +424,6 @@ pub trait ControlAction: Action {
 /// # }
 /// # impl Action for MyIf {
 /// #     type Output = bool;
-/// #     fn dependencies() -> &'static Dependencies {
-/// #         static D: OnceLock<Dependencies> = OnceLock::new();
-/// #         D.get_or_init(Dependencies::new)
-/// #     }
 /// # }
 /// # impl ControlAction for MyIf {
 /// #     async fn evaluate(

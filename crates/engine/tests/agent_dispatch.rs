@@ -10,7 +10,7 @@
 
 use std::{
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicU32, Ordering},
     },
     time::Duration,
@@ -24,7 +24,6 @@ use nebula_action::{
     result::{ActionResult, BreakReason, WaitCondition},
     testing::TestContextBuilder,
 };
-use nebula_core::Dependencies;
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, RuntimeError,
 };
@@ -77,11 +76,6 @@ impl Action for TwoTurnAgent {
 
     const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl nebula_action::from_workflow_node::FromWorkflowNode for TwoTurnAgent {
@@ -169,11 +163,6 @@ impl Action for StubbornContinueAgent {
 
     const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl nebula_action::from_workflow_node::FromWorkflowNode for StubbornContinueAgent {
@@ -252,11 +241,6 @@ impl Action for LoopForeverAgent {
 
     const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl nebula_action::from_workflow_node::FromWorkflowNode for LoopForeverAgent {
@@ -328,11 +312,6 @@ impl Action for SlowTurnAgent {
 
     const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl nebula_action::from_workflow_node::FromWorkflowNode for SlowTurnAgent {
@@ -393,11 +372,6 @@ impl Action for FastTurnAgent {
 
     const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl nebula_action::from_workflow_node::FromWorkflowNode for FastTurnAgent {
@@ -463,11 +437,6 @@ impl Action for WaitReturningAgent {
 
     const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl nebula_action::from_workflow_node::FromWorkflowNode for WaitReturningAgent {

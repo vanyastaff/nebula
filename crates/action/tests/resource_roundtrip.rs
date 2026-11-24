@@ -6,7 +6,7 @@
 //! downcast back by `ResourceActionAdapter::cleanup`.
 
 use std::sync::{
-    Arc, OnceLock,
+    Arc,
     atomic::{AtomicBool, Ordering},
 };
 
@@ -14,7 +14,6 @@ use nebula_action::{
     Action, ActionError, ActionRuntimeContext, Component, ResourceAction, ResourceActionAdapter,
     ResourceHandler, ResourceProduces, TestContextBuilder, kind,
 };
-use nebula_core::Dependencies;
 
 /// Handle to a fictitious pool. Non-trivial enough to expose any
 /// downcast mismatch as a test failure rather than a spurious pass.
@@ -49,11 +48,6 @@ impl Component for PoolAction {
 impl Action for PoolAction {
     // ResourceAction requires Output = ResourceProduces<Self::Resource>.
     type Output = ResourceProduces<PoolHandle>;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl ResourceAction for PoolAction {

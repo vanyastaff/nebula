@@ -28,7 +28,7 @@
 //! ## Coexistence with `#[derive(Action)]`
 //!
 //! `#[action_phantom]` is the rewrite gate; `#[derive(Action)]` is the
-//! `DeclaresDependencies` + `Action` impl emitter. Authors who use
+//! `Component` + `Action` impl emitter. Authors who use
 //! capability-bound dyn fields apply both - attribute first, derive
 //! second.
 

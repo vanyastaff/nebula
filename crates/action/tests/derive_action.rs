@@ -4,7 +4,7 @@
 //! plus a `FromWorkflowNode` factory body that resolves slot fields.
 
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionFactory, ActionResult, MetadataVersion,
+    Action, ActionContext, ActionError, ActionFactory, ActionResult, Component, MetadataVersion,
     StatelessAction, effect::ActionEffectContract,
 };
 use nebula_schema::HasSchema;
@@ -32,13 +32,8 @@ impl StatelessAction for NoCredAction {
 }
 
 #[test]
-fn no_credentials_returns_empty_slot_fields() {
-    assert!(NoCredAction::dependencies().slot_fields().is_empty());
-}
-
-#[test]
-fn no_resources_in_dependencies() {
-    assert!(NoCredAction::dependencies().resources().is_empty());
+fn a_struct_without_slot_fields_declares_no_slots() {
+    assert!(NoCredAction::dependencies().is_empty());
 }
 
 #[test]
@@ -93,7 +88,7 @@ fn input_schema_derives_from_input_via_schema_of() {
     // P3: there is no `Action::input_schema()` method. The action's
     // input schema is reached through the `Input: HasSchema` associated-type
     // bound via `nebula_schema::schema_of` — the single source of truth.
-    let schema = nebula_schema::schema_of::<<NoCredAction as nebula_action::Component>::Config>()
+    let schema = nebula_schema::schema_of::<<NoCredAction as Component>::Config>()
         .expect("valid test catalog definition");
     let direct = <serde_json::Value as HasSchema>::schema().expect("valid test catalog definition");
     assert_eq!(schema, direct);
@@ -281,9 +276,9 @@ mod resource_handle_fields {
         read_only
     )]
     struct RowAction {
-        #[resource]
+        #[slot]
         db: ResourceHandle<Db>,
-        #[resource(key = "cache")]
+        #[slot(key = "cache", purpose = "Read-through cache")]
         cache: Option<ResourceHandle<Cache>>,
     }
 
@@ -425,20 +420,19 @@ mod resource_handle_fields {
     #[test]
     fn row_fields_declare_their_resources() {
         let deps = RowAction::dependencies();
-        let slots = deps.slot_fields();
-        assert_eq!(slots.len(), 2);
-        let db = slots.iter().find(|s| s.slot_key == "db").expect("db slot");
-        assert!(db.required && !db.lazy);
+        let keys: Vec<_> = deps.slots().iter().map(nebula_action::Slot::key).collect();
+        assert_eq!(keys, ["db", "cache"], "slots keep field order");
+        let db = deps.get("db").expect("db slot");
+        assert!(db.is_required());
         assert!(matches!(
-            &db.kind,
-            nebula_core::SlotKind::Resource { key, type_id, .. }
-                if *key == nebula_resource::key_of::<Db>() && *type_id == std::any::TypeId::of::<Db>()
+            db.target(),
+            nebula_component::SlotTarget::Resource(target)
+                if target.key() == &nebula_resource::key_of::<Db>()
+                    && target.type_id() == std::any::TypeId::of::<Db>()
         ));
-        let cache = slots
-            .iter()
-            .find(|s| s.slot_key == "cache")
-            .expect("cache slot");
-        assert!(!cache.required && !cache.lazy);
+        let cache = deps.get("cache").expect("cache slot");
+        assert!(!cache.is_required());
+        assert_eq!(cache.purpose(), Some("Read-through cache"));
     }
 
     #[tokio::test]

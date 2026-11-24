@@ -181,24 +181,12 @@ impl Provider for ManualProvider {
 }
 
 #[derive(Default, Clone, Resource)]
+#[resource(key = "example.catalog-provider", config = ())]
 #[topology(Pooled)]
 struct CatalogProvider;
 
 impl PoolProvider for CatalogProvider {}
 
-impl Component for CatalogProvider {
-    type Kind = kind::Resource;
-    type Config = ();
-
-    const KEY: &'static str = "example.catalog-provider";
-
-    fn metadata() -> nebula_sdk::integration::resource::Metadata {
-        nebula_sdk::integration::resource::Metadata::new(
-            nebula_sdk::prelude::metadata_name!("CatalogProvider"),
-            "",
-        )
-    }
-}
 
 #[async_trait::async_trait]
 impl Provider for CatalogProvider {

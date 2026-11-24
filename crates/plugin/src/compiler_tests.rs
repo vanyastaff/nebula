@@ -1,16 +1,11 @@
-use std::{
-    cell::RefCell,
-    sync::{Arc, OnceLock},
-};
+use std::{cell::RefCell, sync::Arc};
 
 use nebula_action::{
     Action, ActionContext, ActionError, ActionFactory, ActionKind, ActionResult, Component,
     FromWorkflowNode, GenericTriggerFactory, InstanceFactory, Metadata, StatelessAction,
     TriggerAction, TriggerContext, TriggerEventOutcome, TriggerSource, kind,
 };
-use nebula_core::{
-    ArtifactSetDigest, Dependencies, PluginKey, WorkflowId, WorkflowVersionId, node_key,
-};
+use nebula_core::{ArtifactSetDigest, PluginKey, WorkflowId, WorkflowVersionId, node_key};
 use nebula_metadata::PluginManifest;
 use nebula_schema::{
     ObjectField, Property, Schema, SecretField, ValidSchema, ValuePath, field_key,
@@ -151,10 +146,6 @@ impl<const INDEX: usize> Action for ContractAction<INDEX> {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        empty_dependencies()
-    }
 }
 
 impl<const INDEX: usize> StatelessAction for ContractAction<INDEX> {
@@ -201,10 +192,6 @@ impl Action for ContractTrigger {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        empty_dependencies()
-    }
 }
 
 impl FromWorkflowNode for ContractTrigger {
@@ -245,11 +232,6 @@ impl TriggerAction for ContractTrigger {
             "compiler contract trigger does not accept external events",
         ))
     }
-}
-
-fn empty_dependencies() -> &'static Dependencies {
-    static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-    DEPENDENCIES.get_or_init(Dependencies::new)
 }
 
 struct TestPlugin {

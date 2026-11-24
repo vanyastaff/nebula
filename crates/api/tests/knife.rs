@@ -431,10 +431,6 @@ impl nebula_action::action::Component for KnifeEcho {
 
 impl nebula_action::action::Action for KnifeEcho {
     type Output = serde_json::Value;
-    fn dependencies() -> &'static nebula_core::Dependencies {
-        static D: std::sync::OnceLock<nebula_core::Dependencies> = std::sync::OnceLock::new();
-        D.get_or_init(nebula_core::Dependencies::new)
-    }
 }
 impl nebula_action::stateless::StatelessAction for KnifeEcho {
     async fn execute(

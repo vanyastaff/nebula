@@ -4,32 +4,22 @@
 
 use nebula_sdk::integration::credential::BearerTokenCredential;
 use nebula_sdk::integration::resource::{
-    Component, CredentialSlot, Effect, Error, Metadata, Operation, OperationError, Provider,
-    Resident, ResidentProvider, Resource, ResourceContext, ResourceHandle,
+    CredentialSlot, Effect, Error, Operation, OperationError, Provider, Resident,
+    ResidentProvider, Resource, ResourceContext, ResourceHandle,
     http::{
         AsWrite, Authorize, Delete, Get, HttpApi, HttpConfig, HttpTransport, Keyed, Patch, Post,
         Put, Request, open_stream,
     },
-    kind,
 };
 use nebula_sdk::prelude::Value;
 
 #[derive(Resource)]
+#[resource(key = "example.github", config = HttpConfig)]
 struct GitHub {
-    #[credential(key = "token")]
+    #[slot]
     token: CredentialSlot<BearerTokenCredential>,
 }
 
-impl Component for GitHub {
-    type Kind = kind::Resource;
-    type Config = HttpConfig;
-
-    const KEY: &'static str = "example.github";
-
-    fn metadata() -> Metadata {
-        Metadata::new(nebula_sdk::prelude::metadata_name!("GitHub"), "")
-    }
-}
 
 #[async_trait::async_trait]
 impl Provider for GitHub {
