@@ -26,7 +26,7 @@
 use std::{
     collections::HashMap,
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -35,7 +35,7 @@ use nebula_action::{
     ActionError, Component, Metadata, action::Action, kind, result::ActionResult,
     stateless::StatelessAction,
 };
-use nebula_core::{Dependencies, ScopeLevel, id::WorkflowId, node_key};
+use nebula_core::{ScopeLevel, id::WorkflowId, node_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, WorkflowEngine,
 };
@@ -96,11 +96,6 @@ impl Action for PipelineWitness {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl StatelessAction for PipelineWitness {

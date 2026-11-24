@@ -21,16 +21,13 @@
 //!   Unit: pre-registering an action with the same key as one inside the
 //!   plugin returns `PluginWiringError::DuplicateActionKey`.
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, OnceLock},
-};
+use std::{collections::HashMap, sync::Arc};
 
 use nebula_action::{
     Action, ActionContext, ActionError, ActionFactory, ActionResult, Component, InstanceFactory,
     Metadata, StatelessAction, kind,
 };
-use nebula_core::{Dependencies, port_key};
+use nebula_core::port_key;
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, PluginWiringError,
     WorkflowEngine,
@@ -254,11 +251,6 @@ impl Component for StubAction {
 
 impl Action for StubAction {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
-    }
 }
 
 impl StatelessAction for StubAction {

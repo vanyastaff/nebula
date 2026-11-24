@@ -1,0 +1,363 @@
+error[E0277]: `u32` cannot hold a slot
+  --> tests/probes/derive_slot_on_wrong_type.rs:23:12
+   |
+23 |     count: u32,
+   |            ^^^ a `#[slot]` field must hold a slot value
+   |
+   = help: the trait `SlotValue` is not implemented for `u32`
+   = note: a slot field holds a resource handle or a credential handle, optionally in `Option<...>`
+help: the following other types implement trait `SlotValue`
+  --> $WORKSPACE/crates/resource/src/call/row.rs
+   |
+   |   impl<R: Provider> nebula_component::SlotValue for ResourceHandle<R> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ResourceHandle<R>`
+   |
+  ::: $WORKSPACE/crates/component/src/slot.rs
+   |
+   |   impl<V: SlotValue> SlotValue for Option<V> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Option<V>`
+   |
+  ::: $WORKSPACE/crates/resource/src/slot.rs
+   |
+   | / impl<C> nebula_component::SlotValue for CredentialSlot<C>
+   | | where
+   | |     C: nebula_credential::Credential,
+   | |     C::Scheme: zeroize::Zeroize,
+   | |________________________________^ `CredentialSlot<C>`
+note: required by a bound in `from_slot`
+  --> src/slot.rs
+   |
+   | pub trait FromSlot: SlotValue + Sized {
+   |                     ^^^^^^^^^ required by this bound in `FromSlot::from_slot`
+...
+   |     fn from_slot<'a>(
+   |
+
+error[E0277]: an action cannot resolve `u32` for a slot
+  --> tests/probes/derive_slot_on_wrong_type.rs:15:10
+   |
+15 | #[derive(Action)]
+   |          ^^^^^^ not an action slot value
+   |
+   = help: the trait `ResolveSlot` is not implemented for `u32`
+   = note: an action slot holds `ResourceHandle<R>` or `CredentialSlot<C>`, optionally in `Option<...>`
+help: the following other types implement trait `ResolveSlot`
+  --> src/slot.rs
+   |
+   |   impl<R: Provider> ResolveSlot for ResourceHandle<R> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ResourceHandle<R>`
+...
+   | / impl<C> ResolveSlot for CredentialSlot<C>
+   | | where
+   | |     C: Credential,
+   | |     C::Scheme: zeroize::Zeroize,
+   | |________________________________^ `CredentialSlot<C>`
+   = note: required for `u32` to implement `FromSlot`
+   = note: this error originates in the derive macro `Action` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `ResourceGuard<R>` cannot hold a slot
+  --> tests/probes/derive_slot_on_wrong_type.rs:34:9
+   |
+34 |     db: ResourceGuard<R>,
+   |         ^^^^^^^^^^^^^^^^ a `#[slot]` field must hold a slot value
+   |
+   = help: the trait `SlotValue` is not implemented for `ResourceGuard<R>`
+   = note: a slot field holds a resource handle or a credential handle, optionally in `Option<...>`
+help: the following other types implement trait `SlotValue`
+  --> $WORKSPACE/crates/resource/src/call/row.rs
+   |
+   |   impl<R: Provider> nebula_component::SlotValue for ResourceHandle<R> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ResourceHandle<R>`
+   |
+  ::: $WORKSPACE/crates/component/src/slot.rs
+   |
+   |   impl<V: SlotValue> SlotValue for Option<V> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Option<V>`
+   |
+  ::: $WORKSPACE/crates/resource/src/slot.rs
+   |
+   | / impl<C> nebula_component::SlotValue for CredentialSlot<C>
+   | | where
+   | |     C: nebula_credential::Credential,
+   | |     C::Scheme: zeroize::Zeroize,
+   | |________________________________^ `CredentialSlot<C>`
+note: required by a bound in `from_slot`
+  --> src/slot.rs
+   |
+   | pub trait FromSlot: SlotValue + Sized {
+   |                     ^^^^^^^^^ required by this bound in `FromSlot::from_slot`
+...
+   |     fn from_slot<'a>(
+   |
+
+error[E0277]: an action cannot resolve `ResourceGuard<R>` for a slot
+  --> tests/probes/derive_slot_on_wrong_type.rs:26:10
+   |
+26 | #[derive(Action)]
+   |          ^^^^^^ not an action slot value
+   |
+   = help: the trait `ResolveSlot` is not implemented for `ResourceGuard<R>`
+   = note: an action slot holds `ResourceHandle<R>` or `CredentialSlot<C>`, optionally in `Option<...>`
+help: the following other types implement trait `ResolveSlot`
+  --> src/slot.rs
+   |
+   |   impl<R: Provider> ResolveSlot for ResourceHandle<R> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ResourceHandle<R>`
+...
+   | / impl<C> ResolveSlot for CredentialSlot<C>
+   | | where
+   | |     C: Credential,
+   | |     C::Scheme: zeroize::Zeroize,
+   | |________________________________^ `CredentialSlot<C>`
+   = note: required for `ResourceGuard<R>` to implement `FromSlot`
+   = note: this error originates in the derive macro `Action` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `Lazy<ResourceHandle<R>>` cannot hold a slot
+  --> tests/probes/derive_slot_on_wrong_type.rs:45:9
+   |
+45 |     db: Lazy<ResourceHandle<R>>,
+   |         ^^^^^^^^^^^^^^^^^^^^^^^ a `#[slot]` field must hold a slot value
+   |
+   = help: the trait `SlotValue` is not implemented for `Lazy<ResourceHandle<R>>`
+   = note: a slot field holds a resource handle or a credential handle, optionally in `Option<...>`
+help: the following other types implement trait `SlotValue`
+  --> $WORKSPACE/crates/resource/src/call/row.rs
+   |
+   |   impl<R: Provider> nebula_component::SlotValue for ResourceHandle<R> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ResourceHandle<R>`
+   |
+  ::: $WORKSPACE/crates/component/src/slot.rs
+   |
+   |   impl<V: SlotValue> SlotValue for Option<V> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Option<V>`
+   |
+  ::: $WORKSPACE/crates/resource/src/slot.rs
+   |
+   | / impl<C> nebula_component::SlotValue for CredentialSlot<C>
+   | | where
+   | |     C: nebula_credential::Credential,
+   | |     C::Scheme: zeroize::Zeroize,
+   | |________________________________^ `CredentialSlot<C>`
+note: required by a bound in `from_slot`
+  --> src/slot.rs
+   |
+   | pub trait FromSlot: SlotValue + Sized {
+   |                     ^^^^^^^^^ required by this bound in `FromSlot::from_slot`
+...
+   |     fn from_slot<'a>(
+   |
+
+error[E0277]: an action cannot resolve `Lazy<ResourceHandle<R>>` for a slot
+  --> tests/probes/derive_slot_on_wrong_type.rs:37:10
+   |
+37 | #[derive(Action)]
+   |          ^^^^^^ not an action slot value
+   |
+   = help: the trait `ResolveSlot` is not implemented for `Lazy<ResourceHandle<R>>`
+   = note: an action slot holds `ResourceHandle<R>` or `CredentialSlot<C>`, optionally in `Option<...>`
+help: the following other types implement trait `ResolveSlot`
+  --> src/slot.rs
+   |
+   |   impl<R: Provider> ResolveSlot for ResourceHandle<R> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ResourceHandle<R>`
+...
+   | / impl<C> ResolveSlot for CredentialSlot<C>
+   | | where
+   | |     C: Credential,
+   | |     C::Scheme: zeroize::Zeroize,
+   | |________________________________^ `CredentialSlot<C>`
+   = note: required for `Lazy<ResourceHandle<R>>` to implement `FromSlot`
+   = note: this error originates in the derive macro `Action` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `CredentialGuard<nebula_credential::SecretToken>` cannot hold a slot
+  --> tests/probes/derive_slot_on_wrong_type.rs:56:12
+   |
+56 |     token: CredentialGuard<nebula_credential::SecretToken>,
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ a `#[slot]` field must hold a slot value
+   |
+   = help: the trait `SlotValue` is not implemented for `CredentialGuard<nebula_credential::SecretToken>`
+   = note: a slot field holds a resource handle or a credential handle, optionally in `Option<...>`
+help: the following other types implement trait `SlotValue`
+  --> $WORKSPACE/crates/resource/src/call/row.rs
+   |
+   |   impl<R: Provider> nebula_component::SlotValue for ResourceHandle<R> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ResourceHandle<R>`
+   |
+  ::: $WORKSPACE/crates/component/src/slot.rs
+   |
+   |   impl<V: SlotValue> SlotValue for Option<V> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Option<V>`
+   |
+  ::: $WORKSPACE/crates/resource/src/slot.rs
+   |
+   | / impl<C> nebula_component::SlotValue for CredentialSlot<C>
+   | | where
+   | |     C: nebula_credential::Credential,
+   | |     C::Scheme: zeroize::Zeroize,
+   | |________________________________^ `CredentialSlot<C>`
+note: required by a bound in `from_slot`
+  --> src/slot.rs
+   |
+   | pub trait FromSlot: SlotValue + Sized {
+   |                     ^^^^^^^^^ required by this bound in `FromSlot::from_slot`
+...
+   |     fn from_slot<'a>(
+   |
+
+error[E0277]: an action cannot resolve `CredentialGuard<nebula_credential::SecretToken>` for a slot
+  --> tests/probes/derive_slot_on_wrong_type.rs:48:10
+   |
+48 | #[derive(Action)]
+   |          ^^^^^^ not an action slot value
+   |
+   = help: the trait `ResolveSlot` is not implemented for `CredentialGuard<nebula_credential::SecretToken>`
+   = note: an action slot holds `ResourceHandle<R>` or `CredentialSlot<C>`, optionally in `Option<...>`
+help: the following other types implement trait `ResolveSlot`
+  --> src/slot.rs
+   |
+   |   impl<R: Provider> ResolveSlot for ResourceHandle<R> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ResourceHandle<R>`
+...
+   | / impl<C> ResolveSlot for CredentialSlot<C>
+   | | where
+   | |     C: Credential,
+   | |     C::Scheme: zeroize::Zeroize,
+   | |________________________________^ `CredentialSlot<C>`
+   = note: required for `CredentialGuard<nebula_credential::SecretToken>` to implement `FromSlot`
+   = note: this error originates in the derive macro `Action` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `u32` cannot hold a slot
+  --> tests/probes/derive_slot_on_wrong_type.rs:23:12
+   |
+23 |     count: u32,
+   |            ^^^ a `#[slot]` field must hold a slot value
+   |
+   = help: the trait `SlotValue` is not implemented for `u32`
+   = note: a slot field holds a resource handle or a credential handle, optionally in `Option<...>`
+help: the following other types implement trait `SlotValue`
+  --> $WORKSPACE/crates/resource/src/call/row.rs
+   |
+   |   impl<R: Provider> nebula_component::SlotValue for ResourceHandle<R> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ResourceHandle<R>`
+   |
+  ::: $WORKSPACE/crates/component/src/slot.rs
+   |
+   |   impl<V: SlotValue> SlotValue for Option<V> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Option<V>`
+   |
+  ::: $WORKSPACE/crates/resource/src/slot.rs
+   |
+   | / impl<C> nebula_component::SlotValue for CredentialSlot<C>
+   | | where
+   | |     C: nebula_credential::Credential,
+   | |     C::Scheme: zeroize::Zeroize,
+   | |________________________________^ `CredentialSlot<C>`
+note: required by a bound in `Slot::of`
+  --> $WORKSPACE/crates/component/src/slot.rs
+   |
+   | impl Slot {
+...
+   |     pub fn of<V: SlotValue>(key: &'static str) -> Self {
+   |                  ^^^^^^^^^ required by this bound in `Slot::of`
+
+error[E0277]: `ResourceGuard<R>` cannot hold a slot
+  --> tests/probes/derive_slot_on_wrong_type.rs:34:9
+   |
+34 |     db: ResourceGuard<R>,
+   |         ^^^^^^^^^^^^^^^^ a `#[slot]` field must hold a slot value
+   |
+   = help: the trait `SlotValue` is not implemented for `ResourceGuard<R>`
+   = note: a slot field holds a resource handle or a credential handle, optionally in `Option<...>`
+help: the following other types implement trait `SlotValue`
+  --> $WORKSPACE/crates/resource/src/call/row.rs
+   |
+   |   impl<R: Provider> nebula_component::SlotValue for ResourceHandle<R> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ResourceHandle<R>`
+   |
+  ::: $WORKSPACE/crates/component/src/slot.rs
+   |
+   |   impl<V: SlotValue> SlotValue for Option<V> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Option<V>`
+   |
+  ::: $WORKSPACE/crates/resource/src/slot.rs
+   |
+   | / impl<C> nebula_component::SlotValue for CredentialSlot<C>
+   | | where
+   | |     C: nebula_credential::Credential,
+   | |     C::Scheme: zeroize::Zeroize,
+   | |________________________________^ `CredentialSlot<C>`
+note: required by a bound in `Slot::of`
+  --> $WORKSPACE/crates/component/src/slot.rs
+   |
+   | impl Slot {
+...
+   |     pub fn of<V: SlotValue>(key: &'static str) -> Self {
+   |                  ^^^^^^^^^ required by this bound in `Slot::of`
+
+error[E0277]: `Lazy<ResourceHandle<R>>` cannot hold a slot
+  --> tests/probes/derive_slot_on_wrong_type.rs:45:9
+   |
+45 |     db: Lazy<ResourceHandle<R>>,
+   |         ^^^^^^^^^^^^^^^^^^^^^^^ a `#[slot]` field must hold a slot value
+   |
+   = help: the trait `SlotValue` is not implemented for `Lazy<ResourceHandle<R>>`
+   = note: a slot field holds a resource handle or a credential handle, optionally in `Option<...>`
+help: the following other types implement trait `SlotValue`
+  --> $WORKSPACE/crates/resource/src/call/row.rs
+   |
+   |   impl<R: Provider> nebula_component::SlotValue for ResourceHandle<R> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ResourceHandle<R>`
+   |
+  ::: $WORKSPACE/crates/component/src/slot.rs
+   |
+   |   impl<V: SlotValue> SlotValue for Option<V> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Option<V>`
+   |
+  ::: $WORKSPACE/crates/resource/src/slot.rs
+   |
+   | / impl<C> nebula_component::SlotValue for CredentialSlot<C>
+   | | where
+   | |     C: nebula_credential::Credential,
+   | |     C::Scheme: zeroize::Zeroize,
+   | |________________________________^ `CredentialSlot<C>`
+note: required by a bound in `Slot::of`
+  --> $WORKSPACE/crates/component/src/slot.rs
+   |
+   | impl Slot {
+...
+   |     pub fn of<V: SlotValue>(key: &'static str) -> Self {
+   |                  ^^^^^^^^^ required by this bound in `Slot::of`
+
+error[E0277]: `CredentialGuard<nebula_credential::SecretToken>` cannot hold a slot
+  --> tests/probes/derive_slot_on_wrong_type.rs:56:12
+   |
+56 |     token: CredentialGuard<nebula_credential::SecretToken>,
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ a `#[slot]` field must hold a slot value
+   |
+   = help: the trait `SlotValue` is not implemented for `CredentialGuard<nebula_credential::SecretToken>`
+   = note: a slot field holds a resource handle or a credential handle, optionally in `Option<...>`
+help: the following other types implement trait `SlotValue`
+  --> $WORKSPACE/crates/resource/src/call/row.rs
+   |
+   |   impl<R: Provider> nebula_component::SlotValue for ResourceHandle<R> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ResourceHandle<R>`
+   |
+  ::: $WORKSPACE/crates/component/src/slot.rs
+   |
+   |   impl<V: SlotValue> SlotValue for Option<V> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Option<V>`
+   |
+  ::: $WORKSPACE/crates/resource/src/slot.rs
+   |
+   | / impl<C> nebula_component::SlotValue for CredentialSlot<C>
+   | | where
+   | |     C: nebula_credential::Credential,
+   | |     C::Scheme: zeroize::Zeroize,
+   | |________________________________^ `CredentialSlot<C>`
+note: required by a bound in `Slot::of`
+  --> $WORKSPACE/crates/component/src/slot.rs
+   |
+   | impl Slot {
+...
+   |     pub fn of<V: SlotValue>(key: &'static str) -> Self {
+   |                  ^^^^^^^^^ required by this bound in `Slot::of`

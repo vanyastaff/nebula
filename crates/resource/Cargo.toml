@@ -60,6 +60,8 @@ fastrand = "2.4"
 sha2 = { workspace = true }
 # A library unit's local idempotency key is a base64url SHA-256 digest.
 base64 = { workspace = true }
+# `CredentialSlot<C>` holds a `CredentialGuard<C::Scheme>`, which zeroizes.
+zeroize = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
@@ -72,7 +74,6 @@ tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 # removed `test-util` from `nebula-credential`, and this crate never had one.
 nebula-credential = { path = "../credential" }
 serde = { workspace = true, features = ["derive"] }
-zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
 insta = { workspace = true }
 pretty_assertions = { workspace = true }
 rstest = { workspace = true }

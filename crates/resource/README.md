@@ -19,7 +19,7 @@ External connections — database pools, HTTP clients, message brokers — are a
 
 ## Public API (v4 — slot-binding pattern, 2026-04-29)
 
-The v4 surface — singular `type Credential` is dropped in favor of typed credential **slot fields** declared via `#[credential(key = "…")]` field attributes on the resource struct. Each slot field is a lock-free `SlotCell<CredentialGuard<C>>` the framework populates and rotates through `&self`; the derive emits a `<field>_slot()` read accessor. Multi-credential resources are now natural; per-slot rotation lands via `Provider::on_credential_refresh(&self, slot_name, instance)` with a companion `Provider::on_credential_revoke(&self, slot_name, instance)`.
+The v4 surface — singular `type Credential` is dropped in favor of typed credential **slot fields** declared with `#[slot]` on the resource struct. Each slot field is a `CredentialSlot<C>`, a lock-free cell of the credential's projected guard that the framework populates and rotates through `&self`; the derive lists the slots in `Component::dependencies()` and emits a `<field>_slot()` read accessor. Multi-credential resources are now natural; per-slot rotation lands via `Provider::on_credential_refresh(&self, slot_name, instance)` with a companion `Provider::on_credential_revoke(&self, slot_name, instance)`.
 
 ### `Provider` trait — a `Component` with an instance and a topology
 
@@ -272,40 +272,30 @@ and provide a real schema, usually with `#[derive(Schema)]` for named fields.
 The external option also permits an intentional custom override for empty configs.
 
 The per-resource **credential epoch** (an order-sensitive fold over every
-`#[credential]` slot's generation, used by the rotation reconcile) lives on a
+`#[slot]` field's generation, used by the rotation reconcile) lives on a
 separate `HasCredentialSlots` trait, emitted by `#[derive(Resource)]` —
 never hand-maintained.
 
-**`type Credential` was dropped.** There is no longer a singular credential associated type; resources declare credentials as slot fields. The opt-out alias `NoCredential` is no longer required — resources without credentials simply have no `#[credential]` fields.
+**`type Credential` was dropped.** There is no longer a singular credential associated type; resources declare credentials as slot fields. The opt-out alias `NoCredential` is no longer required — resources without credentials simply have no `#[slot]` fields.
 
 ### Slot-binding pattern — `#[derive(Resource)]` + hand-written `impl Provider`
 
-The **two-derive pattern**: `#[derive(Resource)]` emits only the slot
-plumbing; you supply a hand-written `impl Provider` with real `create` /
-`check` / `destroy` bodies. No container `#[resource(...)]`
-attribute is needed or accepted.
+The **two-derive pattern**: `#[derive(Resource)]` writes what the resource
+declares about itself (its `Component` impl and slot plumbing); you supply a
+hand-written `impl Provider` with real `create` / `check` / `destroy` bodies.
 
 ```rust
-use nebula_credential::CredentialGuard;
-use nebula_resource::{Provider, Resource, SlotCell};
+use nebula_resource::{CredentialSlot, Provider, Resource};
 
+/// Database pool
 #[derive(Resource)]
+#[resource(key = "postgres", config = PostgresConfig)]
 struct Postgres {
-    #[credential(key = "db_auth", purpose = "Main DB auth")]
-    db_auth: SlotCell<CredentialGuard<DatabaseCredential>>,
+    #[slot(purpose = "Main DB auth")]
+    db_auth: CredentialSlot<DatabaseCredential>,
 
-    #[credential(key = "audit", purpose = "Audit log auth")]
-    audit: SlotCell<CredentialGuard<AuditCredential>>,
-}
-
-impl Component for Postgres {
-    type Kind   = kind::Resource;
-    type Config = PostgresConfig;
-
-    const KEY: &'static str = "postgres";
-    fn metadata() -> Metadata {
-        Metadata::new(metadata_name!("Postgres"), "Database pool")
-    }
+    #[slot(key = "audit", purpose = "Audit log auth")]
+    audit_auth: CredentialSlot<AuditCredential>,
 }
 
 impl Provider for Postgres {
@@ -316,23 +306,33 @@ impl Provider for Postgres {
         -> Result<PgPool, Error>
     {
         // read resolved credentials through derive-emitted accessors
-        let guard = self.db_auth_slot().expect("db_auth slot must be bound");
+        let guard = self.db_auth_slot().ok_or_else(|| Error::transient("db_auth unbound"))?;
         // … build pool …
     }
     // check / destroy …
 }
 ```
 
+`#[resource(...)]` takes `key` and `config` (required) and `name`,
+`description` and `version` (optional; the name defaults to the struct name,
+the description to its doc comment), the same keys as `#[action(...)]`.
+
 `#[derive(Resource)]` emits:
-- `impl DeclaresDependencies for Postgres` — enumerates credential slot fields so the engine resolves each before `create` runs.
-- A read accessor per slot field: `pub fn <field>_slot(&self) -> Option<Arc<CredentialGuard<C>>>` returning the resolved guard, or `None` until the framework binds it. Implementations read the credential through this accessor — never off the raw cell field. A pure derive cannot add or rewrite struct fields and `ManagedResource` hands out `Arc<R>` (no `&mut R`), so the author declares the `SlotCell` cell and the framework populates / rotates it through `&self` via `SlotCell::store`.
+- `impl Component for Postgres` — the key, config and catalog metadata, with `dependencies()` listing each `#[slot]` field. Admission validates the list into `ResourceDefinition::dependencies()`; the engine resolves each slot before `create` runs.
+- A read accessor per slot field: `pub fn <field>_slot(&self) -> Option<Arc<CredentialGuard<C::Scheme>>>` returning the resolved guard, or `None` until the framework binds it, and a `SLOT_<KEY>` constant naming the slot. Implementations read the credential through this accessor — never off the raw cell. A pure derive cannot add or rewrite struct fields and `ManagedResource` hands out `Arc<R>` (no `&mut R`), so the author declares the `CredentialSlot` cell (`CredentialSlot::empty()`) and the framework populates / rotates it through `&self`.
 - `impl HasCredentialSlots for Postgres` — order-sensitive epoch fold used by the engine's hot-reload path.
+- `impl PinSlots` — the per-unit snapshot of the slots for the managed call facade.
 
 The per-topology hook trait (`PoolProvider` / `ResidentProvider` / `BoundedProvider`) is always hand-written — the derive does not emit it. Every hook has a default, so an empty `impl PoolProvider for Postgres {}` is enough to opt into pool topology.
 
 #### Field-type shape
 
-The generated `<field>_slot()` accessor emits one fixed body, so a `#[credential]` slot field must currently be **exactly** `SlotCell<CredentialGuard<C>>` (required + eager). `Option<…>`- and `Lazy<…>`-wrapped slots are a hard compile error at the derive site until the accessor is generalized — declare an unconditional cell and treat the accessor's `None` (unbound) return as the optional/lazy case.
+The derive never parses the field type: it writes `Slot::of::<FieldType>(key)`
+and the `SlotValue` and `ResourceSlot` traits accept or refuse the type. A
+resource slot is a `CredentialSlot<C>`. `Option<…>` and `Lazy<…>` are refused:
+a `CredentialSlot` is already empty until bound, so treat the accessor's
+`None` (unbound) return as the optional case. The slot key defaults to the
+field name; `#[slot(key = "...")]` overrides it.
 
 ### `Manager` registration
 
@@ -340,7 +340,7 @@ Registration goes through **one funnel**: `Manager::register::<R>(spec: Registra
 
 ```rust
 manager.register(RegistrationSpec {
-    resource,                                  // fully-constructed R, all #[credential] slots resolved
+    resource,                                  // fully-constructed R, all #[slot] fields resolved
     config,                                    // validated on register
     scope: ScopeLevel::Global,
     slot_identity: SlotIdentity::Unbound,      // structural dedup/resolution key (see below)
@@ -352,7 +352,7 @@ manager.register(RegistrationSpec {
 
 `slot_identity` is a collision-free structural resolved-credential identity (`SlotIdentity::{Unbound, Structural(Arc<[(String, String)]>)}`). Registrations with different exact `(slot, credential)` bindings occupy distinct rows, but this identity is **not tenant authorization**: equal credentials or unbound registrations do not prove equal tenants. Hosts must admit the correct scope and caller authority. JSON/expression registration enters through `ResourceFactory::register`; its manager helper is crate-private and consumes the factory-admitted schema.
 
-The framework resolves declared `#[credential]` slots **before** invoking `Provider::create` — implementations read each resolved credential through the derive-emitted `self.<field>_slot()` accessor (`Option<Arc<CredentialGuard<C>>>`), handling the `None` (unbound) case explicitly.
+The framework resolves declared `#[slot]` fields **before** invoking `Provider::create` — implementations read each resolved credential through the derive-emitted `self.<field>_slot()` accessor (`Option<Arc<CredentialGuard<C::Scheme>>>`), handling the `None` (unbound) case explicitly.
 
 ### Lifecycle ownership and breaking migration
 
@@ -479,7 +479,7 @@ follow from the same generation:
 
 ### Managed call facade
 
-Actions submit units on a `call::ResourceHandle<R>` (a `#[resource]`
+Actions submit units on a `call::ResourceHandle<R>` (a `#[slot]`
 field); host code builds one with `Manager::handle` (below). It is the only
 managed call facade: a `ResourceGuard` never becomes one (the `Lease`
 facade and `guard.into_lease()` were removed in 0.30.0 — holding one
@@ -514,7 +514,7 @@ impl Operation<Bot> for Send {
     }
 }
 
-// In an action: `#[resource] bot: ResourceHandle<Bot>`.
+// In an action: `#[slot] bot: ResourceHandle<Bot>`.
 let id = self.bot.submit(Send { chat, text }).await?;
 ```
 
@@ -758,9 +758,9 @@ An action reaches a row through a derived field — the supported route:
     read_only
 )]
 struct Audit {
-    #[resource]
+    #[slot]
     directory: ResourceHandle<Directory>,
-    #[resource]
+    #[slot]
     ledger: Option<ResourceHandle<Ledger>>, // optional slot
 }
 ```
@@ -956,11 +956,11 @@ is not SDK-exported.
 
 The slot-binding break is hard. To migrate an existing `Resource` impl:
 
-1. **Drop `type Credential`.** Move the credential dependency to a `#[credential(key = "…")]` slot field of type `SlotCell<CredentialGuard<C>>` on the struct, constructed with `SlotCell::empty()`. Change `Provider::Credential` references to read through the derive-emitted `self.<field>_slot()` accessor.
-2. **Drop the `scheme: &<R::Credential as Credential>::Scheme` parameter** from `create`. The framework populates the slot cells before `create` runs; read the resolved guard via `self.<field>_slot()` (`Option<Arc<CredentialGuard<C>>>`) and handle the `None` (unbound) case explicitly.
+1. **Drop `type Credential`.** Move the credential dependency to a `#[slot]` field of type `CredentialSlot<C>` on the struct, constructed with `CredentialSlot::empty()`. Change `Provider::Credential` references to read through the derive-emitted `self.<field>_slot()` accessor.
+2. **Drop the `scheme: &<R::Credential as Credential>::Scheme` parameter** from `create`. The framework populates the slot cells before `create` runs; read the resolved guard via `self.<field>_slot()` (`Option<Arc<CredentialGuard<C::Scheme>>>`) and handle the `None` (unbound) case explicitly.
 3. **Replace `on_credential_refresh(scheme, ctx)` with `on_credential_refresh(&self, slot_name, instance)`** and add an `on_credential_revoke(&self, slot_name, instance)` override where the resource held revoke logic. The engine swaps the rotated guard into the slot cell before the call; `&self` is an immutable descriptor, so blue-green / re-auth acts on `instance`'s interior mutability. Multi-credential resources can branch on `slot_name` to refresh only the affected sub-system.
-4. **Drop `nebula_credential::NoCredential`.** Resources without credentials simply have no `#[credential]` fields. The `NoCredential` opt-out is no longer needed.
-5. **Use the two-derive pattern**: annotate the struct with `#[derive(Resource)]` (emits slot plumbing only); write a hand-written `impl Provider` with real `create` / `check` / `destroy` bodies. No `#[resource(...)]` container attribute. The per-topology hook trait (`PoolProvider` / `ResidentProvider` / `BoundedProvider`) is still hand-written.
+4. **Drop `nebula_credential::NoCredential`.** Resources without credentials simply have no `#[slot]` fields. The `NoCredential` opt-out is no longer needed.
+5. **Use the two-derive pattern**: annotate the struct with `#[derive(Resource)]` and `#[resource(key = "…", config = …)]` (emits the `Component` impl and slot plumbing); write a hand-written `impl Provider` with real `create` / `check` / `destroy` bodies. The per-topology hook trait (`PoolProvider` / `ResidentProvider` / `BoundedProvider`) is still hand-written.
 6. **Update test code** — register through `Manager::register::<R>(RegistrationSpec { resource, config, scope, slot_identity, topology, recovery_gate, rate_limit })`. Acquire through `acquire::<R>` / `acquire_for_identity::<R>` for built-in and custom topologies, or `acquire_any` when the concrete provider type is erased.
 7. **For credential slot identity**, pass `SlotIdentity::Unbound` for the historical single-row dedup, or build a `SlotIdentity::Structural` from the resolved `(slot, credential)` pairs for per-binding row separation. The old `u64` `slot_identity` digest was removed.
 

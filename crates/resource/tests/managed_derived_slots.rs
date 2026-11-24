@@ -15,13 +15,12 @@ use nebula_credential::{
 };
 use nebula_resource::{
     CredentialSlot, Error, Manager, PinSlots, RegistrationSpec, Resident, ResidentConfig, Resource,
-    ResourceConfig, ResourceContext, ScopeLevel, SlotCell, SlotIdentity,
+    ResourceConfig, ResourceContext, ScopeLevel, SlotIdentity,
     call::{Cost, Effect, Operation, OperationCx, OperationError},
     resource::Provider,
     topology::ResidentProvider,
 };
 use tokio_util::sync::CancellationToken;
-use zeroize::Zeroize;
 
 #[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct MailerConfig {
@@ -34,24 +33,14 @@ impl ResourceConfig for MailerConfig {
     }
 }
 
-/// A credentialed resource with a raw guard slot and a credential alias slot.
+/// A credentialed resource with two credential slots.
 #[derive(Resource)]
+#[resource(key = "derived.mailer", config = MailerConfig)]
 struct Mailer {
-    #[credential(key = "smtp")]
-    smtp: SlotCell<CredentialGuard<ApiToken>>,
-    #[credential(key = "api")]
+    #[slot]
+    smtp: CredentialSlot<ApiToken>,
+    #[slot]
     api: CredentialSlot<ApiToken>,
-}
-
-impl Component for Mailer {
-    type Kind = kind::Resource;
-    type Config = MailerConfig;
-
-    const KEY: &'static str = "derived.mailer";
-
-    fn metadata() -> Metadata {
-        Metadata::new(nebula_resource::metadata_name!("Mailer"), "")
-    }
 }
 
 #[async_trait::async_trait]
@@ -68,13 +57,10 @@ impl ResidentProvider for Mailer {}
 
 /// A slot-less derived resource pins nothing.
 #[derive(Resource)]
+#[resource(key = "derived.plain", config = ())]
 struct Plain;
 
 struct ApiToken;
-
-impl Zeroize for ApiToken {
-    fn zeroize(&mut self) {}
-}
 
 impl Component for ApiToken {
     type Kind = kind::Credential;
@@ -119,8 +105,8 @@ impl Operation<Mailer> for ReadSlots {
 
     async fn run(self, cx: &mut OperationCx<'_, Mailer>) -> Result<Self::Output, OperationError> {
         cx.call(Cost::FREE, async |(), credentials| {
-            let smtp: Option<&CredentialGuard<ApiToken>> = credentials.smtp();
-            // The alias slot pins the credential's projected scheme.
+            // A credential slot pins the credential's projected scheme.
+            let smtp: Option<&CredentialGuard<SecretToken>> = credentials.smtp();
             let api: Option<&CredentialGuard<SecretToken>> = credentials.api();
             Ok((smtp.is_some(), api.is_some()))
         })
@@ -128,9 +114,15 @@ impl Operation<Mailer> for ReadSlots {
     }
 }
 
-fn mailer(smtp: Option<Arc<CredentialGuard<ApiToken>>>) -> Mailer {
+fn token() -> Arc<CredentialGuard<SecretToken>> {
+    Arc::new(CredentialGuard::new(SecretToken::new(SecretString::new(
+        "token",
+    ))))
+}
+
+fn mailer(smtp: Option<Arc<CredentialGuard<SecretToken>>>) -> Mailer {
     let mailer = Mailer {
-        smtp: SlotCell::empty(),
+        smtp: CredentialSlot::<ApiToken>::empty(),
         api: CredentialSlot::<ApiToken>::empty(),
     };
     if let Some(guard) = smtp {
@@ -141,8 +133,8 @@ fn mailer(smtp: Option<Arc<CredentialGuard<ApiToken>>>) -> Mailer {
 
 #[test]
 fn the_derive_pins_each_slot_once_and_a_rotation_reaches_the_next_pin() {
-    let first = Arc::new(CredentialGuard::new(ApiToken));
-    let second = Arc::new(CredentialGuard::new(ApiToken));
+    let first = token();
+    let second = token();
     let resource = mailer(Some(Arc::clone(&first)));
     let pinned = resource.pin_slots();
     resource.smtp.store(Arc::clone(&second));
@@ -175,7 +167,7 @@ async fn a_unit_reads_the_derived_pin_through_its_attempt() {
     let manager = Manager::new();
     manager
         .register(RegistrationSpec {
-            resource: mailer(Some(Arc::new(CredentialGuard::new(ApiToken)))),
+            resource: mailer(Some(token())),
             config: MailerConfig { version: 1 },
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,

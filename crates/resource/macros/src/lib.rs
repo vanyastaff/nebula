@@ -2,41 +2,20 @@
 //!
 //! Proc-macros for the `nebula-resource` crate (slot model).
 //!
-//! ## Two-derive pattern
+//! ## `#[derive(Resource)]`
 //!
-//! Resource authors use two derives:
-//!
-//! 1. **`#[derive(Resource)]`** — emits slot plumbing only:
-//!    - `impl DeclaresDependencies` enumerating `#[credential]` slot fields.
-//!    - An inherent `pub fn <field>_slot(&self) -> Option<Arc<...>>` accessor per slot.
-//!    - `impl HasCredentialSlots` with the order-sensitive positional epoch fold.
-//!
-//! 2. **Hand-written `impl Provider`** — the implementor supplies `KEY`, `metadata()`, the three
-//!    associated types (`Config`, `Instance`, `Topology`), and lifecycle methods (`create`,
-//!    optionally `check`, consuming `destroy`, credential-rotation hooks).
+//! The derive writes what a resource declares about itself; the author writes
+//! only `impl Provider` (instance, topology, lifecycle):
 //!
 //! ```text
-//! use nebula_credential::CredentialGuard;
-//! use nebula_resource::{Provider, Resource, SlotCell, Component, kind};
+//! use nebula_resource::{CredentialSlot, Provider, Resource};
 //!
+//! /// Database pool
 //! #[derive(Resource)]
+//! #[resource(key = "postgres", name = "Postgres", config = PostgresConfig)]
 //! struct Postgres {
-//!     #[credential(key = "db_auth", purpose = "Main DB auth")]
-//!     db_auth: SlotCell<CredentialGuard<DatabaseCredential>>,
-//! }
-//!
-//! impl Component for Postgres {
-//!     type Kind = kind::Resource;
-//!     type Config = PostgresConfig;
-//!
-//!     const KEY: &'static str = "postgres";
-//!
-//!     fn metadata() -> nebula_resource::Metadata {
-//!         nebula_resource::Metadata::new(
-//!             nebula_resource::metadata_name!("Postgres"),
-//!             "Database pool",
-//!         )
-//!     }
+//!     #[slot(purpose = "Main DB auth")]
+//!     db_auth: CredentialSlot<DatabaseCredential>,
 //! }
 //!
 //! impl Provider for Postgres {
@@ -54,9 +33,6 @@
 //!
 //! For a compiling end-to-end example, see the runnable doctest on
 //! `nebula_resource::Resource` in the parent crate.
-//!
-//! The `#[resource(...)]` container attribute is not accepted by `Resource` — it
-//! existed only on an older retired derive which emitted a `todo!()` body.
 //!
 //! ## `#[derive(ClassifyError)]`
 //!
@@ -113,48 +89,41 @@ use quote::quote;
 use syn::{Data, DeriveInput, Fields, Ident, parse_macro_input};
 
 mod config;
-mod field_slots;
+
 mod slots;
 mod topology_attr;
 
-/// Derive macro that emits slot plumbing for a resource struct (slot model).
+/// Derive macro for a resource: its `Component` impl and its slot plumbing.
 ///
-/// ## What is emitted
+/// ## Container attributes (`#[resource(...)]`, required)
 ///
-/// - `impl DeclaresDependencies` enumerating each `#[credential]` slot field.
-/// - An inherent `pub fn <field>_slot(&self) -> Option<Arc<CredentialGuard<C>>>` accessor per slot.
-/// - `impl HasCredentialSlots` with the order-sensitive positional epoch fold.
+/// - `key = "..."` - the resource's `Component::KEY` (required)
+/// - `config = Type` - its `Component::Config`, the row's settings (required; `()` for none)
+/// - `name = "..."` - catalog name (default: the struct name)
+/// - `description = "..."` - catalog description (default: the doc comment)
+/// - `version = "..."` - interface version (default: `0.1.0`)
 ///
-/// ## What is NOT emitted
-///
-/// This derive does **not** emit any `Provider` impl, `todo!()`, `key()`,
-/// `metadata()`, or topology constant. The implementor writes `impl Provider`
-/// by hand (2 associated types + `create`).
+/// `#[topology(Kind)]` additionally emits a `<Name>Factory`.
 ///
 /// ## Field attributes
 ///
-/// `#[credential]` / `#[credential(key = "...", purpose = "...")]`
+/// `#[slot]` or `#[slot(key = "...", purpose = "...")]` on a field whose type
+/// implements `ResourceSlot` (today `CredentialSlot<C>`). The key defaults to
+/// the field name. The derive never parses the field type.
 ///
-/// - `key = "..."` — slot key override (defaults to field name). Validated
-///   at expansion time against `CredentialKey` rules.
-/// - `purpose = "..."` — human-readable description (catalog / UI).
+/// ## What is emitted
 ///
-/// Field types accepted (path-tail matching, bare or fully qualified):
-/// - `SlotCell<CredentialGuard<C>>`
-/// - `CredentialSlot<C>` (type alias for the above)
-///
-/// ## Slot-less structs
-///
-/// Deriving on a struct with no `#[credential]` fields is legal and emits
-/// empty `DeclaresDependencies` + `HasCredentialSlots { epoch → 0 }`.
+/// - `impl Component` with `dependencies()` listing the slots.
+/// - `impl HasCredentialSlots` with the order-sensitive positional epoch fold.
+/// - A `SLOT_<KEY>` constant and a `<field>_slot()` accessor per slot.
+/// - `impl PinSlots` for the managed call facade.
 ///
 /// ## Rejected forms
 ///
-/// - Enums and unions: compile error at the type ident.
-/// - Tuple structs with a `#[credential]` field: compile error.
-/// - Wrong field type: compile error naming both accepted shapes.
-/// - `#[resource(...)]` container attribute: compile error (removed).
-#[proc_macro_derive(Resource, attributes(credential, topology))]
+/// - Enums and unions.
+/// - A `#[slot]` on a tuple field.
+/// - A field still marked `#[credential]` (replaced by `#[slot]`).
+#[proc_macro_derive(Resource, attributes(resource, slot, credential, topology))]
 pub fn derive_resource(input: TokenStream) -> TokenStream {
     nebula_macro_support::paths::resolve_generated_crate_paths(slots::derive(input).into()).into()
 }

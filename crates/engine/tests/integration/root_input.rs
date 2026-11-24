@@ -3,7 +3,7 @@
 use std::{
     marker::PhantomData,
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -12,7 +12,7 @@ use nebula_action::{
     Action, ActionContext, ActionError, ActionResult, Component, ConnectionFilter, InputPort,
     Metadata, StatelessAction, SupportPort, kind,
 };
-use nebula_core::{Dependencies, node_key, port_key};
+use nebula_core::{node_key, port_key};
 use nebula_engine::{ActionRegistry, ExecutionResult};
 use nebula_execution::context::ExecutionBudget;
 use nebula_schema::HasSchema;
@@ -52,11 +52,6 @@ where
 
     const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
-    }
 }
 
 impl<T> StatelessAction for RootEcho<T>
@@ -125,11 +120,6 @@ impl Action for SupportEcho {
                 .map(InputPort::Support),
         );
         inputs
-    }
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
     }
 }
 

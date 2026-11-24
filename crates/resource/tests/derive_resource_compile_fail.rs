@@ -4,10 +4,12 @@
 //! Compile-fail probes under `tests/probes/` exercise diagnostic contracts:
 //!
 //! - enum rejected at the type-ident span
-//! - `#[credential]` on a tuple-struct field rejected with clear span
-//! - `#[credential]` field with wrong type rejected naming both accepted shapes
-//! - `#[credential(key = "...")]` invalid key literal rejected at the literal span
-//! - `Option<SlotCell<CredentialGuard<C>>>` rejected (must be the bare shape)
+//! - a missing `#[resource(key, config)]`, or an unknown key in it, rejected
+//! - the replaced `#[credential]` field attribute refused with a hint
+//! - `#[slot]` on a tuple-struct field rejected with clear span
+//! - a `#[slot]` field of a type that is no resource slot value rejected
+//! - `#[slot(key = "...")]` invalid key literal rejected at the literal span
+//! - `Option<CredentialSlot<C>>` rejected (the slot is already empty-able)
 //! - nonempty or tuple configs cannot publish an automatic empty-record schema
 //! - a fingerprinted config field naming a hash-ordered set (`HashSet`) is
 //!   rejected at the type segment; `HashMap` and skipped sets are accepted
@@ -16,8 +18,8 @@
 //! The positive probes exercise a clean two-derive expansion:
 //!
 //! - slot-less unit struct with hand-written `impl Provider`, pinning `()`
-//! - named slot field with derive-emitted `<field>_slot()` accessor and
-//!   pinned `<field>()` accessor
+//! - `CredentialSlot<C>` field with derive-emitted `<field>_slot()` accessor,
+//!   `SLOT_<KEY>` constant and pinned `<field>()` accessor
 
 #[test]
 fn resource_pinned_slots_keep_their_guards_private() {
@@ -32,7 +34,19 @@ fn resource_slots_rejects_enum() {
 }
 
 #[test]
-fn resource_slots_rejects_credential_on_tuple_field() {
+fn resource_derive_requires_its_container_attribute() {
+    let t = trybuild::TestCases::new();
+    t.compile_fail("tests/probes/derive_requires_resource_attribute.rs");
+}
+
+#[test]
+fn resource_derive_refuses_the_replaced_credential_attribute() {
+    let t = trybuild::TestCases::new();
+    t.compile_fail("tests/probes/derive_credential_attribute_replaced.rs");
+}
+
+#[test]
+fn resource_slots_rejects_slot_on_tuple_field() {
     let t = trybuild::TestCases::new();
     t.compile_fail("tests/probes/derive_tuple_struct.rs");
 }
@@ -46,7 +60,7 @@ fn resource_slots_rejects_wrong_field_type() {
 #[test]
 fn resource_slots_rejects_bad_key_literal() {
     let t = trybuild::TestCases::new();
-    t.compile_fail("tests/probes/credential_bad_key_literal.rs");
+    t.compile_fail("tests/probes/slot_bad_key_literal.rs");
 }
 
 #[test]

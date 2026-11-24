@@ -5,7 +5,7 @@ use std::{
     error::Error,
     marker::PhantomData,
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -14,7 +14,7 @@ use nebula_action::{
     Action, ActionContext, ActionError, ActionFactory, ActionHandle, ActionResult, Component,
     InstanceFactory, StatelessAction, TestContextBuilder, kind,
 };
-use nebula_core::{Dependencies, node_key};
+use nebula_core::node_key;
 use nebula_schema::{AuthoredValue, HasSchema, ValidSchema, ValidationReport};
 use nebula_workflow::NodeDefinition;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -47,11 +47,6 @@ where
     T: HasSchema + DeserializeOwned + Serialize + Send + Sync + 'static,
 {
     type Output = T;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
-    }
 }
 
 impl<T> StatelessAction for RootEcho<T>

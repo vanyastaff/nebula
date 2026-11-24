@@ -261,3 +261,37 @@ fn literal(expression: &Expr, numeric_only: bool) -> Result<()> {
         )),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use syn::parse_quote;
+
+    #[test]
+    fn shared_condition_syntax_distinguishes_schema_and_receiver_scope() {
+        use super::{ConditionScope, validate_condition};
+        let local: syn::Expr = parse_quote!(all(eq(field(mode), "active"), condition(other)));
+        assert!(validate_condition(&local, ConditionScope::LocalRecord).is_ok());
+        assert!(validate_condition(&local, ConditionScope::AssociatedData).is_err());
+        for malformed in [
+            "eq(field(\"name\"), true)",
+            "eq(field(other::name), true)",
+            "eq(field(), true)",
+        ] {
+            let expression = syn::parse_str(malformed).expect("Rust syntax");
+            assert!(validate_condition(&expression, ConditionScope::LocalRecord).is_err());
+        }
+    }
+
+    #[test]
+    fn condition_integer_literals_fit_json_number_representation() {
+        use super::{ConditionScope, validate_condition};
+        for value in ["18446744073709551615", "-9223372036854775808"] {
+            let expression = syn::parse_str(&format!("eq(root(\"/n\"), {value})")).expect("syntax");
+            assert!(validate_condition(&expression, ConditionScope::AssociatedData).is_ok());
+        }
+        for value in ["18446744073709551616", "-9223372036854775809"] {
+            let expression = syn::parse_str(&format!("eq(root(\"/n\"), {value})")).expect("syntax");
+            assert!(validate_condition(&expression, ConditionScope::AssociatedData).is_err());
+        }
+    }
+}

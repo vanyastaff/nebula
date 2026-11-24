@@ -19,7 +19,7 @@ pub use nebula_action::{
     Action, ActionEffectContract, Component, InputPort, IsolationLevel, JournalProtocol, Metadata,
     OutputPort, key_of, kind,
 };
-pub use nebula_core::{ActionKey, Dependencies, action_key};
+pub use nebula_core::{ActionKey, action_key};
 pub use nebula_metadata::{
     DeprecationNotice, Icon, MetadataError, MetadataName, MetadataVersion, metadata_name,
 };

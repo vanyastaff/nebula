@@ -35,7 +35,7 @@ credential-bound routes):
   the `ReleaseQueue`.
 - Otherwise → `PoolProvider::recycle` decides `Keep` (pushed back to the idle
   queue, subject to the revoke-epoch fence) or `Drop` (destroyed).
-- A resource that declares `#[credential]` slots is **discarded by default**
+- A resource that declares `#[slot]` credential slots is **discarded by default**
   on release rather than re-pooled (cross-lease state bleed prevention) —
   override `recycle` to wipe per-lease state and return `Keep` to actually
   pool a credentialed connection.

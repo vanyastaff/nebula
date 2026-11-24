@@ -7,7 +7,6 @@ use core::num::NonZeroU32;
 /// The component contract [`Action`] is built on, and the catalog metadata it
 /// returns, re-exported next to it.
 pub use nebula_component::{Component, kind};
-use nebula_core::Dependencies;
 pub use nebula_metadata::Metadata;
 use nebula_schema::HasSchema;
 use serde::Serialize;
@@ -23,9 +22,9 @@ use crate::{
 /// An action is a [`Component`] of kind [`kind::Action`]: the `Component`
 /// impl carries its key ([`Component::KEY`]), its form data
 /// ([`Component::Config`], decoded from the node's input per execution) and
-/// its catalog [`Metadata`]. `Action` adds what
-/// only an action has: its output type, its ports, its execution policy and
-/// its slot dependencies. All of it is static per concrete type, so one type
+/// its catalog [`Metadata`] and its slots ([`Component::dependencies`]).
+/// `Action` adds what only an action has: its output type, its ports and its
+/// execution policy. All of it is static per concrete type, so one type
 /// is one catalog entry. Sub-traits ([`StatelessAction`](crate::StatelessAction)
 /// etc.) define the execution surface and consume `Self::Config` /
 /// `Self::Output`.
@@ -39,9 +38,7 @@ use crate::{
 /// # Example
 ///
 /// ```rust
-/// use std::sync::OnceLock;
 /// use nebula_action::{Action, Component, Metadata, kind};
-/// use nebula_core::Dependencies;
 ///
 /// struct Echo;
 ///
@@ -58,11 +55,6 @@ use crate::{
 ///
 /// impl Action for Echo {
 ///     type Output = serde_json::Value;
-///
-///     fn dependencies() -> &'static Dependencies {
-///         static D: OnceLock<Dependencies> = OnceLock::new();
-///         D.get_or_init(Dependencies::new)
-///     }
 /// }
 ///
 /// // Identity is the type's constant; metadata carries no key...
@@ -112,7 +104,4 @@ pub trait Action: Component<Kind = kind::Action> {
     fn outputs() -> Vec<OutputPort> {
         port::default_output_ports()
     }
-
-    /// Slot-binding declarations (`#[resource]` / `#[credential]` fields).
-    fn dependencies() -> &'static Dependencies;
 }

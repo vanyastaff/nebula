@@ -1,12 +1,10 @@
 //! Typed discovery and the admitted subset of the core actions' serde wire format.
 
-use std::sync::OnceLock;
-
 use nebula_action::{
     Action, ActionContext, ActionError, ActionFactory, ActionResult, Component, InstanceFactory,
     Metadata, StatelessAction, kind,
 };
-use nebula_core::{ActionKey, Dependencies};
+use nebula_core::ActionKey;
 use nebula_plugin::ResolvedPlugin;
 use nebula_plugin_core::{CorePlugin, actions::*};
 use nebula_schema::{
@@ -41,11 +39,6 @@ impl Action for LegacySchemaAction {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
-    }
 }
 
 impl StatelessAction for LegacySchemaAction {

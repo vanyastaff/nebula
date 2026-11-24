@@ -107,6 +107,12 @@ impl Component for BearerRow {
             String::new(),
         )
     }
+
+    fn dependencies() -> nebula_resource::Dependencies {
+        nebula_resource::Dependencies::none().slot(nebula_resource::Slot::of::<
+            nebula_resource::CredentialSlot<BearerTokenCredential>,
+        >(AUTH_SLOT))
+    }
 }
 
 #[async_trait::async_trait]
@@ -120,23 +126,6 @@ impl Provider for BearerRow {
         _ctx: &ResourceContext,
     ) -> Result<Arc<AtomicU64>, ResourceError> {
         Ok(Arc::new(AtomicU64::new(1)))
-    }
-}
-
-impl DeclaresDependencies for BearerRow {
-    fn dependencies() -> Dependencies {
-        Dependencies::new().slot_field(SlotField {
-            slot_key: AUTH_SLOT,
-            default_id: AUTH_SLOT,
-            kind: SlotKind::Credential {
-                type_id: std::any::TypeId::of::<BearerTokenCredential>(),
-                type_name: "bearer_token",
-                key: CredentialKey::new(BearerTokenCredential::KEY).expect("valid credential key"),
-            },
-            required: true,
-            lazy: false,
-            purpose: None,
-        })
     }
 }
 

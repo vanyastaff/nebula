@@ -1,0 +1,5 @@
+error: slot key `bad_key_` is invalid: use 1 to 64 lowercase ASCII letters, digits and `_`, starting with a letter and not ending with `_`
+  --> tests/probes/slot_bad_key_literal.rs:13:18
+   |
+13 |     #[slot(key = "bad_key_")]
+   |                  ^^^^^^^^^^

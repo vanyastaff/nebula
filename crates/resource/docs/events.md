@@ -68,7 +68,7 @@ never enters an event payload.
 
 | Variant | Emitted when | Key fields |
 |---------|-------------|------------|
-| `SlotRefreshed` | A `#[credential]` slot was refreshed (hook returned `Ok`) | `key`, `slot: String` |
+| `SlotRefreshed` | A credential slot was refreshed (hook returned `Ok`) | `key`, `slot: String` |
 | `SlotRevoked` | A slot's credential was revoked (hook returned `Ok`) | `key`, `slot: String` |
 | `SlotRefreshFailed` | The per-resource refresh hook failed or timed out | `key`, `slot: String`, `kind: ErrorKind`, `message: SecretFreeMessage` |
 | `SlotRevokeFailed` | The per-resource revoke hook failed | `key`, `slot: String`, `kind: ErrorKind`, `message: SecretFreeMessage` |

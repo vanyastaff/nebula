@@ -1,5 +1,133 @@
-error: field with `#[credential]` must have type `SlotCell<CredentialGuard<C>>` or `CredentialSlot<C>` — got: String
-  --> tests/probes/slot_field_wrong_type.rs:10:11
+error[E0277]: a resource cannot hold `String` in a slot
+ --> tests/probes/slot_field_wrong_type.rs:7:10
+  |
+7 | #[derive(Resource)]
+  |          ^^^^^^^^ not a resource slot value
+  |
+  = help: the trait `nebula_resource::ResourceSlot` is not implemented for `String`
+  = note: a resource slot holds `CredentialSlot<C>`
+help: the trait `nebula_resource::ResourceSlot` is implemented for `CredentialSlot<C>`
+ --> src/slot.rs
+  |
+  | / impl<C> ResourceSlot for CredentialSlot<C>
+  | | where
+  | |     C: nebula_credential::Credential,
+  | |     C::Scheme: zeroize::Zeroize,
+  | |________________________________^
+  = note: this error originates in the derive macro `Resource` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: a resource cannot hold `String` in a slot
+ --> tests/probes/slot_field_wrong_type.rs:7:10
+  |
+7 | #[derive(Resource)]
+  |          ^^^^^^^^ not a resource slot value
+  |
+  = help: within `DemoPinnedSlots`, the trait `nebula_resource::ResourceSlot` is not implemented for `String`
+  = note: a resource slot holds `CredentialSlot<C>`
+help: the trait `nebula_resource::ResourceSlot` is implemented for `CredentialSlot<C>`
+ --> src/slot.rs
+  |
+  | / impl<C> ResourceSlot for CredentialSlot<C>
+  | | where
+  | |     C: nebula_credential::Credential,
+  | |     C::Scheme: zeroize::Zeroize,
+  | |________________________________^
+note: required because it appears within the type `DemoPinnedSlots`
+ --> tests/probes/slot_field_wrong_type.rs:7:10
+  |
+7 | #[derive(Resource)]
+  |          ^^^^^^^^
+note: required by a bound in `nebula_resource::PinSlots::Pinned`
+ --> src/call/pin.rs
+  |
+  | pub trait PinSlots: HasCredentialSlots {
+...
+  |     type Pinned: Send + Sync + 'static;
+  |                         ^^^^ required by this bound in `PinSlots::Pinned`
+  = note: this error originates in the derive macro `Resource` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `String` cannot hold a slot
+  --> tests/probes/slot_field_wrong_type.rs:11:11
    |
-10 |     auth: String,
-   |           ^^^^^^
+11 |     auth: String,
+   |           ^^^^^^ a `#[slot]` field must hold a slot value
+   |
+   = help: the trait `SlotValue` is not implemented for `String`
+   = note: a slot field holds a resource handle or a credential handle, optionally in `Option<...>`
+help: the following other types implement trait `SlotValue`
+  --> src/slot.rs
+   |
+   | / impl<C> nebula_component::SlotValue for CredentialSlot<C>
+   | | where
+   | |     C: nebula_credential::Credential,
+   | |     C::Scheme: zeroize::Zeroize,
+   | |________________________________^ `CredentialSlot<C>`
+   |
+  ::: $WORKSPACE/crates/component/src/slot.rs
+   |
+   |   impl<V: SlotValue> SlotValue for Option<V> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Option<V>`
+   |
+  ::: src/call/row.rs
+   |
+   |   impl<R: Provider> nebula_component::SlotValue for ResourceHandle<R> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ResourceHandle<R>`
+note: required by a bound in `Slot::of`
+  --> $WORKSPACE/crates/component/src/slot.rs
+   |
+   | impl Slot {
+...
+   |     pub fn of<V: SlotValue>(key: &'static str) -> Self {
+   |                  ^^^^^^^^^ required by this bound in `Slot::of`
+
+error[E0277]: a resource cannot hold `String` in a slot
+  --> tests/probes/slot_field_wrong_type.rs:11:11
+   |
+11 |     auth: String,
+   |           ^^^^^^ not a resource slot value
+   |
+   = help: the trait `nebula_resource::ResourceSlot` is not implemented for `String`
+   = note: a resource slot holds `CredentialSlot<C>`
+help: the trait `nebula_resource::ResourceSlot` is implemented for `CredentialSlot<C>`
+  --> src/slot.rs
+   |
+   | / impl<C> ResourceSlot for CredentialSlot<C>
+   | | where
+   | |     C: nebula_credential::Credential,
+   | |     C::Scheme: zeroize::Zeroize,
+   | |________________________________^
+
+error[E0277]: `String` cannot hold a slot
+  --> tests/probes/slot_field_wrong_type.rs:11:11
+   |
+11 |     auth: String,
+   |           ^^^^^^ a `#[slot]` field must hold a slot value
+   |
+   = help: the trait `SlotValue` is not implemented for `String`
+   = note: a slot field holds a resource handle or a credential handle, optionally in `Option<...>`
+help: the following other types implement trait `SlotValue`
+  --> src/slot.rs
+   |
+   | / impl<C> nebula_component::SlotValue for CredentialSlot<C>
+   | | where
+   | |     C: nebula_credential::Credential,
+   | |     C::Scheme: zeroize::Zeroize,
+   | |________________________________^ `CredentialSlot<C>`
+   |
+  ::: $WORKSPACE/crates/component/src/slot.rs
+   |
+   |   impl<V: SlotValue> SlotValue for Option<V> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Option<V>`
+   |
+  ::: src/call/row.rs
+   |
+   |   impl<R: Provider> nebula_component::SlotValue for ResourceHandle<R> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ResourceHandle<R>`
+note: required by a bound in `cell`
+  --> src/slot.rs
+   |
+   | pub trait ResourceSlot: nebula_component::SlotValue {
+   |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `ResourceSlot::cell`
+...
+   |     fn cell(&self) -> &SlotCell<Self::Guard>;
+   |

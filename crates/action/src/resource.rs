@@ -109,7 +109,7 @@ pub trait ResourceHandler: crate::handle::sealed::Resource + Send + Sync + 'stat
 /// # Example
 ///
 /// ```rust
-/// use std::sync::{Arc, OnceLock};
+/// use std::sync::Arc;
 ///
 /// use nebula_action::prelude::*;
 /// use nebula_action::{ResourceHandler, ResourceProduces};
@@ -131,10 +131,6 @@ pub trait ResourceHandler: crate::handle::sealed::Resource + Send + Sync + 'stat
 /// impl Action for StringPool {
 ///     // ResourceAction constrains `Output` to `ResourceProduces<Self::Resource>`.
 ///     type Output = ResourceProduces<String>;
-///     fn dependencies() -> &'static Dependencies {
-///         static D: OnceLock<Dependencies> = OnceLock::new();
-///         D.get_or_init(Dependencies::new)
-///     }
 /// }
 ///
 /// impl ResourceAction for StringPool {
@@ -253,9 +249,7 @@ impl<A: Action> fmt::Debug for ResourceActionAdapter<A> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, OnceLock};
-
-    use nebula_core::Dependencies;
+    use std::sync::Arc;
 
     use super::*;
     use crate::testing::{TestActionContext, TestContextBuilder};
@@ -286,10 +280,6 @@ mod tests {
         // ResourceAction requires Output = ResourceProduces<Self::Resource>.
         // MockResourceAction::Resource = String, so Output = ResourceProduces<String>.
         type Output = ResourceProduces<String>;
-        fn dependencies() -> &'static Dependencies {
-            static D: OnceLock<Dependencies> = OnceLock::new();
-            D.get_or_init(Dependencies::new)
-        }
     }
 
     impl ResourceAction for MockResourceAction {

@@ -26,7 +26,7 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use nebula_core::{CredentialId, Dependencies, SlotField, credential_key, dependencies::SlotKind};
+use nebula_core::CredentialId;
 use nebula_engine::{KindActivator, RegistrarError, ResourceActivatorRegistry};
 use nebula_resource::Resident;
 use nebula_resource::{
@@ -122,8 +122,6 @@ impl Provider for HttpPool {
     }
 }
 
-impl nebula_core::DeclaresDependencies for HttpPool {}
-
 nebula_resource::no_credential_slots!(HttpPool);
 
 #[async_trait::async_trait]
@@ -152,6 +150,42 @@ fn registry_with_http_pool() -> ResourceActivatorRegistry {
 // ── A kind with one required credential slot, so the binding rules beyond
 //    "declares no slot" are exercised ─────────────────────────────────────────
 
+/// The credential behind `TokenPool`'s `api_token` slot.
+struct ApiToken;
+
+impl nebula_credential::Component for ApiToken {
+    type Kind = nebula_credential::kind::Credential;
+    type Config = ();
+
+    const KEY: &'static str = "token_pool.api_token";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
+            nebula_credential::metadata_name!("token_pool.api_token"),
+            "",
+        )
+    }
+}
+
+impl nebula_credential::Credential for ApiToken {
+    type Scheme = nebula_credential::scheme::SecretToken;
+    type State = nebula_credential::scheme::SecretToken;
+
+    fn project(state: &Self::State) -> Self::Scheme {
+        state.clone()
+    }
+
+    async fn resolve(
+        _properties: &(),
+        _ctx: &nebula_credential::CredentialContext,
+    ) -> Result<
+        nebula_credential::StaticResolveResult<Self::State>,
+        nebula_credential::CredentialError,
+    > {
+        Err(nebula_credential::CredentialError::NotInteractive)
+    }
+}
+
 #[derive(Clone)]
 struct TokenPool;
 
@@ -163,6 +197,12 @@ impl nebula_resource::Component for TokenPool {
 
     fn metadata() -> Metadata {
         Metadata::new(nebula_resource::metadata_name!("token_pool"), String::new())
+    }
+
+    fn dependencies() -> nebula_resource::Dependencies {
+        nebula_resource::Dependencies::none().slot(nebula_resource::Slot::of::<
+            nebula_resource::CredentialSlot<ApiToken>,
+        >("api_token"))
     }
 }
 
@@ -177,23 +217,6 @@ impl Provider for TokenPool {
         _ctx: &nebula_resource::ResourceContext,
     ) -> Result<(), nebula_resource::Error> {
         Ok(())
-    }
-}
-
-impl nebula_core::DeclaresDependencies for TokenPool {
-    fn dependencies() -> Dependencies {
-        Dependencies::new().slot_field(SlotField {
-            slot_key: "api_token",
-            default_id: "api_token",
-            kind: SlotKind::Credential {
-                type_id: std::any::TypeId::of::<()>(),
-                type_name: std::any::type_name::<()>(),
-                key: credential_key!("token_pool.api_token"),
-            },
-            required: true,
-            lazy: false,
-            purpose: None,
-        })
     }
 }
 

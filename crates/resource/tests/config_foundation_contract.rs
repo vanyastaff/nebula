@@ -5,7 +5,6 @@ use std::{
     marker::PhantomData,
 };
 
-use nebula_core::{DeclaresDependencies, Dependencies};
 use nebula_resource::{Component, kind};
 use nebula_resource::{
     Error, HasCredentialSlots, KindActivator, Manager, Provider, RegisterRequest, Resident,
@@ -99,12 +98,6 @@ impl<C: ResourceConfig> HasCredentialSlots for ConfigProbe<C> {
     }
     fn declares_credential_slots() -> bool {
         false
-    }
-}
-
-impl<C: ResourceConfig> DeclaresDependencies for ConfigProbe<C> {
-    fn dependencies() -> Dependencies {
-        Dependencies::new()
     }
 }
 

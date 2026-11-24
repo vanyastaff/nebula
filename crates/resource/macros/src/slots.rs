@@ -1,60 +1,34 @@
-//! `#[derive(Resource)]` macro implementation — slot model.
+//! `#[derive(Resource)]` macro implementation.
 //!
-//! ## Two-derive pattern
+//! The derive writes everything a resource declares about itself; the author
+//! writes only `impl Provider` (its instance, topology and lifecycle):
 //!
-//! Resource authors use two derives:
+//! - `impl Component` from `#[resource(key, name, description, version,
+//!   config)]`, with `dependencies()` listing the `#[slot]` fields.
+//! - `impl HasCredentialSlots`: the order-sensitive positional epoch fold
+//!   and the install, projection, fence and revoke arms per slot.
+//! - An inherent `pub fn <field>_slot(&self)` accessor and a `SLOT_<KEY>`
+//!   constant per slot.
+//! - `impl PinSlots` for the managed call facade: `Pinned = ()` for a
+//!   slot-less struct, otherwise a generated `<Name>PinnedSlots` holding
+//!   each slot's guard `Arc` loaded once per unit, read through a
+//!   `<field>()` accessor (generic structs with slots get none).
+//! - `<Name>Factory` when `#[topology(Kind)]` is present.
 //!
-//! 1. `#[derive(Resource)]` (this macro) — emits the slot plumbing:
-//!    - `impl DeclaresDependencies` enumerating `#[credential]` slot fields.
-//!    - An inherent `pub fn <field>_slot(&self) -> Option<Arc<...>>` accessor per slot.
-//!    - `impl HasCredentialSlots` with the order-sensitive positional fold,
-//!      a `declares_credential_slots()` that is `true` iff the struct has at
-//!      least one `#[credential]` field, and a `credential_slot_names()`
-//!      listing every declared slot key (used by
-//!      `Manager::refresh_slot`/`taint_slot`'s unknown-slot validation).
-//!    - `impl PinSlots` for the managed call facade: `Pinned = ()` for a
-//!      slot-less struct, otherwise a generated `<Name>PinnedSlots` holding
-//!      each slot's guard `Arc` loaded once per unit, read through a
-//!      `<field>()` accessor (generic structs with slots get none).
-//!
-//! 2. Hand-written `impl Provider` — the implementor supplies `KEY`, `metadata()`, the three
-//!    associated types (`Config`, `Instance`, `Topology`), and lifecycle methods
-//!    (`create`, optionally `check`, consuming `destroy`, hooks).
-//!
-//! The macro **never** emits any `Provider` item, `todo!()`, `KEY`, or
-//! `metadata()`. There is no `#[resource(...)]` container attribute.
-//!
-//! ## Field attributes
-//!
-//! `#[credential]` / `#[credential(key = "...", purpose = "...")]`
-//!
-//! The field type must be **exactly** `SlotCell<CredentialGuard<C>>` or the
-//! alias `CredentialSlot<C>` (path-tail matching). Any other type is a
-//! compile error at the field span naming the two accepted shapes.
-//!
-//! The `key = "..."` literal is validated at expansion time: invalid keys
-//! produce a compile error at the literal span.
-//!
-//! ## Slot-less structs
-//!
-//! Deriving on a struct with no `#[credential]` fields is legal. The macro
-//! emits empty `DeclaresDependencies` and `HasCredentialSlots { fn
-//! credential_slot_epoch → 0, fn declares_credential_slots → false, fn
-//! credential_slot_names → &[] }` implementations and `PinSlots { type
-//! Pinned = () }`. No accessors are emitted.
-//!
-//! ## Rejected forms
-//!
-//! - Enums and unions: compile error at the type identifier span.
-//! - Tuple structs with a `#[credential]` field: compile error.
-//! - Slot field with wrong type: compile error at the field type.
+//! A `#[slot]` field's type must implement `nebula_resource::ResourceSlot`
+//! (today `CredentialSlot<C>`); the derive never parses it.
 
+use nebula_macro_support::{
+    attrs,
+    component::{COMPONENT_KEYS, ComponentAttrs},
+    slot::{self as slot_fields, SlotField},
+};
 use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::{format_ident, quote};
 use syn::{Data, DeriveInput, parse_macro_input};
 
-use crate::{field_slots, topology_attr};
+use crate::topology_attr;
 
 pub(crate) fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -67,9 +41,7 @@ pub(crate) fn derive(input: TokenStream) -> TokenStream {
 
 fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let struct_name = &input.ident;
-    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
-    // Reject enums and unions at the type ident span.
     let fields = match &input.data {
         Data::Struct(s) => &s.fields,
         Data::Enum(_) => {
@@ -86,60 +58,167 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         },
     };
 
-    // Reject `#[resource(...)]` container attributes — deleted in this derive.
-    for attr in &input.attrs {
-        if attr.path().is_ident("resource") {
+    let attr_args = attrs::parse_attrs(&input.attrs, "resource")?;
+    for item in &attr_args.items {
+        let key = match item {
+            attrs::AttrItem::KeyValue { key, .. }
+            | attrs::AttrItem::Flag(key)
+            | attrs::AttrItem::List { key, .. } => key,
+        };
+        if !COMPONENT_KEYS.iter().any(|allowed| key == allowed) {
             return Err(syn::Error::new_spanned(
-                attr,
-                "#[resource(...)] container attribute is not accepted by \
-                 #[derive(Resource)] — it was only used by an older retired derive \
-                 which emitted a todo!() body. \
-                 Write `impl Provider for ... { ... }` directly instead.",
+                key,
+                format!(
+                    "unknown attribute `{key}` in #[resource(...)] — allowed keys: {}",
+                    COMPONENT_KEYS.join(", "),
+                ),
             ));
         }
     }
+    let component = ComponentAttrs::parse(&attr_args, struct_name, "resource", &input.attrs)?;
 
-    // Parse the optional `#[topology(Kind)]` container attribute.
     let topology_kind = topology_attr::parse_topology_attr(&input.attrs)?;
 
-    let slots = field_slots::parse_credential_slot_fields_slots(fields)?;
-    let slot_registrations = field_slots::emit_slot_field_registrations_with_purpose(&slots);
-    let slot_accessors = field_slots::emit_slot_accessors(&slots);
-    let credential_slot_epoch_body = field_slots::emit_credential_slot_epoch_body(&slots);
-    let slot_install_body = field_slots::emit_slot_install_body(&slots, false);
-    let slot_conditional_install_body = field_slots::emit_slot_install_body(&slots, true);
-    let slot_projection_arms = slots.iter().map(|slot| {
-        let key = slot.slot_key();
-        let field = &slot.field_ident;
-        quote! { #key => Some(self.#field.projection_snapshot()) }
-    });
-    let slot_fence_arms = slots.iter().map(|slot| {
-        let key = slot.slot_key();
-        let field = &slot.field_ident;
-        quote! { #key => self.#field.fence_projection_at_generation(expected_generation, fence) }
-    });
-    let slot_metadata_arms = slots.iter().map(|slot| {
-        let key = slot.slot_key();
-        let field = &slot.field_ident;
-        quote! { #key => self.#field.projection_metadata() }
-    });
-    let slot_revoke_body = field_slots::emit_slot_revoke_body(&slots);
-    // Type-level signal: `true` iff the struct declared at least one
-    // `#[credential]` field. Emitted explicitly (rather than relying on the
-    // trait default) so the slot-less case reads `false` at the impl site.
-    let declares_credential_slots = !slots.is_empty();
-    // Unknown-slot validation source list: the real declared slot-key list,
-    // in field declaration order — each `quote!{ #slot_key }` on a `String`
-    // emits a `&'static str` literal token.
-    let slot_key_literals: Vec<String> = slots
-        .iter()
-        .map(field_slots::ParsedCredentialSlot::slot_key)
-        .collect();
+    let slots = slot_fields::parse_slots(fields)?;
+    let component_impl = emit_component(&input, &component, &slots);
+    let has_credential_slots_impl = emit_has_credential_slots(&input, &slots);
+    let slot_accessor_impl = emit_slot_accessors(&input, &slots);
+    let pin_slots_item = emit_pin_slots(&input, &slots);
+    let factory_item = match topology_kind {
+        Some(kind) => emit_factory(struct_name, kind),
+        None => quote! {},
+    };
 
-    let has_credential_slots_impl = quote! {
+    Ok(quote! {
+        #component_impl
+        #has_credential_slots_impl
+        #slot_accessor_impl
+        #pin_slots_item
+        #factory_item
+    })
+}
+
+/// Emit `impl Component`, with a definition-site check of the key literal.
+fn emit_component(
+    input: &DeriveInput,
+    component: &ComponentAttrs,
+    slots: &[SlotField],
+) -> proc_macro2::TokenStream {
+    let struct_name = &input.ident;
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let krate = quote!(::nebula_resource);
+    let key = &component.key;
+    let config = &component.config;
+    let metadata = component.metadata_expr(&krate);
+    let dependencies = slot_fields::emit_dependencies(&krate, slots);
+    quote! {
+        const _: () = ::core::assert!(
+            ::nebula_core::ResourceKey::is_valid_key_const(#key),
+            "invalid resource key literal"
+        );
+
+        impl #impl_generics ::nebula_resource::Component for #struct_name #ty_generics #where_clause {
+            type Kind = ::nebula_resource::kind::Resource;
+            type Config = #config;
+
+            const KEY: &'static str = #key;
+
+            fn metadata() -> ::nebula_resource::Metadata {
+                #metadata
+            }
+
+            fn dependencies() -> ::nebula_resource::Dependencies {
+                #dependencies
+            }
+        }
+    }
+}
+
+/// `<FieldType as ResourceSlot>::cell(&self.field)`.
+fn cell(slot: &SlotField) -> proc_macro2::TokenStream {
+    let field = &slot.field_ident;
+    let ty = &slot.ty;
+    quote! { <#ty as ::nebula_resource::ResourceSlot>::cell(&self.#field) }
+}
+
+/// Emit `impl HasCredentialSlots`: the epoch fold and the per-slot arms.
+fn emit_has_credential_slots(input: &DeriveInput, slots: &[SlotField]) -> proc_macro2::TokenStream {
+    let struct_name = &input.ident;
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+
+    let epoch_body = if slots.is_empty() {
+        quote! { 0 }
+    } else {
+        let generations = slots.iter().map(|slot| {
+            let cell = cell(slot);
+            quote! { #cell.generation() }
+        });
+        quote! {
+            {
+                const __NEBULA_SLOT_EPOCH_K: u64 = 0x0000_0100_0000_01b3;
+                [ #(#generations),* ]
+                    .into_iter()
+                    .fold(0u64, |acc, slot_gen| {
+                        acc.wrapping_mul(__NEBULA_SLOT_EPOCH_K).wrapping_add(slot_gen)
+                    })
+            }
+        }
+    };
+    let declares_credential_slots = !slots.is_empty();
+    let keys: Vec<&String> = slots.iter().map(|slot| &slot.key).collect();
+
+    let install_arms = |conditional: bool| {
+        let arms = slots.iter().map(move |slot| {
+            let key = &slot.key;
+            let ty = &slot.ty;
+            let cell = cell(slot);
+            let install = if conditional {
+                quote! { #cell.install_projected_at_generation(expected_generation, metadata, ::std::sync::Arc::new(guard)) }
+            } else {
+                quote! { #cell.install_projected(metadata, ::std::sync::Arc::new(guard)) }
+            };
+            quote! {
+                #key => {
+                    let metadata = guard.metadata().clone();
+                    let guard = <#ty as ::nebula_resource::ResourceSlot>::typed_guard(guard)?;
+                    #install
+                }
+            }
+        });
+        quote! {
+            match slot {
+                #(#arms,)*
+                _ => ::core::result::Result::Err(::nebula_resource::SlotInstallError::UnknownSlot),
+            }
+        }
+    };
+    let install_body = install_arms(false);
+    let conditional_install_body = install_arms(true);
+    let projection_arms = slots.iter().map(|slot| {
+        let key = &slot.key;
+        let cell = cell(slot);
+        quote! { #key => ::core::option::Option::Some(#cell.projection_snapshot()) }
+    });
+    let fence_arms = slots.iter().map(|slot| {
+        let key = &slot.key;
+        let cell = cell(slot);
+        quote! { #key => #cell.fence_projection_at_generation(expected_generation, fence) }
+    });
+    let metadata_arms = slots.iter().map(|slot| {
+        let key = &slot.key;
+        let cell = cell(slot);
+        quote! { #key => #cell.projection_metadata() }
+    });
+    let revoke_arms = slots.iter().map(|slot| {
+        let key = &slot.key;
+        let cell = cell(slot);
+        quote! { #key => ::core::result::Result::Ok(#cell.revoke()) }
+    });
+
+    quote! {
         impl #impl_generics ::nebula_resource::HasCredentialSlots for #struct_name #ty_generics #where_clause {
             fn credential_slot_epoch(&self) -> u64 {
-                #credential_slot_epoch_body
+                #epoch_body
             }
 
             fn declares_credential_slots() -> bool {
@@ -147,7 +226,7 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
             }
 
             fn credential_slot_names() -> &'static [&'static str] {
-                &[#(#slot_key_literals),*]
+                &[#(#keys),*]
             }
 
             fn supports_credential_slot_projection(&self, slot: &str) -> bool {
@@ -162,13 +241,16 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                 ::nebula_resource::SlotUpdate,
                 ::nebula_resource::SlotInstallError,
             > {
-                #slot_install_body
+                #install_body
             }
 
-            fn credential_slot_projection(&self, slot: &str) -> Option<(u64, Option<::nebula_credential::CredentialGuardMetadata>)> {
+            fn credential_slot_projection(
+                &self,
+                slot: &str,
+            ) -> ::core::option::Option<(u64, ::core::option::Option<::nebula_credential::CredentialGuardMetadata>)> {
                 match slot {
-                    #(#slot_projection_arms,)*
-                    _ => None,
+                    #(#projection_arms,)*
+                    _ => ::core::option::Option::None,
                 }
             }
 
@@ -178,7 +260,7 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                 guard: ::nebula_credential::ErasedCredentialGuard,
                 expected_generation: u64,
             ) -> ::core::result::Result<::nebula_resource::SlotUpdate, ::nebula_resource::SlotInstallError> {
-                #slot_conditional_install_body
+                #conditional_install_body
             }
 
             fn fence_credential_slot_at_generation(
@@ -188,15 +270,18 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                 fence: &mut dyn FnMut(),
             ) -> ::core::result::Result<(), ::nebula_resource::SlotInstallError> {
                 match slot {
-                    #(#slot_fence_arms,)*
-                    _ => Err(::nebula_resource::SlotInstallError::UnknownSlot),
+                    #(#fence_arms,)*
+                    _ => ::core::result::Result::Err(::nebula_resource::SlotInstallError::UnknownSlot),
                 }
             }
 
-            fn credential_slot_metadata(&self, slot: &str) -> Option<::nebula_credential::CredentialGuardMetadata> {
+            fn credential_slot_metadata(
+                &self,
+                slot: &str,
+            ) -> ::core::option::Option<::nebula_credential::CredentialGuardMetadata> {
                 match slot {
-                    #(#slot_metadata_arms,)*
-                    _ => None,
+                    #(#metadata_arms,)*
+                    _ => ::core::option::Option::None,
                 }
             }
 
@@ -207,77 +292,77 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                 ::nebula_resource::SlotUpdate,
                 ::nebula_resource::SlotInstallError,
             > {
-                #slot_revoke_body
+                match slot {
+                    #(#revoke_arms,)*
+                    _ => ::core::result::Result::Err(::nebula_resource::SlotInstallError::UnknownSlot),
+                }
             }
         }
-    };
-
-    let deps_impl = quote! {
-        impl #impl_generics ::nebula_core::DeclaresDependencies for #struct_name #ty_generics #where_clause {
-            fn dependencies() -> ::nebula_core::Dependencies {
-                ::nebula_core::Dependencies::new()
-                    #slot_registrations
-            }
-        }
-    };
-
-    let slot_accessor_impl = if slot_accessors.is_empty() {
-        quote! {}
-    } else {
-        quote! {
-            impl #impl_generics #struct_name #ty_generics #where_clause {
-                #slot_accessors
-            }
-        }
-    };
-
-    // Emit `<Name>Factory` only when `#[topology(Kind)]` is present.
-    let factory_item = match topology_kind {
-        Some(kind) => emit_factory(struct_name, kind),
-        None => quote! {},
-    };
-
-    let pin_slots_item = emit_pin_slots(&input, &slots);
-    let key_check = emit_key_check(&input);
-
-    Ok(quote! {
-        #key_check
-        #has_credential_slots_impl
-        #deps_impl
-        #slot_accessor_impl
-        #pin_slots_item
-        #factory_item
-    })
+    }
 }
 
-/// Emit a definition-site check of the provider's `KEY` literal.
-///
-/// `nebula_resource::key_of` rejects an invalid literal when it is instantiated, which
-/// `cargo check` and an editor never do. This item names the concrete type, so
-/// the same mistake is reported where the resource is declared. A generic
-/// struct has no concrete `KEY` to evaluate here and relies on `key_of` alone.
-fn emit_key_check(input: &DeriveInput) -> proc_macro2::TokenStream {
-    if !input.generics.params.is_empty() {
+/// `SLOT_<KEY>`: the key upper-cased, non-alphanumerics as `_`.
+fn slot_const_suffix(key: &str) -> String {
+    key.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// Emit the `SLOT_<KEY>` constants and `<field>_slot()` accessors.
+fn emit_slot_accessors(input: &DeriveInput, slots: &[SlotField]) -> proc_macro2::TokenStream {
+    if slots.is_empty() {
         return quote! {};
     }
     let struct_name = &input.ident;
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let accessors = slots.iter().map(|slot| {
+        let ty = &slot.ty;
+        let key = &slot.key;
+        let cell = cell(slot);
+        let accessor = format_ident!("{}_slot", slot.field_ident);
+        let const_ident = format_ident!("SLOT_{}", slot_const_suffix(key));
+        let const_doc = format!(
+            "The `{key}` slot key. Match `slot_name` against `Self::{const_ident}` in \
+             `on_credential_refresh`/`on_credential_revoke` so a renamed slot field \
+             becomes a compile error, not a silent no-op."
+        );
+        let accessor_doc =
+            format!("The current value of the `{key}` slot, or `None` while it is unbound.");
+        quote! {
+            #[doc = #const_doc]
+            pub const #const_ident: &str = #key;
+
+            #[doc = #accessor_doc]
+            #[must_use]
+            pub fn #accessor(&self) -> ::core::option::Option<
+                ::std::sync::Arc<<#ty as ::nebula_resource::ResourceSlot>::Guard>
+            > {
+                #cell.load()
+            }
+        }
+    });
     quote! {
-        ::nebula_resource::__assert_provider_key!(#struct_name);
+        impl #impl_generics #struct_name #ty_generics #where_clause {
+            #(#accessors)*
+        }
     }
 }
 
 /// Emit `impl PinSlots` — the per-unit slot snapshot of the managed call
 /// facade.
 ///
-/// A slot-less struct pins `()`. A struct with `#[credential]` slots pins a
-/// generated `<Name>PinnedSlots`: one private `Option<Arc<CredentialGuard<_>>>`
-/// per slot, loaded once per unit, read through a `<field>()` accessor. A
-/// generic struct with slots gets no impl (the pinned type would have to be
-/// generic too); it implements `PinSlots` by hand if it uses the facade.
-fn emit_pin_slots(
-    input: &DeriveInput,
-    slots: &[field_slots::ParsedCredentialSlot],
-) -> proc_macro2::TokenStream {
+/// A slot-less struct pins `()`. A struct with slots pins a generated
+/// `<Name>PinnedSlots`: one private `Option<Arc<_>>` per slot, loaded once per
+/// unit, read through a `<field>()` accessor. A generic struct with slots gets
+/// no impl (the pinned type would have to be generic too); it implements
+/// `PinSlots` by hand if it uses the facade.
+fn emit_pin_slots(input: &DeriveInput, slots: &[SlotField]) -> proc_macro2::TokenStream {
     let struct_name = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     if slots.is_empty() {
@@ -298,21 +383,14 @@ fn emit_pin_slots(
     let guard_types: Vec<proc_macro2::TokenStream> = slots
         .iter()
         .map(|slot| {
-            let inner = &slot.inner_type;
-            if slot.credential_alias {
-                quote! {
-                    ::nebula_credential::CredentialGuard<
-                        <#inner as ::nebula_credential::Credential>::Scheme
-                    >
-                }
-            } else {
-                quote! { ::nebula_credential::CredentialGuard<#inner> }
-            }
+            let ty = &slot.ty;
+            quote! { <#ty as ::nebula_resource::ResourceSlot>::Guard }
         })
         .collect();
+    let cells: Vec<proc_macro2::TokenStream> = slots.iter().map(cell).collect();
     let fields: Vec<&syn::Ident> = slots.iter().map(|slot| &slot.field_ident).collect();
     let struct_doc = format!(
-        "The credential slots of [`{struct_name}`] pinned for one managed call unit.\n\n\
+        "The slots of [`{struct_name}`] pinned for one managed call unit.\n\n\
          Loaded once, at the unit's first grant; every attempt of the unit reads the \
          same guards, and a rotation reaches the next unit. `None` for a slot that was \
          unbound at that grant. Emitted by `#[derive(Resource)]`."
@@ -321,15 +399,12 @@ fn emit_pin_slots(
         .iter()
         .map(|slot| {
             format!(
-                "The `{}` credential pinned for this unit, or `None` if the slot was unbound.",
-                slot.slot_key()
+                "The `{}` slot pinned for this unit, or `None` if it was unbound.",
+                slot.key
             )
         })
         .collect();
-    let slot_keys: Vec<String> = slots
-        .iter()
-        .map(field_slots::ParsedCredentialSlot::slot_key)
-        .collect();
+    let keys: Vec<&String> = slots.iter().map(|slot| &slot.key).collect();
 
     quote! {
         #[doc = #struct_doc]
@@ -351,7 +426,7 @@ fn emit_pin_slots(
             fn fmt(&self, formatter: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
                 formatter
                     .debug_struct(::std::stringify!(#pinned_name))
-                    #( .field(#slot_keys, &self.#fields.is_some()) )*
+                    #( .field(#keys, &self.#fields.is_some()) )*
                     .finish()
             }
         }
@@ -361,7 +436,7 @@ fn emit_pin_slots(
 
             fn pin_slots(&self) -> Self::Pinned {
                 #pinned_name {
-                    #( #fields: self.#fields.load(), )*
+                    #( #fields: #cells.load(), )*
                 }
             }
         }

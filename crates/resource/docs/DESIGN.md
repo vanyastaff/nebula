@@ -121,7 +121,7 @@ Sized`, `destroy(…, cx: TeardownCx)`, дефолты у `check`/`destroy`);
 
 Швы (seam), которыми крейт стыкуется с credential-стеком:
 
-- **Consumer-binding seam.** Resource объявляет `#[credential(key=…)]` слот-поля; framework заполняет их типизированными `CredentialGuard<Scheme>` через `&self` до вызова `create`; derive `Resource` эмитит `<field>_slot()` accessor и `HasCredentialSlots`. Слоты (`slot_bindings`) отделены от параметров; значения персистятся как values-only, схема приходит из зарегистрированных типов через `HasSchema` → `nebula-metadata` → API-каталог.
+- **Consumer-binding seam.** Resource объявляет `#[slot]` поля типа `CredentialSlot<C>`; derive `Resource` перечисляет их в `Component::dependencies()` (единственное объявление слотов, которое читают admission и компилятор плана), эмитит `<field>_slot()` accessor и `HasCredentialSlots`; framework заполняет их типизированными `CredentialGuard<Scheme>` через `&self` до вызова `create`. Слоты (`slot_bindings`) отделены от параметров; значения персистятся как values-only, схема приходит из зарегистрированных типов через `HasSchema` → `nebula-metadata` → API-каталог.
 - **Rotation seam.** `nebula-credential` решает refresh/rotation-state; `nebula-resource` подписывается на событие и через `ResourceFanoutDriver`/`ResourceFanoutIndex` доставляет его до конкретных слотов живых инстансов, вызывая `Provider::on_credential_refresh(&self, slot, runtime)`. Маршрутизация по `policy(&State)` и owner-изоляция (`CredentialSelector`) — обязанность credential-крейта; resource доверяет уже-маршрутизированному событию.
 - **Revoke seam.** `on_credential_revoke` + двухфазный taint→drain — точка, где отзыв credential инвалидирует ресурсные инстансы без TOCTOU; lease — first-class в credential, resource держит лишь срок жизни инстанса вокруг неё.
 
@@ -147,8 +147,8 @@ This completes deployment wiring, not a catalog of first-party resource integrat
   [контракт](../../schema/docs/PHASE5_PROPERTY.md) сохраняет явный `Component::Config` как
   канонический data-тип с value-only `#[property(...)]`; отдельный `#[slot(credential, ...)]`
   описывает зависимости на resource вне `HasSchema` и persisted config values.
-  Handwritten `impl Component` + `impl Provider`, `create(&self, config, ...)`, `Instance`, topology и
-  `ResourceConfig: Clone` сохраняются; текущие `#[credential]` поля — implementation baseline.
+  `impl Component` (из `#[resource(key, config)]` derive или вручную) + `impl Provider`, `create(&self, config, ...)`, `Instance`, topology и
+  `ResourceConfig: Clone` сохраняются; текущие `#[slot]` поля — implementation baseline.
   Общий `Metadata` без ключа и схемы и factory-only привязка ключа и схемы следуют
   [общему metadata-контракту](../../../docs/INTEGRATION_MODEL.md#shared-metadata-authoring-current-foundation-target-parity).
 - ~~**Гигиена feature/тест-команд.**~~ **Closed by Batch D (2026-07-02)** — see §6, items 6-7 above.

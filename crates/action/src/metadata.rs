@@ -2,6 +2,7 @@
 
 use core::num::NonZeroU32;
 
+use nebula_component::{Dependencies, SlotError};
 use nebula_core::ActionKey;
 use nebula_metadata::{
     BaseDefinition, Definition, Metadata, MetadataBuildError, MetadataReadmissionError,
@@ -100,6 +101,9 @@ pub enum ActionAdmissionError {
     /// A remote action's descriptor could not be built.
     #[error(transparent)]
     RemoteEffectDeclaration(#[from] crate::effect::RemoteEffectDeclarationError),
+    /// The action's [slots](nebula_component::Slot) break a rule.
+    #[error(transparent)]
+    Slots(#[from] SlotError),
 }
 
 /// Failure while re-admitting recorded action metadata.
@@ -204,6 +208,7 @@ impl ActionDefinition {
         output_schema
             .ensure_current_semantics()
             .map_err(MetadataBuildError::from)?;
+        let dependencies = nebula_component::dependencies_of::<A>()?;
         let definition = Self {
             base: metadata.bind(key, input_schema)?,
             inputs: interface.inputs.into_boxed_slice(),
@@ -214,6 +219,7 @@ impl ActionDefinition {
             effect_contract: interface.effect_contract,
             max_concurrent: interface.max_concurrent,
             output_schema,
+            dependencies,
         };
         nebula_metadata::check_json_record(&definition).map_err(MetadataBuildError::from)?;
         validate_action_package(&definition)?;
@@ -248,6 +254,10 @@ pub struct ActionDefinition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     max_concurrent: Option<NonZeroU32>,
     output_schema: ValidSchema,
+    /// Read from [`Component::dependencies`](crate::Component::dependencies)
+    /// at admission. Not part of the recorded wire form yet.
+    #[serde(skip)]
+    dependencies: Dependencies,
 }
 
 impl Definition for ActionDefinition {
@@ -305,6 +315,12 @@ impl ActionDefinition {
     #[must_use]
     pub const fn output_schema(&self) -> &ValidSchema {
         &self.output_schema
+    }
+
+    /// The action's slots, read once at admission.
+    #[must_use]
+    pub const fn dependencies(&self) -> &Dependencies {
+        &self.dependencies
     }
 
     /// Output schema with producer polarity.
@@ -455,9 +471,7 @@ impl RecordedActionDefinition {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::OnceLock;
 
-    use nebula_core::Dependencies;
     use nebula_schema::{HasSchema, PropertyCollector, Schema, field_key};
 
     use super::*;
@@ -504,11 +518,6 @@ mod tests {
 
     impl Action for ExampleAction {
         type Output = ExampleOutput;
-
-        fn dependencies() -> &'static Dependencies {
-            static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-            DEPENDENCIES.get_or_init(Dependencies::new)
-        }
     }
 
     fn admitted() -> ActionDefinition {

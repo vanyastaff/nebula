@@ -1,7 +1,7 @@
 //! Authored intent survives schema preparation, runtime dispatch, and repeated iterations.
 
 use std::sync::{
-    Arc, OnceLock,
+    Arc,
     atomic::{AtomicUsize, Ordering},
 };
 
@@ -9,7 +9,7 @@ use nebula_action::{
     Action, ActionContext, ActionError, ActionResult, Component, FromWorkflowNode, StatefulAction,
     kind,
 };
-use nebula_core::{Dependencies, node_key};
+use nebula_core::node_key;
 use nebula_engine::{ActionRegistry, ExecutionResult};
 use nebula_execution::context::ExecutionBudget;
 use nebula_schema::{
@@ -244,11 +244,6 @@ impl Action for IterationProbe {
 
     const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
-    }
 }
 
 impl FromWorkflowNode for IterationProbe {

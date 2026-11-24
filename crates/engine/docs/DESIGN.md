@@ -193,8 +193,8 @@ slot/tenant authority; semantic decoupling требует будущей version
 - `scoped_resources.rs` / `LayeredResourceAccessor` — engine-сторона scoped→global precedence;
 - `EngineResourceAccessor` — без allowlist (скоупинг у topology, не engine).
 
-**Что остаётся истинным.** Consumer-binding модель: action/resource объявляют `#[credential]` /
-`#[resource]` слоты и получают `CredentialGuard<Scheme>`; `slot_bindings` отделены от parameters;
+**Что остаётся истинным.** Consumer-binding модель: action/resource объявляют `#[slot]` поля
+(`Component::dependencies()`) и получают `CredentialGuard<Scheme>`; `slot_bindings` отделены от parameters;
 персистентность values-only (схема — из зарегистрированных типов через `HasSchema → nebula-metadata
 → API-каталог`). Все эти контракты engine **транзитом передаёт**, не владеет ими.
 

@@ -3,17 +3,12 @@ use std::{future::Future, pin::Pin, sync::Arc};
 use nebula_action::{
     ActionContext, ActionError, ActionFactory, ActionHandle, ActionDefinition,
 };
-use nebula_core::Dependencies;
 use nebula_workflow::NodeDefinition;
 
 struct ForgedFactory;
 
 impl ActionFactory for ForgedFactory {
     fn definition(&self) -> &Arc<ActionDefinition> {
-        panic!("compile-only probe")
-    }
-
-    fn dependencies(&self) -> &Dependencies {
         panic!("compile-only probe")
     }
 

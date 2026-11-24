@@ -1,7 +1,4 @@
-use std::sync::OnceLock;
-
 use futures::stream;
-use nebula_core::Dependencies;
 use nebula_workflow::NodeDefinition;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -64,11 +61,6 @@ impl crate::Component for SumStream {
 
 impl Action for SumStream {
     type Output = SumOutput;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl StreamAction for SumStream {
@@ -130,11 +122,6 @@ impl crate::Component for ErrorStream {
 
 impl Action for ErrorStream {
     type Output = Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl StreamAction for ErrorStream {

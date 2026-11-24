@@ -3,8 +3,6 @@
 //! Validates that the macro-generated `StatefulAction` impl correctly drives
 //! cursor-based pagination through the `StatefulTestHarness`.
 
-use std::sync::OnceLock;
-
 use nebula_action::{
     ActionContext,
     action::Action,
@@ -13,7 +11,6 @@ use nebula_action::{
     stateful::{PageResult, PaginatedAction},
     testing::{StatefulTestHarness, TestContextBuilder},
 };
-use nebula_core::Dependencies;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, nebula_schema::Schema)]
@@ -43,11 +40,6 @@ impl nebula_action::Component for NumberPaginator {
 
 impl Action for NumberPaginator {
     type Output = NumberPage;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl PaginatedAction for NumberPaginator {
@@ -101,11 +93,6 @@ impl nebula_action::Component for LimitedPaginator {
 
 impl Action for LimitedPaginator {
     type Output = NumberPage;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl PaginatedAction for LimitedPaginator {

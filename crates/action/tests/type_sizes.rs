@@ -45,9 +45,10 @@ fn top_level_type_sizes_are_stable() {
     );
     // Measured with Rust 1.97.1 on x86_64: typed categories, links, removal/
     // replacement guidance, and checked authoring intent grow ActionDefinition
-    // from 376 to 512 bytes. It is admitted once per action type; the cold
-    // remote-effect descriptor remains boxed.
-    assert_eq!(size_of::<ActionDefinition>(), 512);
+    // from 376 to 512 bytes; the declared slots (one `Vec`) add 24 more. It is
+    // admitted once per action type; the cold remote-effect descriptor
+    // remains boxed.
+    assert_eq!(size_of::<ActionDefinition>(), 536);
     assert_eq!(size_of::<ActionError>(), 72);
 
     // `WebhookRequest` contains a `SystemTime`, which is 8 bytes on

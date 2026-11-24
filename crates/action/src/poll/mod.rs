@@ -809,9 +809,8 @@ impl<K: Hash + Eq + Clone, C> DeduplicatingCursor<K, C> {
 /// ```rust
 /// use std::time::Duration;
 /// use nebula_action::{PollAction, PollConfig, PollCursor, PollResult, TriggerContext};
-/// # use std::sync::OnceLock;
 /// # use nebula_action::{Action, ActionError, ActionDefinition};
-/// # use nebula_core::{Dependencies, action_key};
+/// # use nebula_core::action_key;
 ///
 /// struct RssPoll {
 ///     feed_url: String,
@@ -827,10 +826,6 @@ impl<K: Hash + Eq + Clone, C> DeduplicatingCursor<K, C> {
 /// # }
 /// # impl Action for RssPoll {
 /// #     type Output = serde_json::Value;
-/// #     fn dependencies() -> &'static Dependencies {
-/// #         static D: OnceLock<Dependencies> = OnceLock::new();
-/// #         D.get_or_init(Dependencies::new)
-/// #     }
 /// # }
 /// impl PollAction for RssPoll {
 ///     type Cursor = String; // last-seen entry id

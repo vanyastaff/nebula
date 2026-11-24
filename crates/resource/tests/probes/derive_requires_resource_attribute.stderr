@@ -1,0 +1,17 @@
+error: missing required attribute `key = "..."`
+ --> tests/probes/derive_requires_resource_attribute.rs:7:8
+  |
+7 | struct Unnamed;
+  |        ^^^^^^^
+
+error: missing required attribute `config = SomeType` in #[resource(...)] — it is the component's `Component::Config`; use `()` for none
+  --> tests/probes/derive_requires_resource_attribute.rs:11:8
+   |
+11 | struct NoConfig;
+   |        ^^^^^^^^
+
+error: unknown attribute `kind` in #[resource(...)] — allowed keys: key, name, description, version, config
+  --> tests/probes/derive_requires_resource_attribute.rs:14:48
+   |
+14 | #[resource(key = "probe.unknown", config = (), kind = "pool")]
+   |                                                ^^^^

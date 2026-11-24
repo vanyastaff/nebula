@@ -1,5 +1,0 @@
-error: field with `#[resource]` must have type `ResourceHandle<T>` (optionally wrapped in `Option<...>`) — got: String
-  --> tests/probes/derive_resource_on_wrong_type.rs:16:18
-   |
-16 |     not_a_guard: String,
-   |                  ^^^^^^

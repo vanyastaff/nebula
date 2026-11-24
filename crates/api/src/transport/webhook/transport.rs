@@ -762,7 +762,7 @@ mod tests {
         Action, Component, Metadata, TriggerContext, TriggerEventOutcome, TriggerHandler,
         WebhookAction, WebhookConfig, WebhookRequest, WebhookResponse, WebhookTriggerAdapter, kind,
     };
-    use nebula_core::{BaseContext, Dependencies, scope::Principal};
+    use nebula_core::{BaseContext, scope::Principal};
     use nebula_storage::inmem::InMemoryWebhookActivationStore;
     use nebula_storage_port::Scope;
     use nebula_storage_port::dto::WebhookMode;
@@ -790,11 +790,6 @@ mod tests {
 
     impl Action for NoopWebhook {
         type Output = serde_json::Value;
-
-        fn dependencies() -> &'static Dependencies {
-            static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-            DEPENDENCIES.get_or_init(Dependencies::new)
-        }
     }
 
     impl WebhookAction for NoopWebhook {

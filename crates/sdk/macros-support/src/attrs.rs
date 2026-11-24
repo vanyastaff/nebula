@@ -396,6 +396,14 @@ impl Parse for AttrValueParser {
             path.to_tokens(&mut ts);
             return Ok(Self(AttrValue::Tokens(ts)));
         }
+        // A type such as `()` or `[u8; 4]` ends at the next top-level comma,
+        // so the keys after it stay their own items.
+        let fork = input.fork();
+        if fork.parse::<Type>().is_ok() && (fork.is_empty() || fork.peek(Token![,])) {
+            use quote::ToTokens as _;
+            let ty: Type = input.parse()?;
+            return Ok(Self(AttrValue::Tokens(ty.to_token_stream())));
+        }
         Ok(Self(AttrValue::Tokens(input.parse()?)))
     }
 }
@@ -414,6 +422,13 @@ mod tests {
         assert_eq!(parsed.0.items.len(), 2);
         assert!(parsed.0.get_string("key").is_some());
         assert!(parsed.0.has_flag("required"));
+    }
+
+    #[test]
+    fn a_unit_type_value_ends_at_the_next_comma() {
+        let parsed: AttrArgsParser = syn::parse2(quote!(config = (), kind = "pool")).unwrap();
+        assert_eq!(parsed.0.items.len(), 2);
+        assert!(parsed.0.get_string("kind").is_some());
     }
 
     #[test]

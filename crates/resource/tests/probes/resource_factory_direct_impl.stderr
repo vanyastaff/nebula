@@ -15,7 +15,7 @@ help: the trait `factory::private::Sealed` is implemented for `KindActivator<R, 
    |
    | / impl<R, FRes, FTopo> private::Sealed for KindActivator<R, FRes, FTopo>
    | | where
-   | |     R: Provider + nebula_core::DeclaresDependencies,
+   | |     R: Provider,
    | |     R::Config: serde::de::DeserializeOwned,
 ...  |
    | |     FTopo:

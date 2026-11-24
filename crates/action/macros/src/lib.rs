@@ -1,7 +1,7 @@
 //! Proc-macro crate for the `Action` derive macro and `#[action_phantom]` attribute macro.
 //!
-//! - `#[derive(Action)]` generates `DeclaresDependencies` and `Action` trait impls with
-//!   `metadata()`.
+//! - `#[derive(Action)]` generates the `Component` impl (key, config, metadata and the slots
+//!   of its `#[slot]` fields), the `Action` impl and the slot-filling `FromWorkflowNode` impl.
 //! - `#[action_phantom]` rewrites `CredentialRef<dyn X>` field types to `CredentialRef<dyn
 //!   XPhantom>` per Tech Spec 2.7.
 //!
@@ -24,7 +24,6 @@ use proc_macro::TokenStream;
 mod action;
 mod action_attr;
 mod action_attrs;
-mod field_slots;
 
 /// Derive macro for the `Action` trait.
 ///
@@ -45,6 +44,13 @@ mod field_slots;
 ///   journaled actions get read-only handles, whose writes are refused before any
 ///   provider call).
 ///
+/// ## Field attributes
+///
+/// - `#[slot]` or `#[slot(key = "...", purpose = "...")]` - the field holds a slot. Its type
+///   says what the slot points at and whether it is required: `ResourceHandle<R>`,
+///   `CredentialSlot<C>`, or either in `Option<...>`. The key defaults to the field name.
+///   The derive fills every slot field before each run; other fields take `Default`.
+///
 /// # Example
 ///
 /// For a compiling end-to-end example, see the runnable doctest on
@@ -63,7 +69,7 @@ mod field_slots;
 /// )]
 /// pub struct DirectoryLookupAction;
 /// ```
-#[proc_macro_derive(Action, attributes(action, nebula, resource, credential))]
+#[proc_macro_derive(Action, attributes(action, nebula, slot, resource, credential))]
 pub fn derive_action(input: TokenStream) -> TokenStream {
     nebula_macro_support::paths::resolve_generated_crate_paths(action::derive(input).into()).into()
 }

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use nebula_core::{Dependencies, resource_key};
+use nebula_core::resource_key;
 use nebula_resource::{Component, kind};
 use nebula_resource::{
     Error, HasCredentialSlots, KindActivator, Metadata, Provider, RecordedResourceDefinition,
@@ -72,12 +72,6 @@ impl HasCredentialSlots for MetadataProbe {
     }
 }
 
-impl nebula_core::DeclaresDependencies for MetadataProbe {
-    fn dependencies() -> Dependencies {
-        Dependencies::new()
-    }
-}
-
 impl Component for MetadataProbe {
     type Kind = kind::Resource;
     type Config = EmptyRecordConfig;
@@ -125,8 +119,6 @@ impl HasCredentialSlots for ExplicitMetadataProbe {
         false
     }
 }
-
-impl nebula_core::DeclaresDependencies for ExplicitMetadataProbe {}
 
 impl Component for ExplicitMetadataProbe {
     type Kind = kind::Resource;

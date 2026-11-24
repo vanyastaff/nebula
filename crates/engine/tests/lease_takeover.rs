@@ -30,7 +30,7 @@ mod workflow_fixture;
 use std::{
     collections::HashMap,
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicI64, AtomicU32, Ordering},
     },
     time::Duration,
@@ -43,7 +43,7 @@ use nebula_action::{
     result::{ActionResult, WaitCondition},
     stateless::StatelessAction,
 };
-use nebula_core::{Dependencies, id::WorkflowId, node_key};
+use nebula_core::{id::WorkflowId, node_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, ControlConsumer, ControlDispatch, DataPassingPolicy,
     EngineControlDispatch, ExecutionEvent, InProcessRunner, WorkflowEngine,
@@ -205,10 +205,6 @@ macro_rules! fixture_action_impl {
 
             const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
                 nebula_action::effect::ActionEffectContract::ReadOnly;
-            fn dependencies() -> &'static Dependencies {
-                static D: OnceLock<Dependencies> = OnceLock::new();
-                D.get_or_init(Dependencies::new)
-            }
         }
     };
 }

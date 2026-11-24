@@ -18,7 +18,7 @@
 
 use std::{
     sync::{
-        Arc, Mutex, OnceLock,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
@@ -37,7 +37,6 @@ use nebula_action::{
 use nebula_api::transport::webhook::{
     PersistParams, WebhookTransport, WebhookTransportConfig, activate_and_persist,
 };
-use nebula_core::Dependencies;
 use nebula_storage::inmem::InMemoryWebhookActivationStore;
 use nebula_storage_port::{
     Scope,
@@ -83,10 +82,6 @@ impl Component for GitHubLikeWebhook {
 
 impl Action for GitHubLikeWebhook {
     type Output = serde_json::Value;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl WebhookAction for GitHubLikeWebhook {
@@ -437,10 +432,6 @@ impl Component for HangingWebhook {
 
 impl Action for HangingWebhook {
     type Output = serde_json::Value;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl WebhookAction for HangingWebhook {
@@ -654,10 +645,6 @@ impl Component for UnsignedWebhook {
 
 impl Action for UnsignedWebhook {
     type Output = serde_json::Value;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl WebhookAction for UnsignedWebhook {
@@ -703,10 +690,6 @@ impl Component for DefaultConfigWebhook {
 
 impl Action for DefaultConfigWebhook {
     type Output = serde_json::Value;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl WebhookAction for DefaultConfigWebhook {

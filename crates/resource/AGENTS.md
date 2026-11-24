@@ -24,7 +24,7 @@
 
 ## Conventions & never-do
 
-- Credentials are declared as `#[credential(key="…")] field: SlotCell<CredentialGuard<C>>`; read via derive-emitted `self.<field>_slot()` (`Option<Arc<…>>`, handle `None`/unbound) — never off the raw cell. No singular `Resource::Credential`; `NoCredential` is gone.
+- `#[derive(Resource)]` + `#[resource(key = "…", config = …)]` writes the `Component` impl; credentials are declared as `#[slot] field: CredentialSlot<C>` and listed in `Component::dependencies()`, the one slot declaration admission and the plan compiler read. Read via derive-emitted `self.<field>_slot()` (`Option<Arc<…>>`, handle `None`/unbound) — never off the raw cell. No singular `Resource::Credential`; `NoCredential` is gone.
 - This crate is NOT a connection driver, retry pipeline, secret holder, or expression evaluator — it owns the lifecycle wrapper only (see Non-goals).
 - Async release is best-effort on crash; never assume "release ran" without an explicit checkpoint (canon §11.4).
 - For teardown changes, read `src/runtime/teardown.rs` and `src/manager/shutdown.rs` before relying on README hook descriptions. A declared provider hook is not proof of a runtime call site, and queued release is not completed physical destruction.

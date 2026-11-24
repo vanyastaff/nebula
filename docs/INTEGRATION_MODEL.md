@@ -44,8 +44,19 @@ selects (`ActionKey`, `ResourceKey`, `CredentialKey`), and
 `nebula_component::admit::<C>()` is the one shared admission of metadata, key
 and `Config` schema. `Action: Component<Kind = kind::Action>` adds `Output`,
 the type-level interface (`inputs()`, `outputs()`, `ISOLATION_LEVEL`,
-`EFFECT_CONTRACT`, `MAX_CONCURRENT`) and `dependencies()`. An action's form
-data is its `Component::Config`, like a credential's or a resource's.
+`EFFECT_CONTRACT`, `MAX_CONCURRENT`). An action's form data is its
+`Component::Config`, like a credential's or a resource's.
+
+`Component::dependencies()` (default: none) is the one declaration of what a
+component needs: a list of `Slot`s, each a key, whether it is required, and the
+component it points at (`SlotTarget::{Resource, Credential}`). The derives
+write it from `#[slot]` fields, and the field type decides the target through
+`SlotValue`: `ResourceHandle<R>` points at the resource `R`,
+`CredentialSlot<C>` at the credential `C`, and `Option<...>` makes the slot
+optional. Admission validates the list (slot keys are 1 to 64 of `[a-z0-9_]`,
+unique) into the definition, and the plan compiler, the engine and resource
+registration read it from there. Today an action declares resource and
+credential slots and a resource declares credential slots.
 
 Every concept in Nebula's integration layer is described by two things:
 
@@ -149,8 +160,8 @@ APIs.
 
 **Target authoring:** `#[property(display(...), input(...), validate(...),
 options(...))]` describes values only; the blocks are optional according to the
-property's needs. `#[slot(credential, ...)]` and `#[slot(resource, ...)]` declare
-dependencies separately. `Component::Config`, for an action, a credential or a
+property's needs. `#[slot]` fields declare dependencies separately (shipped in
+0.42.0; the field type, not the attribute, names the kind). `Component::Config`, for an action, a credential or a
 resource, remains a permanently supported, canonical explicit data type;
 `Action::Output` remains explicit too. They are not migration-only escape hatches,
 and no derive requires an associated type to be `Self`.
@@ -158,8 +169,8 @@ and no derive requires an associated type to be `Self`.
 | Declaration | Target authoring location | Included in `HasSchema` | Persisted as values | Binding source |
 |---|---|---:|---:|---|
 | Parameter / config / credential property | `#[property(...)]` on the associated data type or schema-only type | yes | yes, subject to existing disclosure rules | authored values |
-| Credential slot | `#[slot(credential, ...)]` on an action or resource | no | no | `slot_bindings` |
-| Resource slot | `#[slot(resource, ...)]` on an action | no | no | `slot_bindings` |
+| Credential slot | `#[slot]` on a `CredentialSlot<C>` field of an action or resource | no | no | `slot_bindings` |
+| Resource slot | `#[slot]` on a `ResourceHandle<R>` field of an action | no | no | `slot_bindings` |
 
 Target `#[schema_type(input)]`, `#[schema_type(output)]` or `#[schema_type(input, output)]`
 owns real library Serde derives plus Schema on the same DTO and generates recursive

@@ -106,18 +106,8 @@ pub type SessionFuture<'s, T> =
 /// }
 ///
 /// #[derive(Resource, Clone)]
+/// #[resource(key = "doctest.ledger", config = ())]
 /// struct Ledger;
-///
-/// impl Component for Ledger {
-///     type Kind = kind::Resource;
-///     type Config = ();
-///
-///     const KEY: &'static str = "doctest.ledger";
-///
-///     fn metadata() -> Metadata {
-///         Metadata::new(metadata_name!("Ledger"), "")
-///     }
-/// }
 ///
 /// #[async_trait]
 /// impl Provider for Ledger {

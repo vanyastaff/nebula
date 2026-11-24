@@ -32,12 +32,6 @@ impl Action for Echo {
 
     const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static nebula_core::Dependencies {
-        static DEPENDENCIES: std::sync::OnceLock<nebula_core::Dependencies> =
-            std::sync::OnceLock::new();
-        DEPENDENCIES.get_or_init(nebula_core::Dependencies::new)
-    }
 }
 
 impl StatelessAction for Echo {

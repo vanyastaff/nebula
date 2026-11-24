@@ -8,10 +8,7 @@ use std::{
     },
 };
 
-use nebula_core::{
-    CredentialKey, DeclaresDependencies, Dependencies, ResourceKey,
-    dependencies::{SlotField, SlotKind},
-};
+use nebula_core::{CredentialKey, ResourceKey};
 use nebula_resource::{
     KindActivator, Resident, ResourceContext, ResourceEvent,
     error::Error as ResourceError,
@@ -23,6 +20,40 @@ use nebula_storage::inmem::InMemoryResourceStore;
 use super::*;
 
 // ── Test resources ─────────────────────────────────────────────────────────
+
+/// The credential type behind the `auth` slots of the fixtures; activation
+/// resolves it by its key, `auth`.
+struct AuthCredential;
+
+impl nebula_credential::Component for AuthCredential {
+    type Kind = nebula_credential::kind::Credential;
+    type Config = ();
+
+    const KEY: &'static str = "auth";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_credential::metadata_name!("auth"), "")
+    }
+}
+
+impl nebula_credential::Credential for AuthCredential {
+    type Scheme = nebula_credential::scheme::SecretToken;
+    type State = nebula_credential::scheme::SecretToken;
+
+    fn project(state: &Self::State) -> Self::Scheme {
+        state.clone()
+    }
+
+    async fn resolve(
+        _properties: &(),
+        _ctx: &nebula_credential::CredentialContext,
+    ) -> Result<
+        nebula_credential::StaticResolveResult<Self::State>,
+        nebula_credential::CredentialError,
+    > {
+        Err(nebula_credential::CredentialError::NotInteractive)
+    }
+}
 
 #[derive(Clone, Debug, serde::Deserialize, nebula_schema::Schema)]
 struct LabelConfig {
@@ -80,12 +111,6 @@ impl Provider for Plain {
 
 nebula_resource::no_credential_slots!(Plain);
 
-impl DeclaresDependencies for Plain {
-    fn dependencies() -> Dependencies {
-        Dependencies::new()
-    }
-}
-
 impl resident::ResidentProvider for Plain {
     fn is_alive_sync(&self, _runtime: &Arc<AtomicU64>) -> bool {
         true
@@ -130,12 +155,6 @@ impl Provider for Misnamed {
 
 nebula_resource::no_credential_slots!(Misnamed);
 
-impl DeclaresDependencies for Misnamed {
-    fn dependencies() -> Dependencies {
-        Dependencies::new()
-    }
-}
-
 impl resident::ResidentProvider for Misnamed {
     fn is_alive_sync(&self, _runtime: &Arc<AtomicU64>) -> bool {
         true
@@ -171,6 +190,12 @@ impl nebula_resource::Component for Slotted {
             String::new(),
         )
     }
+
+    fn dependencies() -> nebula_resource::Dependencies {
+        nebula_resource::Dependencies::none().slot(nebula_resource::Slot::of::<
+            nebula_resource::CredentialSlot<AuthCredential>,
+        >(AUTH_SLOT))
+    }
 }
 
 #[async_trait::async_trait]
@@ -184,23 +209,6 @@ impl Provider for Slotted {
         _ctx: &ResourceContext,
     ) -> Result<Arc<AtomicU64>, ResourceError> {
         Ok(Arc::new(AtomicU64::new(1)))
-    }
-}
-
-impl DeclaresDependencies for Slotted {
-    fn dependencies() -> Dependencies {
-        Dependencies::new().slot_field(SlotField {
-            slot_key: AUTH_SLOT,
-            default_id: AUTH_SLOT,
-            kind: SlotKind::Credential {
-                type_id: std::any::TypeId::of::<()>(),
-                type_name: "test-credential",
-                key: CredentialKey::new("auth").expect("valid credential key"),
-            },
-            required: true,
-            lazy: false,
-            purpose: None,
-        })
     }
 }
 

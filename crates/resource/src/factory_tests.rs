@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use nebula_core::{Dependencies, ResourceKey, ResourceRequirement, resource_key};
+use nebula_core::ResourceKey;
 use nebula_error::{Classify, ErrorCategory};
 use nebula_expression::ExpressionEngine;
 
@@ -65,8 +65,6 @@ struct TestRes {
     create_counter: Arc<AtomicU64>,
 }
 
-struct TestResourceDependency;
-
 impl TestRes {
     fn new(create_counter: Arc<AtomicU64>) -> Self {
         Self { create_counter }
@@ -96,16 +94,6 @@ impl Provider for TestRes {
     ) -> Result<Arc<AtomicU64>, ResourceError> {
         let id = self.create_counter.fetch_add(1, Ordering::Relaxed);
         Ok(Arc::new(AtomicU64::new(id)))
-    }
-}
-
-impl nebula_core::DeclaresDependencies for TestRes {
-    fn dependencies() -> Dependencies {
-        Dependencies::new().resource(ResourceRequirement::new(
-            resource_key!("test-factory-dependency"),
-            TypeId::of::<TestResourceDependency>(),
-            std::any::type_name::<TestResourceDependency>(),
-        ))
     }
 }
 
@@ -159,6 +147,35 @@ impl crate::Component for BoundTestRes {
     fn metadata() -> Metadata {
         Metadata::new(crate::metadata_name!("BoundTestRes"), "")
     }
+
+    fn dependencies() -> crate::Dependencies {
+        crate::Dependencies::none().slot(crate::Slot::of::<FactoryCredentialCell>("auth"))
+    }
+}
+
+/// The credential `BoundTestRes` builds on; only its identity matters here.
+#[cfg(feature = "rotation")]
+struct FactoryCredential;
+
+#[cfg(feature = "rotation")]
+impl crate::Component for FactoryCredential {
+    type Kind = crate::kind::Credential;
+    type Config = ();
+
+    const KEY: &'static str = "test.factory-credential";
+
+    fn metadata() -> Metadata {
+        Metadata::new(crate::metadata_name!("Factory credential"), "")
+    }
+}
+
+/// Names the slot's target; `BoundTestRes` keeps its own hand-written cell.
+#[cfg(feature = "rotation")]
+struct FactoryCredentialCell;
+
+#[cfg(feature = "rotation")]
+impl crate::SlotValue for FactoryCredentialCell {
+    type Target = FactoryCredential;
 }
 
 #[cfg(feature = "rotation")]
@@ -258,24 +275,6 @@ impl crate::HasCredentialSlots for BoundTestRes {
 }
 
 #[cfg(feature = "rotation")]
-impl nebula_core::DeclaresDependencies for BoundTestRes {
-    fn dependencies() -> Dependencies {
-        Dependencies::new().slot_field(nebula_core::SlotField {
-            slot_key: "auth",
-            default_id: "auth",
-            kind: SlotKind::Credential {
-                type_id: TypeId::of::<()>(),
-                type_name: std::any::type_name::<()>(),
-                key: nebula_core::credential_key!("test.factory-credential"),
-            },
-            required: true,
-            lazy: false,
-            purpose: None,
-        })
-    }
-}
-
-#[cfg(feature = "rotation")]
 #[async_trait::async_trait]
 impl ResidentProvider for BoundTestRes {}
 
@@ -291,10 +290,6 @@ impl private::Sealed for DivergentIdentityFactory {}
 impl ResourceFactory for DivergentIdentityFactory {
     fn key(&self) -> ResourceKey {
         self.inner.key()
-    }
-
-    fn dependencies(&self) -> &Dependencies {
-        self.inner.dependencies()
     }
 
     fn resource_type_id(&self) -> TypeId {
@@ -422,27 +417,85 @@ fn key_coherence_law() {
 #[test]
 fn factory_exposes_exact_resource_contract() {
     let factory = test_factory(Arc::new(AtomicU64::new(0)));
-    let [resource_requirement] = factory.dependencies().resources() else {
-        panic!("factory must expose the resource's one declared dependency");
-    };
-
     assert_eq!(factory.resource_type_id(), TypeId::of::<TestRes>());
-    assert_eq!(
-        resource_requirement.key,
-        resource_key!("test-factory-dependency")
+    assert!(
+        factory
+            .definition()
+            .expect("admitted")
+            .dependencies()
+            .is_empty()
     );
-    assert_eq!(
-        resource_requirement.type_id,
-        TypeId::of::<TestResourceDependency>()
+}
+
+#[cfg(feature = "rotation")]
+#[test]
+fn the_definition_carries_the_resource_credential_slots() {
+    let definition = ResourceDefinition::admit_for::<BoundTestRes>().expect("admitted");
+    let [(slot, target)] = definition
+        .dependencies()
+        .credential_slots()
+        .collect::<Vec<_>>()[..]
+    else {
+        panic!("one credential slot");
+    };
+    assert_eq!(slot.key(), "auth");
+    assert!(slot.is_required());
+    assert_eq!(target.key().as_str(), "test.factory-credential");
+    assert_eq!(target.type_id(), TypeId::of::<FactoryCredential>());
+}
+
+/// A resource that declares a slot on another resource, which admission
+/// refuses until resources can build on resources.
+struct NestedRes;
+
+impl crate::Component for NestedRes {
+    type Kind = crate::kind::Resource;
+    type Config = TestConfig;
+
+    const KEY: &'static str = "test-factory-nested-res";
+
+    fn metadata() -> Metadata {
+        Metadata::new(crate::metadata_name!("NestedRes"), "")
+    }
+
+    fn dependencies() -> crate::Dependencies {
+        crate::Dependencies::none().slot(crate::Slot::of::<crate::call::ResourceHandle<TestRes>>(
+            "inner",
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for NestedRes {
+    type Instance = Arc<AtomicU64>;
+    type Topology = Resident<Self>;
+
+    async fn create(
+        &self,
+        _config: &TestConfig,
+        _ctx: &crate::ResourceContext,
+    ) -> Result<Arc<AtomicU64>, ResourceError> {
+        Ok(Arc::new(AtomicU64::new(0)))
+    }
+}
+
+crate::no_credential_slots!(NestedRes);
+
+#[async_trait::async_trait]
+impl ResidentProvider for NestedRes {}
+
+#[test]
+fn admission_refuses_a_slot_on_another_resource() {
+    let Err(error) = ResourceDefinition::admit_for::<NestedRes>() else {
+        panic!("a resource slot on a resource must be refused");
+    };
+    assert!(
+        matches!(
+            error,
+            crate::ResourceAdmissionError::ResourceSlot { key: "inner" }
+        ),
+        "{error}"
     );
-    assert_eq!(
-        resource_requirement.type_name,
-        std::any::type_name::<TestResourceDependency>()
-    );
-    assert!(resource_requirement.required);
-    assert_eq!(resource_requirement.purpose, None);
-    assert!(factory.dependencies().credentials().is_empty());
-    assert!(factory.dependencies().slot_fields().is_empty());
 }
 
 #[test]

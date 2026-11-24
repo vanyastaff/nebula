@@ -12,7 +12,8 @@
 use std::{any::TypeId, collections::HashMap, sync::Arc};
 
 use nebula_action::{ActionDefinition, ActionFactory};
-use nebula_core::{ActionKey, CredentialKey, Dependencies, PluginKey, ResourceKey};
+use nebula_component::Dependencies;
+use nebula_core::{ActionKey, CredentialKey, PluginKey, ResourceKey};
 use nebula_credential::{AnyCredential, Capabilities, CredentialDefinition};
 use nebula_metadata::PluginManifest;
 use nebula_resource::{ResourceDefinition, ResourceFactory};
@@ -22,7 +23,6 @@ use crate::{ComponentKind, PluginError, plugin::Plugin};
 
 pub(crate) struct ActionContractSnapshot {
     metadata: Arc<ActionDefinition>,
-    dependencies: Dependencies,
 }
 
 impl ActionContractSnapshot {
@@ -30,8 +30,8 @@ impl ActionContractSnapshot {
         &self.metadata
     }
 
-    pub(crate) const fn dependencies(&self) -> &Dependencies {
-        &self.dependencies
+    pub(crate) fn dependencies(&self) -> &Dependencies {
+        self.metadata.dependencies()
     }
 }
 
@@ -75,7 +75,6 @@ struct ProjectedCredential {
 
 pub(crate) struct ResourceContractSnapshot {
     metadata: ResourceDefinition,
-    dependencies: Dependencies,
     type_id: TypeId,
 }
 
@@ -85,7 +84,7 @@ impl ResourceContractSnapshot {
     }
 
     pub(crate) const fn dependencies(&self) -> &Dependencies {
-        &self.dependencies
+        self.metadata.dependencies()
     }
 
     pub(crate) const fn type_id(&self) -> TypeId {
@@ -257,16 +256,12 @@ impl ResolvedPlugin {
             .into_iter()
             .map(|factory| {
                 let metadata = Arc::clone(factory.definition());
-                let dependencies = factory.dependencies().clone();
                 let key = metadata.base().key().clone();
                 Ok::<_, PluginError>((
                     key,
                     ResolvedAction {
                         factory,
-                        contract: ActionContractSnapshot {
-                            metadata,
-                            dependencies,
-                        },
+                        contract: ActionContractSnapshot { metadata },
                     },
                 ))
             })
@@ -377,17 +372,12 @@ impl ResolvedPlugin {
             .map(|factory| {
                 let key = factory.key();
                 let metadata = factory.definition()?.clone();
-                let dependencies = factory.dependencies().clone();
                 let type_id = factory.resource_type_id();
                 Ok::<_, PluginError>((
                     key,
                     ResolvedResource {
                         factory,
-                        contract: ResourceContractSnapshot {
-                            metadata,
-                            dependencies,
-                            type_id,
-                        },
+                        contract: ResourceContractSnapshot { metadata, type_id },
                     },
                 ))
             })

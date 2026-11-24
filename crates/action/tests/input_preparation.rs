@@ -1,6 +1,6 @@
 //! Every JSON-erased input adapter crosses the same schema preparation boundary.
 
-use std::{assert_matches, error::Error, sync::OnceLock};
+use std::{assert_matches, error::Error};
 
 use futures::{Stream, stream};
 use nebula_action::{
@@ -11,7 +11,7 @@ use nebula_action::{
     StatefulAction, StatefulActionAdapter, StatefulHandle, StatelessAction, StatelessActionAdapter,
     StatelessHandle, StreamAction, TestContextBuilder, kind,
 };
-use nebula_core::{Dependencies, node_key};
+use nebula_core::node_key;
 use nebula_schema::{
     AuthoredValue, HasSchema, Predicate, Property, Rule, Schema, Transformer, ValidSchema,
     ValidationReport, field_key,
@@ -107,11 +107,6 @@ impl Component for Probe {
 
 impl Action for Probe {
     type Output = Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
-    }
 }
 
 nebula_action::stateless_entry!(

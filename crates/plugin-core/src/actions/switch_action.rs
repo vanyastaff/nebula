@@ -161,11 +161,6 @@ impl nebula_action::action::Action for CoreSwitch {
             include_fallback: true,
         })]
     }
-
-    fn dependencies() -> &'static nebula_action::Dependencies {
-        static DEPS: OnceLock<nebula_action::Dependencies> = OnceLock::new();
-        DEPS.get_or_init(nebula_action::Dependencies::new)
-    }
 }
 
 impl nebula_action::from_workflow_node::FromWorkflowNode for CoreSwitch {

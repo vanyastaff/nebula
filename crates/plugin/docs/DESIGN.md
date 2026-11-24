@@ -207,7 +207,7 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
 - **Что остаётся неизменным.** Namespace-инвариант, single-source-of-truth-регистрация,
   registry-дедуп и in-process cross-plugin closure (ADR-0091) ортогональны
   credential/resource-rewrite. Plugin остаётся **каталогизатором**: компоненты декларируют
-  слоты (`#[credential]`/`#[resource]`) и получают `CredentialGuard<Scheme>` на уровне
+  слоты (`#[slot]`, `Component::dependencies()`) и получают `CredentialGuard<Scheme>` на уровне
   action/resource, но это происходит **ниже** plugin — он лишь поставляет типы в каталог
   (values-only persistence, schema из зарегистрированных типов через `HasSchema` →
   `nebula-metadata` → API-каталог). Façade-уровня credential (policy(&State)-routing,

@@ -53,8 +53,6 @@ pub mod auth;
 pub mod branch_key;
 /// Context system -- base trait + capabilities.
 pub mod context;
-/// Dependency declaration types.
-pub mod dependencies;
 /// Guard traits for RAII resource/credential wrappers.
 pub mod guard;
 /// Unique identifiers for Nebula entities (prefixed ULIDs).
@@ -97,7 +95,6 @@ pub use context::{
     BaseContext, BaseContextBuilder, Context, HasCredentials, HasEventBus, HasLogger, HasMetrics,
     HasResources,
 };
-pub use dependencies::*;
 pub use error::*;
 pub use guard::{Guard, TypedGuard, debug_redacted, debug_typed};
 pub use id::*;
@@ -180,8 +177,6 @@ pub mod prelude {
     // Parse errors
     pub use domain_key::{KeyParseError, UlidParseError};
 
-    // Dependency error type
-    pub use crate::dependencies::DependencyError;
     pub use crate::error::{CoreError, CoreResult};
     // Identifiers (ULID-backed)
     pub use crate::id::{

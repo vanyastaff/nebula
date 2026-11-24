@@ -6,13 +6,12 @@
 //! <https://stripe.com/docs/webhooks/signatures>.
 
 use std::{
-    sync::{Arc, OnceLock},
+    sync::Arc,
     time::{Duration, SystemTime},
 };
 
 use bytes::Bytes;
 use http::{HeaderName, StatusCode};
-use nebula_core::Dependencies;
 use nebula_error::decode::value_free_decode_summary;
 use tracing::debug;
 
@@ -73,11 +72,6 @@ impl crate::Component for StripeWebhookAction {
 
 impl Action for StripeWebhookAction {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl WebhookAction for StripeWebhookAction {

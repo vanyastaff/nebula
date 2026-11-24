@@ -601,14 +601,13 @@ impl WebhookResponse {
 /// prefix-length timing side-channel.
 ///
 /// ```rust
-/// # use std::sync::OnceLock;
 /// use http::{HeaderMap, Method};
 /// use nebula_action::trigger::TriggerEventOutcome;
 /// use nebula_action::webhook::{
 ///     verify_hmac_sha256, WebhookAction, WebhookRequest, WebhookResponse,
 /// };
 /// use nebula_action::{Action, ActionError, ActionDefinition, TriggerContext};
-/// # use nebula_core::{Dependencies, action_key};
+/// # use nebula_core::action_key;
 ///
 /// /// State returned by `on_activate` and handed back to every request.
 /// #[derive(Clone)]
@@ -625,10 +624,6 @@ impl WebhookResponse {
 /// # }
 /// # impl Action for GitHubWebhook {
 /// #     type Output = serde_json::Value;
-/// #     fn dependencies() -> &'static Dependencies {
-/// #         static D: OnceLock<Dependencies> = OnceLock::new();
-/// #         D.get_or_init(Dependencies::new)
-/// #     }
 /// # }
 ///
 /// impl WebhookAction for GitHubWebhook {

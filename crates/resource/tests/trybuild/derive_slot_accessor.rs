@@ -1,46 +1,34 @@
-//! Compile-pass probe: `#[derive(Resource)]` accepts a named `#[credential]`
-//! field of shape `SlotCell<CredentialGuard<C>>` and emits an inherent read
-//! accessor `<field>_slot(&self) -> Option<Arc<CredentialGuard<C>>>` that
-//! delegates to `SlotCell::load` (slot model, two-derive pattern).
+//! Compile-pass probe: `#[derive(Resource)]` accepts a `#[slot]` field of
+//! type `CredentialSlot<C>` and emits an inherent read accessor
+//! `<field>_slot(&self) -> Option<Arc<CredentialGuard<C::Scheme>>>`, the
+//! `SLOT_<KEY>` constant, the pinned `<field>()` accessor and the resolver
+//! install bridge.
 
 use std::sync::Arc;
 
 use nebula_credential::{
-    Credential, CredentialContext, CredentialError, CredentialGuard, Metadata,
-    SecretString, SecretToken, StaticResolveResult,
-    Component, kind,
+    Component, Credential, CredentialContext, CredentialError, CredentialGuard, Metadata,
+    SecretString, SecretToken, StaticResolveResult, kind,
 };
-use nebula_resource::{CredentialSlot, HasCredentialSlots, PinSlots, Resource, SlotCell};
-use zeroize::Zeroize;
+use nebula_resource::{CredentialSlot, HasCredentialSlots, PinSlots, Resource};
 
 #[derive(Resource)]
+#[resource(key = "probe.demo", config = ())]
 struct Demo {
-    #[credential(key = "db")]
-    db: SlotCell<CredentialGuard<FakeCred>>,
-}
-
-#[derive(Resource)]
-struct AliasDemo {
-    #[credential(key = "api")]
-    api: CredentialSlot<FakeCred>,
+    #[slot(key = "api", purpose = "API token")]
+    token: CredentialSlot<FakeCred>,
 }
 
 struct FakeCred;
-
-impl Zeroize for FakeCred {
-    fn zeroize(&mut self) {}
-}
 
 impl Component for FakeCred {
     type Kind = kind::Credential;
     type Config = ();
 
-    const KEY: &'static str = "demo.fake";
+    const KEY: &'static str = "probe.fake";
 
     fn metadata() -> Metadata {
-        Metadata::new(nebula_credential::metadata_name!("FakeCred"),
-            "trybuild slot-accessor fixture",
-        )
+        Metadata::new(nebula_credential::metadata_name!("FakeCred"), "probe fixture")
     }
 }
 
@@ -63,29 +51,26 @@ impl Credential for FakeCred {
 }
 
 fn main() {
-    let d = Demo {
-        db: SlotCell::empty(),
+    let demo = Demo {
+        token: CredentialSlot::empty(),
     };
-    // The derive-generated inherent accessor exists, type-checks, and returns
-    // `None` while the slot is unresolved.
-    let _maybe: Option<Arc<CredentialGuard<FakeCred>>> = d.db_slot();
-    assert!(_maybe.is_none());
-
-    let alias = AliasDemo {
-        api: CredentialSlot::<FakeCred>::empty(),
-    };
-    let _projected: Option<Arc<CredentialGuard<SecretToken>>> = alias.api_slot();
-    assert!(_projected.is_none());
+    // The derive-generated inherent accessor returns `None` while the slot
+    // is unbound.
+    let current: Option<Arc<CredentialGuard<SecretToken>>> = demo.token_slot();
+    assert!(current.is_none());
+    let _: &str = Demo::SLOT_API;
 
     // The derive-emitted `PinSlots` snapshot borrows each pinned guard.
-    let pinned: DemoPinnedSlots = PinSlots::pin_slots(&d);
-    let _pinned_db: Option<&CredentialGuard<FakeCred>> = pinned.db();
-    let alias_pinned: AliasDemoPinnedSlots = alias.pin_slots();
-    let _pinned_api: Option<&CredentialGuard<SecretToken>> = alias_pinned.api();
-    assert!(_pinned_api.is_none());
+    let pinned: DemoPinnedSlots = demo.pin_slots();
+    let pinned_token: Option<&CredentialGuard<SecretToken>> = pinned.token();
+    assert!(pinned_token.is_none());
+
+    // The slot is declared on the component.
+    let dependencies = <Demo as nebula_resource::Component>::dependencies();
+    assert_eq!(dependencies.slots().len(), 1);
 
     fn install_from_resolver(
-        resource: &AliasDemo,
+        resource: &Demo,
         guard: nebula_credential::ErasedCredentialGuard,
     ) -> Result<nebula_resource::SlotUpdate, nebula_resource::SlotInstallError> {
         resource.install_credential_slot("api", guard)

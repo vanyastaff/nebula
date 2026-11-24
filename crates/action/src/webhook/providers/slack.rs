@@ -6,14 +6,10 @@
 //! `X-Slack-Request-Timestamp` (Unix seconds, replay window 5 min).
 //! See <https://api.slack.com/authentication/verifying-requests-from-slack>.
 
-use std::{
-    sync::{Arc, OnceLock},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
-use nebula_core::Dependencies;
 use nebula_error::decode::value_free_decode_summary;
 use serde::Deserialize;
 use tracing::debug;
@@ -75,11 +71,6 @@ impl crate::Component for SlackWebhookAction {
 
 impl Action for SlackWebhookAction {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl WebhookAction for SlackWebhookAction {

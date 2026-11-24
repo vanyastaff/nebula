@@ -37,7 +37,7 @@ use nebula_action::{
     result::{ActionResult, WaitCondition},
     stateless::StatelessAction,
 };
-use nebula_core::{Dependencies, id::ExecutionId, node_key};
+use nebula_core::{id::ExecutionId, node_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, ControlDispatch, DataPassingPolicy, EngineControlDispatch,
     InProcessRunner, ResumeTarget, WorkflowEngine,
@@ -77,10 +77,6 @@ macro_rules! static_action_impl {
 
             const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
                 nebula_action::effect::ActionEffectContract::ReadOnly;
-            fn dependencies() -> &'static Dependencies {
-                static D: OnceLock<Dependencies> = OnceLock::new();
-                D.get_or_init(Dependencies::new)
-            }
         }
     };
 }
@@ -738,10 +734,6 @@ impl Action for ExecutionWait {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 impl StatelessAction for ExecutionWait {
     async fn execute(
@@ -783,10 +775,6 @@ impl Action for ExecutionWaitB {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 impl StatelessAction for ExecutionWaitB {
     async fn execute(

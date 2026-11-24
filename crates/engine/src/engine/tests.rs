@@ -1,6 +1,6 @@
 use std::{
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicU32, Ordering},
     },
     time::Duration,
@@ -10,7 +10,7 @@ use nebula_action::{
     ActionError, BranchKey, Component, Metadata, OutputPort, action::Action,
     context::CredentialContextExt, kind, result::ActionResult, stateless::StatelessAction,
 };
-use nebula_core::{ActionKey, Dependencies, action_key, port_key, scope::Principal};
+use nebula_core::{ActionKey, action_key, port_key, scope::Principal};
 use nebula_storage_port::StorageError;
 use nebula_storage_port::store::{ExecutionStore, NodeResultStore, WorkflowVersionStore};
 use nebula_workflow::{
@@ -47,10 +47,6 @@ impl Action for EchoHandler {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 nebula_action::stateless_entry!(
@@ -127,11 +123,6 @@ impl Action for SetupFailureHandler {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
-    }
 }
 
 nebula_action::stateless_entry!(
@@ -170,10 +161,6 @@ impl Action for FailHandler {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 nebula_action::stateless_entry!(
@@ -216,10 +203,6 @@ impl Action for SlowHandler {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 nebula_action::stateless_entry!(
@@ -858,10 +841,6 @@ impl Action for SkipHandler {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl StatelessAction for SkipHandler {
@@ -903,11 +882,6 @@ impl Action for BranchHandler {
             OutputPort::flow(port_key!("true")),
             OutputPort::flow(port_key!("false")),
         ]
-    }
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -3063,10 +3037,6 @@ async fn successful_execution_records_idempotency_mark_and_output() {
 
         const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
             nebula_action::effect::ActionEffectContract::ReadOnly;
-        fn dependencies() -> &'static Dependencies {
-            static D: OnceLock<Dependencies> = OnceLock::new();
-            D.get_or_init(Dependencies::new)
-        }
     }
 
     impl StatelessAction for CountingHandler {
@@ -3185,11 +3155,6 @@ async fn version_pinned_node_uses_specified_handler() {
 
         const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
             nebula_action::effect::ActionEffectContract::ReadOnly;
-
-        fn dependencies() -> &'static Dependencies {
-            static D: OnceLock<Dependencies> = OnceLock::new();
-            D.get_or_init(Dependencies::new)
-        }
     }
 
     impl StatelessAction for V1Handler {
@@ -3222,10 +3187,6 @@ async fn version_pinned_node_uses_specified_handler() {
 
         const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
             nebula_action::effect::ActionEffectContract::ReadOnly;
-        fn dependencies() -> &'static Dependencies {
-            static D: OnceLock<Dependencies> = OnceLock::new();
-            D.get_or_init(Dependencies::new)
-        }
     }
 
     impl StatelessAction for V2Handler {
@@ -3807,10 +3768,6 @@ async fn credential_refresh_failure_surfaces_as_typed_error() {
 
         const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
             nebula_action::effect::ActionEffectContract::ReadOnly;
-        fn dependencies() -> &'static Dependencies {
-            static D: OnceLock<Dependencies> = OnceLock::new();
-            D.get_or_init(Dependencies::new)
-        }
     }
     impl StatelessAction for NeverRunHandler {
         async fn execute(
@@ -3981,10 +3938,6 @@ impl Action for CredProbeAction {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl StatelessAction for CredProbeAction {
@@ -4534,10 +4487,6 @@ async fn panicked_task_reports_real_node_id() {
 
         const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
             nebula_action::effect::ActionEffectContract::ReadOnly;
-        fn dependencies() -> &'static Dependencies {
-            static D: OnceLock<Dependencies> = OnceLock::new();
-            D.get_or_init(Dependencies::new)
-        }
     }
 
     impl StatelessAction for PanicHandler {
@@ -5611,10 +5560,6 @@ impl Action for FactoryEcho {
 
     const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl StatelessAction for FactoryEcho {
@@ -6573,10 +6518,6 @@ async fn undeclared_flow_port_rejected_before_execution() {
 
     impl Action for CountingHandler {
         type Output = serde_json::Value;
-        fn dependencies() -> &'static Dependencies {
-            static D: OnceLock<Dependencies> = OnceLock::new();
-            D.get_or_init(Dependencies::new)
-        }
     }
 
     impl StatelessAction for CountingHandler {

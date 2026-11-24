@@ -198,15 +198,10 @@ fn action_attr_with_derive_pattern2_compiles_and_metadata_roundtrips() {
 
 #[test]
 fn action_attr_with_derive_pattern2_dependencies_are_empty() {
-    // Pattern 2 fields don't auto-register as `#[credential]` slots —
-    // the field type is `CredentialRef<dyn...>`, not `CredentialGuard<C>`.
-    // The dependency list reflects the absence of `#[credential]` /
-    // `#[resource]` annotations on the field. Verifies the derive's
-    // dependencies-builder executed against the rewritten struct without
-    // rejecting it.
-    assert!(LocalBearerAction::dependencies().slot_fields().is_empty());
-    assert!(LocalBearerAction::dependencies().credentials().is_empty());
-    assert!(LocalBearerAction::dependencies().resources().is_empty());
+    // Pattern 2 fields are not slots: the field carries no `#[slot]`, so
+    // the derive declares none. Verifies the derive's dependencies builder
+    // ran against the rewritten struct without rejecting it.
+    assert!(LocalBearerAction::dependencies().is_empty());
 }
 
 #[test]

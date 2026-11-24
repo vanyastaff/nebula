@@ -11,12 +11,12 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use nebula_core::{CredentialKey, DeclaresDependencies, Dependencies, ScopeLevel};
+use nebula_core::{CredentialKey, ScopeLevel};
 use nebula_expression::ExpressionEngine;
 use nebula_resource::Resident;
 use nebula_resource::{
-    KindActivator, Manager, Metadata, RegisterRequest, ResidentConfig, ResourceConfigInput,
-    ResourceContext, ResourceFactory,
+    CredentialSlot, Dependencies, KindActivator, Manager, Metadata, RegisterRequest,
+    ResidentConfig, ResourceConfigInput, ResourceContext, ResourceFactory, Slot,
     error::Error,
     resource::{HasCredentialSlots, Provider, ResourceConfig},
     topology::resident::ResidentProvider,
@@ -157,15 +157,42 @@ impl ResidentProvider for Postgres {
     }
 }
 
-impl DeclaresDependencies for Postgres {
-    fn dependencies() -> Dependencies {
-        // Default: no slot fields. Tests that exercise slot binding
-        // declare the slot via a dedicated fixture below.
-        Dependencies::new()
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+/// The credential the credentialed fixtures below declare a slot for.
+struct AdmissionCredential;
+
+impl nebula_credential::Component for AdmissionCredential {
+    type Kind = nebula_credential::kind::Credential;
+    type Config = ();
+
+    const KEY: &'static str = "test.admission-credential";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_credential::metadata_name!("AdmissionCredential"), "")
     }
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────
+impl nebula_credential::Credential for AdmissionCredential {
+    type Scheme = nebula_credential::SecretToken;
+    type State = nebula_credential::SecretToken;
+
+    fn project(state: &Self::State) -> Self::Scheme {
+        state.clone()
+    }
+
+    async fn resolve(
+        _properties: &(),
+        _ctx: &nebula_credential::CredentialContext,
+    ) -> Result<
+        nebula_credential::StaticResolveResult<Self::State>,
+        nebula_credential::CredentialError,
+    > {
+        Ok(nebula_credential::StaticResolveResult::Complete(
+            nebula_credential::SecretToken::new(nebula_credential::SecretString::new("token")),
+        ))
+    }
+}
 
 struct AdmissionResource<const CREDENTIALS: bool>;
 
@@ -177,6 +204,14 @@ impl<const CREDENTIALS: bool> nebula_resource::Component for AdmissionResource<C
 
     fn metadata() -> Metadata {
         Metadata::new(nebula_resource::metadata_name!("AdmissionResource"), "")
+    }
+
+    fn dependencies() -> Dependencies {
+        if CREDENTIALS {
+            Dependencies::none().slot(Slot::of::<CredentialSlot<AdmissionCredential>>("auth"))
+        } else {
+            Dependencies::none()
+        }
     }
 }
 
@@ -199,27 +234,6 @@ impl<const CREDENTIALS: bool> HasCredentialSlots for AdmissionResource<CREDENTIA
     }
     fn credential_slot_names() -> &'static [&'static str] {
         if CREDENTIALS { &["auth"] } else { &[] }
-    }
-}
-
-impl<const CREDENTIALS: bool> DeclaresDependencies for AdmissionResource<CREDENTIALS> {
-    fn dependencies() -> Dependencies {
-        if CREDENTIALS {
-            Dependencies::new().slot_field(nebula_core::SlotField {
-                slot_key: "auth",
-                default_id: "auth",
-                kind: nebula_core::dependencies::SlotKind::Credential {
-                    type_id: std::any::TypeId::of::<()>(),
-                    type_name: std::any::type_name::<()>(),
-                    key: nebula_core::credential_key!("test.revoke-admission"),
-                },
-                required: true,
-                lazy: false,
-                purpose: None,
-            })
-        } else {
-            Dependencies::new()
-        }
     }
 }
 
@@ -477,14 +491,14 @@ async fn register_from_value_unknown_slot_binding_rejected() {
 }
 
 // ── Registration consistency check: HasCredentialSlots vs
-//    DeclaresDependencies drift ───────────────────────────────────────────
+//    Component::dependencies drift ─────────────────────────────────────────
 
 /// A hand-written resource whose two self-reported slot signals
 /// deliberately disagree: `declares_credential_slots()` says `true` but
-/// `DeclaresDependencies::dependencies()` declares zero credential slot
-/// fields. Models the drift a hand-written pair can accumulate that
-/// `#[derive(Resource)]` structurally cannot (it emits both from the same
-/// `#[credential]` field list, so they can never disagree).
+/// `Component::dependencies()` declares zero credential slots. Models the
+/// drift a hand-written pair can accumulate that `#[derive(Resource)]`
+/// structurally cannot (it emits both from the same `#[slot]` field list,
+/// so they can never disagree).
 #[derive(Clone)]
 struct DriftedSlotSignals;
 
@@ -531,14 +545,6 @@ impl ResidentProvider for DriftedSlotSignals {
     }
 }
 
-impl DeclaresDependencies for DriftedSlotSignals {
-    fn dependencies() -> Dependencies {
-        // Deliberately empty — disagrees with `declares_credential_slots()`
-        // above.
-        Dependencies::new()
-    }
-}
-
 #[tokio::test]
 async fn register_from_value_rejects_drifted_slot_signals() {
     let manager = Manager::new();
@@ -555,7 +561,7 @@ async fn register_from_value_rejects_drifted_slot_signals() {
         HashMap::new(),
     )
     .await
-    .expect_err("a HasCredentialSlots vs DeclaresDependencies contradiction must be rejected");
+    .expect_err("a HasCredentialSlots vs Component::dependencies contradiction must be rejected");
 
     let msg = err.to_string();
     assert!(
@@ -570,9 +576,9 @@ async fn register_from_value_rejects_drifted_slot_signals() {
 /// A hand-written resource whose `declares_credential_slots()` and
 /// `credential_slot_names()` disagree: `declares_credential_slots()` says
 /// `true`, but `credential_slot_names()` keeps the empty trait default
-/// (never overridden). `DeclaresDependencies` agrees with
+/// (never overridden). `Component::dependencies()` agrees with
 /// `declares_credential_slots()`, so this fixture passes the
-/// `HasCredentialSlots` vs `DeclaresDependencies` check above and isolates
+/// `HasCredentialSlots` vs `Component::dependencies` check above and isolates
 /// the separate `declares_credential_slots()` vs `credential_slot_names()`
 /// cross-check.
 #[derive(Clone)]
@@ -589,6 +595,12 @@ impl nebula_resource::Component for DriftedSlotNames {
             nebula_resource::metadata_name!("phase9-drifted-slot-names"),
             "",
         )
+    }
+    // Agrees with `declares_credential_slots() -> true`, so the
+    // declared-slots check passes and this fixture isolates the
+    // names-vs-declares cross-check instead.
+    fn dependencies() -> Dependencies {
+        Dependencies::none().slot(Slot::of::<CredentialSlot<AdmissionCredential>>("db"))
     }
 }
 
@@ -619,26 +631,6 @@ impl HasCredentialSlots for DriftedSlotNames {
 impl ResidentProvider for DriftedSlotNames {
     fn is_alive_sync(&self, _runtime: &Arc<()>) -> bool {
         true
-    }
-}
-
-impl DeclaresDependencies for DriftedSlotNames {
-    fn dependencies() -> Dependencies {
-        // Agrees with `declares_credential_slots() -> true`, so the
-        // HasCredentialSlots-vs-DeclaresDependencies check passes and this
-        // fixture isolates the names-vs-declares cross-check instead.
-        Dependencies::new().slot_field(nebula_core::SlotField {
-            slot_key: "db",
-            default_id: "db",
-            kind: nebula_core::dependencies::SlotKind::Credential {
-                type_id: std::any::TypeId::of::<()>(),
-                type_name: std::any::type_name::<()>(),
-                key: nebula_core::credential_key!("phase9.drifted-names"),
-            },
-            required: true,
-            lazy: false,
-            purpose: None,
-        })
     }
 }
 
@@ -783,12 +775,6 @@ impl ResidentProvider for CacheBackend {
     }
 }
 
-impl DeclaresDependencies for CacheBackend {
-    fn dependencies() -> Dependencies {
-        Dependencies::new()
-    }
-}
-
 fn cache_backend_factory() -> impl ResourceFactory {
     KindActivator::<CacheBackend, _, _>::new(
         || CacheBackend,
@@ -919,12 +905,6 @@ impl Provider for WarmPool {
 nebula_resource::no_credential_slots!(WarmPool);
 
 impl nebula_resource::topology::pooled::PoolProvider for WarmPool {}
-
-impl DeclaresDependencies for WarmPool {
-    fn dependencies() -> Dependencies {
-        Dependencies::new()
-    }
-}
 
 /// A row registered from its stored definition warms as its pool's warmup
 /// strategy says, without anyone calling `warmup_pool`.

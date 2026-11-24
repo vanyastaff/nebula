@@ -1,10 +1,8 @@
-use std::sync::OnceLock;
-
 use nebula_action::{
     Action, ActionContext, ActionError, ActionFactory, ActionResult, Component, InstanceFactory,
     Metadata, StatelessAction, kind,
 };
-use nebula_core::{ActionKey, ArtifactSetDigest, Dependencies, accessor::SystemClock, node_key};
+use nebula_core::{ActionKey, ArtifactSetDigest, accessor::SystemClock, node_key};
 use nebula_plugin::{Plugin, PluginManifest, PluginRegistry, ResolvedPlugin};
 use nebula_schema::{HasSchema, ValidSchema};
 use nebula_storage::{InMemoryExecutionStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore};
@@ -229,11 +227,6 @@ impl Action for FixtureAction {
 
     const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
-    }
 }
 
 impl StatelessAction for FixtureAction {

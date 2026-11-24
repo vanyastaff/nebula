@@ -9,6 +9,10 @@
 mod component;
 /// The three kinds of component and the [`ComponentKind`] trait they share.
 pub mod kind;
+mod slot;
 
-pub use component::{Component, KeyOf, admit, key_of};
+pub use component::{Component, KeyOf, admit, dependencies_of, key_of};
 pub use kind::ComponentKind;
+pub use slot::{
+    Dependencies, DependencyKind, Slot, SlotError, SlotTarget, SlotValue, Target, is_valid_slot_key,
+};

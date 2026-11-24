@@ -38,7 +38,7 @@
 //! or a rollback ([`SessionEnd`], [`SessionClosed`]). A
 //! [`SessionBinding::Connection`] provider only runs on a connection built
 //! with the credentials the unit pinned. An action obtains a `ResourceHandle`
-//! through a derived field — `#[resource] db: ResourceHandle<Db>` (or
+//! through a derived field — `#[slot] db: ResourceHandle<Db>` (or
 //! `Option<ResourceHandle<Db>>`) on a `#[derive(Action)]` struct — never by
 //! building one here: its units are cancelled with the execution until their
 //! first grant and bounded by the execution's deadline.
@@ -54,11 +54,13 @@
 //! [`ResourceHandle::submit_streaming`] runs as one unit that also sends items through a bounded [`StreamSink`]; the
 //! caller reads them from [`Streaming`], then the unit's error, if any, once.
 //!
-//! Credentials are declared on the resource struct with
-//! `#[derive(Resource)]` and `#[credential(key = "…")]` fields of type
+//! A resource names itself and declares its credentials with
+//! `#[derive(Resource)]`: `#[resource(key = "…", config = …)]` writes its
+//! [`Component`] impl, and each `#[slot]` field of type
 //! [`CredentialSlot<C>`](CredentialSlot) — a [`SlotCell`] holding the
-//! credential's projected [`CredentialGuard`]. A unit reads them only
-//! through its pinned snapshot ([`Attempt::credentials`]).
+//! credential's projected [`CredentialGuard`] — is one of its
+//! [`Component::dependencies`]. A unit reads them only through its pinned
+//! snapshot ([`Attempt::credentials`]).
 //!
 //! Runtime registration, dispatch, and cleanup queues remain engine-owned.
 

@@ -38,10 +38,6 @@ impl Action for SnapshotHandler {
 
     const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        EchoHandler::dependencies()
-    }
 }
 
 impl StatelessAction for SnapshotHandler {

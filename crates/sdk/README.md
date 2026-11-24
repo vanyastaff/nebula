@@ -264,14 +264,14 @@ the same facade with `ResourceHandle::submit_streaming`.
 and the `Lease` facade are gone from the prelude and from
 `integration::resource` — a lease bypasses the effect journal, so it stays a
 host-only capability of the engine. An action names a resource only as a
-`#[resource]` field of type `ResourceHandle<R>`; `http::open_stream` /
+`#[slot]` field of type `ResourceHandle<R>`; `http::open_stream` /
 `open_stream_until` take `&ResourceHandle<R>`. The negative fixtures
 `removed_resource_guard` and `removed_lease` and the snapshot test
 `raw_leases_are_not_exported` pin the absence.
 
 | Before (≤ 0.26) | Now |
 |---|---|
-| `#[resource] db: ResourceGuard<Db>` | `#[resource] db: ResourceHandle<Db>` |
+| `#[resource] db: ResourceGuard<Db>` | `#[slot] db: ResourceHandle<Db>` |
 | `lease.submit(op)` / `guard.into_lease().submit(op)` | `handle.submit(op)` |
 | `open_stream(&lease, request)` | `open_stream(&handle, request)` |
 | `*guard` (direct client calls) | an `Operation` calling the client through `OperationCx::call` |
@@ -279,7 +279,7 @@ host-only capability of the engine. An action names a resource only as a
 **Credentialed resources:** `integration::resource` re-exports `CredentialSlot`
 and `CredentialGuard`, and `integration::credential` (and the prelude)
 `BearerTokenCredential`, so a `#[derive(Resource)]` struct with
-`#[credential(key = "token")] token: CredentialSlot<BearerTokenCredential>`
+`#[slot] token: CredentialSlot<BearerTokenCredential>`
 compiles against the SDK alone (`resource_credentialed` fixture). A unit reads
 the slot only through its pinned snapshot, the `credentials` a call hands its
 closure (`credentials.token()`).
@@ -322,7 +322,7 @@ native calls on one pooled connection as one unit, committed or rolled back
 by the provider; its `SessionSpec` names the session and carries its request
 (`SessionSpec::read(name)`, `::idempotent(name, &request)`,
 `::write(name, &request)`). A `ResourceHandle` is obtained from the engine-owned manager
-or, in an action, through a derived `#[resource]` field
+or, in an action, through a derived `#[slot]` field
 (`action_resource_handle`), so the SDK-only fixture compiles a session
 provider and the action-side call (`resource_session`), proves a
 `ResourceHandle` does not deref (`resource_handle_no_deref`) and that a body

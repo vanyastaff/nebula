@@ -5,18 +5,17 @@
 //! three associated types (`Config`, `Instance`, `Topology`) and the lifecycle methods
 //! (slot model).
 //!
-//! Per slot model (supersedes credential isolation) the singular `type Credential`
-//! associated type was deleted in favor of typed credential **slot fields**
-//! declared on the resource struct via `#[credential(key = "...")]` (the
-//! `#[derive(Resource)]` macro emits a `DeclaresDependencies` impl that
-//! enumerates them, plus slot accessors, plus `impl HasCredentialSlots`).
+//! A resource's credentials are typed **slot fields** on the resource struct:
+//! `#[slot] auth: CredentialSlot<C>`. `#[derive(Resource)]` lists them in
+//! [`Component::dependencies`],
+//! the one declaration admission and the plan compiler read, and emits the
+//! slot accessors and `impl HasCredentialSlots`.
 //!
-//! `Provider::create(&self, ctx)` no longer takes an explicit
-//! `scheme: &<R::Credential as Credential>::Scheme` argument: the framework
-//! resolves every declared `#[credential]` slot **before** invoking
-//! `create`. Each slot field is a `SlotCell<CredentialGuard<C>>` cell; the
+//! The framework resolves every declared slot **before** invoking
+//! [`Provider::create`]. Each slot field is a `CredentialSlot<C>`, a cell of
+//! the credential's projected `CredentialGuard<C::Scheme>`; the
 //! implementation reads the resolved guard through the derive-emitted
-//! `<field>_slot()` accessor (`Option<Arc<CredentialGuard<C>>>`).
+//! `<field>_slot()` accessor (`Option<Arc<CredentialGuard<C::Scheme>>>`).
 //!
 //! Per-credential rotation is exposed via
 //! [`Provider::on_credential_refresh`], which receives the **slot name**
@@ -146,6 +145,10 @@ impl ResourceConfig for () {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ResourceDefinition {
     base: BaseDefinition<ResourceKey>,
+    /// Read from [`Component::dependencies`] at admission. Not part of the
+    /// catalog wire form yet.
+    #[serde(skip)]
+    dependencies: nebula_component::Dependencies,
 }
 
 impl ResourceDefinition {
@@ -157,7 +160,11 @@ impl ResourceDefinition {
     /// name a resource other than the one it was built from.
     #[tracing::instrument(name = "resource.metadata.admit", skip_all, fields(resource_key = R::KEY), err)]
     pub(crate) fn admit_for<R: Provider>() -> Result<Self, ResourceAdmissionError> {
-        Self::from_base(nebula_component::admit::<R>()?)
+        let dependencies = nebula_component::dependencies_of::<R>()?;
+        if let Some((slot, _)) = dependencies.resource_slots().next() {
+            return Err(ResourceAdmissionError::ResourceSlot { key: slot.key() });
+        }
+        Self::from_base(nebula_component::admit::<R>()?, dependencies)
     }
 
     /// Test-only admission from explicit parts, for shapes no real provider
@@ -168,11 +175,17 @@ impl ResourceDefinition {
         metadata: Metadata,
         schema: nebula_schema::ValidSchema,
     ) -> Result<Self, ResourceAdmissionError> {
-        Self::from_base(metadata.bind(key, schema)?)
+        Self::from_base(
+            metadata.bind(key, schema)?,
+            nebula_component::Dependencies::none(),
+        )
     }
 
-    fn from_base(base: BaseDefinition<ResourceKey>) -> Result<Self, ResourceAdmissionError> {
-        let definition = Self { base };
+    fn from_base(
+        base: BaseDefinition<ResourceKey>,
+        dependencies: nebula_component::Dependencies,
+    ) -> Result<Self, ResourceAdmissionError> {
+        let definition = Self { base, dependencies };
         nebula_metadata::check_json_record(&definition)
             .map_err(nebula_metadata::MetadataBuildError::from)?;
         Ok(definition)
@@ -182,6 +195,12 @@ impl ResourceDefinition {
     #[must_use]
     pub const fn base(&self) -> &BaseDefinition<ResourceKey> {
         &self.base
+    }
+
+    /// The resource's slots, read once at admission.
+    #[must_use]
+    pub const fn dependencies(&self) -> &nebula_component::Dependencies {
+        &self.dependencies
     }
 
     /// Validate that this metadata update is version-compatible with `previous`.
@@ -304,6 +323,16 @@ pub enum ResourceAdmissionError {
     /// Shared metadata or canonical schema construction failed.
     #[error(transparent)]
     Definition(#[from] nebula_metadata::MetadataBuildError),
+    /// The resource's [slots](nebula_component::Slot) break a rule.
+    #[error(transparent)]
+    Slots(#[from] nebula_component::SlotError),
+    /// A slot points at a resource. A resource builds only on credentials
+    /// for now.
+    #[error("resource slot `{key}` points at a resource; a resource slot holds a credential")]
+    ResourceSlot {
+        /// The slot's key.
+        key: &'static str,
+    },
 }
 
 impl From<nebula_schema::ValidationReport> for ResourceAdmissionError {
@@ -316,24 +345,30 @@ impl nebula_error::Classify for ResourceAdmissionError {
     fn category(&self) -> nebula_error::ErrorCategory {
         match self {
             Self::Definition(source) => nebula_error::Classify::category(source),
+            Self::Slots(_) | Self::ResourceSlot { .. } => nebula_error::ErrorCategory::Validation,
         }
     }
 
     fn code(&self) -> nebula_error::ErrorCode {
         match self {
             Self::Definition(source) => nebula_error::Classify::code(source),
+            Self::Slots(_) | Self::ResourceSlot { .. } => {
+                nebula_error::ErrorCode::new("RESOURCE:INVALID_SLOTS")
+            },
         }
     }
 
     fn is_retryable(&self) -> bool {
         match self {
             Self::Definition(source) => nebula_error::Classify::is_retryable(source),
+            Self::Slots(_) | Self::ResourceSlot { .. } => false,
         }
     }
 
     fn retry_hint(&self) -> Option<nebula_error::RetryHint> {
         match self {
             Self::Definition(source) => nebula_error::Classify::retry_hint(source),
+            Self::Slots(_) | Self::ResourceSlot { .. } => None,
         }
     }
 }
@@ -503,16 +538,14 @@ macro_rules! __assert_provider_key {
 /// `Sized` bound) — the attribute is for the blanket impl's convenience,
 /// not for `dyn Provider` dispatch.
 ///
-/// Per slot model (supersedes credential isolation) the singular `type Credential`
-/// associated type was removed in favor of typed credential **slot
-/// fields** on the resource struct (declared via `#[credential(...)]`
-/// field attributes; the `#[derive(Resource)]` macro emits an impl of
-/// [`nebula_core::DeclaresDependencies`] enumerating them). Each slot
-/// field is a `SlotCell<CredentialGuard<C>>` cell. The framework
-/// resolves slot fields **before** calling [`create`](Self::create) —
-/// implementors read each resolved guard through the derive-emitted
+/// A resource's credentials are typed **slot fields** on the resource
+/// struct (`#[slot]` fields of type `CredentialSlot<C>`), which
+/// `#[derive(Resource)]` lists in
+/// [`Component::dependencies`].
+/// The framework resolves them **before** calling [`create`](Self::create)
+/// — implementors read each resolved guard through the derive-emitted
 /// `<field>_slot()` accessor, which returns
-/// `Option<Arc<CredentialGuard<C>>>`, never off the raw cell field.
+/// `Option<Arc<CredentialGuard<C::Scheme>>>`, never off the raw cell field.
 ///
 /// # Associated types
 ///

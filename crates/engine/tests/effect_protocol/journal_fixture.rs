@@ -745,11 +745,6 @@ impl Component for ChargeAction {
 
 impl Action for ChargeAction {
     type Output = Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
-    }
 }
 
 impl StatelessAction for ChargeAction {

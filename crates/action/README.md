@@ -36,7 +36,6 @@ pub trait Action: Component<Kind = kind::Action> {
 
     fn inputs() -> Vec<InputPort> { port::default_input_ports() }
     fn outputs() -> Vec<OutputPort> { port::default_output_ports() }
-    fn dependencies() -> &'static Dependencies;  // slot-binding metadata
 }
 // Identity, form data and catalog metadata come from `Component`:
 // `Component::KEY`, `Component::Config` (the input) and
@@ -115,14 +114,13 @@ for limits and the separation from durable plugin records.
 | `PaginatedAction` / `BatchAction` | DX over `StatefulAction` | cursor / chunk patterns |
 | `WebhookAction` / `PollAction` | DX over `TriggerAction` | webhook + interval polling |
 
-### Slot-binding fields — `#[resource]` / `#[credential]` per-field attrs
+### Slot fields — `#[slot]`
 
 Action structs hold **only slot fields** (resources + credentials). User-facing form data lives on `Self::Config` (a separate `#[derive(Schema, Deserialize)]` companion struct).
 
 ```rust
 use nebula_action::{Action, StatelessAction};
-use nebula_credential::CredentialGuard;
-use nebula_resource::call::ResourceHandle;
+use nebula_resource::{CredentialSlot, call::ResourceHandle};
 use nebula_schema::Schema;
 use serde::{Deserialize, Serialize};
 
@@ -148,10 +146,10 @@ struct MessageId(i64);
     output = MessageId,
 )]
 struct SendTelegram {
-    #[resource(key = "bot")]
+    #[slot]
     bot: ResourceHandle<TelegramBot>,
-    #[credential(key = "auth")]
-    token: CredentialGuard<<TelegramCredential as nebula_credential::Credential>::Scheme>,
+    #[slot(key = "auth", purpose = "Bot API token")]
+    token: CredentialSlot<TelegramCredential>,
 }
 
 impl StatelessAction for SendTelegram {
@@ -171,10 +169,13 @@ impl StatelessAction for SendTelegram {
 }
 ```
 
-A `#[resource]` field holds a `ResourceHandle<R>` (or `Option<ResourceHandle<R>>`) —
-since 0.27.0 the only resource capability an action can name. A `ResourceGuard<R>`
-slot is refused at compile time ("`ResourceGuard<T>` slots were removed in 0.27.0;
-hold `ResourceHandle<T>` — a lease bypasses the effect journal"); raw leases stay a
+The derive never parses a field type. It lists every `#[slot]` field in
+`Component::dependencies()` as `Slot::of::<FieldType>(key)`: the type says what
+the slot points at (through `SlotValue`) and whether it is required (`Option`
+makes it optional), and the key defaults to the field name. A resource slot
+holds a `ResourceHandle<R>` — since 0.27.0 the only resource capability an
+action can name; a `ResourceGuard<R>` lease is no slot value and is refused at
+compile time, since a lease bypasses the effect journal. Raw leases stay a
 host-only capability of the resource manager and the engine.
 
 **Why slots-only on `Self`?** Eliminates `self.text` vs `input.text` ambiguity at compile time. `Self` carries deps; `Self::Input` carries form data. Single source of truth per field.
@@ -183,19 +184,18 @@ host-only capability of the resource manager and the engine.
 
 | Field type | Semantics |
 |---|---|
-| `ResourceHandle<R>` / `CredentialGuard<C::Scheme>` | required (a handle checks nothing out at resolution) |
-| `Option<ResourceHandle<R>>` / `Option<CredentialGuard<C::Scheme>>` | optional |
+| `ResourceHandle<R>` / `CredentialSlot<C>` | required |
+| `Option<ResourceHandle<R>>` / `Option<CredentialSlot<C>>` | optional |
 
-Credential slots resolve eagerly during `FromWorkflowNode`. Migrate
-`Lazy<CredentialGuard<S>>` to `CredentialGuard<S>` and
-`Option<Lazy<CredentialGuard<S>>>` to `Option<CredentialGuard<S>>`;
-use the populated guard directly instead of calling `.get(ctx).await`.
-The removed wrappers never deferred resolution: the factory resolved the guard
-before wrapping it. A `ResourceHandle<R>` acquires nothing to defer, so
-`Lazy<ResourceHandle<R>>` is also refused;
-`ResourceGuard<R>` in any wrapper is refused with the 0.27.0 migration hint.
+Slots resolve eagerly during `FromWorkflowNode`, through `FromSlot`. An unbound
+resource slot takes the instance registered under the resource's own key; an
+unbound credential slot resolves by the slot key (the ADR-0042 hybrid
+mechanism: default = slot key, explicit override via `node.slot_bindings`). A
+required slot that finds nothing, or a bound slot that does not resolve, fails
+the node. `Lazy<...>` is no slot value: a slot is resolved before the action
+runs, and a `ResourceHandle<R>` acquires nothing to defer.
 
-> **Note** — `#[credential]` slot fields hold `CredentialGuard<C::Scheme>` (the projected auth scheme), not `CredentialGuard<C>` (the credential type). The framework projects state→scheme before populating the slot. The `key` attribute names the slot; binding to a concrete `CredentialId` per workflow node uses the ADR-0042 hybrid mechanism (default = slot key, explicit override via `node.slot_bindings`).
+> **Note** — a `CredentialSlot<C>` holds `CredentialGuard<C::Scheme>` (the projected auth scheme) and derefs to its cell; the framework projects state→scheme before populating the slot. The same type is a resource's credential slot.
 
 ### `FromWorkflowNode` async factory
 
@@ -212,7 +212,7 @@ pub trait FromWorkflowNode: Sized + Send + 'static {
 }
 ```
 
-`#[derive(Action)]` emits the body — read `node.resource_binding(slot)` / `node.credential_binding(slot)` (an unbound resource slot falls back to the provider's contract key, a credential slot resolves by its slot key), call `ctx.resource_handle_by_id::<R>(id)` (`try_resource_handle_by_id` for an optional slot) / `ctx.resolve_credential_by_id::<C>(id)`, assemble `Self`. Plugin authors never write the body by hand.
+`#[derive(Action)]` emits the body — one `<FieldType as FromSlot>::from_slot(node, ctx, key)` per `#[slot]` field, which reads `node.resource_binding(key)` / `node.credential_binding(key)` (an unbound resource slot falls back to the provider's contract key, a credential slot resolves by its slot key) and resolves through `ctx.resource_handle_by_id::<R>(id)` / `ctx.resolve_credential_by_id::<C>(id)` — then assembles `Self`. Plugin authors never write the body by hand.
 
 ### Engine-side dispatch — `ActionFactory` + `ActionHandle`
 
@@ -239,14 +239,14 @@ Generic factories (`GenericStatelessFactory<A>`, `GenericStatefulFactory<A>`, �
 - `ActionOutput` — first-class output type: inline value, blob ref, stream.
 - `ActionError`, `RetryHintCode` — typed error distinguishing retryable from fatal.
 - `Context`, `ActionContext`, `TriggerContext`, `ActionContextExt` — execution context traits + extension helpers (`resource_handle_by_id`, `try_resource_handle_by_id`, `resolve_credential_by_id`). `ActionRuntimeContext::has_resource` checks a key; there is no raw resource accessor on the context since 0.27.0.
-- `Dependencies`, `SlotField`, `SlotKind` (re-exported from `nebula-core`) — declarative slot metadata.
+- `Dependencies`, `Slot`, `SlotValue` (re-exported from `nebula-component`) — the slots a component declares in `Component::dependencies()`; `FromSlot` / `ResolveSlot` — how an action field gets its value.
 - `WebhookConfig`, `SignaturePolicy`, `RequiredPolicy`, `SignatureScheme` — ADR-0022 signature enforcement.
 - `IsolationLevel`, `ActionKind` — in-process capability gating and node-taxonomy classification (also drives UI grouping / validation / audit).
 - `TestContextBuilder`, `StatefulTestHarness`, `TriggerTestHarness`, `SpyEmitter`, `SpyLogger`, `SpyScheduler` — testing utilities. To unit-test an action with resource slots, register the rows on a real `nebula_resource::Manager` and pass it to `TestContextBuilder::with_resource_manager`: the built context serves `ResourceHandle<R>`s by key (unbound slot identity, bound to the context's cancellation). Test handles carry library effect semantics — every unit runs, unjournaled; assert the engine's journaled / read-only routing in an engine test.
 
 ### Macros
 
-- `#[derive(Action)]` — emits `Action` + `FromWorkflowNode` impls; parses `#[action(key, version, config, output, …)]` struct attribute and `#[resource]` / `#[credential]` field attributes.
+- `#[derive(Action)]` — emits `Component` (with `dependencies()`) + `Action` + `FromWorkflowNode` impls; parses the `#[action(key, version, config, output, …)]` struct attribute and `#[slot]` field attributes.
 - `#[action]` attribute macro — reserved for advanced cases requiring ADR-0035 phantom-shim field rewriting (`CredentialRef<dyn Bearer>` → `CredentialRef<dyn BearerPhantom>`); 95% of plugin authors use the derive form.
 - `validate_action_package`, `ActionPackageValidationError` — package-level validation.
 
@@ -256,11 +256,11 @@ The v4 surface is a hard break: no compatibility shims preserve the old shapes (
 
 1. **Split form data off `Self`.** Move `#[field]`-bearing fields off the action struct into a `<Name>Input: HasSchema + Deserialize` companion struct. Add `type Config = <Name>Input` to the `Component` impl (or `config = <Name>Input` to the derive's struct attribute).
 2. **Drop `metadata()` boilerplate from `Self`.** The derive emits fallible `metadata()` from the `#[action(key, version, …)]` arguments and the associated input/output schemas. Generic factories cache the admission result. Delete the manual `Component::metadata` block.
-3. **Replace `dependencies()` macros with field attributes.** Old: a separate `DeclaresDependencies` impl listing `ResourceKey`s and `CredentialKey`s. New: `#[resource(key = "…")]` / `#[credential(key = "…")]` per field on the struct.
+3. **Declare slots on fields.** Old: a separate `DeclaresDependencies` impl listing `ResourceKey`s and `CredentialKey`s, then `#[resource]` / `#[credential]` field attributes. New (0.42.0): `#[slot]` (or `#[slot(key = "…", purpose = "…")]`) per field; the field type says what it points at, and the derive writes `Component::dependencies()`. A credential field is a `CredentialSlot<C>`.
 4. **Update sub-trait method signatures** to take `Self::Config` explicitly: `execute(&self, input: SendTelegramInput, ctx)` not `execute(&self, ctx)`.
 5. **Replace `dyn Action` with `Arc<dyn ActionFactory>`** anywhere the engine or plugin loader stored a dynamic action handle. Existing transports / SDK harnesses that wrap `Arc<dyn StatelessHandler>` continue to work — four production paths intentionally stay on the legacy handler surface: webhook routing, plugin discovery, SDK runtime, EventSource adapter. The original architectural rationale survives in `git log` (commits up to the retire-AI-Factory pass).
 6. **For `ResourceAction` impls**, set `type Output = ResourceProduces<Self::Resource>`. The marker auto-derives `HasSchema`.
-7. **For `Resource` impls**, drop `type Credential` (per ADR-0044) and declare credential deps via `#[credential(key = "…")]` field attributes — see `crates/resource/README.md` for the resource-side migration.
+7. **For `Resource` impls**, drop `type Credential` (per ADR-0044) and declare credential deps as `#[slot]` fields of type `CredentialSlot<C>` — see `crates/resource/README.md` for the resource-side migration.
 
 The full architectural rationale and per-phase migration shape for this redesign survive in `git log` only — the original plan and phase-block notes (the retired `.ai-factory/plans/m6-resource-finalization-integration-audit.md` and `PHASE3/4/7_BLOCKED.md` artifacts) were removed with the AI Factory framework.
 

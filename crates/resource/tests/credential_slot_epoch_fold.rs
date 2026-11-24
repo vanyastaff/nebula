@@ -1,7 +1,7 @@
 //! `credential_slot_epoch` fold must be **order-sensitive**, not `max`.
 //!
 //! The load-bearing contract: the epoch changes whenever *any*
-//! `#[credential]` slot's generation changes — including a slot whose
+//! `#[slot]` slot's generation changes — including a slot whose
 //! generation is **not** the largest. A `max` fold violates this: a
 //! runtime built at `(slot_a=5, slot_b=10)` then rotated `slot_a→6` still
 //! maxes to `10`, so the resident create-vs-rotate reconcile would never
@@ -28,6 +28,7 @@ use std::{
     },
 };
 
+use nebula_component::SlotTarget;
 use nebula_core::{ScopeLevel, scope::Scope};
 use nebula_credential::{Component, kind};
 use nebula_credential::{
@@ -36,9 +37,9 @@ use nebula_credential::{
 };
 use nebula_resource::Resident;
 use nebula_resource::{
-    AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, Resource, ResourceConfig,
-    ResourceContext, SlotCell, SlotIdentity, error::Error, resource::HasCredentialSlots,
-    topology::resident::ResidentProvider,
+    AcquireOptions, CredentialSlot, Dependencies, Manager, Provider, RegistrationSpec,
+    ResidentConfig, Resource, ResourceConfig, ResourceContext, Slot, SlotCell, SlotIdentity,
+    error::Error, resource::HasCredentialSlots, topology::resident::ResidentProvider,
 };
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroize;
@@ -107,23 +108,20 @@ impl ResourceConfig for TwoSlotCfg {
 /// A real derived two-slot resource — `credential_slot_epoch()` here is
 /// the exact token stream `#[derive(Resource)]` emits.
 #[derive(Default, Resource)]
+#[resource(key = "epochfold-derived", config = TwoSlotCfg)]
 #[topology(Resident)]
 struct TwoSlotDerived {
-    #[credential(key = "slot_a")]
-    slot_a: SlotCell<CredentialGuard<FakeCred>>,
-    #[credential(key = "slot_b")]
-    slot_b: SlotCell<CredentialGuard<FakeCred>>,
+    #[slot]
+    slot_a: CredentialSlot<FakeCred>,
+    #[slot]
+    slot_b: CredentialSlot<FakeCred>,
 }
 
-impl Component for TwoSlotDerived {
-    type Kind = kind::Resource;
-    type Config = TwoSlotCfg;
-
-    const KEY: &'static str = "epochfold-derived";
-
-    fn metadata() -> Metadata {
-        Metadata::new(nebula_resource::metadata_name!("TwoSlotDerived"), "")
-    }
+/// A fresh guard over the fake credential's scheme.
+fn token() -> Arc<CredentialGuard<SecretToken>> {
+    Arc::new(CredentialGuard::new(SecretToken::new(SecretString::new(
+        "fake-token",
+    ))))
 }
 
 #[async_trait::async_trait]
@@ -148,41 +146,29 @@ fn derived_factory_projects_exact_resource_contract() {
         "the generated factory must preserve the concrete resource identity"
     );
 
-    let dependencies = factory.dependencies();
-    assert!(
-        dependencies.credentials().is_empty(),
-        "resource credential slots are represented as slot fields"
-    );
-    assert!(dependencies.resources().is_empty());
+    let definition = factory
+        .definition()
+        .expect("the derived resource is admitted");
+    let slots = definition.dependencies().slots();
+    assert_eq!(slots.len(), 2);
+    for (slot, expected_slot_key) in slots.iter().zip(["slot_a", "slot_b"]) {
+        assert_eq!(slot.key(), expected_slot_key);
+        assert!(slot.is_required());
+        assert_eq!(slot.purpose(), None);
 
-    let slot_fields = dependencies.slot_fields();
-    assert_eq!(slot_fields.len(), 2);
-    for (slot_field, expected_slot_key) in slot_fields.iter().zip(["slot_a", "slot_b"]) {
-        assert_eq!(slot_field.slot_key, expected_slot_key);
-        assert_eq!(slot_field.default_id, expected_slot_key);
-        assert!(slot_field.required);
-        assert!(!slot_field.lazy);
-        assert_eq!(slot_field.purpose, None);
-
-        let nebula_core::SlotKind::Credential {
-            type_id,
-            type_name,
-            key,
-        } = &slot_field.kind
-        else {
-            panic!("derived resource slot must remain a credential dependency");
+        let SlotTarget::Credential(target) = slot.target() else {
+            panic!("a derived resource slot must point at a credential");
         };
-        assert_eq!(*type_id, std::any::TypeId::of::<FakeCred>());
-        assert_eq!(*type_name, std::any::type_name::<FakeCred>());
-        assert_eq!(key, &nebula_core::credential_key!("epochfold.fake"));
+        assert_eq!(target.type_id(), std::any::TypeId::of::<FakeCred>());
+        assert_eq!(target.key().as_str(), "epochfold.fake");
     }
 }
 
 #[test]
 fn derived_epoch_changes_when_non_max_slot_rotates() {
     let r = TwoSlotDerived {
-        slot_a: SlotCell::empty(),
-        slot_b: SlotCell::empty(),
+        slot_a: CredentialSlot::empty(),
+        slot_b: CredentialSlot::empty(),
     };
 
     // Empty ⇒ 0 ("never bound"), preserved by the fold.
@@ -194,10 +180,10 @@ fn derived_epoch_changes_when_non_max_slot_rotates() {
 
     // Bind both. slot_b is `store`d more times so its generation is
     // strictly larger than slot_a's — i.e. slot_a is the NON-max slot.
-    r.slot_a.store(Arc::new(CredentialGuard::new(FakeCred(1))));
-    r.slot_b.store(Arc::new(CredentialGuard::new(FakeCred(2))));
-    r.slot_b.store(Arc::new(CredentialGuard::new(FakeCred(3))));
-    r.slot_b.store(Arc::new(CredentialGuard::new(FakeCred(4))));
+    r.slot_a.store(token());
+    r.slot_b.store(token());
+    r.slot_b.store(token());
+    r.slot_b.store(token());
     assert!(
         r.slot_b.generation() > r.slot_a.generation(),
         "fixture sanity: slot_b must out-generation slot_a so slot_a is the \
@@ -208,7 +194,7 @@ fn derived_epoch_changes_when_non_max_slot_rotates() {
 
     // Rotate ONLY the non-max slot (slot_a). A `max` fold would NOT
     // change (slot_b still dominates); the order-sensitive fold MUST.
-    r.slot_a.store(Arc::new(CredentialGuard::new(FakeCred(9))));
+    r.slot_a.store(token());
     let after = r.credential_slot_epoch();
 
     assert_ne!(
@@ -270,6 +256,15 @@ impl Component for TwoSlotResident {
 
     fn metadata() -> Metadata {
         Metadata::new(nebula_resource::metadata_name!("TwoSlotResident"), "")
+    }
+
+    // Mirrors `credential_slot_names()` below, so the registration
+    // consistency checks between the self-reports and the declared slots
+    // do not themselves reject this fixture.
+    fn dependencies() -> Dependencies {
+        Dependencies::none()
+            .slot(Slot::of::<CredentialSlot<FakeCred>>("slot_a"))
+            .slot(Slot::of::<CredentialSlot<FakeCred>>("slot_b"))
     }
 }
 
@@ -336,41 +331,6 @@ impl HasCredentialSlots for TwoSlotResident {
 
     fn credential_slot_names() -> &'static [&'static str] {
         &["slot_a", "slot_b"]
-    }
-}
-
-impl nebula_core::DeclaresDependencies for TwoSlotResident {
-    // Mirrors `credential_slot_names()` above so the registration
-    // consistency checks (`declares_credential_slots()` vs
-    // `DeclaresDependencies::slot_fields()`, and vs `credential_slot_names()`)
-    // do not themselves reject this fixture — every self-report names the
-    // same two slots.
-    fn dependencies() -> nebula_core::Dependencies {
-        nebula_core::Dependencies::new()
-            .slot_field(nebula_core::SlotField {
-                slot_key: "slot_a",
-                default_id: "slot_a",
-                kind: nebula_core::dependencies::SlotKind::Credential {
-                    type_id: std::any::TypeId::of::<FakeCred>(),
-                    type_name: std::any::type_name::<FakeCred>(),
-                    key: nebula_core::credential_key!("epochfold.fake"),
-                },
-                required: true,
-                lazy: false,
-                purpose: None,
-            })
-            .slot_field(nebula_core::SlotField {
-                slot_key: "slot_b",
-                default_id: "slot_b",
-                kind: nebula_core::dependencies::SlotKind::Credential {
-                    type_id: std::any::TypeId::of::<FakeCred>(),
-                    type_name: std::any::type_name::<FakeCred>(),
-                    key: nebula_core::credential_key!("epochfold.fake"),
-                },
-                required: true,
-                lazy: false,
-                purpose: None,
-            })
     }
 }
 
@@ -533,26 +493,16 @@ async fn refresh_slot_rejects_a_name_not_in_the_declared_slot_list() {
 
 // ── Part 3: type-level `declares_credential_slots` signal (ADR-0093) ──
 //
-// The derive emits `true` when the struct has >=1 `#[credential]` field and
+// The derive emits `true` when the struct has >=1 `#[slot]` field and
 // `false` when it has none; a hand-written `impl HasCredentialSlots` keeps the
 // trait default of `false`. This is the type-level signal the registration
 // Tier-3 nudge keys off (the epoch is `0` for both slot-less and
 // declared-but-unbound resources, so it cannot answer this).
 
-/// A derived resource with **no** `#[credential]` field — the slot-less case.
+/// A derived resource with **no** `#[slot]` field — the slot-less case.
 #[derive(Resource)]
+#[resource(key = "epochfold-noslot", config = TwoSlotCfg)]
 struct NoSlotDerived;
-
-impl Component for NoSlotDerived {
-    type Kind = kind::Resource;
-    type Config = TwoSlotCfg;
-
-    const KEY: &'static str = "epochfold-noslot";
-
-    fn metadata() -> Metadata {
-        Metadata::new(nebula_resource::metadata_name!("NoSlotDerived"), "")
-    }
-}
 
 #[async_trait::async_trait]
 impl Provider for NoSlotDerived {
@@ -568,12 +518,12 @@ impl ResidentProvider for NoSlotDerived {}
 
 #[test]
 fn declares_credential_slots_reflects_credential_fields() {
-    // Derived WITH `#[credential]` fields → true.
+    // Derived WITH `#[slot]` fields → true.
     assert!(
         TwoSlotDerived::declares_credential_slots(),
         "a derived resource with #[credential] fields must declare credential slots"
     );
-    // Derived WITHOUT any `#[credential]` field → false (slot-less case).
+    // Derived WITHOUT any `#[slot]` field → false (slot-less case).
     assert!(
         !NoSlotDerived::declares_credential_slots(),
         "a derived slot-less resource must not declare credential slots"
@@ -589,7 +539,7 @@ fn declares_credential_slots_reflects_credential_fields() {
     );
     // A hand-written `impl HasCredentialSlots` that does NOT override this
     // method keeps the trait default (false) — the common case for a
-    // resource with no `#[credential]` field at all.
+    // resource with no `#[slot]` field at all.
     struct BareHandWritten;
     nebula_resource::no_credential_slots!(BareHandWritten);
     assert!(
@@ -671,7 +621,7 @@ fn derived_projection_install_fences_unqualified_slot_transition() {
     let cid = nebula_credential::CredentialId::new();
     let guard = |epoch| {
         nebula_credential::ErasedCredentialGuard::from_typed(
-            CredentialGuard::new(FakeCred(99)),
+            CredentialGuard::new(SecretToken::new(SecretString::new("fake-token"))),
             nebula_credential::CredentialGuardMetadata::new(
                 cid,
                 "epochfold.fake".parse().expect("key"),
@@ -695,13 +645,15 @@ fn derived_projection_install_fences_unqualified_slot_transition() {
         .credential_slot_projection("slot_a")
         .expect("live projection");
     assert_eq!(metadata.expect("identity").credential_id(), cid);
-    resource
-        .slot_a
-        .store(Arc::new(CredentialGuard::new(FakeCred(7))));
+    let manual = token();
+    resource.slot_a.store(Arc::clone(&manual));
     assert_eq!(
         resource.install_credential_slot_at_generation("slot_a", guard(2), generation),
         Err(nebula_resource::SlotInstallError::ProjectionChanged)
     );
-    assert_eq!(resource.slot_a.load().expect("manual replacement").0, 7);
+    assert!(Arc::ptr_eq(
+        &resource.slot_a.load().expect("manual replacement"),
+        &manual
+    ));
     assert!(resource.credential_slot_projection("unknown").is_none());
 }

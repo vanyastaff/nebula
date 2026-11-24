@@ -16,6 +16,7 @@ nebula-core = { path = "../core" }
 nebula-metadata = { path = "../metadata" }
 nebula-schema = { path = "../schema" }
 serde = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

@@ -16,7 +16,7 @@
 
 pub use nebula_component::{Component, kind};
 pub use nebula_core::{
-    Context, Dependencies,
+    Context,
     accessor::{EventEmitter, LogLevel, Logger, MetricsEmitter, ResourceAccessor},
     context::{HasCredentials, HasEventBus, HasLogger, HasMetrics, HasResources},
 };

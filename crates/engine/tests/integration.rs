@@ -11,7 +11,7 @@ mod proof_input;
 use std::{
     collections::HashMap,
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
@@ -21,7 +21,7 @@ use nebula_action::{
     ActionError, Component, Metadata, action::Action, kind, result::ActionResult,
     stateless::StatelessAction,
 };
-use nebula_core::{Dependencies, NodeKey, id::WorkflowId, node_key};
+use nebula_core::{NodeKey, id::WorkflowId, node_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, WorkflowEngine,
 };
@@ -58,10 +58,6 @@ macro_rules! variant_a_action {
 
             const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
                 nebula_action::effect::ActionEffectContract::ReadOnly;
-            fn dependencies() -> &'static Dependencies {
-                static D: OnceLock<Dependencies> = OnceLock::new();
-                D.get_or_init(Dependencies::new)
-            }
         }
     };
 }

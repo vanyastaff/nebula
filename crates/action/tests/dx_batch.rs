@@ -3,8 +3,6 @@
 //! Validates that the macro-generated `StatefulAction` impl correctly drives
 //! fixed-size batch processing through the `StatefulTestHarness`.
 
-use std::sync::OnceLock;
-
 use nebula_action::{
     ActionContext,
     action::Action,
@@ -13,7 +11,6 @@ use nebula_action::{
     stateful::{BatchAction, BatchItemResult},
     testing::{StatefulTestHarness, TestContextBuilder},
 };
-use nebula_core::Dependencies;
 use nebula_schema::{HasSchema, ValidSchema};
 use serde::{Deserialize, Serialize};
 
@@ -59,11 +56,6 @@ impl nebula_action::Component for DoublerBatch {
 
 impl Action for DoublerBatch {
     type Output = BatchOutput;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl BatchAction for DoublerBatch {

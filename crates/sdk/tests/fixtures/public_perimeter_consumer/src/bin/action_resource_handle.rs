@@ -1,5 +1,5 @@
 //! An SDK-only action whose resource slots are resource handles: a required
-//! `#[resource] ResourceHandle<Directory>` field, an optional pooled
+//! `#[slot] ResourceHandle<Directory>` field, an optional pooled
 //! `Option<ResourceHandle<Ledger>>`, a custom read `Operation`, and `?` from a
 //! unit's `OperationError` into `ActionError` — all through `nebula_sdk`.
 
@@ -96,9 +96,9 @@ impl PoolProvider for Ledger {}
     read_only
 )]
 struct AuditLookup {
-    #[resource]
+    #[slot]
     directory: ResourceHandle<Directory>,
-    #[resource]
+    #[slot]
     ledger: Option<ResourceHandle<Ledger>>,
 }
 
@@ -115,10 +115,10 @@ impl StatelessAction for AuditLookup {
 }
 
 fn main() {
-    let slots = AuditLookup::dependencies().slot_fields();
+    let dependencies = <AuditLookup as Component>::dependencies();
+    let slots = dependencies.slots();
     assert_eq!(slots.len(), 2);
-    assert!(slots.iter().all(|slot| !slot.lazy));
-    let required: Vec<bool> = slots.iter().map(|slot| slot.required).collect();
+    let required: Vec<bool> = slots.iter().map(|slot| slot.is_required()).collect();
     assert_eq!(required, [true, false], "the ledger row is optional");
     assert_eq!(Lookup::EFFECT, Effect::Read);
 }

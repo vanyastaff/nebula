@@ -14,16 +14,12 @@
 //! This mirrors `crates/action/src/poll.rs::PollTriggerAdapter` (which runs
 //! `poll()` in an inline loop driven by `ctx.cancellation()` + `ctx.emitter()`).
 
-use std::{
-    future::Future,
-    sync::{Arc, OnceLock},
-};
+use std::{future::Future, sync::Arc};
 
 use nebula_action::{
-    Action, ActionAdmissionError, ActionError, Component, Metadata, TriggerAction,
+    Action, ActionAdmissionError, ActionError, Component, Dependencies, Metadata, TriggerAction,
     TriggerActionAdapter, TriggerContext, TriggerEventOutcome, TriggerSource, kind,
 };
-use nebula_core::Dependencies;
 use nebula_resource::{ResourceContext, error::ErrorKind as ResourceErrorKind, resource::Provider};
 
 /// EventSource — pull-based event subscription.
@@ -46,10 +42,10 @@ pub trait EventSource: Provider {
     /// Author-owned action catalog metadata for this event source, without a key.
     fn action_metadata() -> Metadata;
 
-    /// Action dependencies required while driving this event source.
-    fn action_dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
+    /// The slots of the trigger action that drives this event source. None
+    /// by default.
+    fn action_dependencies() -> Dependencies {
+        Dependencies::none()
     }
 
     /// Creates a new subscription to this event source.
@@ -209,6 +205,10 @@ where
     fn metadata() -> Metadata {
         E::action_metadata()
     }
+
+    fn dependencies() -> Dependencies {
+        E::action_dependencies()
+    }
 }
 
 impl<E> Action for EventSourceAdapter<E>
@@ -217,10 +217,6 @@ where
     E::Instance: Send + Sync + 'static,
 {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        E::action_dependencies()
-    }
 }
 
 /// Event family marker for self-driven [`EventSourceAdapter`] triggers.

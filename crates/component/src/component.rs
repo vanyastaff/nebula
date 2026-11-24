@@ -5,7 +5,10 @@ use nebula_metadata::{BaseDefinition, Metadata, MetadataBuildError};
 use nebula_schema::{HasSchema, schema_of};
 use serde::de::DeserializeOwned;
 
-use crate::kind::ComponentKind;
+use crate::{
+    kind::ComponentKind,
+    slot::{Dependencies, SlotError},
+};
 
 /// What every action, resource and credential declares about itself.
 ///
@@ -67,6 +70,17 @@ pub trait Component: Sized + Send + Sync + 'static {
     /// [`KEY`](Self::KEY) and derives the schema from [`Config`](Self::Config),
     /// so an admitted definition cannot describe a different component.
     fn metadata() -> Metadata;
+
+    /// What this component needs from the system: its [slots](crate::Slot),
+    /// in declaration order.
+    ///
+    /// A derive writes this from the struct's `#[slot]` fields. A component
+    /// without slots keeps the default, [`Dependencies::none`]. Admission
+    /// reads it once and stores it in the component's definition; nothing
+    /// reads it from the type after that.
+    fn dependencies() -> Dependencies {
+        Dependencies::none()
+    }
 }
 
 /// The typed key of component `C`: an `ActionKey`, a `ResourceKey` or a
@@ -88,6 +102,20 @@ pub fn key_of<C: Component>() -> KeyOf<C> {
     }
     // Checked above: a valid key literal is already in canonical form.
     KeyOf::<C>::from_static_unchecked(C::KEY)
+}
+
+/// The [slots](crate::Slot) `C` declares, checked.
+///
+/// Every kind's admission calls this once; a kind may reject targets it does
+/// not support yet.
+///
+/// # Errors
+///
+/// Returns [`SlotError`] when a slot key is invalid or declared twice.
+pub fn dependencies_of<C: Component>() -> Result<Dependencies, SlotError> {
+    let dependencies = C::dependencies();
+    dependencies.validate()?;
+    Ok(dependencies)
 }
 
 /// Admits `C`'s catalog definition: its author's [`metadata`](Component::metadata)

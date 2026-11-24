@@ -1,47 +1,43 @@
-//! Compile-fail probe: `#[derive(Resource)]` rejects `#[credential]`
-//! on a tuple-struct field. Named-field structs are the only accepted form
-//! for slot declarations.
+//! Compile-fail probe: `#[derive(Resource)]` rejects `#[slot]` on a
+//! tuple-struct field. A slot is addressed by its field name.
 
 use nebula_credential::{
-    Credential, CredentialContext, CredentialError, CredentialGuard, Metadata,
-    SecretString, SecretToken, StaticResolveResult,
-    Component, kind,
+    Component, Credential, CredentialContext, CredentialError, Metadata, SecretString,
+    SecretToken, StaticResolveResult, kind,
 };
-use nebula_resource::{Resource, SlotCell};
-use zeroize::Zeroize;
+use nebula_resource::{CredentialSlot, Resource};
 
 #[derive(Resource)]
-struct TupleResource(#[credential(key = "auth")] SlotCell<CredentialGuard<FakeCred>>);
+#[resource(key = "probe.tuple", config = ())]
+struct TupleResource(#[slot] CredentialSlot<FakeCred>);
 
 struct FakeCred;
-impl Zeroize for FakeCred {
-    fn zeroize(&mut self) {}
-}
+
 impl Component for FakeCred {
     type Kind = kind::Credential;
     type Config = ();
 
-    const KEY: &'static str = "fake.cred";
+    const KEY: &'static str = "probe.fake";
 
     fn metadata() -> Metadata {
-        Metadata::new(nebula_credential::metadata_name!("FakeCred"),
-            "fixture",
-        )
+        Metadata::new(nebula_credential::metadata_name!("FakeCred"), "probe fixture")
     }
 }
 
 impl Credential for FakeCred {
     type Scheme = SecretToken;
     type State = SecretToken;
+
     fn project(state: &SecretToken) -> SecretToken {
         state.clone()
     }
+
     async fn resolve(
         _properties: &(),
         _ctx: &CredentialContext,
     ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
         Ok(StaticResolveResult::Complete(SecretToken::new(
-            SecretString::new("t"),
+            SecretString::new("fake-token"),
         )))
     }
 }

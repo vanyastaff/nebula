@@ -162,7 +162,7 @@ retry-механика. `journal.rs` (262) — WAL-события. `idempotency.
 **Не затронут.** Крейт не зависит на `nebula-credential` / `nebula-resource`; упоминания только косвенные
 (`transition.rs:174` — regression-тест #273 про out-of-band failure при credential rotation; `state.rs:1037`
 — строка-пример в тесте `mark_setup_failed`). Это Core-слой, зависящий только вниз (core/error/workflow);
-потребители — engine и api. Consumer-binding (`#[credential]` / `#[resource]` слоты, `CredentialGuard<Scheme>`)
+потребители — engine и api. Consumer-binding (`#[slot]` поля, `CredentialGuard<Scheme>`)
 живёт выше по стеку и не пересекается с типами execution-времени.
 
 ## 8. Forward design / открытые вопросы

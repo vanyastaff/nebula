@@ -4,7 +4,7 @@
 |-------|-------|
 | **Status** | Frontier public vocabulary; stable workspace-leaf layering (depends on nothing in-workspace except `nebula-error`) |
 | **Layer** | Foundation / vocabulary (bottom of the stack; 15 reverse-deps) |
-| **Redesign role** | **Partially touched** — `auth.rs` (`AuthScheme`/`AuthPattern`/Sensitive-Public) and `dependencies.rs` (`SlotField`/slot decls) and the `guard.rs` + `accessor.rs` seam are load-bearing for the credential/resource rewrite; the rest (IDs, keys, scope, tenancy, obs, slug) is untouched stable foundation. |
+| **Redesign role** | **Partially touched** — `auth.rs` (`AuthScheme`/`AuthPattern`/Sensitive-Public) and the `guard.rs` + `accessor.rs` seam are load-bearing for the credential/resource rewrite; the rest (IDs, keys, scope, tenancy, obs, slug) is untouched stable foundation. |
 | **Related** | ADR-0088/0092 (credential rewrite — consume `auth.rs`/`accessor.rs`), ADR-0093 (topology/hot-swap — `RefreshCoordinator`), PRODUCT_CANON §15.5 (Sensitive/Public), spec 23 (`dependencies.rs`) |
 
 ---
@@ -30,7 +30,6 @@
 | Capability-трейты | `HasResources`, `HasCredentials`, `HasLogger`, `HasMetrics`, `HasEventBus` | `src/context/capability.rs:6-35` |
 | Accessors | `ResourceAccessor`, `CredentialAccessor`, `Logger`, `MetricsEmitter`, `EventEmitter`, `Clock`, `SystemClock`, `RefreshCoordinator`, `RefreshToken` | `src/accessor.rs:13-119` |
 | Auth | `AuthPattern` (11 вариантов, `non_exhaustive`), `AuthScheme`, `SensitiveScheme: AuthScheme + ZeroizeOnDrop`, `PublicScheme`, `impl AuthScheme for ()` = NoAuth | `src/auth.rs:41,83,118,137,140` |
-| Dependencies (spec 23) | `Dependencies`, `SlotField`, `SlotKind`, `DeclaresDependencies`, `CredentialRequirement`, `ResourceRequirement`, `DependencyError` | `src/dependencies.rs:9-226` |
 | Guards | `Guard`, `TypedGuard`, `debug_redacted`, `debug_typed` | `src/guard.rs:9-40` |
 | Observability | `TraceId(u128)`, `SpanId(u64)`, `W3cTraceContext`, `parse_traceparent`, `W3cTraceContextError` | `src/obs.rs:11-172` |
 | RBAC / tenancy | `OrgRole`, `WorkspaceRole`, `effective_workspace_role`, `Permission`, `TenantContext`, `PermissionDenied`, `ResolvedIds` | `src/role.rs:9-40`, `src/permission.rs:8`, `src/tenancy.rs:15,94,115` |
@@ -88,7 +87,7 @@
 Частично затронут, но как **словарь, а не как реализация**. Канонический дом, который consume-ит rewrite:
 
 - `auth.rs` — `AuthScheme`/`AuthPattern`/Sensitive-Public дихотомия, на которой стоит scheme-enum/Protocol-модель, `SchemeFactory` и hot-swap из `nebula-credential` (ADR-0088/0092).
-- `dependencies.rs` — `SlotField`/`SlotKind` = словарь slot-bindings и bind-population (M12.4, `nebula-resource`).
+- Словарь слотов (`Dependencies`, `Slot`, `SlotValue`) переехал в `nebula-component`: компонент объявляет слоты в `Component::dependencies()` (0.42.0).
 - `accessor.rs` + `guard.rs` — `CredentialAccessor`/`RefreshCoordinator` + guard-трейты = seam для hot-swap handles и framework-owned acquire loop (ADR-0093/topology).
 
 Сами resolver/refresh/lease/rotation-state (`nebula-credential`) и per-slot fan-out (`nebula-resource`) сюда НЕ переезжают — `nebula-core` остаётся пассивным контрактным словарём.

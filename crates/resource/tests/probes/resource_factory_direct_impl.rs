@@ -1,6 +1,6 @@
 use std::any::TypeId;
 
-use nebula_core::{Dependencies, ResourceKey};
+use nebula_core::ResourceKey;
 use nebula_resource::{
     Error, Manager, ResourceAdmissionError, ResourceFactory, ResourceDefinition, SlotIdentity,
     factory::{BoxFut, RegisterRequest},
@@ -10,10 +10,6 @@ struct ForgedFactory;
 
 impl ResourceFactory for ForgedFactory {
     fn key(&self) -> ResourceKey {
-        panic!("compile-only probe")
-    }
-
-    fn dependencies(&self) -> &Dependencies {
         panic!("compile-only probe")
     }
 

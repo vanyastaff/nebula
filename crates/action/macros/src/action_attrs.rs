@@ -1,23 +1,19 @@
-//! Parsed `#[action(...)]` attributes for the Variant A `#[derive(Action)]`.
+//! Parsed `#[action(...)]` attributes for `#[derive(Action)]`.
 
-use nebula_macro_support::attrs;
+use nebula_macro_support::{
+    attrs,
+    component::{COMPONENT_KEYS, ComponentAttrs},
+};
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
-use syn::{Ident, Result, Type};
+use syn::{Attribute, Ident, Result, Type};
 
-/// Parsed action container attributes (Variant A.
+/// Parsed action container attributes.
 #[derive(Debug, Clone)]
 pub(crate) struct ActionAttrs {
-    /// Unique key (e.g. `"http.request"`).
-    pub key: String,
-    /// Human-readable name.
-    pub name: String,
-    /// Short description.
-    pub description: String,
-    /// Complete checked SemVer, including prerelease and build metadata.
-    pub version: semver::Version,
-    /// Required `Component::Config` type: the node's form data.
-    pub config: Type,
+    /// Key, name, description, version and config, shared with every
+    /// component derive.
+    pub component: ComponentAttrs,
     /// Required `Self::Output` type.
     pub output: Type,
     /// The author explicitly attests that the action performs no external
@@ -36,21 +32,9 @@ impl ActionAttrs {
     pub(crate) fn parse(
         attr_args: &attrs::AttrArgs,
         struct_name: &Ident,
-        description_fallback: Option<String>,
+        doc_attributes: &[Attribute],
     ) -> Result<Self> {
-        // Validate that all keys present are recognised. This produces clean
-        // diagnostics for misspelled attribute names so authors get a hint
-        // pointing at the bad key instead of a confusing parse error far
-        // downstream.
-        const ALLOWED: &[&str] = &[
-            "key",
-            "name",
-            "description",
-            "version",
-            "config",
-            "output",
-            "read_only",
-        ];
+        const ACTION_KEYS: [&str; 2] = ["output", "read_only"];
         for item in &attr_args.items {
             let key = match item {
                 attrs::AttrItem::KeyValue { key, .. }
@@ -71,13 +55,14 @@ impl ActionAttrs {
                      `Component::Config`; write `#[action(config = SomeType)]`",
                 ));
             }
-            if !ALLOWED.iter().any(|allowed| key == allowed) {
+            let allowed = COMPONENT_KEYS.iter().chain(ACTION_KEYS.iter());
+            if !allowed.clone().any(|allowed| key == allowed) {
                 return Err(syn::Error::new_spanned(
                     key,
                     format!(
                         "unknown attribute `{key}` in #[action(...)] \
                          — allowed keys: {}",
-                        ALLOWED.join(", "),
+                        allowed.copied().collect::<Vec<_>>().join(", "),
                     ),
                 ));
             }
@@ -89,55 +74,26 @@ impl ActionAttrs {
             }
         }
 
-        let key = attr_args.require_string("key", struct_name)?;
-        let name = attr_args
-            .get_string("name")
-            .unwrap_or_else(|| struct_name.to_string());
-
-        let description = attr_args
-            .get_string("description")
-            .or(description_fallback)
-            .filter(|s| !s.is_empty())
-            .unwrap_or_default();
-
-        let version_str = attr_args
-            .get_string("version")
-            .unwrap_or_else(|| "0.1.0".to_string());
-        let version = parse_version(&version_str)?;
-
-        let config = attr_args.get_type("config")?.ok_or_else(|| {
-            syn::Error::new_spanned(
-                struct_name,
-                "missing required attribute `config = SomeType` \
-                 — the action's `Component::Config` must be specified",
-            )
-        })?;
+        let component = ComponentAttrs::parse(attr_args, struct_name, "action", doc_attributes)?;
         let output = attr_args.get_type("output")?.ok_or_else(|| {
             syn::Error::new_spanned(
                 struct_name,
                 "missing required attribute `output = SomeType` \
-                 — Variant A requires Self::Output to be specified",
+                 — the action's `Action::Output` must be specified",
             )
         })?;
         let read_only = attr_args.has_flag("read_only");
 
         Ok(Self {
-            key,
-            name,
-            description,
-            version,
-            config,
+            component,
             output,
             read_only,
         })
     }
 
-    /// Generate the `const KEY` item and its definition-site validity check.
-    ///
-    /// The check is a non-generic `const _` item, so `cargo check` and an
-    /// editor report an invalid literal where the action is declared.
+    /// The `const KEY` item and a definition-site check of its literal.
     pub(crate) fn key_items(&self) -> (TokenStream2, TokenStream2) {
-        let key = &self.key;
+        let key = &self.component.key;
         (
             quote! { const KEY: &'static str = #key; },
             quote! {
@@ -149,21 +105,7 @@ impl ActionAttrs {
         )
     }
 
-    /// Generate the keyless `Metadata` initialization expression.
-    pub(crate) fn metadata_init_expr(&self) -> TokenStream2 {
-        let name = &self.name;
-        let description = &self.description;
-        let version = self.version.to_string();
-        quote! {
-            ::nebula_action::Metadata::new(
-                ::nebula_action::metadata_name!(#name),
-                #description,
-            )
-                .with_version_literal(#version)
-        }
-    }
-
-    /// The `EFFECT_CONTRACT` override `#[action(read_only)]` asks for.
+    /// The `const EFFECT_CONTRACT` item for `read_only`, if set.
     pub(crate) fn effect_contract_item(&self) -> Option<TokenStream2> {
         self.read_only.then(|| {
             quote! {
@@ -172,48 +114,4 @@ impl ActionAttrs {
             }
         })
     }
-}
-
-/// Parse a `#[action(version = "…")]` string without discarding SemVer fields.
-///
-/// Accepts both the short `"X.Y"` shape (promoted to `X.Y.0`) and the full
-/// semver `"X.Y.Z"` shape, plus any additional pre-release / build metadata
-/// that `semver::Version::parse` understands.
-fn parse_version(version: &str) -> Result<semver::Version> {
-    let trimmed = version.trim();
-    if trimmed.is_empty() {
-        return Err(syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "empty version string; expected semver like `1.0` or `1.0.0`",
-        ));
-    }
-
-    // `semver::Version::parse` requires three components. Promote `X.Y` to
-    // `X.Y.0` first so authors can keep writing the shorter form.
-    let mut owned_buf;
-    let normalized: &str = if trimmed.split('.').take(3).count() < 3
-        && !trimmed.contains('-')
-        && !trimmed.contains('+')
-    {
-        owned_buf = trimmed.to_owned();
-        // Pad with ".0" until we have at least three dot-separated segments.
-        while owned_buf.split('.').take(3).count() < 3 {
-            owned_buf.push_str(".0");
-        }
-        owned_buf.as_str()
-    } else {
-        trimmed
-    };
-
-    let parsed = semver::Version::parse(normalized).map_err(|err| {
-        syn::Error::new(
-            proc_macro2::Span::call_site(),
-            format!(
-                "invalid version `{version}`: {err} \
-                 — expected semver like `1.0` or `1.0.0`"
-            ),
-        )
-    })?;
-
-    Ok(parsed)
 }

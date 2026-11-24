@@ -126,6 +126,10 @@ pub(super) struct RowShared<R: Provider> {
     gate: Option<Arc<Semaphore>>,
 }
 
+impl<R: Provider> nebula_component::SlotValue for ResourceHandle<R> {
+    type Target = R;
+}
+
 impl<R: Provider> Clone for ResourceHandle<R> {
     fn clone(&self) -> Self {
         Self {

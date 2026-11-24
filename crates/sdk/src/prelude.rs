@@ -109,8 +109,8 @@ pub use nebula_component::{Component, kind};
 pub use nebula_core::AuthScheme as AuthSchemeContract;
 pub use nebula_core::auth::NoAuthFamily;
 pub use nebula_core::{
-    ActionKey, AuthPattern, CredentialKey, Dependencies, ExecutionId, NodeKey, OperationCallId,
-    PluginKey, ResourceKey, ScopeLevel, WorkflowId, action_key, credential_key, resource_key,
+    ActionKey, AuthPattern, CredentialKey, ExecutionId, NodeKey, OperationCallId, PluginKey,
+    ResourceKey, ScopeLevel, WorkflowId, action_key, credential_key, resource_key,
 };
 // Credential types (v2)
 pub use nebula_credential::{

@@ -5,9 +5,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::Duration;
 
 use nebula_action::{ActionKind, FlowKind, InputPort, IsolationLevel, OutputPort};
+use nebula_component::{Dependencies, Slot, SlotTarget};
 use nebula_core::{
-    ActionKey, CredentialKey, Dependencies, ExecutablePlanRevisionId, PluginKey, ResourceKey,
-    SlotKind, WorkflowVersionId,
+    ActionKey, CredentialKey, ExecutablePlanRevisionId, PluginKey, ResourceKey, WorkflowVersionId,
 };
 use nebula_credential::AuthPattern;
 use nebula_schema::{Assignability, InputSchema, OutputSchema, explain_assignable};
@@ -22,13 +22,13 @@ use crate::plan::{
     PlanEpoch, RECORD_VERSION_V1, RecordedActionKindV1, RecordedActionV1, RecordedAuthPatternV1,
     RecordedBindingContractV1, RecordedBindingSelectorProvenanceV1, RecordedBindingSiteV1,
     RecordedBindingV1, RecordedCheckpointPolicyV1, RecordedCheckpointingV1, RecordedConnectionV1,
-    RecordedConverterV1, RecordedCredentialV1, RecordedDependenciesV1, RecordedDependencyV1,
-    RecordedDurationV1, RecordedErrorStrategyV1, RecordedExecutablePlanRevisionV1,
-    RecordedFlowKindV1, RecordedGraphContentV1, RecordedInputPortV1, RecordedIsolationV1,
-    RecordedNodeV1, RecordedOutputPortV1, RecordedParameterV1, RecordedParameterValueV1,
-    RecordedPlanManifestV1, RecordedPlanProfileV1, RecordedPluginV1, RecordedRateLimitV1,
-    RecordedResourceV1, RecordedRetryV1, RecordedSchemaV1, RecordedSemverV1, RecordedSlotV1,
-    RecordedTriggerV1, RecordedVariableV1, RecordedWorkflowConfigV1, RecordedWorkflowVersionV1,
+    RecordedConverterV1, RecordedCredentialV1, RecordedDependenciesV1, RecordedDurationV1,
+    RecordedErrorStrategyV1, RecordedExecutablePlanRevisionV1, RecordedFlowKindV1,
+    RecordedGraphContentV1, RecordedInputPortV1, RecordedIsolationV1, RecordedNodeV1,
+    RecordedOutputPortV1, RecordedParameterV1, RecordedParameterValueV1, RecordedPlanManifestV1,
+    RecordedPlanProfileV1, RecordedPluginV1, RecordedRateLimitV1, RecordedResourceV1,
+    RecordedRetryV1, RecordedSchemaV1, RecordedSemverV1, RecordedSlotV1, RecordedTriggerV1,
+    RecordedVariableV1, RecordedWorkflowConfigV1, RecordedWorkflowVersionV1,
     validate_node_parameters, validate_parameter, validate_parameter_contract,
     validate_trigger_configuration,
 };
@@ -634,51 +634,34 @@ fn output_port_key(port: &RecordedOutputPortV1) -> &str {
 }
 
 fn project_dependencies(dependencies: &Dependencies) -> RecordedDependenciesV1 {
-    let mut credentials = dependencies
-        .credentials()
-        .iter()
-        .map(|dependency| RecordedDependencyV1 {
-            key: dependency.key.to_string(),
-            required: dependency.required,
-        })
-        .collect::<Vec<_>>();
-    credentials.sort_by(|left, right| left.key.cmp(&right.key));
-
-    let mut resources = dependencies
-        .resources()
-        .iter()
-        .map(|dependency| RecordedDependencyV1 {
-            key: dependency.key.to_string(),
-            required: dependency.required,
-        })
-        .collect::<Vec<_>>();
-    resources.sort_by(|left, right| left.key.cmp(&right.key));
-
+    // An unbound slot selects by its own key, recorded as the default
+    // selector; resolution is eager, so no slot is lazy. The separate
+    // requirement lists of the record carry nothing a slot does not.
     let mut slots = dependencies
-        .slot_fields()
+        .slots()
         .iter()
-        .map(|slot| match &slot.kind {
-            SlotKind::Resource { key, .. } => RecordedSlotV1::Resource {
-                slot_key: slot.slot_key.to_owned(),
-                default_selector: slot.default_id.trim().to_owned(),
-                contract_key: key.to_string(),
-                required: slot.required,
-                lazy: slot.lazy,
+        .map(|slot| match slot.target() {
+            SlotTarget::Credential(target) => RecordedSlotV1::Credential {
+                slot_key: slot.key().to_owned(),
+                default_selector: slot.key().to_owned(),
+                contract_key: target.key().to_string(),
+                required: slot.is_required(),
+                lazy: false,
             },
-            SlotKind::Credential { key, .. } => RecordedSlotV1::Credential {
-                slot_key: slot.slot_key.to_owned(),
-                default_selector: slot.default_id.trim().to_owned(),
-                contract_key: key.to_string(),
-                required: slot.required,
-                lazy: slot.lazy,
+            SlotTarget::Resource(target) => RecordedSlotV1::Resource {
+                slot_key: slot.key().to_owned(),
+                default_selector: slot.key().to_owned(),
+                contract_key: target.key().to_string(),
+                required: slot.is_required(),
+                lazy: false,
             },
         })
         .collect::<Vec<_>>();
     slots.sort_by(|left, right| slot_sort_key(left).cmp(&slot_sort_key(right)));
 
     RecordedDependenciesV1 {
-        credentials: credentials.into_boxed_slice(),
-        resources: resources.into_boxed_slice(),
+        credentials: Box::default(),
+        resources: Box::default(),
         slots: slots.into_boxed_slice(),
     }
 }
@@ -1306,9 +1289,9 @@ impl<'a> GraphCompiler<'a> {
 
     fn compile_bindings_for_node(&mut self, node: &NodeDefinition, dependencies: &Dependencies) {
         let declared = dependencies
-            .slot_fields()
+            .slots()
             .iter()
-            .map(|slot| slot.slot_key)
+            .map(Slot::key)
             .collect::<BTreeSet<_>>();
         let mut overrides = node.slot_bindings.iter().collect::<Vec<_>>();
         overrides.sort_by_key(|(key, _)| *key);
@@ -1326,47 +1309,44 @@ impl<'a> GraphCompiler<'a> {
                 );
             }
         }
-        for slot in dependencies.slot_fields() {
-            let override_value = node.slot_bindings.get(slot.slot_key);
-            let (selector, selector_provenance) = match (&slot.kind, override_value) {
-                (SlotKind::Resource { .. }, Some(SlotBinding::ResourceId(value))) => (
+        for slot in dependencies.slots() {
+            let override_value = node.slot_bindings.get(slot.key());
+            let (selector, selector_provenance) = match (slot.target(), override_value) {
+                (SlotTarget::Resource(_), Some(SlotBinding::ResourceId(value))) => (
                     value.as_str(),
                     RecordedBindingSelectorProvenanceV1::ResourceIdOverride,
                 ),
-                (SlotKind::Credential { .. }, Some(SlotBinding::CredentialId(value))) => (
+                (SlotTarget::Credential(_), Some(SlotBinding::CredentialId(value))) => (
                     value.as_str(),
                     RecordedBindingSelectorProvenanceV1::CredentialIdOverride,
                 ),
-                (SlotKind::Resource { .. }, Some(SlotBinding::CredentialId(_))) => {
+                (SlotTarget::Resource(_), Some(SlotBinding::CredentialId(_))) => {
                     self.diagnostics.push(
                         DiagnosticCode::SlotKindMismatch,
                         JsonPointer::root("nodes")
                             .child(node.id.as_str())
                             .child("slot_bindings")
-                            .child(slot.slot_key),
+                            .child(slot.key()),
                         DiagnosticValue::ResourceSlot,
                         DiagnosticValue::CredentialSlot,
                         Remediation::SelectMatchingSlotKind,
                     );
                     continue;
                 },
-                (SlotKind::Credential { .. }, Some(SlotBinding::ResourceId(_))) => {
+                (SlotTarget::Credential(_), Some(SlotBinding::ResourceId(_))) => {
                     self.diagnostics.push(
                         DiagnosticCode::SlotKindMismatch,
                         JsonPointer::root("nodes")
                             .child(node.id.as_str())
                             .child("slot_bindings")
-                            .child(slot.slot_key),
+                            .child(slot.key()),
                         DiagnosticValue::CredentialSlot,
                         DiagnosticValue::ResourceSlot,
                         Remediation::SelectMatchingSlotKind,
                     );
                     continue;
                 },
-                (_, None) => (
-                    slot.slot_key,
-                    RecordedBindingSelectorProvenanceV1::DefaultName,
-                ),
+                (_, None) => (slot.key(), RecordedBindingSelectorProvenanceV1::DefaultName),
             };
             self.compile_binding(
                 RecordedBindingSiteV1::Node(node.id.to_string()),
@@ -1377,7 +1357,7 @@ impl<'a> GraphCompiler<'a> {
                 JsonPointer::root("nodes")
                     .child(node.id.as_str())
                     .child("slot_bindings")
-                    .child(slot.slot_key),
+                    .child(slot.key()),
             );
         }
     }
@@ -1387,17 +1367,17 @@ impl<'a> GraphCompiler<'a> {
         trigger: &TriggerBinding,
         dependencies: &Dependencies,
     ) {
-        for slot in dependencies.slot_fields() {
+        for slot in dependencies.slots() {
             self.compile_binding(
                 RecordedBindingSiteV1::Trigger(trigger.id.to_string()),
                 trigger.plugin_key.clone(),
                 slot,
-                slot.slot_key,
+                slot.key(),
                 RecordedBindingSelectorProvenanceV1::DefaultName,
                 JsonPointer::root("trigger_bindings")
                     .child(trigger.id.as_str())
                     .child("bindings")
-                    .child(slot.slot_key),
+                    .child(slot.key()),
             );
         }
     }
@@ -1406,7 +1386,7 @@ impl<'a> GraphCompiler<'a> {
         &mut self,
         site: RecordedBindingSiteV1,
         owner_plugin: PluginKey,
-        slot: &nebula_core::SlotField,
+        slot: &Slot,
         selector: &str,
         selector_provenance: RecordedBindingSelectorProvenanceV1,
         path: JsonPointer,
@@ -1422,8 +1402,9 @@ impl<'a> GraphCompiler<'a> {
             return;
         }
         let selector = selector.trim();
-        let contract = match &slot.kind {
-            SlotKind::Resource { type_id, key, .. } => {
+        let contract = match slot.target() {
+            SlotTarget::Resource(target) => {
+                let (key, type_id) = (target.key(), target.type_id());
                 let Some((provider, snapshot)) = self.find_resource(key) else {
                     self.diagnostics.push(
                         DiagnosticCode::MissingResourceContract,
@@ -1434,7 +1415,7 @@ impl<'a> GraphCompiler<'a> {
                     );
                     return;
                 };
-                if snapshot.type_id() != *type_id {
+                if snapshot.type_id() != type_id {
                     self.dependency_type_mismatch(path, DiagnosticValue::Resource(key));
                     return;
                 }
@@ -1448,7 +1429,8 @@ impl<'a> GraphCompiler<'a> {
                     version: record_semver(&version),
                 }
             },
-            SlotKind::Credential { type_id, key, .. } => {
+            SlotTarget::Credential(target) => {
+                let (key, type_id) = (target.key(), target.type_id());
                 let Some((provider, snapshot)) = self.find_credential(key) else {
                     self.diagnostics.push(
                         DiagnosticCode::MissingCredentialContract,
@@ -1459,7 +1441,7 @@ impl<'a> GraphCompiler<'a> {
                     );
                     return;
                 };
-                if snapshot.type_id() != *type_id {
+                if snapshot.type_id() != type_id {
                     self.dependency_type_mismatch(path, DiagnosticValue::Credential(key));
                     return;
                 }
@@ -1478,12 +1460,12 @@ impl<'a> GraphCompiler<'a> {
         };
         self.bindings.push(RecordedBindingV1 {
             site,
-            slot_key: slot.slot_key.to_owned(),
+            slot_key: slot.key().to_owned(),
             selector: selector.to_owned(),
             selector_provenance: Some(selector_provenance),
             contract,
-            required: slot.required,
-            lazy: slot.lazy,
+            required: slot.is_required(),
+            lazy: false,
         });
     }
 
@@ -1765,42 +1747,15 @@ impl<'a> GraphCompiler<'a> {
             let Ok(owner_plugin_key) = owner.parse::<PluginKey>() else {
                 continue;
             };
-            for dependency in dependencies.resources() {
-                let Some((provider_key, record, nested)) = self.resolve_resource_dependency(
-                    &owner_plugin_key,
-                    &dependency.key,
-                    dependency.type_id,
-                    JsonPointer::root("components")
-                        .child("resources")
-                        .child(dependency.key.as_str()),
-                ) else {
-                    continue;
-                };
-                let inserted = self.resources.insert(record.key.clone(), record).is_none();
-                if inserted && processed_resources.insert(dependency.key.to_string()) {
-                    queue.push((provider_key.to_string(), nested));
-                }
-            }
-            for dependency in dependencies.credentials() {
-                if let Some(record) = self.resolve_credential_dependency(
-                    &owner_plugin_key,
-                    &dependency.key,
-                    dependency.type_id,
-                    JsonPointer::root("components")
-                        .child("credentials")
-                        .child(dependency.key.as_str()),
-                ) {
-                    self.credentials.entry(record.key.clone()).or_insert(record);
-                }
-            }
-            for slot in dependencies.slot_fields() {
-                match &slot.kind {
-                    SlotKind::Resource { type_id, key, .. } => {
+            for slot in dependencies.slots() {
+                match slot.target() {
+                    SlotTarget::Resource(target) => {
+                        let key = target.key();
                         if let Some((provider_key, record, nested)) = self
                             .resolve_resource_dependency(
                                 &owner_plugin_key,
                                 key,
-                                *type_id,
+                                target.type_id(),
                                 JsonPointer::root("components")
                                     .child("resources")
                                     .child(key.as_str()),
@@ -1813,11 +1768,12 @@ impl<'a> GraphCompiler<'a> {
                             }
                         }
                     },
-                    SlotKind::Credential { type_id, key, .. } => {
+                    SlotTarget::Credential(target) => {
+                        let key = target.key();
                         if let Some(record) = self.resolve_credential_dependency(
                             &owner_plugin_key,
                             key,
-                            *type_id,
+                            target.type_id(),
                             JsonPointer::root("components")
                                 .child("credentials")
                                 .child(key.as_str()),

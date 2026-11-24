@@ -325,13 +325,12 @@ impl std::fmt::Debug for ActionRegistry {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::OnceLock;
 
     use nebula_action::{
         Component, Metadata, action::Action, error::ActionError, kind, metadata::ActionKind,
         result::ActionResult, stateless::StatelessAction,
     };
-    use nebula_core::{Dependencies, action_key};
+    use nebula_core::action_key;
     use nebula_workflow::NodeDefinition;
 
     use super::*;
@@ -351,10 +350,6 @@ mod tests {
 
     impl Action for NoopAction {
         type Output = serde_json::Value;
-        fn dependencies() -> &'static Dependencies {
-            static D: OnceLock<Dependencies> = OnceLock::new();
-            D.get_or_init(Dependencies::new)
-        }
     }
 
     nebula_action::stateless_entry!(TestNoopEntry(NoopAction) = "test.noop", meta_with(2, 0),);
@@ -417,10 +412,6 @@ mod tests {
 
     impl Action for InvalidSchemaAction {
         type Output = serde_json::Value;
-
-        fn dependencies() -> &'static Dependencies {
-            NoopAction::dependencies()
-        }
     }
 
     impl FromWorkflowNode for InvalidSchemaAction {
@@ -496,10 +487,6 @@ mod tests {
 
     impl Action for NoopStateful {
         type Output = serde_json::Value;
-        fn dependencies() -> &'static Dependencies {
-            static D: OnceLock<Dependencies> = OnceLock::new();
-            D.get_or_init(Dependencies::new)
-        }
     }
 
     impl StatefulAction for NoopStateful {

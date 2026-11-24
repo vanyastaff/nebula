@@ -1,12 +1,11 @@
 //! Admitted action metadata exposes immutable concurrency intent.
 
-use std::{num::NonZeroU32, sync::OnceLock};
+use std::num::NonZeroU32;
 
 use nebula_action::{
     Action, ActionContext, ActionError, ActionFactory, ActionResult, Component, InstanceFactory,
     Metadata, RecordedActionDefinition, StatelessAction, kind,
 };
-use nebula_core::Dependencies;
 
 struct Probe;
 
@@ -23,11 +22,6 @@ impl Component for Probe {
 
 impl Action for Probe {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
-    }
 }
 
 const LIMIT: NonZeroU32 = NonZeroU32::new(4).expect("four is non-zero");
@@ -50,10 +44,6 @@ impl Action for LimitedProbe {
     type Output = serde_json::Value;
 
     const MAX_CONCURRENT: Option<NonZeroU32> = Some(LIMIT);
-
-    fn dependencies() -> &'static Dependencies {
-        Probe::dependencies()
-    }
 }
 
 impl StatelessAction for LimitedProbe {

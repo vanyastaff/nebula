@@ -84,6 +84,7 @@ pub mod resource;
 pub mod resource_produces;
 /// Execution result types carrying data and flow-control intent.
 pub mod result;
+pub mod slot;
 /// [`StatefulAction`] DX trait, [`StatefulActionAdapter`], and DX patterns
 /// (paginated, batch).
 pub mod stateful;
@@ -146,10 +147,10 @@ pub use metadata::{
     ActionReadmissionError, IsolationLevel, RecordedActionDefinition,
 };
 pub use nebula_action_macros::{Action, action_phantom};
-pub use nebula_component::{Component, key_of, kind};
+pub use nebula_component::{Component, Dependencies, Slot, SlotValue, key_of, kind};
 pub use nebula_core::{BranchKey, KeyValidationError, KeyValidationErrorKind, PortKey};
 pub use nebula_core::{
-    Context, Dependencies,
+    Context,
     accessor::{EventEmitter, LogLevel, Logger, MetricsEmitter, ResourceAccessor},
     context::{HasCredentials, HasEventBus, HasLogger, HasMetrics, HasResources},
 };
@@ -172,6 +173,7 @@ pub use port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, S
 pub use resource::{ResourceAction, ResourceActionAdapter, ResourceHandler};
 pub use resource_produces::ResourceProduces;
 pub use result::{ActionResult, BreakReason, TerminationCode, TerminationReason, WaitCondition};
+pub use slot::{FromSlot, ResolveSlot};
 pub use stateful::{
     BatchAction, BatchItemResult, BatchState, PageResult, PaginatedAction, PaginationState,
     StatefulAction, StatefulActionAdapter,

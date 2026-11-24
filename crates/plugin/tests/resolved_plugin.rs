@@ -1,12 +1,12 @@
 //! Integration tests for `ResolvedPlugin` — namespace enforcement and lookup.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use nebula_action::{
     Action, ActionContext, ActionError, ActionFactory, ActionResult, InstanceFactory, Metadata,
     StatelessAction,
 };
-use nebula_core::{ActionKey, CredentialKey, Dependencies, ResourceKey};
+use nebula_core::{ActionKey, CredentialKey, ResourceKey};
 use nebula_credential::{
     AnyCredential, Component, Credential, CredentialContext, SecretString, SecretToken,
     contract::plugin_capability_report, error::CredentialError, kind, resolve::StaticResolveResult,
@@ -27,8 +27,6 @@ impl<const INDEX: usize> nebula_resource::HasCredentialSlots for MetadataFixture
         false
     }
 }
-
-impl<const INDEX: usize> nebula_core::DeclaresDependencies for MetadataFixture<INDEX> {}
 
 impl<const INDEX: usize> Component for MetadataFixture<INDEX> {
     type Kind = kind::Resource;
@@ -136,11 +134,6 @@ impl<const INDEX: usize> Component for MetadataAction<INDEX> {
 
 impl<const INDEX: usize> Action for MetadataAction<INDEX> {
     type Output = serde_json::Value;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
-    }
 }
 
 impl<const INDEX: usize> StatelessAction for MetadataAction<INDEX> {

@@ -21,7 +21,9 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, parse_macro_input};
 
-use crate::{action_attrs::ActionAttrs, field_slots};
+use nebula_macro_support::slot::{self as slots, SlotField};
+
+use crate::action_attrs::ActionAttrs;
 
 pub(crate) fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -47,23 +49,22 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     };
 
     let attr_args = attrs::parse_attrs(&input.attrs, "action")?;
-    let description_fallback = doc_string(&input.attrs);
-    let description_fallback = if description_fallback.is_empty() {
-        None
-    } else {
-        Some(description_fallback)
-    };
+    let attrs = ActionAttrs::parse(&attr_args, struct_name, &input.attrs)?;
 
-    let attrs = ActionAttrs::parse(&attr_args, struct_name, description_fallback)?;
+    if let Fields::Unnamed(_) = fields {
+        return Err(syn::Error::new_spanned(
+            fields,
+            "#[derive(Action)] does not support tuple structs \
+             — use a named-field struct or a unit struct",
+        ));
+    }
+    let slots = slots::parse_slots(fields)?;
+    let dependencies = slots::emit_dependencies(&quote!(::nebula_action), &slots);
 
-    // Parse field-level slot attributes.
-    let slots = field_slots::parse_slot_fields(fields)?;
-    let slot_registrations = field_slots::emit_slot_field_registrations(&slots);
-
-    let metadata_init = attrs.metadata_init_expr();
+    let metadata_init = attrs.component.metadata_expr(&quote!(::nebula_action));
     let (key_const, key_check) = attrs.key_items();
 
-    let config_ty = &attrs.config;
+    let config_ty = &attrs.component.config;
     let output_ty = &attrs.output;
     let effect_contract = attrs.effect_contract_item();
 
@@ -87,20 +88,15 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
             fn metadata() -> ::nebula_action::Metadata {
                 #metadata_init
             }
+
+            fn dependencies() -> ::nebula_action::Dependencies {
+                #dependencies
+            }
         }
 
         impl #impl_generics ::nebula_action::Action for #struct_name #ty_generics #where_clause {
             type Output = #output_ty;
             #effect_contract
-
-            fn dependencies() -> &'static ::nebula_core::Dependencies {
-                static DEPS: ::std::sync::OnceLock<::nebula_core::Dependencies> =
-                    ::std::sync::OnceLock::new();
-                DEPS.get_or_init(|| {
-                    ::nebula_core::Dependencies::new()
-                        #slot_registrations
-                })
-            }
         }
     };
 
@@ -116,33 +112,9 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     })
 }
 
-fn doc_string(attributes: &[syn::Attribute]) -> String {
-    attributes
-        .iter()
-        .filter_map(|attribute| {
-            let syn::Meta::NameValue(name_value) = &attribute.meta else {
-                return None;
-            };
-            if !name_value.path.is_ident("doc") {
-                return None;
-            }
-            let syn::Expr::Lit(expression) = &name_value.value else {
-                return None;
-            };
-            let syn::Lit::Str(documentation) = &expression.lit else {
-                return None;
-            };
-            let line = documentation.value();
-            let line = line.trim();
-            (!line.is_empty()).then(|| line.to_owned())
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 fn emit_factory_impl(
     input: &DeriveInput,
-    slots: &[field_slots::ParsedSlotField],
+    slots: &[SlotField],
 ) -> syn::Result<proc_macro2::TokenStream> {
     let struct_name = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
@@ -152,7 +124,15 @@ fn emit_factory_impl(
         _ => unreachable!("checked by expand()"),
     };
 
-    let (resolution_block, slot_idents) = field_slots::emit_slot_resolution_block(slots);
+    let resolution_block = slots.iter().map(|slot| {
+        let field = &slot.field_ident;
+        let ty = &slot.ty;
+        let key = &slot.key;
+        quote! {
+            let #field = <#ty as ::nebula_action::FromSlot>::from_slot(node, ctx, #key).await?;
+        }
+    });
+    let slot_idents: Vec<&syn::Ident> = slots.iter().map(|slot| &slot.field_ident).collect();
 
     // Build the struct constructor expression covering both slot fields
     // (resolved) and non-slot fields (default-initialised). This keeps the
@@ -161,7 +141,7 @@ fn emit_factory_impl(
         Fields::Named(named) => {
             let inits = named.named.iter().map(|f| {
                 let f_ident = f.ident.as_ref().expect("named field has ident");
-                if slot_idents.iter().any(|s| s == f_ident) {
+                if slot_idents.contains(&f_ident) {
                     // Slot field — resolved via local of the same name.
                     quote! { #f_ident }
                 } else {
@@ -196,7 +176,7 @@ fn emit_factory_impl(
                 async move {
                     let _ = node;
                     let _ = ctx;
-                    #resolution_block
+                    #(#resolution_block)*
                     Ok(#constructor)
                 }
             }

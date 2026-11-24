@@ -72,18 +72,15 @@ pub mod __private {
     pub mod action {
         pub use nebula_action::{
             Action, ActionContext, ActionContextExt, ActionEffectContract, ActionError,
-            ActionResult, Component, FromWorkflowNode, Metadata, MetadataVersion, StatelessAction,
-            kind, metadata_name,
+            ActionResult, Component, Dependencies, FromSlot, FromWorkflowNode, Metadata,
+            MetadataVersion, Slot, StatelessAction, kind, metadata_name,
         };
     }
 
     /// Core contracts referenced by generated implementations.
     #[doc(hidden)]
     pub mod core {
-        pub use nebula_core::{
-            ActionKey, CredentialKey, DeclaresDependencies, Dependencies, ResourceKey, SlotField,
-            SlotKind,
-        };
+        pub use nebula_core::{ActionKey, CredentialKey, ResourceKey};
 
         pub mod auth {
             pub use nebula_core::auth::{
@@ -125,8 +122,9 @@ pub mod __private {
     #[doc(hidden)]
     pub mod resource {
         pub use nebula_resource::{
-            __assert_provider_key, ConfigFingerprint, Error, HasCredentialSlots, PinSlots,
-            ResourceConfig, SlotInstallError, SlotUpdate, key_of,
+            Component, ConfigFingerprint, Dependencies, Error, HasCredentialSlots, Metadata,
+            PinSlots, ResourceConfig, ResourceSlot, Slot, SlotInstallError, SlotUpdate, key_of,
+            kind, metadata_name,
         };
 
         /// Opaque resource contribution contracts used by SDK-only derives.
@@ -415,9 +413,8 @@ macro_rules! workflow {
 /// Macro for defining a simple stateless action with a unit struct.
 ///
 /// Generates a unit `struct $name`, implements [`Component`](prelude::Component)
-/// with its key, `config` type and keyless metadata,
-/// [`Action`](prelude::Action) with slot-binding
-/// [`Dependencies`](prelude::Dependencies), and
+/// with its key, `config` type and keyless metadata (and no slots),
+/// [`Action`](prelude::Action), and
 /// [`StatelessAction`](prelude::StatelessAction) over the supplied
 /// `config` / `output` types.
 ///
@@ -481,12 +478,6 @@ macro_rules! simple_action {
 
         impl $crate::__private::action::Action for $name {
             type Output = $output;
-
-            fn dependencies() -> &'static $crate::__private::core::Dependencies {
-                static DEPS: ::std::sync::OnceLock<$crate::__private::core::Dependencies> =
-                    ::std::sync::OnceLock::new();
-                DEPS.get_or_init($crate::__private::core::Dependencies::new)
-            }
         }
 
         impl $crate::__private::action::StatelessAction for $name {

@@ -14,8 +14,8 @@
 //!
 //! ## Quick start
 //!
-//! The 90% path: `#[derive(Resource)]` emits slot plumbing (empty here — no
-//! `#[credential]` field), a hand-written [`Provider`] impl supplies the
+//! The 90% path: `#[derive(Resource)]` names the resource and emits slot
+//! plumbing (empty here — no `#[slot]` field), a hand-written [`Provider`] impl supplies the
 //! lifecycle, [`Manager::register`] files it under `key_of::<R>()`, and
 //! `acquire_<topology>` hands back a [`ResourceGuard`] that derefs to
 //! `R::Instance` and releases (recycle or destroy, per topology) on drop:
@@ -29,21 +29,13 @@
 //! };
 //!
 //! #[derive(Resource, Clone)]
+//! #[resource(
+//!     key = "quickstart.http_client",
+//!     name = "HTTP client",
+//!     description = "Pooled HTTP client",
+//!     config = (),
+//! )]
 //! struct HttpClient;
-//!
-//! impl Component for HttpClient {
-//!     type Kind = kind::Resource;
-//!     type Config = ();
-//!
-//!     const KEY: &'static str = "quickstart.http_client";
-//!
-//!     fn metadata() -> nebula_resource::Metadata {
-//!         nebula_resource::Metadata::new(
-//!             nebula_resource::metadata_name!("HTTP client"),
-//!             "Pooled HTTP client",
-//!         )
-//!     }
-//! }
 //!
 //! #[async_trait]
 //! impl Provider for HttpClient {
@@ -336,28 +328,34 @@ pub use nebula_credential::{Credential, CredentialContext, CredentialId};
 /// For the full derive→register→acquire flow, see the doctest on
 /// [`Manager::register`].
 pub use nebula_resource_macros::ClassifyError;
-/// Derive macro that emits slot plumbing for a resource struct.
+/// Derive macro that writes what a resource declares about itself.
 ///
-/// Generates `impl DeclaresDependencies`, slot accessor methods, and
-/// `impl HasCredentialSlots`. Used together with a hand-written `impl Provider`.
+/// `#[resource(key = "...", config = ...)]` (plus optional `name`,
+/// `description` and `version`) becomes the [`Component`] impl, whose
+/// [`Component::dependencies`] lists the `#[slot]` fields. The derive also
+/// emits the slot accessors, `impl HasCredentialSlots` and `impl PinSlots`.
+/// Used together with a hand-written `impl Provider`.
 ///
-/// See [`nebula_resource_macros::Resource`] for the full field-attribute
+/// See [`nebula_resource_macros::Resource`] for the full attribute
 /// reference. A slot-less struct is legal and emits the honest zero
 /// [`HasCredentialSlots`] impl (same shape as
 /// [`no_credential_slots!`](crate::no_credential_slots)):
 ///
 /// ```
-/// use nebula_resource::{HasCredentialSlots, Resource};
+/// use nebula_resource::{Component, HasCredentialSlots, Resource};
 ///
+/// /// Shared HTTP client
 /// #[derive(Resource)]
+/// #[resource(key = "doc.http_client", config = ())]
 /// struct HttpClient;
 ///
+/// assert!(HttpClient::dependencies().is_empty());
 /// assert!(!HttpClient::declares_credential_slots());
 /// assert_eq!(HttpClient.credential_slot_epoch(), 0);
 /// ```
 ///
-/// For the full derive→register→acquire flow (including a `#[credential]`
-/// slot field), see the doctest on [`Manager::register`].
+/// For the full derive→register→acquire flow, see the doctest on
+/// [`Manager::register`].
 pub use nebula_resource_macros::Resource;
 /// Derive macro that generates `impl ResourceConfig` with a structural fingerprint
 /// and automatic schemas only for unit/null and empty-braced record configs.
@@ -396,7 +394,7 @@ pub use factory::{
     SlotBinding,
 };
 /// The shared component contract a resource provider is built on.
-pub use nebula_component::{Component, key_of, kind};
+pub use nebula_component::{Component, Dependencies, Slot, SlotValue, key_of, kind};
 pub use nebula_schema::{HasSchema, Schema, ValidSchema, impl_empty_has_schema};
 pub use options::AcquireOptions;
 pub use rate_limit::RateLimitProfile;
@@ -411,7 +409,7 @@ pub use resource::{
     ResourceCompatibilityError, ResourceConfig, ResourceDefinition, ResourceReadmissionError,
     TeardownCx, TeardownReason,
 };
-pub use slot::{CredentialSlot, SlotCell, SlotInstallError, SlotUpdate};
+pub use slot::{CredentialSlot, ResourceSlot, SlotCell, SlotInstallError, SlotUpdate};
 // Runtime types — the framework topologies needed for `Manager::register()`.
 pub use runtime::managed::ManagedResource;
 pub use runtime::retained_store::{

@@ -5,7 +5,7 @@ use nebula_action::{
     Metadata, StatelessAction, kind,
 };
 use nebula_core::{
-    ArtifactSetDigest, Dependencies, ExecutablePlanRevisionId, WorkerFlavorRevisionId, WorkflowId,
+    ArtifactSetDigest, ExecutablePlanRevisionId, WorkerFlavorRevisionId, WorkflowId,
     WorkflowVersionId, node_key,
 };
 use nebula_plugin::{Plugin, PluginManifest, PluginRegistry, ResolvedPlugin};
@@ -54,11 +54,6 @@ where
 
     const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        static DEPENDENCIES: std::sync::OnceLock<Dependencies> = std::sync::OnceLock::new();
-        DEPENDENCIES.get_or_init(Dependencies::new)
-    }
 }
 
 impl<I> StatelessAction for TestAction<I>

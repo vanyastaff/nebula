@@ -15,21 +15,12 @@ use nebula_sdk::integration::resource::{
 use nebula_sdk::prelude::Value;
 
 #[derive(Resource)]
+#[resource(key = "example.github", config = HttpConfig)]
 struct GitHub {
-    #[credential(key = "token")]
+    #[slot]
     token: CredentialSlot<BearerTokenCredential>,
 }
 
-impl Component for GitHub {
-    type Kind = kind::Resource;
-    type Config = HttpConfig;
-
-    const KEY: &'static str = "example.github";
-
-    fn metadata() -> Metadata {
-        Metadata::new(nebula_sdk::prelude::metadata_name!("GitHub"), "")
-    }
-}
 
 #[async_trait::async_trait]
 impl Provider for GitHub {

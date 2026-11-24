@@ -1,6 +1,6 @@
 //! Factories for admission-boundary integration tests.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use nebula_action::effect::{
     ActionEffectContract, EffectPreparationContext, EffectPreparationError, PreparedRemoteEffect,
@@ -12,7 +12,7 @@ use nebula_action::{
     GenericTriggerFactory, InstanceFactory, Metadata, RemoteEffectInstanceFactory, StatelessAction,
     TriggerAction, TriggerContext, TriggerEventOutcome, TriggerSource, kind,
 };
-use nebula_core::{ArtifactSetDigest, Dependencies};
+use nebula_core::ArtifactSetDigest;
 use nebula_schema::{HasSchema, Schema, SecretField, ValidSchema, field_key};
 use nebula_workflow::NodeDefinition;
 use serde_json::Value;
@@ -52,6 +52,10 @@ macro_rules! diagnostic_stateless {
             fn metadata() -> Metadata {
                 $metadata
             }
+
+            fn dependencies() -> nebula_action::Dependencies {
+                $dependencies
+            }
         }
 
         impl Action for $name {
@@ -61,10 +65,6 @@ macro_rules! diagnostic_stateless {
 
             fn inputs() -> Vec<nebula_action::InputPort> {
                 $inputs
-            }
-
-            fn dependencies() -> &'static Dependencies {
-                $dependencies
             }
         }
 
@@ -137,7 +137,7 @@ diagnostic_stateless!(
 diagnostic_stateless!(
     ResourceSlotFixture,
     Value,
-    ResourceSlotDependencies::get(),
+    resource_slot_dependencies(),
     "core.resource_slot",
     read_only(
         nebula_action::metadata_name!("resource_slot"),
@@ -147,7 +147,7 @@ diagnostic_stateless!(
 diagnostic_stateless!(
     CredentialSlotFixture,
     Value,
-    CredentialSlotDependencies::get(),
+    credential_slot_dependencies(),
     "core.credential_slot",
     read_only(
         nebula_action::metadata_name!("credential_slot"),
@@ -195,7 +195,7 @@ diagnostic_stateless!(
 diagnostic_stateless!(
     WrongDependencyTypeFixture,
     Value,
-    WrongResourceTypeDependencies::get(),
+    wrong_resource_type_dependencies(),
     "core.wrong_dependency_type",
     read_only(
         nebula_action::metadata_name!("wrong_dependency_type"),
@@ -205,7 +205,7 @@ diagnostic_stateless!(
 diagnostic_stateless!(
     UndeclaredDependencyFixture,
     Value,
-    UndeclaredResourceDependencies::get(),
+    undeclared_resource_dependencies(),
     "core.undeclared_dependency",
     read_only(
         nebula_action::metadata_name!("undeclared_dependency"),
@@ -213,82 +213,65 @@ diagnostic_stateless!(
     ),
 );
 
-trait FixtureDependencies: Send + Sync + 'static {
-    fn get() -> &'static Dependencies;
+/// A slot value pointing at the component `C`, for fixtures that declare a
+/// slot without holding a real handle.
+struct SlotOn<C>(std::marker::PhantomData<fn() -> C>);
+
+impl<C> nebula_component::SlotValue for SlotOn<C>
+where
+    C: Component<Kind: nebula_component::DependencyKind> + 'static,
+{
+    type Target = C;
 }
 
-struct ResourceSlotDependencies;
+/// Declares the component `$name` of kind `$kind` under `$key`, with no
+/// behaviour: a slot target the registry does not provide, or provides under
+/// another type.
+macro_rules! slot_target {
+    ($name:ident, $kind:ty, $key:literal) => {
+        struct $name;
 
-impl FixtureDependencies for ResourceSlotDependencies {
-    fn get() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(|| {
-            Dependencies::new().slot_field(nebula_core::SlotField {
-                slot_key: "binding",
-                default_id: "fixture",
-                kind: nebula_core::SlotKind::Resource {
-                    type_id: std::any::TypeId::of::<()>(),
-                    type_name: "FixtureResource",
-                    key: "core.absent".parse().unwrap(),
-                },
-                required: true,
-                lazy: false,
-                purpose: None,
-            })
-        })
-    }
+        impl Component for $name {
+            type Kind = $kind;
+            type Config = ();
+
+            const KEY: &'static str = $key;
+
+            fn metadata() -> Metadata {
+                Metadata::new(nebula_action::metadata_name!("slot_target"), "")
+            }
+        }
+    };
 }
 
-struct CredentialSlotDependencies;
+slot_target!(AbsentResource, kind::Resource, "core.absent");
+slot_target!(AbsentCredential, kind::Credential, "core.absent");
+slot_target!(ImpostorResident, kind::Resource, "provider.resident");
 
-impl FixtureDependencies for CredentialSlotDependencies {
-    fn get() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(|| {
-            Dependencies::new().slot_field(nebula_core::SlotField {
-                slot_key: "binding",
-                default_id: "fixture",
-                kind: nebula_core::SlotKind::Credential {
-                    type_id: std::any::TypeId::of::<()>(),
-                    type_name: "FixtureCredential",
-                    key: "core.absent".parse().unwrap(),
-                },
-                required: true,
-                lazy: false,
-                purpose: None,
-            })
-        })
-    }
+fn resource_slot_dependencies() -> nebula_action::Dependencies {
+    nebula_action::Dependencies::none()
+        .slot(nebula_action::Slot::of::<SlotOn<AbsentResource>>("binding"))
 }
 
-struct WrongResourceTypeDependencies;
-
-impl FixtureDependencies for WrongResourceTypeDependencies {
-    fn get() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(|| {
-            Dependencies::new().resource(nebula_core::ResourceRequirement::new(
-                "provider.resident".parse().unwrap(),
-                std::any::TypeId::of::<u8>(),
-                "FixtureResource",
-            ))
-        })
-    }
+fn credential_slot_dependencies() -> nebula_action::Dependencies {
+    nebula_action::Dependencies::none().slot(nebula_action::Slot::of::<SlotOn<AbsentCredential>>(
+        "binding",
+    ))
 }
 
-struct UndeclaredResourceDependencies;
+/// A slot on the provider's resource key with another Rust type behind it.
+fn wrong_resource_type_dependencies() -> nebula_action::Dependencies {
+    nebula_action::Dependencies::none().slot(nebula_action::Slot::of::<SlotOn<ImpostorResident>>(
+        "resident",
+    ))
+}
 
-impl FixtureDependencies for UndeclaredResourceDependencies {
-    fn get() -> &'static Dependencies {
-        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-        DEPENDENCIES.get_or_init(|| {
-            Dependencies::new().resource(nebula_core::ResourceRequirement::new(
-                "provider.resident".parse().unwrap(),
-                std::any::TypeId::of::<FixtureResource>(),
-                "FixtureResource",
-            ))
-        })
-    }
+/// A slot on the provider's resource, from a plugin that does not declare
+/// the provider as a dependency.
+fn undeclared_resource_dependencies() -> nebula_action::Dependencies {
+    nebula_action::Dependencies::none().slot(nebula_action::Slot::of::<SlotOn<FixtureResource>>(
+        "resident",
+    ))
 }
 
 #[derive(serde::Deserialize)]
@@ -348,10 +331,6 @@ macro_rules! diagnostic_trigger {
 
             const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
                 ActionEffectContract::ReadOnly;
-
-            fn dependencies() -> &'static Dependencies {
-                empty_dependencies()
-            }
         }
 
         impl FromWorkflowNode for $trigger {
@@ -422,10 +401,6 @@ impl Component for DiagnosticRemoteAction {
 
 impl Action for DiagnosticRemoteAction {
     type Output = Value;
-
-    fn dependencies() -> &'static Dependencies {
-        empty_dependencies()
-    }
 }
 
 impl RemoteEffectAction for DiagnosticRemoteAction {
@@ -450,9 +425,8 @@ impl RemoteEffectAction for DiagnosticRemoteAction {
     }
 }
 
-fn empty_dependencies() -> &'static Dependencies {
-    static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
-    DEPENDENCIES.get_or_init(Dependencies::new)
+const fn empty_dependencies() -> nebula_action::Dependencies {
+    nebula_action::Dependencies::none()
 }
 
 struct FixturePlugin {
@@ -507,8 +481,6 @@ impl nebula_resource::HasCredentialSlots for FixtureResource {
         false
     }
 }
-
-impl nebula_core::DeclaresDependencies for FixtureResource {}
 
 impl Component for FixtureResource {
     type Kind = kind::Resource;

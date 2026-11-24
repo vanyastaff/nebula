@@ -21,7 +21,7 @@ use std::{
 use nebula_action::{
     ActionError, action::Action, result::ActionResult, stateless::StatelessAction,
 };
-use nebula_core::{Dependencies, PluginKey, node_key};
+use nebula_core::{PluginKey, node_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, ResourceFanoutCoordinator,
     WorkflowEngine, WorkflowStartService,
@@ -605,11 +605,6 @@ impl Action for EchoHandler {
 
     const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
         nebula_action::effect::ActionEffectContract::ReadOnly;
-
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl StatelessAction for EchoHandler {

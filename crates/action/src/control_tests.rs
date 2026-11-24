@@ -1,6 +1,4 @@
-use std::sync::OnceLock;
-
-use nebula_core::{Dependencies, action_key};
+use nebula_core::action_key;
 
 use super::*;
 use crate::{
@@ -176,10 +174,6 @@ impl Action for TestIf {
             OutputPort::flow(port_key!("false")),
         ]
     }
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
 }
 
 impl ControlAction for TestIf {
@@ -225,10 +219,6 @@ impl Action for TestStop {
 
     fn outputs() -> Vec<OutputPort> {
         Vec::new()
-    }
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
     }
 }
 
