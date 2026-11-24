@@ -278,8 +278,11 @@ fn main() {
         nebula_sdk::serde_json::from_slice(&wire).expect("valid authored wire");
     assert_eq!(authored, AuthoredValue::Expression(template));
     let catalog_contribution = CatalogProviderFactory::new().into_contribution();
-    assert_eq!(catalog_contribution.key(), CatalogProvider::key());
-    let _resource_key = ManualProvider::key();
+    assert_eq!(
+        catalog_contribution.key(),
+        nebula_sdk::integration::resource::key_of::<CatalogProvider>()
+    );
+    let _resource_key = nebula_sdk::integration::resource::key_of::<ManualProvider>();
     let _invocation_identity: fn(&dyn EffectInvocationContext) -> (OperationId, OperationCallId) =
         invocation_identity;
     let _query_identity: fn(&dyn EffectQueryContext) -> (OperationId, OperationCallId) =
@@ -293,7 +296,8 @@ fn main() {
         OrgId,
         WorkspaceId,
     ) -> EffectPreparationContext = EffectPreparationContext::new;
-    let manual_metadata = ActionMetadata::new(metadata_name!("Perimeter action"),
+    let manual_metadata = ActionMetadata::new(
+        metadata_name!("Perimeter action"),
         "Uses only the supported SDK authoring surface",
     );
     let workflow = WorkflowBuilder::new("public_perimeter")
@@ -416,20 +420,17 @@ fn catalog_constructor_parity() {
     let _: MetadataError = MetadataError::FieldTooLarge(MetadataField::Description);
     let _: Result<CatalogCategoryKey, CatalogValueError> = "INVALID".parse();
 
-    let action = ActionMetadata::new(metadata_name!("Echo"),
-        "HTTP echo",
-    )
-    .with_version(version.clone())
-    .with_categories([category.clone()])
-    .add_link(link.clone())
-    .with_deprecation(notice.clone());
-    let action_dynamic =
-        ActionMetadata::try_new("Echo", "HTTP echo")
-            .expect("valid name")
-            .with_version(version.clone())
-            .with_categories([category.clone()])
-            .add_link(link.clone())
-            .with_deprecation(notice.clone());
+    let action = ActionMetadata::new(metadata_name!("Echo"), "HTTP echo")
+        .with_version(version.clone())
+        .with_categories([category.clone()])
+        .add_link(link.clone())
+        .with_deprecation(notice.clone());
+    let action_dynamic = ActionMetadata::try_new("Echo", "HTTP echo")
+        .expect("valid name")
+        .with_version(version.clone())
+        .with_categories([category.clone()])
+        .add_link(link.clone())
+        .with_deprecation(notice.clone());
     assert_eq!(action, action_dynamic);
     let credential = Metadata::new(metadata_name!("Token"), "")
         .with_version(version.clone())

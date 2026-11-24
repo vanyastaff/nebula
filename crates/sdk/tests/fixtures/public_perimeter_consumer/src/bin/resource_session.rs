@@ -3,9 +3,9 @@
 //! resource handle, all through `nebula_sdk::integration::resource`.
 
 use nebula_sdk::integration::resource::{
-    Cost, Effect, Error, ResourceMetadata, OperationError, PoolProvider, Pooled, Provider,
-    ResourceContext, ResourceHandle, SessionBinding, SessionClosed, SessionEnd,
-    SessionProvider, SessionSpec, no_credential_slots,
+    Cost, Effect, Error, OperationError, PoolProvider, Pooled, Provider, ResourceContext,
+    ResourceHandle, ResourceMetadata, SessionBinding, SessionClosed, SessionEnd, SessionProvider,
+    SessionSpec, no_credential_slots,
 };
 
 /// A connection that applies statements only when a transaction commits.
@@ -82,7 +82,7 @@ async fn transfer(ledger: &ResourceHandle<Ledger>) -> Result<u64, Error> {
             Box::pin(async move {
                 let debit = tx.execute("update accounts set balance = balance - 1");
                 let credit = tx.execute("update accounts set balance = balance + 1");
-                assert_eq!(key, Ledger::key());
+                assert_eq!(key, nebula_sdk::integration::resource::key_of::<Ledger>());
                 Ok(debit + credit)
             })
         })

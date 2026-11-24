@@ -1,7 +1,7 @@
 use nebula_sdk::integration::resource::{
     AdmissionPhase, CreatedEntry, Error, HookFault, Load, MaintenanceSchedule, Provider,
-    ResourceContext, RetainedId, RetainedLease, RetainedStore, StoreView, TeardownCx,
-    Ticket, Topology, Unavailable, no_credential_slots,
+    ResourceContext, RetainedId, RetainedLease, RetainedStore, StoreView, TeardownCx, Ticket,
+    Topology, Unavailable, no_credential_slots,
 };
 
 struct OwnedConnection(String);
@@ -89,7 +89,7 @@ fn retained_lease<E: Clone + Send + Sync + 'static>(
 }
 
 fn main() {
-    let _ = CustomProvider::key();
+    let _ = nebula_sdk::integration::resource::key_of::<CustomProvider>();
     let _ = CustomTopology;
     let _ = retained_lease::<std::sync::Arc<OwnedConnection>>;
 }
