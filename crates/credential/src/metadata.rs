@@ -4,16 +4,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::AuthPattern;
 
-/// What a credential's author says about it for the catalog: name,
-/// description, version, icon, links, tags, maturity.
-///
-/// This is the shared [`nebula_metadata::Metadata`] under the name credential
-/// authors use. It holds neither a key nor a schema nor an auth pattern: the
-/// registry stamps [`Credential::KEY`](crate::Credential::KEY), derives the
-/// schema from `Properties` and the pattern from `Scheme` when it admits the
-/// credential as a [`CredentialDefinition`].
-pub type CredentialMetadata = nebula_metadata::Metadata;
-
 /// Payload-free failure to admit a credential definition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
@@ -21,12 +11,12 @@ pub enum CredentialAdmissionError {
     /// Shared catalog metadata failed its construction contract.
     #[error("credential catalog metadata admission failed")]
     CatalogMetadata,
-    /// `C::Properties` did not produce a valid canonical schema.
-    #[error("credential properties schema admission failed")]
-    PropertiesSchema,
+    /// `C::Config` did not produce a valid canonical schema.
+    #[error("credential config schema admission failed")]
+    ConfigSchema,
 }
 
-/// Admitted credential definition bound to the canonical `C::Properties` schema.
+/// Admitted credential definition bound to the canonical `C::Config` schema.
 ///
 /// Fields are immutable. The shared catalog fields are read through the
 /// [`Definition`] trait, as on every other component definition. Wire data cannot
@@ -55,46 +45,34 @@ impl Definition for CredentialDefinition {
 
 impl CredentialDefinition {
     /// Admit `C`'s catalog definition: its author's metadata, under
-    /// [`Credential::KEY`](crate::Credential::KEY) and the canonical
-    /// `C::Properties` schema.
+    /// [`Component::KEY`](crate::Component::KEY) and the canonical
+    /// `C::Config` schema, plus the auth pattern of `C::Scheme`.
     #[tracing::instrument(name = "credential.metadata.admit", skip_all, fields(credential_key = C::KEY), err)]
-    pub(crate) fn admit_for<C>(
-        metadata: CredentialMetadata,
-    ) -> Result<Self, CredentialAdmissionError>
+    pub(crate) fn admit_for<C>() -> Result<Self, CredentialAdmissionError>
     where
         C: crate::Credential,
     {
-        let schema = nebula_schema::schema_of::<C::Properties>().map_err(|report| {
-            tracing::error!(
-                credential.key = C::KEY,
-                issue_count = report.errors().count(),
-                error_code = "CREDENTIAL:PROPERTIES_SCHEMA_INVALID",
-                "credential properties schema admission failed"
-            );
-            CredentialAdmissionError::PropertiesSchema
+        let base = nebula_component::admit::<C>().map_err(|error| {
+            if let nebula_metadata::MetadataBuildError::Schema(report) = error {
+                tracing::error!(
+                    credential.key = C::KEY,
+                    issue_count = report.errors().count(),
+                    error_code = "CREDENTIAL:CONFIG_SCHEMA_INVALID",
+                    "credential config schema admission failed"
+                );
+                CredentialAdmissionError::ConfigSchema
+            } else {
+                tracing::error!(
+                    error_code = "CREDENTIAL:CATALOG_METADATA_INVALID",
+                    "credential catalog metadata admission failed"
+                );
+                CredentialAdmissionError::CatalogMetadata
+            }
         })?;
-        Self::admit_with_schema(
-            crate::key_of::<C>(),
-            metadata,
-            schema,
-            <C::Scheme as nebula_core::AuthScheme>::pattern(),
-        )
-    }
-
-    fn admit_with_schema(
-        key: CredentialKey,
-        metadata: CredentialMetadata,
-        schema: nebula_schema::ValidSchema,
-        pattern: AuthPattern,
-    ) -> Result<Self, CredentialAdmissionError> {
-        let base = metadata.bind(key, schema).map_err(|_| {
-            tracing::error!(
-                error_code = "CREDENTIAL:CATALOG_METADATA_INVALID",
-                "credential catalog metadata admission failed"
-            );
-            CredentialAdmissionError::CatalogMetadata
-        })?;
-        let definition = Self { base, pattern };
+        let definition = Self {
+            base,
+            pattern: <C::Scheme as nebula_core::AuthScheme>::pattern(),
+        };
         nebula_metadata::check_json_record(&definition).map_err(|_| {
             tracing::error!(
                 error_code = "CREDENTIAL:CATALOG_RECORD_INVALID",
@@ -102,6 +80,24 @@ impl CredentialDefinition {
             );
             CredentialAdmissionError::CatalogMetadata
         })?;
+        Ok(definition)
+    }
+
+    /// Test-only admission from explicit parts, for shapes no real
+    /// credential type needs to declare.
+    #[cfg(test)]
+    fn admit_with_schema(
+        key: CredentialKey,
+        metadata: nebula_metadata::Metadata,
+        schema: nebula_schema::ValidSchema,
+        pattern: AuthPattern,
+    ) -> Result<Self, CredentialAdmissionError> {
+        let base = metadata
+            .bind(key, schema)
+            .map_err(|_| CredentialAdmissionError::CatalogMetadata)?;
+        let definition = Self { base, pattern };
+        nebula_metadata::check_json_record(&definition)
+            .map_err(|_| CredentialAdmissionError::CatalogMetadata)?;
         Ok(definition)
     }
 

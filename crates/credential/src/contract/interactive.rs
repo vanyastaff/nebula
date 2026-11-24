@@ -51,7 +51,7 @@ use crate::{
 ///
 /// ```
 /// use nebula_credential::{
-///     Credential, CredentialContext, CredentialMetadata, Interactive,
+///     Component, Credential, CredentialContext, Metadata, kind, Interactive,
 ///     OAuth2Pending, SecretString, scheme::SecretToken,
 /// };
 /// use nebula_credential::error::CredentialError;
@@ -60,18 +60,24 @@ use crate::{
 ///
 /// struct OAuth2Cred;
 ///
-/// # impl Credential for OAuth2Cred {
-/// #     type Properties = serde_json::Value;
-/// #     type Scheme = SecretToken;
-/// #     type State = SecretToken;
+/// # impl Component for OAuth2Cred {
+/// #     type Kind = kind::Credential;
+/// #     type Config = serde_json::Value;
+/// #
 /// #     const KEY: &'static str = "oauth2_cred";
-/// #     fn metadata() -> CredentialMetadata {
-/// #         CredentialMetadata::new(nebula_credential::metadata_name!("OAuth2"), "demo",
+/// #
+/// #     fn metadata() -> Metadata {
+/// #         Metadata::new(nebula_credential::metadata_name!("OAuth2"), "demo",
 /// #         )
 /// #     }
+/// # }
+/// #
+/// # impl Credential for OAuth2Cred {
+/// #     type Scheme = SecretToken;
+/// #     type State = SecretToken;
 /// #     fn project(state: &SecretToken) -> SecretToken { state.clone() }
 /// #     async fn resolve(
-/// #         _properties: &Self::Properties,
+/// #         _properties: &Self::Config,
 /// #         _ctx: &CredentialContext,
 /// #     ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
 /// #         Ok(StaticResolveResult::Complete(SecretToken::new(SecretString::new(""))))
@@ -84,7 +90,7 @@ use crate::{
 ///     type Pending = OAuth2Pending;
 ///
 ///     async fn begin(
-///         _properties: &Self::Properties,
+///         _properties: &Self::Config,
 ///         _ctx: &CredentialContext,
 ///     ) -> Result<ResolveResult<SecretToken, OAuth2Pending>, CredentialError> {
 ///         Ok(ResolveResult::Complete(SecretToken::new(SecretString::new("access-token"))))
@@ -122,7 +128,7 @@ pub trait Interactive: Credential {
     /// This method has no default. Advertising `Interactive` therefore proves
     /// that the credential supplies both a typed kickoff and continuation.
     fn begin(
-        properties: &Self::Properties,
+        properties: &Self::Config,
         ctx: &CredentialContext,
     ) -> impl Future<Output = Result<ResolveResult<Self::State, Self::Pending>, CredentialError>> + Send
     where

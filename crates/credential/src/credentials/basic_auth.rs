@@ -7,7 +7,7 @@ use nebula_schema::Schema;
 use serde::Deserialize;
 
 use crate::{
-    CredentialContext, SecretString, error::CredentialError, metadata::CredentialMetadata,
+    CredentialContext, Metadata, SecretString, error::CredentialError,
     resolve::StaticResolveResult, scheme::IdentityPassword,
 };
 
@@ -15,7 +15,7 @@ use crate::{
 /// the legacy `BasicAuthInput`).
 ///
 /// `#[derive(Schema)]` provides the `HasSchema` impl read via
-/// `nebula_schema::schema_of::<Self::Properties>()` (schema-of properties). The
+/// `nebula_schema::schema_of::<Self::Config>()` (schema-of properties). The
 /// plaintext password lives
 /// in a `String` here for schema derivation and is wrapped into
 /// [`SecretString`] inside [`Credential::resolve`](crate::Credential::resolve)
@@ -46,12 +46,12 @@ pub struct BasicAuthCredential;
 // `CredentialLifecycle` policy — matching the absent capability sub-traits.
 #[nebula_credential::credential(key = "basic_auth")]
 impl BasicAuthCredential {
-    type Properties = BasicAuthProperties;
+    type Config = BasicAuthProperties;
     type Scheme = IdentityPassword;
     type State = IdentityPassword;
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             crate::metadata_name!("Basic Auth"),
             "HTTP Basic authentication (username + password).",
         )
@@ -78,7 +78,7 @@ mod tests {
     // `Credential` (for `KEY`) and `CredentialLifecycle` (for `policy`) are
     // only referenced by the tests now that `#[credential]` generates the
     // trait impls via absolute paths.
-    use crate::{Credential, CredentialLifecycle, credentials::resolve_properties};
+    use crate::{Component, Credential, CredentialLifecycle, credentials::resolve_properties};
 
     use super::*;
 

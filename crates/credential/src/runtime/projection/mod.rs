@@ -198,33 +198,38 @@ mod tests {
     use super::*;
     use crate::{
         BearerTokenCredential, BearerTokenProperties, Credential, CredentialContext,
-        CredentialError, CredentialMetadata, Dynamic, OAuth2Credential, SecretToken,
+        CredentialError, Dynamic, Metadata, OAuth2Credential, SecretToken,
         contract::plugin_capability_report, metadata_name, register_refreshable_ops,
         register_runtime_ops, resolve::StaticResolveResult,
     };
+    use crate::{Component, kind};
 
     struct DynamicFixtureCredential;
 
-    impl Credential for DynamicFixtureCredential {
-        type Properties = BearerTokenProperties;
-        type Scheme = SecretToken;
-        type State = SecretToken;
+    impl Component for DynamicFixtureCredential {
+        type Kind = kind::Credential;
+        type Config = BearerTokenProperties;
 
         const KEY: &'static str = "projection_dynamic_fixture";
 
-        fn metadata() -> CredentialMetadata {
-            CredentialMetadata::new(
+        fn metadata() -> Metadata {
+            Metadata::new(
                 metadata_name!("Projection Dynamic Fixture"),
                 "Projection-only runtime dynamic rejection fixture.",
             )
         }
+    }
+
+    impl Credential for DynamicFixtureCredential {
+        type Scheme = SecretToken;
+        type State = SecretToken;
 
         fn project(state: &Self::State) -> Self::Scheme {
             state.clone()
         }
 
         async fn resolve(
-            properties: &Self::Properties,
+            properties: &Self::Config,
             _ctx: &CredentialContext,
         ) -> Result<StaticResolveResult<Self::State>, CredentialError> {
             Ok(StaticResolveResult::Complete(SecretToken::new(

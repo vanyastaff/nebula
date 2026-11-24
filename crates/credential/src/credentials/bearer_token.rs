@@ -7,8 +7,9 @@
 use nebula_schema::Schema;
 use serde::Deserialize;
 
+use crate::{Component, kind};
 use crate::{
-    Credential, CredentialContext, CredentialError, CredentialMetadata, SecretString,
+    Credential, CredentialContext, CredentialError, Metadata, SecretString,
     contract::plugin_capability_report, contract::resolve::StaticResolveResult,
     scheme::SecretToken,
 };
@@ -25,20 +26,24 @@ pub struct BearerTokenProperties {
 /// directly as the auth scheme.
 pub struct BearerTokenCredential;
 
-impl Credential for BearerTokenCredential {
-    type Properties = BearerTokenProperties;
-    type Scheme = SecretToken;
-    type State = SecretToken;
+impl Component for BearerTokenCredential {
+    type Kind = kind::Credential;
+    type Config = BearerTokenProperties;
 
     const KEY: &'static str = "bearer_token";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             crate::metadata_name!("Bearer Token"),
             "Opaque bearer token (API key, PAT, session token).",
         )
         .with_icon(nebula_metadata::Icon::inline("key"))
     }
+}
+
+impl Credential for BearerTokenCredential {
+    type Scheme = SecretToken;
+    type State = SecretToken;
 
     fn project(state: &SecretToken) -> SecretToken {
         state.clone()

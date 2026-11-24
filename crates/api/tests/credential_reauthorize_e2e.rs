@@ -46,7 +46,7 @@ impl PendingState for AuthorizationPending {
 struct InteractiveCredential;
 #[nebula_credential::credential(key = "reauthorize_http", name = "HTTP Reauthorization")]
 impl InteractiveCredential {
-    type Properties = Value;
+    type Config = Value;
     type Scheme = SecretToken;
     type State = SecretToken;
     type Pending = AuthorizationPending;

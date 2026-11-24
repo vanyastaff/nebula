@@ -17,30 +17,35 @@ use nebula_core::auth::{
     AuthPattern, AuthScheme, EgressShape, RefreshStrategyKind, SchemeFamily, SensitiveScheme,
 };
 use nebula_credential::{
-    Capabilities, Credential, CredentialContext, CredentialMetadata, CredentialRegistry,
-    CredentialState, RefreshAttempt, RefreshReport, Refreshable, Revocable, SecretString,
+    Capabilities, Credential, CredentialContext, CredentialRegistry, CredentialState, Metadata,
+    RefreshAttempt, RefreshReport, Refreshable, Revocable, SecretString,
     contract::plugin_capability_report, error::CredentialError, resolve::StaticResolveResult,
     scheme::SecretToken,
 };
+use nebula_credential::{Component, kind};
 use serde::{Deserialize, Serialize};
 
 // ── Static probe credential — zero capabilities ────────────────────
 
 pub struct StaticProbe;
 
-impl Credential for StaticProbe {
-    type Properties = ();
-    type Scheme = SecretToken;
-    type State = SecretToken;
+impl Component for StaticProbe {
+    type Kind = kind::Credential;
+    type Config = ();
 
     const KEY: &'static str = "probe.static";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_credential::metadata_name!("StaticProbe"),
             "zero-capability probe credential",
         )
     }
+}
+
+impl Credential for StaticProbe {
+    type Scheme = SecretToken;
+    type State = SecretToken;
 
     fn project(state: &SecretToken) -> SecretToken {
         state.clone()
@@ -112,19 +117,23 @@ impl CredentialState for ProbeToken {
 
 pub struct RefreshableProbe;
 
-impl Credential for RefreshableProbe {
-    type Properties = ();
-    type Scheme = ProbeToken;
-    type State = ProbeToken;
+impl Component for RefreshableProbe {
+    type Kind = kind::Credential;
+    type Config = ();
 
     const KEY: &'static str = "probe.refreshable";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_credential::metadata_name!("RefreshableProbe"),
             "refreshable + revocable probe credential",
         )
     }
+}
+
+impl Credential for RefreshableProbe {
+    type Scheme = ProbeToken;
+    type State = ProbeToken;
 
     fn project(state: &ProbeToken) -> ProbeToken {
         state.clone()
@@ -181,19 +190,23 @@ impl plugin_capability_report::IsDynamic for RefreshableProbe {
 /// `RefreshPolicy::DEFAULT` for a potentially different actual policy.
 pub struct UnreportedRefreshPolicyProbe;
 
-impl Credential for UnreportedRefreshPolicyProbe {
-    type Properties = ();
-    type Scheme = ProbeToken;
-    type State = ProbeToken;
+impl Component for UnreportedRefreshPolicyProbe {
+    type Kind = kind::Credential;
+    type Config = ();
 
     const KEY: &'static str = "probe.unreported_refresh_policy";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_credential::metadata_name!("UnreportedRefreshPolicyProbe"),
             "hand-written refresh policy report probe",
         )
     }
+}
+
+impl Credential for UnreportedRefreshPolicyProbe {
+    type Scheme = ProbeToken;
+    type State = ProbeToken;
 
     fn project(state: &ProbeToken) -> ProbeToken {
         state.clone()

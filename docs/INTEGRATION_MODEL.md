@@ -23,20 +23,41 @@ Most engines give integration authors one abstraction: a **"node"** that receive
 
 ### Structural contract (uniform across concepts)
 
+An action, a resource and a credential are all **components**. `nebula-component`
+states what they share once, as one trait:
+
+```rust,ignore
+pub trait Component: Sized + Send + Sync + 'static {
+    type Kind: ComponentKind;          // kind::Action, kind::Resource or kind::Credential
+    type Config: HasSchema + DeserializeOwned + Send + Sync + 'static;
+    const KEY: &'static str;           // the only place the key is written
+    fn metadata() -> Metadata;         // key-free, schema-free catalog metadata
+}
+```
+
+The kind traits have it as a supertrait and add only what that kind does:
+`Credential: Component<Kind = kind::Credential>` adds `Scheme`, `State`,
+`project` and `resolve`. `key_of::<C>()` returns the typed key the kind
+selects (`ActionKey`, `ResourceKey`, `CredentialKey`), and
+`nebula_component::admit::<C>()` is the one shared admission of metadata, key
+and `Config` schema. `Credential` is built on `Component` today; `Resource`
+and `Action` follow, and until they do they keep `Provider::Config` /
+`Action::Input` and their own metadata types.
+
 Every concept in Nebula's integration layer is described by two things:
 
 
 | Piece | Role |
 |---|---|
-| authored metadata | Author-owned UI/catalog intent: checked display name, version, lifecycle, and concept-specific declarations. `ActionMetadata`, `ResourceMetadata` and `CredentialMetadata` carry no key (identity is `Action::KEY` / `Provider::KEY` / `Credential::KEY`). None can supply a schema or claim admission. |
-| Associated Rust type | The schema source of truth: `Action::{Input, Output}`, `Credential::Properties`, or `Provider::Config`. |
+| authored metadata | Author-owned UI/catalog intent: checked display name, version, lifecycle, and concept-specific declarations. `ActionMetadata`, `ResourceMetadata` and a credential's `Metadata` carry no key (identity is `Action::KEY` / `Provider::KEY` / `Component::KEY`). None can supply a schema or claim admission. |
+| Associated Rust type | The schema source of truth: `Action::{Input, Output}`, `Component::Config` for a credential, or `Provider::Config`. |
 | admitted definition | `ResourceDefinition`, `CredentialDefinition`, and for now `ActionDefinition`. Immutable catalog definition produced only by the owning factory/registry after deriving schemas and checking identity/package invariants. |
 | `Recorded*` | Deserialized evidence (`RecordedResourceDefinition`, `RecordedActionDefinition`, `RecordedCredentialDefinition`). It regains admitted status only by exact comparison with a fresh definition from the currently selected factory/registry. |
 
 This is the canon's `*Metadata + Schema` contract expressed as a one-way
 lifecycle, not permission for authors to construct terminal metadata. Action
 factories derive both schemas and stamp the action kind; `CredentialRegistry`
-derives the properties schema; `ResourceFactory` derives and caches the config
+derives the config schema; `ResourceFactory` derives and caches the config
 schema. `BaseDefinition` and admitted leaf metadata expose getters and serialize
 for catalogs, but have no setters or `Deserialize` implementation. Only the
 recorded DTOs deserialize, and readmission returns the fresh definition rather
@@ -49,7 +70,7 @@ An action, a resource and a credential declare their identity once, as
 `Action::KEY`, `Provider::KEY` and `Credential::KEY`, and their `metadata()`
 returns key-free metadata: `ActionMetadata::new(MetadataName, description)`,
 `ResourceMetadata::new(MetadataName, description)` or
-`CredentialMetadata::new(MetadataName, description)` (the last two are the
+`Metadata::new(MetadataName, description)` (the last two are the
 shared `nebula_metadata::Metadata`; `ActionMetadata` embeds it and adds ports
 and policies). The factory or registry stamps the key at admission, so a
 catalog entry cannot name another component. This holds on every path,
@@ -125,7 +146,7 @@ APIs.
 **Target authoring:** `#[property(display(...), input(...), validate(...),
 options(...))]` describes values only; the blocks are optional according to the
 property's needs. `#[slot(credential, ...)]` and `#[slot(resource, ...)]` declare
-dependencies separately. `Action::Input`, `Credential::Properties`, and
+dependencies separately. `Action::Input`, `Credential::Config`, and
 `Provider::Config` remain permanently supported, canonical explicit data types;
 `Action::Output` remains explicit too. They are not migration-only escape hatches,
 and no derive requires an associated type to be `Self`.
@@ -210,14 +231,14 @@ presentation identity or rewrite existing schema or plan bytes.
 entity-specific admission. Property display hints belong to schema authoring,
 not to a new catalog-leaf metadata type. SDK personas curate these contracts.
 
-| Shared concern | `ActionMetadata` | `CredentialMetadata` | `ResourceMetadata` |
+| Shared concern | `ActionMetadata` | `Metadata` (credential) | `ResourceMetadata` |
 |---|---|---|---|
-| Identity and text | `new(MetadataName, description)` / `try_new`; identity is `Action::KEY` | `new(MetadataName, description)` / `try_new`; identity is `Credential::KEY` | `new(MetadataName, description)` / `try_new`; identity is `Provider::KEY` |
+| Identity and text | `new(MetadataName, description)` / `try_new`; identity is `Action::KEY` | `new(MetadataName, description)` / `try_new`; identity is `Component::KEY` | `new(MetadataName, description)` / `try_new`; identity is `Provider::KEY` |
 | Revision | `with_version(MetadataVersion)` | `with_version(MetadataVersion)` | `with_version(MetadataVersion)` |
 | Icon | `with_icon`, `with_inline_icon`, `with_url_icon` | `with_icon`, `with_inline_icon`, `with_url_icon` | `with_icon`, `with_inline_icon`, `with_url_icon` |
 | Documentation and discovery | `with_documentation_url`, `with_categories`, `add_link`, `with_tags`, `add_tag` | `with_documentation_url`, `with_categories`, `add_link`, `with_tags`, `add_tag` | `with_documentation_url`, `with_categories`, `add_link`, `with_tags`, `add_tag` |
 | Lifecycle | `mark_experimental`, `mark_beta`, `mark_stable`, `with_deprecation` | `mark_experimental`, `mark_beta`, `mark_stable`, `with_deprecation` | `mark_experimental`, `mark_beta`, `mark_stable`, `with_deprecation` |
-| Schema ownership | Factory derives input schema from `Action::Input` and output schema from `Action::Output` | Registry derives properties schema from `Credential::Properties` | Factory derives config schema from `Provider::Config` |
+| Schema ownership | Factory derives input schema from `Action::Input` and output schema from `Action::Output` | Registry derives config schema from `Component::Config` | Factory derives config schema from `Provider::Config` |
 
 Entity-specific extras stay separate: actions add ports, isolation,
 checkpoint/effect policy, concurrency, admitted kind and output schema;
@@ -268,7 +289,7 @@ The **schema subsystem** (`nebula-schema` crate) is the **fifth concept**, share
 | Authored | `AuthoredValue` | Explicitly data or template authoring; no validation proof. |
 | Valid | `ValidValues` | Aliases/transforms applied once, programs compiled, declared secrets protected, pending checks explicit, schema snapshot retained. |
 | Resolved | `ResolvedValues` | Programs absent and every final rule/policy satisfied; still bound to the exact schema snapshot. |
-| Typed | `Action::Input`, `Credential::Properties`, `Provider::Config`, or another destination type | Trusted decode at the owning boundary; proof wrappers do not enter author code. |
+| Typed | `Action::Input`, `Credential::Config`, `Provider::Config`, or another destination type | Trusted decode at the owning boundary; proof wrappers do not enter author code. |
 
 `ValidSchema::validate` consumes authored input. Only consuming completion
 through `resolve(context)` or data-only `resolve_data()` can produce
@@ -287,7 +308,7 @@ silently migrated by changing the in-memory value tree.
 
 ### Configuration pipeline (diagram)
 
-All value sources enter the same consuming preparation boundary. Literal JSON ingress through `AuthoredValue::from_data` never interprets template-looking strings or expression-shaped objects as code. Authoring expressions requires `from_template_json`, an equivalent SDK authoring helper, or the versioned authored wire format, and the exact schema node must permit them. Expression results are data, never recursively reinterpreted as programs. Credential orchestration uses only the synchronous data-only completion path, then decodes `C::Properties` before provider dispatch. Persistence and encryption remain the responsibility of their existing aggregate owners.
+All value sources enter the same consuming preparation boundary. Literal JSON ingress through `AuthoredValue::from_data` never interprets template-looking strings or expression-shaped objects as code. Authoring expressions requires `from_template_json`, an equivalent SDK authoring helper, or the versioned authored wire format, and the exact schema node must permit them. Expression results are data, never recursively reinterpreted as programs. Credential orchestration uses only the synchronous data-only completion path, then decodes `C::Config` before provider dispatch. Persistence and encryption remain the responsibility of their existing aggregate owners.
 
 Inside the runtime, erased action dispatch may carry raw transport data or a
 completed schema-bound proof. `ActionInput` and `PreparedActionInput` name that
@@ -319,7 +340,7 @@ flowchart TB
     DATA["resolve_data()\nreject every program"]
     FULL["Full final validation\nno pending checks"]
     RV["ResolvedValues\nexpression-free, schema-bound"]
-    TYPED["Typed destination\nAction::Input / Credential::Properties / Provider::Config"]
+    TYPED["Typed destination\nAction::Input / Credential::Config / Provider::Config"]
   end
 
   subgraph runtime["Runtime / engine"]
@@ -356,7 +377,7 @@ flowchart TB
 
 **Dashed edges:** storage materializes data for a new validation pass; credential runtime hands stored state to its encryption and persistence boundary. These are explicit data/authority crossings, not implicit serialization of schema proof tokens.
 
-**Secret custody:** declared string secrets become `ValueTree::Secret` before `ValidValues` is returned, including aliases and nested fields. Predicate and loader contexts exclude protected material. Debug and diagnostic JSON redact secrets; authored wire serialization rejects secret-bearing trees instead of writing redaction markers as restorable values. Ordinary typed extraction refuses secrets. A typed `#[field(secret)]` destination must implement the explicit owned-and-zeroizing `SecretInput` marker. `into_typed_exposing_secrets` feeds protected leaves directly to the target deserializer without first materializing plaintext in an ordinary `serde_json::Value`; `get_secret`/`expose` and `SecretWire` remain explicit trusted disclosure operations. Credential preparation checks the normalized values against `C::Properties` without an expression engine; it never validates one copy and resolves a newly ingested, unnormalized copy.
+**Secret custody:** declared string secrets become `ValueTree::Secret` before `ValidValues` is returned, including aliases and nested fields. Predicate and loader contexts exclude protected material. Debug and diagnostic JSON redact secrets; authored wire serialization rejects secret-bearing trees instead of writing redaction markers as restorable values. Ordinary typed extraction refuses secrets. A typed `#[field(secret)]` destination must implement the explicit owned-and-zeroizing `SecretInput` marker. `into_typed_exposing_secrets` feeds protected leaves directly to the target deserializer without first materializing plaintext in an ordinary `serde_json::Value`; `get_secret`/`expose` and `SecretWire` remain explicit trusted disclosure operations. Credential preparation checks the normalized values against `C::Config` without an expression engine; it never validates one copy and resolves a newly ingested, unnormalized copy.
 
 **Where `S` lives:** today the **shape** of `ValidSchema` comes from **author-time Rust** in integration/plugin crates (and registry wiring), not from the snapshot store. Persisted artifacts are **config values and history** (`SNAP`), not the Rust type graph. If product ever versions **schema definitions as data**, the diagram can gain an optional `SNAP -.-> S` edge; until then, keeping `S` only under **author** avoids visual clutter.
 
@@ -369,7 +390,7 @@ opaque typed input proofs bound to the handle's private identity. Resource
 validation and registration reuse the selected factory's cached admitted
 metadata and `R::Config` schema, then keep the typed config inside manager
 registration. Credential preparation similarly terminates in
-`C::Properties`; `Credential::resolve` never receives `ValidValues` or
+`C::Config`; `Credential::resolve` never receives `ValidValues` or
 `ResolvedValues`. Public schema equality alone is therefore necessary but not
 sufficient to dispatch through another factory.
 
@@ -394,9 +415,9 @@ but direct use does not receive an independent compatibility promise.
 
 These are **schema-level** links: metadata and parameter types declare a closed dependency graph that activation validates before the runtime resolves anything. Nothing is satisfied by implicit global lookup.
 
-**Credential** — `[ CredentialMetadata + Schema ]` — **leaf.**
+**Credential** — `[ Metadata + Schema ]` — **leaf.**
 
-**Who** you are and **how** authentication is maintained. Credential code receives provider and transport capabilities through injected ports; a Credential must not depend on a Resource, Action, or ambient registry lookup. The `nebula-credential` crate owns rotation-state, refresh, lease, and the **stored state vs consumer-facing auth material** split (its runtime was consolidated there by ADR-0092; the engine keeps only accessor bridges). Authors declare a typed `Credential::Properties`, stored `State`, and projected `Scheme`; the runtime validates and typed-decodes properties before calling `resolve`. Initial acquisition and refresh receive separate narrow transports, and only refresh runs under the owned provider-to-persistence critical section. The built-in OAuth credential implements Authorization Code (mandatory PKCE S256) and Client Credentials only; there is no supported device-flow variant. Other auth families are available only where a concrete credential/composition path actually wires them. **Concrete shape:** see §3.7 (`nebula-credential`).
+**Who** you are and **how** authentication is maintained. Credential code receives provider and transport capabilities through injected ports; a Credential must not depend on a Resource, Action, or ambient registry lookup. The `nebula-credential` crate owns rotation-state, refresh, lease, and the **stored state vs consumer-facing auth material** split (its runtime was consolidated there by ADR-0092; the engine keeps only accessor bridges). Authors declare a typed `Component::Config`, stored `State`, and projected `Scheme`; the runtime validates and typed-decodes the config before calling `resolve`. Initial acquisition and refresh receive separate narrow transports, and only refresh runs under the owned provider-to-persistence critical section. The built-in OAuth credential implements Authorization Code (mandatory PKCE S256) and Client Credentials only; there is no supported device-flow variant. Other auth families are available only where a concrete credential/composition path actually wires them. **Concrete shape:** see §3.7 (`nebula-credential`).
 
 **Resource** — `[ ResourceMetadata + Schema ]` — **may depend on Credential and/or other Resource types.**
 

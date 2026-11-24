@@ -25,13 +25,12 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use super::oauth2_config;
 use crate::{
-    CredentialContext, CredentialPolicy, CredentialState, PendingState, RefreshAttempt,
+    CredentialContext, CredentialPolicy, CredentialState, Metadata, PendingState, RefreshAttempt,
     RefreshReport, RefreshStrategy, RevokeStrategy, SecretString, StateWireFingerprint,
     error::{
         CredentialError, ProviderErrorContext, ProviderErrorKind, RefreshDiagnosticCode,
         RefreshErrorKind, RefreshFailureSpec, RetryAdvice, SecretFreeMessage,
     },
-    metadata::CredentialMetadata,
     resolve::{InteractionRequest, ResolveResult, StaticResolveResult, UserInput},
     runtime::refresh::token_refresh::{
         CompletedTokenRefresh, OAuthProviderErrorCode, PrepareTokenRefreshError,
@@ -342,12 +341,12 @@ pub struct OAuth2ClientCredentialsProperties {
 // imply a public provider-specific HTTP kickoff surface.
 #[nebula_credential::credential(key = "oauth2")]
 impl OAuth2Credential {
-    type Properties = OAuth2Properties;
+    type Config = OAuth2Properties;
     type Scheme = OAuth2Token;
     type State = OAuth2State;
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(crate::metadata_name!("OAuth2"),
+    fn metadata() -> Metadata {
+        Metadata::new(crate::metadata_name!("OAuth2"),
             "OAuth2 authentication supporting Authorization Code and Client Credentials grant types.",
         )
         .with_icon(nebula_metadata::Icon::inline("oauth2"))

@@ -100,10 +100,10 @@ pub mod __private {
     #[doc(hidden)]
     pub mod credential {
         pub use nebula_credential::{
-            AuthScheme, Credential, CredentialGuard, CredentialGuardMetadata, CredentialLifecycle,
-            CredentialMetadata, CredentialPolicy, CredentialState, Dynamic, ErasedCredentialGuard,
-            Interactive, RefreshPolicy, RefreshStrategy, Refreshable, Revocable, RevokeStrategy,
-            Testable, key_of, metadata_name, schema_of,
+            AuthScheme, Component, Credential, CredentialGuard, CredentialGuardMetadata,
+            CredentialLifecycle, CredentialPolicy, CredentialState, Dynamic, ErasedCredentialGuard,
+            Interactive, Metadata, RefreshPolicy, RefreshStrategy, Refreshable, Revocable,
+            RevokeStrategy, Testable, key_of, kind, metadata_name, schema_of,
         };
 
         pub mod contract {

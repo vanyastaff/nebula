@@ -9,8 +9,8 @@ use std::{
 
 use nebula_core::credential_key;
 use nebula_credential::{
-    Credential, CredentialAdmissionError, CredentialContext, CredentialDefinition,
-    CredentialMetadata, CredentialRegistry, RecordedCredentialDefinition, RegisterError,
+    Component, Credential, CredentialAdmissionError, CredentialContext, CredentialDefinition,
+    CredentialRegistry, Metadata, RecordedCredentialDefinition, RegisterError,
     error::CredentialError, resolve::StaticResolveResult, scheme::SecretToken,
 };
 use nebula_metadata::{
@@ -20,7 +20,7 @@ use nebula_metadata::{
 use semver::Version;
 
 thread_local! {
-    static AUTHORED: RefCell<Option<CredentialMetadata>> = const { RefCell::new(None) };
+    static AUTHORED: RefCell<Option<Metadata>> = const { RefCell::new(None) };
 }
 
 struct CatalogCredential;
@@ -47,7 +47,7 @@ struct RejectedSchemaCredential;
 
 #[nebula_credential::credential(key = "test.rejected-schema", name = "Rejected schema")]
 impl RejectedSchemaCredential {
-    type Properties = RejectedProperties;
+    type Config = RejectedProperties;
     type Scheme = SecretToken;
     type State = SecretToken;
 
@@ -65,11 +65,11 @@ impl RejectedSchemaCredential {
 
 #[nebula_credential::credential(key = "test.catalog-foundation", name = "Catalog credential")]
 impl CatalogCredential {
-    type Properties = ();
+    type Config = ();
     type Scheme = SecretToken;
     type State = SecretToken;
 
-    fn metadata() -> CredentialMetadata {
+    fn metadata() -> Metadata {
         AUTHORED.with_borrow_mut(|draft| {
             draft
                 .take()
@@ -89,19 +89,16 @@ impl CatalogCredential {
     }
 }
 
-fn draft() -> CredentialMetadata {
-    CredentialMetadata::try_new("Catalog credential", "").expect("valid dynamic display name")
+fn draft() -> Metadata {
+    Metadata::try_new("Catalog credential", "").expect("valid dynamic display name")
 }
 
-fn register(
-    registry: &mut CredentialRegistry,
-    draft: CredentialMetadata,
-) -> Result<(), RegisterError> {
+fn register(registry: &mut CredentialRegistry, draft: Metadata) -> Result<(), RegisterError> {
     AUTHORED.set(Some(draft));
     registry.register(CatalogCredential, "catalog-foundation")
 }
 
-fn admit(draft: CredentialMetadata) -> CredentialDefinition {
+fn admit(draft: Metadata) -> CredentialDefinition {
     let mut registry = CredentialRegistry::new();
     register(&mut registry, draft).expect("valid catalog definition");
     registry
@@ -141,7 +138,7 @@ fn shared_admission_rejects_before_insertion_without_error_or_trace_payloads() {
         let mut registry = CredentialRegistry::new();
         for invalid in [
             draft().with_tags([" "]),
-            CredentialMetadata::new(
+            Metadata::new(
                 nebula_credential::metadata_name!("Catalog credential"),
                 CANARY.repeat(300),
             ),
@@ -149,7 +146,7 @@ fn shared_admission_rejects_before_insertion_without_error_or_trace_payloads() {
             draft().with_deprecation(
                 DeprecationNotice::new(Version::new(2, 0, 0)).with_reason(CANARY),
             ),
-            CredentialMetadata::try_new("\"".repeat(20_000), "").expect("nonblank name"),
+            Metadata::try_new("\"".repeat(20_000), "").expect("nonblank name"),
         ] {
             for _ in 0..2 {
                 let error = register(&mut registry, invalid.clone())
@@ -175,7 +172,7 @@ fn shared_admission_rejects_before_insertion_without_error_or_trace_payloads() {
             .expect_err("invalid properties schema must not install dispatch");
         std::assert_matches!(
             error,
-            RegisterError::Metadata(CredentialAdmissionError::PropertiesSchema)
+            RegisterError::Metadata(CredentialAdmissionError::ConfigSchema)
         );
         let cause = error.source().expect("typed schema admission cause");
         assert!(
@@ -200,7 +197,7 @@ fn shared_admission_rejects_before_insertion_without_error_or_trace_payloads() {
         "the rejection trace must actually be captured: {trace}"
     );
     assert!(!trace.contains(CANARY));
-    assert!(trace.contains("CREDENTIAL:PROPERTIES_SCHEMA_INVALID"));
+    assert!(trace.contains("CREDENTIAL:CONFIG_SCHEMA_INVALID"));
     assert!(!trace.contains(SCHEMA_CANARY));
 }
 

@@ -8,9 +8,10 @@
 use std::sync::Arc;
 
 use nebula_core::scope::Scope;
+use nebula_credential::{Component, kind};
 use nebula_credential::{
-    Credential, CredentialContext, CredentialError, CredentialGuard, CredentialMetadata,
-    SecretString, SecretToken, StaticResolveResult,
+    Credential, CredentialContext, CredentialError, CredentialGuard, Metadata, SecretString,
+    SecretToken, StaticResolveResult,
 };
 use nebula_resource::{
     CredentialSlot, Error, Manager, PinSlots, RegistrationSpec, Resident, ResidentConfig, Resource,
@@ -71,19 +72,23 @@ impl Zeroize for ApiToken {
     fn zeroize(&mut self) {}
 }
 
-impl Credential for ApiToken {
-    type Properties = ();
-    type Scheme = SecretToken;
-    type State = SecretToken;
+impl Component for ApiToken {
+    type Kind = kind::Credential;
+    type Config = ();
 
     const KEY: &'static str = "derived.api_token";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_credential::metadata_name!("ApiToken"),
             "managed facade derive fixture",
         )
     }
+}
+
+impl Credential for ApiToken {
+    type Scheme = SecretToken;
+    type State = SecretToken;
 
     fn project(state: &SecretToken) -> SecretToken {
         state.clone()

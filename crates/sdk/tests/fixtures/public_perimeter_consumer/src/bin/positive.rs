@@ -376,7 +376,7 @@ fn catalog_constructor_parity() {
         MetadataVersion, RemovalDate, RemovalMilestone, RemovalSchedule, VersionReq,
     };
     use nebula_sdk::integration::{
-        action::ActionMetadata, credential::CredentialMetadata, resource::ResourceMetadata,
+        action::ActionMetadata, credential::Metadata, resource::ResourceMetadata,
     };
     use nebula_sdk::prelude::action_key;
 
@@ -432,12 +432,12 @@ fn catalog_constructor_parity() {
         .add_link(link.clone())
         .with_deprecation(notice.clone());
     assert_eq!(action, action_dynamic);
-    let credential = CredentialMetadata::new(metadata_name!("Token"), "")
+    let credential = Metadata::new(metadata_name!("Token"), "")
         .with_version(version.clone())
         .with_categories([category.clone()])
         .add_link(link.clone())
         .with_deprecation(notice.clone());
-    let credential_dynamic = CredentialMetadata::try_new("Token", "")
+    let credential_dynamic = Metadata::try_new("Token", "")
         .expect("valid name")
         .with_version(version.clone())
         .with_categories([category.clone()])
@@ -459,6 +459,6 @@ fn catalog_constructor_parity() {
     let _: nebula_sdk::prelude::VersionReq = requirement;
     let _: nebula_sdk::prelude::MetadataField = MetadataField::Links;
     assert!(ActionMetadata::try_new(" ", "").is_err());
-    assert!(CredentialMetadata::try_new(" ", "").is_err());
+    assert!(Metadata::try_new(" ", "").is_err());
     assert!(ResourceMetadata::try_new(" ", "").is_err());
 }

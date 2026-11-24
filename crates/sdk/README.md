@@ -194,7 +194,7 @@ SDK persona types.
 ### Catalog construction migration
 
 Use the author types from `integration::{action, credential, resource}` or `prelude`.
-`ActionMetadata`, `ResourceMetadata` and `CredentialMetadata` take no key
+`ActionMetadata`, `ResourceMetadata` and a credential's `Metadata` take no key
 (`new(MetadataName, description)` / `try_new(name, description)`): the identity is
 `Action::KEY`, `Provider::KEY` or `Credential::KEY`, declared once on the type, and
 `key_of::<A>()` returns an action's typed key.

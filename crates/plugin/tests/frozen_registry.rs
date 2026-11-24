@@ -12,9 +12,10 @@ use nebula_core::{
     WorkflowVersionId, node_key,
 };
 use nebula_credential::{
-    AnyCredential, Credential, CredentialContext, CredentialMetadata, SecretString, SecretToken,
+    AnyCredential, Credential, CredentialContext, Metadata, SecretString, SecretToken,
     contract::plugin_capability_report, error::CredentialError, resolve::StaticResolveResult,
 };
+use nebula_credential::{Component, kind};
 use nebula_error::Classify;
 use nebula_metadata::{PluginDependency, PluginManifest};
 use nebula_plugin::{
@@ -196,19 +197,23 @@ macro_rules! credential_fixture {
     ($type:ident, $key:literal) => {
         struct $type;
 
-        impl Credential for $type {
-            type Properties = ();
-            type Scheme = SecretToken;
-            type State = SecretToken;
+        impl Component for $type {
+            type Kind = kind::Credential;
+            type Config = ();
 
             const KEY: &'static str = $key;
 
-            fn metadata() -> CredentialMetadata {
-                CredentialMetadata::new(
+            fn metadata() -> Metadata {
+                Metadata::new(
                     nebula_credential::metadata_name!("Test credential"),
                     "test credential",
                 )
             }
+        }
+
+        impl Credential for $type {
+            type Scheme = SecretToken;
+            type State = SecretToken;
 
             fn project(state: &SecretToken) -> SecretToken {
                 state.clone()

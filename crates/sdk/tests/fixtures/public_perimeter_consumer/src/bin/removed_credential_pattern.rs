@@ -1,6 +1,6 @@
-use nebula_sdk::prelude::{CredentialMetadata, metadata_name};
+use nebula_sdk::prelude::{Metadata, metadata_name};
 
 fn main() {
-    let metadata = CredentialMetadata::new(metadata_name!("Token"), "");
+    let metadata = Metadata::new(metadata_name!("Token"), "");
     let _ = metadata.pattern();
 }

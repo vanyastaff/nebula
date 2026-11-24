@@ -14,7 +14,7 @@ use nebula_storage_port::SecretBytes;
 // generates the trait impls via absolute paths: `Credential` (KEY /
 // Properties), `CredentialLifecycle` (policy), and the capability
 // sub-traits exercised by `assert_oauth2_capabilities`.
-use crate::{AuthPattern, Credential, CredentialLifecycle, Interactive, Refreshable};
+use crate::{AuthPattern, Component, Credential, CredentialLifecycle, Interactive, Refreshable};
 
 use super::*;
 
@@ -242,7 +242,7 @@ fn metadata_has_correct_fields() {
 
 #[test]
 fn properties_schema_is_admissible() {
-    let params = nebula_schema::schema_of::<<OAuth2Credential as Credential>::Properties>()
+    let params = nebula_schema::schema_of::<<OAuth2Credential as Component>::Config>()
         .expect("valid OAuth2 schema");
     assert!(!params.properties().is_empty());
 }

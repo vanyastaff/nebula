@@ -191,7 +191,7 @@ struct TypedCredential;
 
 #[credential(key = "sdk.typed", name = "Typed credential")]
 impl TypedCredential {
-    type Properties = TokenProperties;
+    type Config = TokenProperties;
     type Scheme = SecretToken;
     type State = SecretToken;
 
@@ -211,7 +211,7 @@ impl TypedCredential {
 
 #[tokio::test]
 async fn credential_author_receives_typed_properties_and_returns_draft_metadata() {
-    let draft: CredentialMetadata = TypedCredential::metadata();
+    let draft: Metadata = TypedCredential::metadata();
     let _ = draft;
     let result = TypedCredential::resolve(
         &TokenProperties {

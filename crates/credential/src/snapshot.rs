@@ -45,7 +45,7 @@
 //!
 //! ```
 //! use nebula_credential::{
-//!     Credential, CredentialRecord, CredentialSnapshot, SecretString,
+//!     Component, Credential, CredentialRecord, CredentialSnapshot, SecretString,
 //!     credentials::ApiKeyCredential, scheme::SecretToken,
 //! };
 //!

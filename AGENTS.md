@@ -147,7 +147,7 @@ are normal; upward dependencies and undeclared lateral coupling are CI failures.
 | **API / Surfaces** | `api`, `sdk` |
 | **Exec** | `engine`, `worker`, `storage`, `storage-loom-probe` |
 | **Business** | `resource`, `action`, `plugin`, `plugin-core`, `tenancy` |
-| **Core / shared-infra** | `api-contract`, `core`, `validator`, `expression`, `workflow`, `execution`, `schema`, `metadata`, `storage-port`, `credential` |
+| **Core / shared-infra** | `api-contract`, `component`, `core`, `validator`, `expression`, `workflow`, `execution`, `schema`, `metadata`, `storage-port`, `credential` |
 | **Cross-cutting** | `crypto`, `log`, `eventbus`, `metrics`, `resilience`, `error`, `env`, `macro-support` |
 
 `nebula-xtask` is repository tooling, not a product crate or architectural layer. It may

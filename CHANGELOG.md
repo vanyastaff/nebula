@@ -11,6 +11,26 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **A credential is a `Component`.** The new `nebula-component` crate holds the
+  one contract every integration component implements: `Kind`, `Config`, `KEY`
+  and `metadata()`. `Credential` now has `Component<Kind = kind::Credential>`
+  as its supertrait and keeps only `Scheme`, `State`, `project` and `resolve`.
+  `Resource` and `Action` move onto `Component` in the next releases.
+
+  | Before | After |
+  |---|---|
+  | `impl Credential for X { type Properties = P; const KEY = ..; fn metadata() .. }` | `impl Component for X { type Kind = kind::Credential; type Config = P; const KEY = ..; fn metadata() .. }` plus `impl Credential for X { .. }` |
+  | `#[credential] impl X { type Properties = P; .. }` | `#[credential] impl X { type Config = P; .. }` (the macro emits both impls) |
+  | `C::Properties`, `Credential::Properties` | `C::Config`, `Component::Config` |
+  | `CredentialMetadata` | `nebula_metadata::Metadata` (re-exported as `nebula_credential::Metadata` and in `nebula_sdk::prelude`) |
+  | `nebula_credential::key_of` (credential-only) | `nebula_component::key_of`, generic over every kind (re-exported as `nebula_credential::key_of`) |
+  | `CredentialAdmissionError::PropertiesSchema`, trace code `CREDENTIAL:PROPERTIES_SCHEMA_INVALID` | `CredentialAdmissionError::ConfigSchema`, `CREDENTIAL:CONFIG_SCHEMA_INVALID` |
+
+  `X::KEY` and `X::metadata()` now need `Component` in scope;
+  `nebula_sdk::prelude` exports `Component` and `kind`. `project` and
+  `resolve` lost their `where Self: Sized` bounds: `Component` requires
+  `Sized`, so `dyn Credential` stays impossible.
+
 - **Metadata errors, the resource key helper and the credential definition
   follow one naming scheme across actions, resources and credentials.** No
   behavior changes; rename at the call site.

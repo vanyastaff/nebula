@@ -5,9 +5,10 @@
 
 use std::time::Duration;
 
+use nebula_credential::{Component, kind};
 use nebula_credential::{
-    Credential, CredentialContext, CredentialMetadata, Interactive, PendingState,
-    PendingStateStore, PendingStoreError, PendingToken, SecretString,
+    Credential, CredentialContext, Interactive, Metadata, PendingState, PendingStateStore,
+    PendingStoreError, PendingToken, SecretString,
     credentials::OAuth2Pending,
     error::CredentialError,
     resolve::{DisplayData, InteractionRequest, ResolveResult, StaticResolveResult, UserInput},
@@ -86,26 +87,30 @@ impl nebula_credential::CredentialState for TestInteractiveState {
 
 struct InteractiveTestCredential;
 
-impl Credential for InteractiveTestCredential {
-    type Properties = serde_json::Value;
-    type Scheme = SecretToken;
-    type State = TestInteractiveState;
+impl Component for InteractiveTestCredential {
+    type Kind = kind::Credential;
+    type Config = serde_json::Value;
 
     const KEY: &'static str = "interactive_test";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_credential::metadata_name!("Interactive Test"),
             "Test credential for pending lifecycle",
         )
     }
+}
+
+impl Credential for InteractiveTestCredential {
+    type Scheme = SecretToken;
+    type State = TestInteractiveState;
 
     fn project(state: &TestInteractiveState) -> SecretToken {
         SecretToken::new(SecretString::new(state.token.clone()))
     }
 
     async fn resolve(
-        _properties: &Self::Properties,
+        _properties: &Self::Config,
         _ctx: &CredentialContext,
     ) -> Result<StaticResolveResult<TestInteractiveState>, CredentialError> {
         Err(CredentialError::InteractiveRequired)
@@ -116,7 +121,7 @@ impl Interactive for InteractiveTestCredential {
     type Pending = TestPending;
 
     async fn begin(
-        _properties: &Self::Properties,
+        _properties: &Self::Config,
         _ctx: &CredentialContext,
     ) -> Result<ResolveResult<TestInteractiveState, TestPending>, CredentialError> {
         Ok(test_pending_result())
@@ -147,26 +152,30 @@ impl Interactive for InteractiveTestCredential {
 
 struct RetryAwareCredential;
 
-impl Credential for RetryAwareCredential {
-    type Properties = serde_json::Value;
-    type Scheme = SecretToken;
-    type State = TestInteractiveState;
+impl Component for RetryAwareCredential {
+    type Kind = kind::Credential;
+    type Config = serde_json::Value;
 
     const KEY: &'static str = "retry_aware";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_credential::metadata_name!("Retry Aware"),
             "Test credential for retry-poll pending lifecycle",
         )
     }
+}
+
+impl Credential for RetryAwareCredential {
+    type Scheme = SecretToken;
+    type State = TestInteractiveState;
 
     fn project(state: &TestInteractiveState) -> SecretToken {
         SecretToken::new(SecretString::new(state.token.clone()))
     }
 
     async fn resolve(
-        _properties: &Self::Properties,
+        _properties: &Self::Config,
         _ctx: &CredentialContext,
     ) -> Result<StaticResolveResult<TestInteractiveState>, CredentialError> {
         Err(CredentialError::InteractiveRequired)
@@ -177,7 +186,7 @@ impl Interactive for RetryAwareCredential {
     type Pending = TestPending;
 
     async fn begin(
-        _properties: &Self::Properties,
+        _properties: &Self::Config,
         _ctx: &CredentialContext,
     ) -> Result<ResolveResult<TestInteractiveState, TestPending>, CredentialError> {
         Ok(test_pending_result())
@@ -226,11 +235,7 @@ async fn kickoff_test_pending<C>(
     ctx: &CredentialContext,
 ) -> PendingToken
 where
-    C: Interactive<
-            Properties = serde_json::Value,
-            Pending = TestPending,
-            State = TestInteractiveState,
-        >,
+    C: Interactive<Config = serde_json::Value, Pending = TestPending, State = TestInteractiveState>,
 {
     let response = nebula_credential::runtime::execute_begin::<C, _>(
         &serde_json::json!({}),

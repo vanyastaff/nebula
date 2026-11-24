@@ -12,6 +12,7 @@ documentation.workspace = true
 
 [dependencies]
 # Core re-exports
+nebula-component = { path = "../component" }
 nebula-core = { path = "../core" }
 nebula-action = { path = "../action" }
 nebula-metadata = { path = "../metadata" }

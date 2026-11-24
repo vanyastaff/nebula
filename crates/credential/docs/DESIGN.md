@@ -230,7 +230,7 @@ covers the AAD used, so removing or changing `aad` on a version-2 row cannot dow
 ## Validation boundary
 
 Runtime registration admits the schema-free `Credential::metadata()` value with the
-fallible schema derived from `C::Properties` before it installs the credential's
+fallible schema derived from `C::Config` before it installs the credential's
 operation closures. `Properties` describes authored data; it is not a runtime proof.
 Untyped mocks may use `serde_json::Value`, while concrete credentials declare the
 actual schema-bearing properties type.
@@ -243,8 +243,8 @@ It never creates an expression engine. Template-looking property strings remain
 literal data; executable expression nodes cannot pass the data-only transition.
 
 The operation consumes that value once with
-`into_typed_exposing_secrets::<C::Properties>()` at a trusted disclosure boundary
-and dispatches `&C::Properties`; it does not reconstruct proof from raw JSON or a
+`into_typed_exposing_secrets::<C::Config>()` at a trusted disclosure boundary
+and dispatches `&C::Config`; it does not reconstruct proof from raw JSON or a
 different schema. Built-in secret fields are zeroizing `SecretString` values by
 the time provider code runs.
 Ordinary `into_typed` rejects secret-bearing input, and typed-decoding diagnostics
@@ -328,14 +328,14 @@ construct refresh coordination, lease lifecycle, reclaim tasks, pending acquisit
 management command authority; those remain in the server management runtime.
 
 `nebula-sdk` is the sole supported Rust surface. Its credential authoring contract exposes
-`Credential`, `CredentialMetadata`, typed `Properties`, the `#[credential]` impl
+`Credential` on `Component`, the shared `Metadata`, typed `Config`, the `#[credential]` impl
 macro and `AuthScheme` derive, the shared `Icon`/maturity/deprecation vocabulary, built-in credential types, typed
 snapshots/context, and universal OAuth types through the SDK prelude. `integration::credential`
 exposes resolve and credential-test outcomes. SDK-only external fixtures compile and execute
 representative credential derives, while perimeter fixtures prove that owner authority, raw
 persistence, runtime constructors, credential records, and unscoped resolvers remain unavailable.
 
-The Phase-5 property design keeps explicit `Credential::Properties` canonical, with
+The Phase-5 property design keeps explicit `Credential::Config` canonical, with
 value-only `#[property(...)]` fields. Consumer `#[slot(credential, ...)]` dependencies stay
 outside properties. Static resolve/project and existing capability traits remain unchanged; the
 shared metadata authoring foundation is tracked in the

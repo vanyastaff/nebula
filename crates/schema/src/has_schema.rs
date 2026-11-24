@@ -40,7 +40,7 @@ pub trait HasSchema {
 /// This is the ergonomic, free-function form of [`HasSchema::schema`] — the
 /// single way `Action` / `Credential` / `Resource` consumers reach a
 /// companion type's schema. The associated-type bound (e.g. `Action::Input`,
-/// `Credential::Properties`, `Resource::Config`) is the sole source of truth;
+/// `Component::Config`, `Resource::Config`) is the sole source of truth;
 /// there is no per-trait `*_schema()` method. The returned
 /// value is `Arc`-backed and cheap to clone; for derived types it is already
 /// memoized inside `#[derive(Schema)]`. A caller may still wrap

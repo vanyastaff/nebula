@@ -28,13 +28,16 @@
 
 use std::future::Future;
 
+use nebula_component::{Component, kind};
+
 use super::CredentialState;
-use crate::{
-    AuthScheme, CredentialContext, CredentialMetadata, error::CredentialError,
-    resolve::StaticResolveResult,
-};
+use crate::{AuthScheme, CredentialContext, error::CredentialError, resolve::StaticResolveResult};
 
 /// Unified trait for all credential types.
+///
+/// A credential is a [`Component`] of kind [`kind::Credential`]: its key,
+/// its setup-form type (`Config`) and its catalog metadata are declared on
+/// the `Component` impl. This trait adds what only a credential has.
 ///
 /// # Integration credentials (Plane B)
 ///
@@ -46,17 +49,12 @@ use crate::{
 ///
 /// # Associated types
 ///
-/// - **`Properties`** — typed shape of the setup-form fields
-///   ([`HasSchema`](nebula_schema::HasSchema)). Mirrors `Action::Input` and `Resource::Config` —
-///   the schema-bearing companion type for credentials per Phase 5 of the M6 dependency redesign.
-///   Replaces the previous `Input` associated type.
 /// - **`Scheme`** — consumer-facing auth material ([`AuthScheme`]).
 /// - **`State`** — what gets encrypted and stored ([`CredentialState`]). May include refresh
 ///   internals not exposed to consumers.
 ///
-/// The pre-§15.4 `Pending` associated type now lives on
-/// [`Interactive`](crate::Interactive); non-interactive credentials no
-/// longer declare a companion type.
+/// The `Pending` associated type lives on [`Interactive`](crate::Interactive);
+/// non-interactive credentials do not declare one.
 ///
 /// # Capability sub-traits
 ///
@@ -77,67 +75,57 @@ use crate::{
 ///
 /// ```
 /// use nebula_credential::{
-///     Credential, CredentialContext, CredentialMetadata, SecretString,
+///     Component, Credential, CredentialContext, Metadata, SecretString, kind,
 ///     scheme::SecretToken,
 /// };
 /// use nebula_credential::error::CredentialError;
 /// use nebula_credential::resolve::StaticResolveResult;
-/// use nebula_core::credential_key;
 /// use serde::Deserialize;
 ///
 /// struct SlackBotToken;
 ///
 /// #[derive(Deserialize, nebula_schema::Schema)]
-/// struct SlackBotProperties {
+/// struct SlackBotConfig {
 ///     #[property(input(secret, required))]
 ///     bot_token: SecretString,
+/// }
+///
+/// impl Component for SlackBotToken {
+///     type Kind = kind::Credential;
+///     type Config = SlackBotConfig;
+///
+///     const KEY: &'static str = "slack_bot_token";
+///
+///     fn metadata() -> Metadata {
+///         Metadata::new(nebula_credential::metadata_name!("Slack Bot Token"),
+///             "Slack bot OAuth token",
+///         )
+///     }
 /// }
 ///
 /// impl Credential for SlackBotToken {
 ///     // `State` == `Scheme` for static credentials: `SecretToken` is both an
 ///     // `AuthScheme` and (via `identity_state!`) a `CredentialState`.
-///     type Properties = SlackBotProperties;
 ///     type Scheme = SecretToken;
 ///     type State = SecretToken;
-///
-///     const KEY: &'static str = "slack_bot_token";
-///
-///     fn metadata() -> CredentialMetadata {
-///         CredentialMetadata::new(nebula_credential::metadata_name!("Slack Bot Token"),
-///             "Slack bot OAuth token",
-///         )
-///     }
 ///
 ///     fn project(state: &SecretToken) -> SecretToken { state.clone() }
 ///
 ///     async fn resolve(
-///         properties: &SlackBotProperties,
+///         config: &SlackBotConfig,
 ///         _ctx: &CredentialContext,
 ///     ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
-///         Ok(StaticResolveResult::Complete(SecretToken::new(properties.bot_token.clone())))
+///         Ok(StaticResolveResult::Complete(SecretToken::new(config.bot_token.clone())))
 ///     }
 /// }
 ///
-/// assert_eq!(SlackBotToken::KEY, "slack_bot_token");
+/// assert_eq!(nebula_credential::key_of::<SlackBotToken>().as_str(), "slack_bot_token");
 /// // `project` is a pure, synchronous extraction of auth material from state.
 /// let state = SecretToken::new(SecretString::new("xoxb-123"));
 /// let scheme = SlackBotToken::project(&state);
 /// assert_eq!(scheme.token().expose_secret(), "xoxb-123");
 /// ```
-pub trait Credential: Send + Sync + 'static {
-    /// Typed shape of the credential setup-form fields.
-    ///
-    /// Mirrors `Action::Input` / `Resource::Config`: the canonical
-    /// schema-bearing companion struct. Read its checked schema via
-    /// [`nebula_schema::schema_of::<Self::Properties>()`](nebula_schema::schema_of)
-    /// (there is no per-trait schema method — schema-of properties).
-    ///
-    /// Untyped test doubles may use `serde_json::Value`, whose schema is
-    /// gradual `Any`, not an empty record. Prefer a concrete properties type
-    /// for real credentials. The runtime owns the one trusted decode from
-    /// validated values into this type before provider dispatch.
-    type Properties: nebula_schema::HasSchema + serde::de::DeserializeOwned + Send + Sync + 'static;
-
+pub trait Credential: Component<Kind = kind::Credential> {
     /// What this credential produces — the consumer-facing auth material.
     type Scheme: AuthScheme;
 
@@ -146,34 +134,14 @@ pub trait Credential: Send + Sync + 'static {
     /// (use [`identity_state!`](crate::identity_state) macro).
     type State: CredentialState;
 
-    /// Stable key for this credential type (e.g., `"github_oauth2"`).
-    ///
-    /// This is the one declaration of the credential's identity:
-    /// [`key_of`] is its typed [`CredentialKey`](nebula_core::CredentialKey),
-    /// and the admitted catalog entry is stamped with it, so the entry cannot
-    /// name a different credential. A literal that is not a valid credential
-    /// key fails compilation.
-    const KEY: &'static str;
-
-    /// What the integration catalog shows for this credential: name,
-    /// description, icon, documentation URL. The metadata carries neither a
-    /// key nor a schema; registry admission stamps [`Self::KEY`] and derives the
-    /// schema from [`Self::Properties`].
-    fn metadata() -> CredentialMetadata
-    where
-        Self: Sized;
-
     /// Project the runtime [`Scheme`] from stored [`State`]. Synchronous,
-    /// pure. `where Self: Sized` excludes this from any object-safe
-    /// vtable — dispatch goes through downcast at full type knowledge.
+    /// pure.
     ///
     /// [`Scheme`]: Credential::Scheme
     /// [`State`]: Credential::State
-    fn project(state: &Self::State) -> Self::Scheme
-    where
-        Self: Sized;
+    fn project(state: &Self::State) -> Self::Scheme;
 
-    /// Build initial [`Self::State`] from typed properties decoded once by the
+    /// Build initial [`Self::State`] from the typed config decoded once by the
     /// runtime after canonical schema validation. Returns
     /// [`StaticResolveResult<State>`](StaticResolveResult).
     ///
@@ -181,29 +149,14 @@ pub trait Credential: Send + Sync + 'static {
     /// consumes literal authored data, completes data-only validation, and
     /// performs the trusted typed decode before invoking this method.
     ///
+    /// Untyped test doubles may use `serde_json::Value` as `Config`, whose
+    /// schema is gradual `Any`, not an empty record. Prefer a concrete config
+    /// type for real credentials.
+    ///
     /// The result can complete or request a retry. It cannot carry pending
     /// state; interactive credentials use [`Interactive::begin`](crate::Interactive::begin).
     fn resolve(
-        properties: &Self::Properties,
+        config: &Self::Config,
         ctx: &CredentialContext,
-    ) -> impl Future<Output = Result<StaticResolveResult<Self::State>, CredentialError>> + Send
-    where
-        Self: Sized;
-}
-
-/// The typed key of credential type `C`, derived from [`Credential::KEY`].
-///
-/// An invalid literal fails the build of whatever instantiates this function
-/// for `C`, which registration always does, so nothing is left to validate at
-/// run time.
-#[must_use]
-pub fn key_of<C: Credential + ?Sized>() -> nebula_core::CredentialKey {
-    const {
-        assert!(
-            nebula_core::CredentialKey::is_valid_key_const(C::KEY),
-            "`Credential::KEY` is not a valid credential key"
-        );
-    }
-    // Checked above: a valid key literal is already in canonical form.
-    nebula_core::CredentialKey::from_static_unchecked(C::KEY)
+    ) -> impl Future<Output = Result<StaticResolveResult<Self::State>, CredentialError>> + Send;
 }

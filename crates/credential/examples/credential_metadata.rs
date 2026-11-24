@@ -6,7 +6,7 @@
 )]
 
 use nebula_credential::{
-    ApiKeyCredential, Credential, CredentialRegistry, RecordedCredentialDefinition,
+    ApiKeyCredential, Component, CredentialRegistry, RecordedCredentialDefinition,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

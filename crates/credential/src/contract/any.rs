@@ -71,7 +71,7 @@ where
     }
 
     fn definition(&self) -> Result<CredentialDefinition, crate::CredentialAdmissionError> {
-        CredentialDefinition::admit_for::<C>(C::metadata())
+        CredentialDefinition::admit_for::<C>()
     }
 
     fn capabilities(&self) -> Capabilities {

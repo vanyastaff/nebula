@@ -1,5 +1,5 @@
-use nebula_sdk::prelude::{ResourceMetadata, resource_key};
+use nebula_sdk::prelude::{Metadata, resource_key};
 
 fn main() {
-    let _ = ResourceMetadata::from_key(resource_key!("example.resource"));
+    let _ = Metadata::from_key(resource_key!("example.resource"));
 }

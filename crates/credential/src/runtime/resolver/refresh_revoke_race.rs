@@ -33,7 +33,7 @@ use crate::runtime::refresh::transport::{
     RefreshTransport, RefreshTransportError, TokenPostRequest, TokenPostResponse,
 };
 use crate::runtime::{AcquisitionTransport, AcquisitionTransportError};
-use crate::{CredentialMetadata, CredentialPolicy, RefreshStrategy, RevokeStrategy};
+use crate::{Component, CredentialPolicy, Metadata, RefreshStrategy, RevokeStrategy, kind};
 
 // ── Test doubles of the crate's own ports ──────────────────────────
 
@@ -1058,19 +1058,23 @@ static CANCELLATION_REFRESH_STARTED: AtomicBool = AtomicBool::new(false);
 static CANCELLATION_REFRESH_STARTED_NOTIFY: Notify = Notify::const_new();
 static CANCELLATION_REFRESH_RELEASE: Notify = Notify::const_new();
 
-impl Credential for TestCred {
-    type Properties = ();
-    type Scheme = TestScheme;
-    type State = TestState;
+impl Component for TestCred {
+    type Kind = kind::Credential;
+    type Config = ();
 
     const KEY: &'static str = "test.refreshable";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             crate::metadata_name!("TestCred"),
             "refreshable test credential for resolver regressions",
         )
     }
+}
+
+impl Credential for TestCred {
+    type Scheme = TestScheme;
+    type State = TestState;
 
     fn project(_state: &TestState) -> TestScheme {
         TestScheme
@@ -1159,19 +1163,23 @@ struct LocalRefreshCred;
 
 static LOCAL_REFRESH_CALLS: AtomicUsize = AtomicUsize::new(0);
 
-impl Credential for LocalRefreshCred {
-    type Properties = ();
-    type Scheme = TestScheme;
-    type State = TestState;
+impl Component for LocalRefreshCred {
+    type Kind = kind::Credential;
+    type Config = ();
 
     const KEY: &'static str = "test.local_refreshable";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             crate::metadata_name!("LocalRefreshCred"),
             "providerless refresh credential for finalization regressions",
         )
     }
+}
+
+impl Credential for LocalRefreshCred {
+    type Scheme = TestScheme;
+    type State = TestState;
 
     fn project(_state: &TestState) -> TestScheme {
         TestScheme
@@ -1221,19 +1229,23 @@ impl CredentialState for VersionTwoState {
     const VERSION: u32 = 2;
 }
 
-impl Credential for VersionTwoCred {
-    type Properties = ();
-    type Scheme = TestScheme;
-    type State = VersionTwoState;
+impl Component for VersionTwoCred {
+    type Kind = kind::Credential;
+    type Config = ();
 
     const KEY: &'static str = "test.refreshable.v2";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             crate::metadata_name!("VersionTwoCred"),
             "version-bumped refreshable test credential for migration regressions",
         )
     }
+}
+
+impl Credential for VersionTwoCred {
+    type Scheme = TestScheme;
+    type State = VersionTwoState;
 
     fn project(_state: &VersionTwoState) -> TestScheme {
         TestScheme
@@ -1277,16 +1289,20 @@ impl CredentialLifecycle for VersionTwoCred {
 /// The linear attempt must reject this before any transport call.
 struct ProviderModeLocalCompletionCred;
 
-impl Credential for ProviderModeLocalCompletionCred {
-    type Properties = ();
-    type Scheme = TestScheme;
-    type State = TestState;
+impl Component for ProviderModeLocalCompletionCred {
+    type Kind = kind::Credential;
+    type Config = ();
 
     const KEY: &'static str = TestCred::KEY;
 
-    fn metadata() -> CredentialMetadata {
+    fn metadata() -> Metadata {
         TestCred::metadata()
     }
+}
+
+impl Credential for ProviderModeLocalCompletionCred {
+    type Scheme = TestScheme;
+    type State = TestState;
 
     fn project(_state: &TestState) -> TestScheme {
         TestScheme
@@ -1323,19 +1339,23 @@ impl CredentialLifecycle for ProviderModeLocalCompletionCred {
 /// own `Refreshable` implementation, never reinterpret state by key.
 struct SameKeyNonOAuthCred;
 
-impl Credential for SameKeyNonOAuthCred {
-    type Properties = ();
-    type Scheme = TestScheme;
-    type State = TestState;
+impl Component for SameKeyNonOAuthCred {
+    type Kind = kind::Credential;
+    type Config = ();
 
     const KEY: &'static str = "oauth2";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             crate::metadata_name!("Same-key typed test credential"),
             "proves refresh dispatch follows the Rust type rather than its registry key",
         )
     }
+}
+
+impl Credential for SameKeyNonOAuthCred {
+    type Scheme = TestScheme;
+    type State = TestState;
 
     fn project(_state: &TestState) -> TestScheme {
         TestScheme
@@ -1387,19 +1407,23 @@ impl CredentialLifecycle for SameKeyNonOAuthCred {
 /// cancellation inside the owned K2 critical section.
 struct CancellationAwareCred;
 
-impl Credential for CancellationAwareCred {
-    type Properties = ();
-    type Scheme = TestScheme;
-    type State = TestState;
+impl Component for CancellationAwareCred {
+    type Kind = kind::Credential;
+    type Config = ();
 
     const KEY: &'static str = "test.cancellation_aware";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             crate::metadata_name!("Cancellation-aware test credential"),
             "proves K2 refresh is detached from request cancellation",
         )
     }
+}
+
+impl Credential for CancellationAwareCred {
+    type Scheme = TestScheme;
+    type State = TestState;
 
     fn project(_state: &TestState) -> TestScheme {
         TestScheme
@@ -1487,19 +1511,23 @@ struct PostProviderEncodingCred;
 
 static ENCODING_PROVIDER_CALLS: AtomicUsize = AtomicUsize::new(0);
 
-impl Credential for PostProviderEncodingCred {
-    type Properties = ();
-    type Scheme = TestScheme;
-    type State = PostProviderEncodingState;
+impl Component for PostProviderEncodingCred {
+    type Kind = kind::Credential;
+    type Config = ();
 
     const KEY: &'static str = "test.post_provider_encoding";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             crate::metadata_name!("Post-provider encoding test"),
             "proves state encoding failures retain replay-unsafe disposition",
         )
     }
+}
+
+impl Credential for PostProviderEncodingCred {
+    type Scheme = TestScheme;
+    type State = PostProviderEncodingState;
 
     fn project(_state: &PostProviderEncodingState) -> TestScheme {
         TestScheme
@@ -3820,19 +3848,23 @@ impl AuthScheme for StaticScheme {
     }
 }
 
-impl Credential for MismatchedPolicyCred {
-    type Properties = ();
-    type Scheme = StaticScheme;
-    type State = TestState;
+impl Component for MismatchedPolicyCred {
+    type Kind = kind::Credential;
+    type Config = ();
 
     const KEY: &'static str = "test.mismatched_policy";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             crate::metadata_name!("MismatchedPolicyCred"),
             "credential whose policy drifts from its family",
         )
     }
+}
+
+impl Credential for MismatchedPolicyCred {
+    type Scheme = StaticScheme;
+    type State = TestState;
 
     fn project(_state: &TestState) -> StaticScheme {
         StaticScheme

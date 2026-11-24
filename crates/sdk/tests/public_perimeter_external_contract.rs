@@ -178,17 +178,16 @@ const REMOVED_CATALOG_API: &[(&str, &str, &str)] = &[
         "with_checkpoint_policy",
         "ActionMetadata",
     ),
-    // `ResourceMetadata` is an alias; rustc names the type behind it.
+    // rustc names the catalog metadata by the SDK path the probe imports.
     (
         "removed_resource_from_key",
         "from_key",
-        "nebula_metadata::base::Metadata",
+        "nebula_sdk::prelude::Metadata",
     ),
-    // `CredentialMetadata` is an alias too.
     (
         "removed_credential_pattern",
         "pattern",
-        "nebula_metadata::base::Metadata",
+        "nebula_sdk::prelude::Metadata",
     ),
     ("removed_limited_wrap", "wrap", "ResourceLimiter"),
 ];
@@ -496,11 +495,11 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
             }
             pub mod credential {
                 pub use nebula_credential::{
-                    AuthScheme, Credential, CredentialGuard, CredentialGuardMetadata, CredentialLifecycle,
-                    CredentialMetadata, CredentialPolicy, CredentialState, Dynamic,
-                    ErasedCredentialGuard, Interactive, RefreshPolicy, RefreshStrategy,
+                    AuthScheme, Component, Credential, CredentialGuard, CredentialGuardMetadata,
+                    CredentialLifecycle, CredentialPolicy, CredentialState, Dynamic,
+                    ErasedCredentialGuard, Interactive, Metadata, RefreshPolicy, RefreshStrategy,
                     Refreshable, Revocable, RevokeStrategy, Testable,
-                    key_of, metadata_name, schema_of,
+                    key_of, kind, metadata_name, schema_of,
                 };
                 pub mod contract {
                     pub mod plugin_capability_report {

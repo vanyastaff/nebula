@@ -645,7 +645,7 @@ where
         return Err(DispatchError::DuplicateKey { key });
     }
 
-    let metadata = crate::CredentialDefinition::admit_for::<C>(C::metadata())?;
+    let metadata = crate::CredentialDefinition::admit_for::<C>()?;
     let validation_schema = metadata.base().schema().clone();
     let resolve_schema = Arc::new(validation_schema.clone());
     let acquire_schema = Arc::new(validation_schema.clone());
@@ -735,7 +735,7 @@ where
 fn prepare_properties<C>(
     schema: &ValidSchema,
     props: serde_json::Value,
-) -> Result<C::Properties, CredentialServiceError>
+) -> Result<C::Config, CredentialServiceError>
 where
     C: Credential,
 {
@@ -880,7 +880,7 @@ where
     C::State: StateWireFingerprint,
     PS: PendingStateStore,
 {
-    let key: &'static str = <C as Credential>::KEY;
+    let key: &'static str = C::KEY;
     let entry = ops
         .entries
         .get_mut(key)
@@ -985,7 +985,7 @@ where
     C::State: StateWireFingerprint,
     PS: PendingStateStore,
 {
-    let key: &'static str = <C as Credential>::KEY;
+    let key: &'static str = C::KEY;
     let entry = ops
         .entries
         .get_mut(key)
@@ -1093,7 +1093,7 @@ where
     C::State: StateWireFingerprint,
     PS: PendingStateStore,
 {
-    let key: &'static str = <C as Credential>::KEY;
+    let key: &'static str = C::KEY;
     let entry = ops
         .entries
         .get_mut(key)
@@ -1143,7 +1143,7 @@ where
     C::State: StateWireFingerprint,
     PS: PendingStateStore,
 {
-    let key: &'static str = <C as Credential>::KEY;
+    let key: &'static str = C::KEY;
     let entry = ops
         .entries
         .get_mut(key)

@@ -1,6 +1,6 @@
 //! Typed integration credentials, lifecycle runtime, and authorized management.
 //!
-//! [`Credential`] separates validated setup [`Properties`](Credential::Properties),
+//! [`Credential`] separates validated setup [`Config`](Component::Config),
 //! encrypted stored [`State`](Credential::State), and consumer-facing
 //! [`Scheme`](Credential::Scheme). Capability traits such as [`Refreshable`] and
 //! [`Interactive`] declare the operations an integration implements.
@@ -99,7 +99,9 @@ mod display;
 mod handle;
 /// Authored credential metadata, admitted definition, recorded evidence, and compatibility.
 mod metadata;
-pub use nebula_metadata::{MetadataError, MetadataName, metadata_name};
+/// The shared component contract a credential is built on.
+pub use nebula_component::{Component, key_of, kind};
+pub use nebula_metadata::{Metadata, MetadataError, MetadataName, metadata_name};
 /// `NoCredential` opt-out type — for resources without an authenticated binding (credential isolation).
 mod no_credential;
 /// Credential record — runtime operational state (timestamps, version, tags).
@@ -145,7 +147,6 @@ pub use contract::{
     CredentialRegistry, CredentialState, Dynamic, Interactive, NoPendingState, PendingState,
     PendingToken, RefreshAttempt, RefreshDispatchError, RefreshExecutionMode, RefreshReport,
     Refreshable, RegisterError, Revocable, StateWireFingerprint, Testable, compute_capabilities,
-    key_of,
 };
 // Resolve types
 pub use contract::{
@@ -168,7 +169,7 @@ pub use nebula_core::accessor::CredentialAccessor;
 pub use nebula_core::{CredentialId, CredentialKey, credential_key};
 // Re-exported so `#[credential]` can emit `::nebula_credential::schema_of`
 // without forcing plugin authors onto a direct `nebula-schema` dependency
-// (schema-of properties: `Self::Properties: HasSchema` is the single source of truth).
+// (schema-of properties: `Self::Config: HasSchema` is the single source of truth).
 pub use nebula_schema::schema_of;
 // Authoring macros. `credential` is the canonical ADR-0088 D1 attribute macro
 // (one-impl-block authoring); `AuthScheme` derives the scheme's `AuthPattern`;
@@ -252,7 +253,7 @@ pub use crate::{
     event::CredentialEvent,
     metadata::{
         CredentialAdmissionError, CredentialCompatibilityError, CredentialDefinition,
-        CredentialMetadata, CredentialReadmissionError, RecordedCredentialDefinition,
+        CredentialReadmissionError, RecordedCredentialDefinition,
     },
     record::CredentialRecord,
     snapshot::{CredentialSnapshot, SnapshotError},
@@ -303,11 +304,11 @@ pub mod prelude {
     pub use crate::{
         AuthPattern, AuthScheme, Credential, CredentialContext, CredentialContextBuilder,
         CredentialDefinition, CredentialError, CredentialGuard, CredentialHandle, CredentialId,
-        CredentialKey, CredentialMetadata, CredentialPolicy, CredentialRecord, CredentialRegistry,
-        CredentialService, CredentialState, DeprecationNotice, Dynamic, ExternalScheme, Icon,
-        Interactive, MaturityLevel, PublicScheme, RefreshAttempt, RefreshExecutionMode,
-        RefreshReport, Refreshable, Revocable, SecretString, SensitiveScheme, StateWireFingerprint,
-        Testable, credential, credential_key, schema_of,
+        CredentialKey, CredentialPolicy, CredentialRecord, CredentialRegistry, CredentialService,
+        CredentialState, DeprecationNotice, Dynamic, ExternalScheme, Icon, Interactive,
+        MaturityLevel, Metadata, PublicScheme, RefreshAttempt, RefreshExecutionMode, RefreshReport,
+        Refreshable, Revocable, SecretString, SensitiveScheme, StateWireFingerprint, Testable,
+        credential, credential_key, schema_of,
     };
 }
 

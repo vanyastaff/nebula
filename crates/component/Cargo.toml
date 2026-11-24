@@ -1,0 +1,29 @@
+[package]
+name = "nebula-component"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+authors.workspace = true
+description = "The one contract every Nebula integration component implements: key, config, catalog metadata."
+license.workspace = true
+repository.workspace = true
+documentation.workspace = true
+
+[dependencies]
+domain-key = { workspace = true }
+nebula-core = { path = "../core" }
+nebula-metadata = { path = "../metadata" }
+nebula-schema = { path = "../schema" }
+serde = { workspace = true, features = ["derive"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[package.metadata.docs.rs]
+# Render feature-gated items on docs.rs (build with every feature).
+all-features = true
+
+[lints]
+workspace = true

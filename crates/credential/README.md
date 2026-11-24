@@ -92,19 +92,20 @@ acquire a management service or refresh/lease collaborators.
 Capabilities originate in trait membership. Registry bitflags are a derived discovery projection,
 not a caller-supplied assertion.
 
-`Credential::metadata()` returns a key-free, schema-free `CredentialMetadata` (an alias of
-`nebula_metadata::Metadata`): `new(MetadataName, description)` or
-`try_new(name, description)`. The credential's identity is `Credential::KEY`, declared once;
+A credential is a `nebula_component::Component` of kind `kind::Credential`. Its
+`Component::metadata()` returns the key-free, schema-free shared
+`nebula_metadata::Metadata`: `new(MetadataName, description)` or
+`try_new(name, description)`. The credential's identity is `Component::KEY`, declared once;
 the registry stamps it at admission, so a catalog entry cannot name another credential.
 There is no auth-pattern argument or getter either:
 admission derives the pattern from `<C::Scheme as AuthScheme>::pattern()`.
-`CredentialMetadata` uses the shared catalog vocabulary: `Icon` for inline, URL-backed, or absent icons;
+The metadata uses the shared catalog vocabulary: `Icon` for inline, URL-backed, or absent icons;
 `with_icon`, `with_inline_icon`, and `with_url_icon` as the only icon setters;
 `mark_experimental`, `mark_beta`, `mark_stable`, and `with_deprecation` for lifecycle; and
 `with_tags`/`add_tag`, typed `with_categories`, and `add_link` for discovery.
 `with_documentation_url` authors the Overview link. Tags are trimmed, sorted, and
 deduplicated; categories and links also have canonical ordering.
-`schema_of::<C::Properties>()` is fallible, returning a checked schema or a lint report;
+`schema_of::<C::Config>()` is fallible, returning a checked schema or a lint report;
 registry admission is the only path that combines it with the metadata into immutable
 `CredentialDefinition` before installing dispatch. Persisted metadata is
 `RecordedCredentialDefinition` evidence and must be re-admitted against the fresh definition.
@@ -197,13 +198,13 @@ The supported authenticated HTTP mutation path uses one command/validation pipel
 
 1. authorize the public management command once in `CredentialController`;
 2. decode property JSON with the declared schema's `values_from_wire` into literal
-   `AuthoredValue`, using the checked `C::Properties` schema captured at registration;
+   `AuthoredValue`, using the checked `C::Config` schema captured at registration;
 3. consume it through `validate`, folding aliases, applying transforms once, and promoting
    declared secrets before prepared values escape;
 4. consume the prepared token with `resolve_data` to obtain schema-bound values, with full rules
    and conditional policies checked and no expression engine involved;
-5. decode `C::Properties` exactly once using explicit
-   `into_typed_exposing_secrets::<C::Properties>()` at the trusted typed-input boundary; and
+5. decode `C::Config` exactly once using explicit
+   `into_typed_exposing_secrets::<C::Config>()` at the trusted typed-input boundary; and
 6. pass the typed properties by reference to credential resolve dispatch.
 
 The API schema port is a catalog/form read model, not a second mutation validator. Its absence does

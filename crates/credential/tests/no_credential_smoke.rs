@@ -4,8 +4,8 @@
 //! used by `Resource` impls that don't need credential binding.
 
 use nebula_credential::{
-    AuthPattern, AuthScheme, Credential, CredentialContext, CredentialState, NoCredential,
-    NoCredentialState, StaticResolveResult,
+    AuthPattern, AuthScheme, Component, Credential, CredentialContext, CredentialState,
+    NoCredential, NoCredentialState, StaticResolveResult,
 };
 use nebula_schema::{AuthoredValue, schema_of};
 
@@ -41,7 +41,7 @@ fn project_returns_unit_scheme() {
 
 #[tokio::test]
 async fn resolve_returns_complete_state() {
-    let schema = schema_of::<<NoCredential as Credential>::Properties>().unwrap();
+    let schema = schema_of::<<NoCredential as Component>::Config>().unwrap();
     let values = schema
         .validate(AuthoredValue::from_data(serde_json::Value::Null).unwrap())
         .unwrap()

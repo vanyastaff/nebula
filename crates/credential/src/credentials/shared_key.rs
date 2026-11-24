@@ -7,8 +7,9 @@
 use nebula_schema::Schema;
 use serde::Deserialize;
 
+use crate::{Component, kind};
 use crate::{
-    Credential, CredentialContext, CredentialError, CredentialMetadata, SecretString,
+    Credential, CredentialContext, CredentialError, Metadata, SecretString,
     contract::plugin_capability_report, contract::resolve::StaticResolveResult, scheme::SharedKey,
 };
 
@@ -24,20 +25,24 @@ pub struct SharedKeyProperties {
 /// directly as the auth scheme.
 pub struct SharedKeyCredential;
 
-impl Credential for SharedKeyCredential {
-    type Properties = SharedKeyProperties;
-    type Scheme = SharedKey;
-    type State = SharedKey;
+impl Component for SharedKeyCredential {
+    type Kind = kind::Credential;
+    type Config = SharedKeyProperties;
 
     const KEY: &'static str = "shared_key";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             crate::metadata_name!("Pre-shared Key"),
             "Pre-shared symmetric key (TLS-PSK, WireGuard, IoT).",
         )
         .with_icon(nebula_metadata::Icon::inline("key"))
     }
+}
+
+impl Credential for SharedKeyCredential {
+    type Scheme = SharedKey;
+    type State = SharedKey;
 
     fn project(state: &SharedKey) -> SharedKey {
         state.clone()

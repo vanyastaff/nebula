@@ -8,7 +8,7 @@ use nebula_schema::Schema;
 use serde::Deserialize;
 
 use crate::{
-    CredentialContext, SecretString, error::CredentialError, metadata::CredentialMetadata,
+    CredentialContext, Metadata, SecretString, error::CredentialError,
     resolve::StaticResolveResult, scheme::SecretToken,
 };
 
@@ -17,7 +17,7 @@ use crate::{
 ///
 /// The struct is purely the schema-bearing companion: `#[derive(Schema)]`
 /// emits the `HasSchema` impl read via
-/// `nebula_schema::schema_of::<Self::Properties>()` (schema-of properties). The
+/// `nebula_schema::schema_of::<Self::Config>()` (schema-of properties). The
 /// actual auth material conversion to
 /// [`SecretToken`] happens in [`Credential::resolve`](crate::Credential::resolve).
 ///
@@ -48,7 +48,7 @@ pub struct ApiKeyProperties {
 ///
 /// ```
 /// use nebula_credential::credentials::ApiKeyCredential;
-/// use nebula_credential::Credential;
+/// use nebula_credential::Component;
 ///
 /// assert_eq!(ApiKeyCredential::KEY, "api_key");
 /// ```
@@ -62,12 +62,12 @@ pub struct ApiKeyCredential;
 // the absent capability sub-traits.
 #[nebula_credential::credential(key = "api_key")]
 impl ApiKeyCredential {
-    type Properties = ApiKeyProperties;
+    type Config = ApiKeyProperties;
     type Scheme = SecretToken;
     type State = SecretToken;
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             crate::metadata_name!("API Key"),
             "Static API key or bearer token for HTTP APIs.",
         )
@@ -90,10 +90,10 @@ impl ApiKeyCredential {
 
 #[cfg(test)]
 mod tests {
-    // `Credential` (for `KEY` / `Properties`) and `CredentialLifecycle` (for
+    // `Component` (for `KEY` / `Config`) and `CredentialLifecycle` (for
     // `policy`) are only referenced by the tests now that `#[credential]`
     // generates the trait impls via absolute paths.
-    use crate::{Credential, CredentialLifecycle, credentials::resolve_properties};
+    use crate::{Component, Credential, CredentialLifecycle, credentials::resolve_properties};
 
     use super::*;
 
@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn parameters_contains_server_and_api_key() {
-        let params = nebula_schema::schema_of::<<ApiKeyCredential as Credential>::Properties>()
+        let params = nebula_schema::schema_of::<<ApiKeyCredential as Component>::Config>()
             .expect("valid API key schema");
         assert!(
             params
@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn server_is_optional() {
-        let params = nebula_schema::schema_of::<<ApiKeyCredential as Credential>::Properties>()
+        let params = nebula_schema::schema_of::<<ApiKeyCredential as Component>::Config>()
             .expect("valid API key schema");
         let server = params
             .properties()

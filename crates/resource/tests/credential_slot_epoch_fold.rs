@@ -29,9 +29,10 @@ use std::{
 };
 
 use nebula_core::{ScopeLevel, scope::Scope};
+use nebula_credential::{Component, kind};
 use nebula_credential::{
-    Credential, CredentialContext, CredentialError, CredentialGuard, CredentialMetadata,
-    SecretString, SecretToken, StaticResolveResult,
+    Credential, CredentialContext, CredentialError, CredentialGuard, Metadata, SecretString,
+    SecretToken, StaticResolveResult,
 };
 use nebula_resource::Resident;
 use nebula_resource::{
@@ -55,19 +56,23 @@ impl Zeroize for FakeCred {
     }
 }
 
-impl Credential for FakeCred {
-    type Properties = ();
-    type Scheme = SecretToken;
-    type State = SecretToken;
+impl Component for FakeCred {
+    type Kind = kind::Credential;
+    type Config = ();
 
     const KEY: &'static str = "epochfold.fake";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_credential::metadata_name!("FakeCred"),
             "slot-epoch fold fixture",
         )
     }
+}
+
+impl Credential for FakeCred {
+    type Scheme = SecretToken;
+    type State = SecretToken;
 
     fn project(state: &SecretToken) -> SecretToken {
         state.clone()

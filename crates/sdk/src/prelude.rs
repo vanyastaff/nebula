@@ -100,6 +100,8 @@ pub use nebula_action::{
 // DX codegen macros — re-exported so authors can write `impl_paginated_action!(...)`
 // without reaching into `nebula_action::`.
 pub use nebula_action::{impl_batch_action, impl_paginated_action};
+// The contract every component implements: key, config, catalog metadata.
+pub use nebula_component::{Component, kind};
 pub use nebula_core::AuthScheme as AuthSchemeContract;
 pub use nebula_core::auth::NoAuthFamily;
 pub use nebula_core::{
@@ -114,8 +116,6 @@ pub use nebula_credential::{
     BearerTokenCredential,
     Credential,
     CredentialError,
-    // Author-owned integration-catalog metadata intent
-    CredentialMetadata,
     // Typed credential access
     CredentialSnapshot,
     CredentialState,
@@ -132,9 +132,9 @@ pub use nebula_credential::{CredentialContext, CredentialId};
 // Shared authoring vocabulary used by action, credential, and resource metadata.
 pub use nebula_metadata::{
     CatalogCategoryKey, CatalogLink, CatalogLinkRelation, CatalogLinkTarget, CatalogReference,
-    CatalogValueError, DeprecationNotice, DocumentationOrigin, Icon, MaturityLevel, MetadataError,
-    MetadataField, MetadataName, MetadataVersion, RemovalDate, RemovalMilestone, RemovalSchedule,
-    metadata_name,
+    CatalogValueError, DeprecationNotice, DocumentationOrigin, Icon, MaturityLevel, Metadata,
+    MetadataError, MetadataField, MetadataName, MetadataVersion, RemovalDate, RemovalMilestone,
+    RemovalSchedule, metadata_name,
 };
 pub use semver::VersionReq;
 // Plugin types. `ManifestError`/`PluginDependency`/`PluginManifestBuilder`

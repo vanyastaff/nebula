@@ -17,7 +17,9 @@
 
 use std::time::Duration;
 
-use nebula_credential::{BasicAuthCredential, CredentialGuard, scheme::IdentityPassword};
+use nebula_credential::{
+    BasicAuthCredential, Component, CredentialGuard, scheme::IdentityPassword,
+};
 use nebula_resource::{
     PoolConfig, Pooled, TeardownCx,
     call::{

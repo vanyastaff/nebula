@@ -40,7 +40,7 @@ use crate::{Credential, CredentialContext, error::CredentialError};
 /// ```
 /// use std::time::Duration;
 /// use nebula_credential::{
-///     Credential, CredentialContext, CredentialMetadata, Dynamic,
+///     Component, Credential, CredentialContext, Metadata, kind, Dynamic,
 ///     SecretString, scheme::SecretToken,
 /// };
 /// use nebula_credential::error::CredentialError;
@@ -49,18 +49,24 @@ use crate::{Credential, CredentialContext, error::CredentialError};
 ///
 /// struct VaultDbCred;
 ///
-/// # impl Credential for VaultDbCred {
-/// #     type Properties = serde_json::Value;
-/// #     type Scheme = SecretToken;
-/// #     type State = SecretToken;
+/// # impl Component for VaultDbCred {
+/// #     type Kind = kind::Credential;
+/// #     type Config = serde_json::Value;
+/// #
 /// #     const KEY: &'static str = "vault_db_cred";
-/// #     fn metadata() -> CredentialMetadata {
-/// #         CredentialMetadata::new(nebula_credential::metadata_name!("Vault DB"), "demo",
+/// #
+/// #     fn metadata() -> Metadata {
+/// #         Metadata::new(nebula_credential::metadata_name!("Vault DB"), "demo",
 /// #         )
 /// #     }
+/// # }
+/// #
+/// # impl Credential for VaultDbCred {
+/// #     type Scheme = SecretToken;
+/// #     type State = SecretToken;
 /// #     fn project(state: &SecretToken) -> SecretToken { state.clone() }
 /// #     async fn resolve(
-/// #         _properties: &Self::Properties,
+/// #         _properties: &Self::Config,
 /// #         _ctx: &CredentialContext,
 /// #     ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
 /// #         Ok(StaticResolveResult::Complete(SecretToken::new(SecretString::new(""))))
