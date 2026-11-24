@@ -30,7 +30,7 @@
 | Capability-трейты | `HasResources`, `HasCredentials`, `HasLogger`, `HasMetrics`, `HasEventBus` | `src/context/capability.rs:6-35` |
 | Accessors | `ResourceAccessor`, `CredentialAccessor`, `Logger`, `MetricsEmitter`, `EventEmitter`, `Clock`, `SystemClock`, `RefreshCoordinator`, `RefreshToken` | `src/accessor.rs:13-119` |
 | Auth | `AuthPattern` (11 вариантов, `non_exhaustive`), `AuthScheme`, `SensitiveScheme: AuthScheme + ZeroizeOnDrop`, `PublicScheme`, `impl AuthScheme for ()` = NoAuth | `src/auth.rs:41,83,118,137,140` |
-| Dependencies (spec 23) | `Dependencies`, `SlotField`, `SlotKind`, `DeclaresDependencies`, `CredentialRequirement`, `ResourceRequirement`, `CredentialLike`, `ResourceLike`, `DependencyError` | `src/dependencies.rs:9-226` |
+| Dependencies (spec 23) | `Dependencies`, `SlotField`, `SlotKind`, `DeclaresDependencies`, `CredentialRequirement`, `ResourceRequirement`, `DependencyError` | `src/dependencies.rs:9-226` |
 | Guards | `Guard`, `TypedGuard`, `debug_redacted`, `debug_typed` | `src/guard.rs:9-40` |
 | Observability | `TraceId(u128)`, `SpanId(u64)`, `W3cTraceContext`, `parse_traceparent`, `W3cTraceContextError` | `src/obs.rs:11-172` |
 | RBAC / tenancy | `OrgRole`, `WorkspaceRole`, `effective_workspace_role`, `Permission`, `TenantContext`, `PermissionDenied`, `ResolvedIds` | `src/role.rs:9-40`, `src/permission.rs:8`, `src/tenancy.rs:15,94,115` |
