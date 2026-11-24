@@ -1640,9 +1640,14 @@ impl ResourceLimiter {
             Arc::clone(&self.refunds),
         );
         tokio::spawn(async move {
+            // The slot is given back when the task ends however it ends: a
+            // store that panics in `cancel` (or a runtime that drops the task)
+            // must not keep one of the `MAX_PENDING_REFUNDS` slots forever.
+            let _slot = std::mem::DropGuard::new(refunds, |refunds| {
+                refunds.fetch_sub(1, Ordering::AcqRel);
+            });
             let _ =
                 tokio::time::timeout(REFUND_BUDGET, store.cancel_boxed(&key, &rate, &grant)).await;
-            refunds.fetch_sub(1, Ordering::AcqRel);
         });
     }
 
