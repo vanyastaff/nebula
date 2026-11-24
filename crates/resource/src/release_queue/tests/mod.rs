@@ -284,26 +284,34 @@ async fn cancelling_public_shutdown_leaves_cleanup_running() {
 async fn bounded_shutdown_aborts_running_and_buffered_tasks_once() {
     let (queue, handle) = ReleaseQueue::new(1);
     let ownership = Arc::new(());
-    let started = Arc::new(Notify::new());
-    let lease = Arc::clone(&ownership);
-    let entered = Arc::clone(&started);
-    queue.submit(move || {
-        Box::pin(async move {
-            entered.notify_one();
-            std::future::pending::<()>().await;
-            drop(lease);
-        })
-    });
-    started.notified().await;
-    for _ in 0..=CHANNEL_BUFFER {
+    let started = Arc::new(Semaphore::new(0));
+    let submit_pending = |started: Option<Arc<Semaphore>>| {
         let lease = Arc::clone(&ownership);
         queue.submit(move || {
             Box::pin(async move {
+                if let Some(started) = started {
+                    started.add_permits(1);
+                }
                 std::future::pending::<()>().await;
                 drop(lease);
             })
         });
+    };
+    // Running: every slot of the one primary worker.
+    for _ in 0..JOBS_PER_WORKER {
+        submit_pending(Some(Arc::clone(&started)));
     }
+    started
+        .acquire_many(JOBS_PER_WORKER as u32)
+        .await
+        .expect("the start semaphore is never closed")
+        .forget();
+    // Buffered: the whole primary channel, and one more that overflows to
+    // the fallback worker — the abort covers all three alike.
+    for _ in 0..=CHANNEL_BUFFER {
+        submit_pending(None);
+    }
+    assert_eq!(queue.fallback_count(), 1, "the last job overflowed");
     queue.close();
     let error = ReleaseQueue::shutdown_bounded(handle, Duration::from_secs(1))
         .await
@@ -317,7 +325,7 @@ async fn bounded_shutdown_aborts_running_and_buffered_tasks_once() {
         1,
         "abort acknowledges ownership release"
     );
-    assert_eq!(queue.dropped_count(), CHANNEL_BUFFER + 2);
+    assert_eq!(queue.dropped_count(), JOBS_PER_WORKER + CHANNEL_BUFFER + 1);
 }
 
 #[tokio::test(start_paused = true)]
@@ -473,9 +481,13 @@ async fn shutdown_completes_after_drop() {
 }
 
 #[tokio::test]
-#[should_panic(expected = "worker_count must be at least 1")]
-async fn zero_workers_panics() {
-    let _ = ReleaseQueue::new(0);
+async fn zero_workers_is_raised_to_one_and_still_runs_cleanup() {
+    let (queue, handle) = ReleaseQueue::new(0);
+    let counter = Arc::new(AtomicU32::new(0));
+    submit_increment(&queue, &counter);
+    drop(queue);
+    ReleaseQueue::shutdown(handle).await;
+    assert_eq!(counter.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]
@@ -533,15 +545,34 @@ fn submit_ready_gated(
     let c = counter.clone();
     queue.submit(move || {
         Box::pin(async move {
+            // Register with the gate before reporting ready: a release that
+            // follows the ready signal then cannot slip past this task.
+            let released = g.notified();
+            tokio::pin!(released);
+            released.as_mut().enable();
             let _ = ready.send(());
-            gated_increment(g, c).await;
+            released.await;
+            c.fetch_add(1, Ordering::Relaxed);
         })
     });
 }
 
-async fn gated_increment(gate: Arc<Notify>, counter: Arc<AtomicU32>) {
-    gate.notified().await;
-    counter.fetch_add(1, Ordering::Relaxed);
+/// Submits `jobs` gated tasks and returns once every one of them runs.
+async fn park_gated_jobs(
+    queue: &ReleaseQueue,
+    gate: &Arc<Notify>,
+    counter: &Arc<AtomicU32>,
+    jobs: usize,
+) {
+    let mut started = Vec::with_capacity(jobs);
+    for _ in 0..jobs {
+        let (ready_tx, ready_rx) = oneshot::channel();
+        submit_ready_gated(queue, gate, ready_tx, counter);
+        started.push(ready_rx);
+    }
+    for ready in started {
+        ready.await.expect("a worker must start the gated task");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -554,42 +585,24 @@ async fn double_full_saturation_rescues_instead_of_dropping() {
     let counter = Arc::new(AtomicU32::new(0));
     let gate = Arc::new(Notify::new());
 
-    // Step 1: park the primary worker on the gate. The first submit
-    // routes to senders[0] (round-robin with 1 worker). The primary
-    // worker pulls it via `recv()` and blocks on `notified()`.
-    let (primary_ready_tx, primary_ready_rx) = oneshot::channel();
-    submit_ready_gated(&queue, &gate, primary_ready_tx, &counter);
-    primary_ready_rx
-        .await
-        .expect("primary worker must start the gated task");
+    // Step 1: hold every slot of the primary worker on the gate. A worker
+    // runs up to JOBS_PER_WORKER jobs at once, so that many gated jobs are
+    // needed before it stops taking from the primary channel.
+    park_gated_jobs(&queue, &gate, &counter, JOBS_PER_WORKER).await;
 
-    // Step 2: park the fallback worker too. Fill primary first with
-    // near-instant tasks so the next submit overflows into the
-    // fallback channel — and the gated task we send next is what
-    // the fallback worker picks up and blocks on.
+    // Step 2: hold the fallback worker too. Fill the primary channel with
+    // near-instant tasks (the saturated worker leaves them buffered) so the
+    // next submits overflow into the fallback channel — the gated tasks
+    // sent next are what the fallback worker picks up and blocks on.
     for _ in 0..CHANNEL_BUFFER {
         submit_increment(&queue, &counter);
     }
-    // Primary is now full (256 buffered, 1 in-flight on the worker).
-    // Next submit overflows to the fallback channel.
-    let (fallback_ready_tx, fallback_ready_rx) = oneshot::channel();
-    submit_ready_gated(&queue, &gate, fallback_ready_tx, &counter);
-    fallback_ready_rx
-        .await
-        .expect("fallback worker must start the gated task");
+    park_gated_jobs(&queue, &gate, &counter, JOBS_PER_WORKER).await;
 
-    // Step 3: now both workers are blocked. Flood until both channels
-    // are completely full and rescue must kick in. Capacity:
-    //   primary buffer  = 256 (full from step 2)
-    //   fallback buffer = 4096 (1 already used by the gated task that
-    //                          the fallback worker is now holding;
-    //                          the gated task is no longer in the
-    //                          buffer, so 4096 free slots remain)
-    // Submitting (256 already filled - we re-fill primary as workers
-    // are gated) plus 4096 to fallback = 4352 buffered before rescue.
-    // After step 2, primary buffer is still ~256 but the 257th went
-    // to fallback. So available room: primary 0, fallback 4096.
-    // Add a margin: 4096 + 300 forces 300 rescues.
+    // Step 3: now both workers are saturated and the primary channel is
+    // full. The fallback channel is empty (its worker holds the gated
+    // jobs, they are no longer buffered), so it takes FALLBACK_BUFFER more
+    // submits; the 300 after that must be rescued.
     let extras: u32 = FALLBACK_BUFFER as u32 + 300;
     for _ in 0..extras {
         submit_increment(&queue, &counter);
@@ -610,14 +623,14 @@ async fn double_full_saturation_rescues_instead_of_dropping() {
         "no task should be dropped — they must all be rescued and run"
     );
 
-    // Release both gated tasks so workers can drain.
+    // Release the gated tasks so workers can drain.
     gate.notify_waiters();
 
     // Wait for the counter to settle. Total expected:
-    //   2 gated tasks
+    //   2 * JOBS_PER_WORKER gated tasks (steps 1 and 2)
     //   + CHANNEL_BUFFER near-instant tasks (step 2)
     //   + extras near-instant tasks (step 3)
-    let expected: u32 = 2 + CHANNEL_BUFFER as u32 + extras;
+    let expected: u32 = 2 * JOBS_PER_WORKER as u32 + CHANNEL_BUFFER as u32 + extras;
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
     while counter.load(Ordering::Relaxed) < expected {
         if std::time::Instant::now() > deadline {
@@ -661,6 +674,92 @@ async fn slow_task_is_aborted_after_execution_timeout() {
         !completed.load(Ordering::Relaxed),
         "slow task should have been aborted by the execution timeout"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_hung_job_holds_a_slot_not_its_worker() {
+    // One worker: under run-to-completion the job behind a hung one would
+    // wait for the whole hang.
+    let (queue, handle) = ReleaseQueue::new(1);
+    let (started_tx, started_rx) = oneshot::channel();
+    queue.submit(move || {
+        Box::pin(async move {
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        })
+    });
+    started_rx.await.expect("the worker starts the hung job");
+
+    let behind = queue
+        .submit_release(|| Box::pin(async { Ok(()) }))
+        .expect("an open queue accepts the next job");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), behind.wait())
+            .await
+            .expect("the job behind a hung one must not wait for it")
+            .expect("the job behind a hung one completes"),
+        SubmissionOutcome::Completed,
+    );
+
+    queue.close();
+    ReleaseQueue::shutdown_bounded(handle, Duration::from_secs(1))
+        .await
+        .expect_err("the hung job outlives the budget and is aborted");
+    assert_eq!(queue.dropped_count(), 1, "only the hung job is abandoned");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_saturated_lane_buffers_until_a_slot_frees() {
+    // The concurrency is bounded: with every slot held, the next job waits
+    // in the primary channel rather than growing the worker.
+    let (queue, handle) = ReleaseQueue::new(2);
+    let parked = queue.park_entry_lane().await;
+    let ran = Arc::new(AtomicBool::new(false));
+    let observed = Arc::clone(&ran);
+    let waiting = queue
+        .submit_release(move || {
+            Box::pin(async move {
+                observed.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+        })
+        .expect("a saturated lane still accepts into its channel");
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        !ran.load(Ordering::SeqCst),
+        "every slot is held: the job must stay buffered"
+    );
+    assert_eq!(queue.fallback_count(), 0, "the primary channel had room");
+
+    parked.release();
+    assert_eq!(
+        waiting.wait().await.expect("the buffered job completes"),
+        SubmissionOutcome::Completed,
+    );
+    queue.close();
+    ReleaseQueue::shutdown(handle).await;
+    assert_eq!(queue.dropped_count(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_saturated_coordinator_lane_leaves_entry_slots_free() {
+    let (queue, handle) = ReleaseQueue::new(1);
+    let parked = queue.park_coordinator_lane().await;
+    let entry = queue
+        .submit_release(|| Box::pin(async { Ok(()) }))
+        .expect("the entry lane accepts cleanup");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), entry.wait())
+            .await
+            .expect("entry cleanup does not wait for coordinator slots")
+            .expect("entry cleanup completes"),
+        SubmissionOutcome::Completed,
+    );
+    parked.release();
+    queue.close();
+    ReleaseQueue::shutdown(handle).await;
+    assert_eq!(queue.dropped_count(), 0);
 }
 
 #[tokio::test(start_paused = true)]

@@ -32,16 +32,7 @@ async fn cancelled_probe_accounts_failures_from_previous_batches() {
         _ = &mut probe => panic!("second probe batch must remain parked"),
     }
     drop(probe);
-    assert_eq!(
-        managed
-            .release_queue
-            .submit_release(|| Box::pin(async { Ok(()) }))
-            .expect("open queue must accept cleanup checkpoint")
-            .wait()
-            .await
-            .unwrap(),
-        SubmissionOutcome::Completed,
-    );
+    managed.release_queue.settled().await;
     assert_eq!(
         managed.resource.destroyed.load(Ordering::SeqCst),
         1,
@@ -81,16 +72,7 @@ async fn cancelling_probe_waiting_to_return_keeps_entry_cleanup_owned() {
     );
     drop(probe);
     drop(idle);
-    assert_eq!(
-        managed
-            .release_queue
-            .submit_release(|| Box::pin(async { Ok(()) }))
-            .expect("open queue must accept cleanup checkpoint")
-            .wait()
-            .await
-            .unwrap(),
-        SubmissionOutcome::Completed,
-    );
+    managed.release_queue.settled().await;
     assert_eq!(
         managed.resource.destroyed.load(Ordering::SeqCst),
         1,

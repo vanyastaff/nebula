@@ -104,15 +104,10 @@ impl Manager {
         &self,
         managed: &Arc<ManagedResource<R>>,
     ) -> Result<(), Error> {
-        if managed.is_tainted() {
-            return Err(Self::tainted_error::<R>());
-        }
-        // Symmetric with the taint re-check above: the increment is now
-        // visible to `wait_for_drain`, so observing `shutting_down`/`cancel`
-        // here means either this acquire is rejected, or its increment was
-        // seen by the drain and the drain waited for the resulting guard.
-        self.shutdown_guard()?;
-        Ok(())
+        // One implementation: the acquire pipeline runs the same re-check
+        // through its link (taint first, then the shutdown fence).
+        self.acquire
+            .reject_if_tainted_or_shutting_down_post_count::<R>(managed)
     }
 
     /// The single typed error both taint checks return — keeps the message
@@ -676,7 +671,6 @@ impl Manager {
             + 'static,
     {
         let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
-        let config = managed.config();
         // `warmup` runs `R::create` against the resolved credential to
         // materialize fresh pool instances — it is acquire-like and must
         // observe the SAME post-count re-check the `run_*_acquire` pipelines
@@ -718,11 +712,9 @@ impl Manager {
         };
         // The framework-owned warmup creates `warmup_target` entries via the
         // topology's `create_entry` (which runs the author's `Provider::create`)
-        // and deposits them (fenced) into the framework store. `config` is read
-        // inside `warmup` itself. Bound + isolate it through the same guard the
-        // acquire pipeline uses: a careless `Provider::create` that hangs or
-        // panics during warmup must fail closed, not wedge or crash the caller.
-        let _ = config;
+        // and deposits them (fenced) into the framework store; the config is read
+        // inside `warmup` itself. A careless `Provider::create` that hangs or
+        // panics during warmup must fail closed, not wedge or crash the caller:
         // `warmup` bounds and isolates each `create_entry` hook under the
         // author-hook ceiling itself (the stagger interval between creates is
         // not part of that budget) and reports the first fault.

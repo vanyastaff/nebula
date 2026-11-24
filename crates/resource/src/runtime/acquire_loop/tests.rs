@@ -27,21 +27,9 @@ use crate::{
 #[tokio::test]
 async fn admitted_hook_deadline_defers_without_cancelling_queue_owned_task() {
     let (queue, workers) = ReleaseQueue::new(1);
-    let worker_blocked = Arc::new(Notify::new());
-    let release_worker = Arc::new(Notify::new());
-    let worker_blocked_in_task = Arc::clone(&worker_blocked);
-    let release_worker_in_task = Arc::clone(&release_worker);
-    queue
-        .submit_coordinator(move || {
-            Box::pin(async move {
-                worker_blocked_in_task.notify_one();
-                release_worker_in_task.notified().await;
-                Ok(())
-            })
-        })
-        .expect("open queue accepts blocker")
-        .detach();
-    worker_blocked.notified().await;
+    // Every coordinator slot is held, so the hook below is accepted but not
+    // started when its observer's deadline passes.
+    let parked = queue.park_coordinator_lane().await;
     let hook_entered = Arc::new(Notify::new());
     let release_hook = Arc::new(Notify::new());
     let hook_runs = Arc::new(AtomicUsize::new(0));
@@ -85,7 +73,7 @@ async fn admitted_hook_deadline_defers_without_cancelling_queue_owned_task() {
         accepted.wait_until(tokio::time::Instant::now()).await,
         SlotHookWaitOutcome::Deferred(SlotHookDeferral::ObservationTimedOut)
     ));
-    release_worker.notify_one();
+    parked.release();
     hook_entered.notified().await;
     release_hook.notify_one();
     assert!(matches!(

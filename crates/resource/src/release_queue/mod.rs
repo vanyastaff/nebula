@@ -6,6 +6,27 @@
 //! A framework coordinator that waits for leases therefore cannot occupy the
 //! workers needed by external guards to return those leases.
 //!
+//! # Isolation between resources
+//!
+//! The queue is shared by every resource of a manager, and a release job
+//! carries its topology permit until it settles — so a job that waits is
+//! capacity its pool does not get back. Two properties keep one resource's
+//! slow teardown from holding another resource's capacity:
+//!
+//! - **One queue per lane, not one per worker.** The primary workers of a
+//!   lane take jobs from a single shared channel, so a job never waits
+//!   behind a busy worker while another one is idle.
+//! - **Workers do not wait on a job.** Each worker drives up to 64 jobs
+//!   (`JOBS_PER_WORKER`) at once. A `destroy` that hangs on a dead
+//!   backend occupies one of those slots until its own deadline; the worker
+//!   keeps taking and settling the jobs behind it.
+//!
+//! The bound is real: once every slot of a lane is held by a job that does
+//! not finish, later jobs wait in the channel (then the fallback, then the
+//! rescue window) exactly as they did before. A resource can hold at most as
+//! many slots as it has releases in flight — for a capped topology, its
+//! capacity.
+//!
 //! # Shutdown
 //!
 //! Closing, dropping, or cancelling the queue seals new root submissions.
@@ -344,8 +365,22 @@ impl Drop for TaskLoss {
 /// manager's terminal shutdown boundary.
 const TASK_EXECUTION_TIMEOUT: Duration = crate::hook_guard::MAX_TEARDOWN_CEILING;
 
-/// Channel buffer size per primary worker.
+/// Buffered jobs per primary worker. The lane's shared primary channel holds
+/// this many for each of its workers.
 const CHANNEL_BUFFER: usize = 256;
+
+/// Jobs one worker drives at once.
+///
+/// Release jobs are I/O-bound (a recycle hook, a `destroy` waiting on its
+/// backend), so a worker interleaves them instead of awaiting each to its
+/// end: one that hangs holds a slot, not the worker. Bounded so a flood of
+/// hung teardowns cannot grow a worker without limit; past the bound the
+/// lane's channels apply backpressure as before.
+pub(crate) const JOBS_PER_WORKER: usize = 64;
+
+/// A lane's primary channel, shared by its workers. A worker holds the lock
+/// only while it waits for the next job, never while it runs one.
+type SharedReceiver = Arc<tokio::sync::Mutex<mpsc::Receiver<QueuedTask>>>;
 
 /// Channel buffer size for the fallback worker.
 ///
@@ -375,10 +410,11 @@ pub struct ReleaseQueueHandle {
 }
 
 struct QueueLane {
-    senders: Vec<mpsc::Sender<QueuedTask>>,
+    /// The lane's one primary channel; every primary worker takes from it.
+    primary_tx: mpsc::Sender<QueuedTask>,
+    primary_workers: usize,
     fallback_tx: mpsc::Sender<QueuedTask>,
     rescue_tx: mpsc::Sender<RescueTask>,
-    next: AtomicUsize,
 }
 
 /// Manager shutdown owns workers until completion or acknowledged abort.
@@ -459,10 +495,10 @@ impl Drop for ReleaseQueue {
 impl std::fmt::Debug for ReleaseQueue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ReleaseQueue")
-            .field("entry_worker_count", &self.entry_lane.senders.len())
+            .field("entry_worker_count", &self.entry_lane.primary_workers)
             .field(
                 "coordinator_worker_count",
-                &self.coordinator_lane.senders.len(),
+                &self.coordinator_lane.primary_workers,
             )
             .field(
                 "fallback_count",
@@ -481,12 +517,15 @@ impl ReleaseQueue {
         admission: &Arc<Admission>,
         identity: &Arc<()>,
     ) -> QueueLane {
-        let mut senders = Vec::with_capacity(worker_count);
+        // One channel for the whole lane: whichever worker is free takes the
+        // next job. A channel per worker (with round-robin submission) parks a
+        // job behind a busy worker while its neighbour idles.
+        let (primary_tx, primary_rx) =
+            mpsc::channel::<QueuedTask>(CHANNEL_BUFFER.saturating_mul(worker_count));
+        let primary_rx: SharedReceiver = Arc::new(tokio::sync::Mutex::new(primary_rx));
         for _ in 0..worker_count {
-            let (sender, receiver) = mpsc::channel::<QueuedTask>(CHANNEL_BUFFER);
-            senders.push(sender);
             workers.push(tokio::spawn(Self::worker_loop(
-                receiver,
+                Arc::clone(&primary_rx),
                 admission.terminate.clone(),
                 Arc::clone(identity),
             )));
@@ -494,7 +533,7 @@ impl ReleaseQueue {
 
         let (fallback_tx, fallback_rx) = mpsc::channel::<QueuedTask>(FALLBACK_BUFFER);
         workers.push(tokio::spawn(Self::worker_loop(
-            fallback_rx,
+            Arc::new(tokio::sync::Mutex::new(fallback_rx)),
             admission.terminate.clone(),
             Arc::clone(identity),
         )));
@@ -505,10 +544,10 @@ impl ReleaseQueue {
             admission.terminate.clone(),
         )));
         QueueLane {
-            senders,
+            primary_tx,
+            primary_workers: worker_count,
             fallback_tx,
             rescue_tx,
-            next: AtomicUsize::new(0),
         }
     }
 
@@ -516,10 +555,8 @@ impl ReleaseQueue {
     /// execution lane and its own internal cancellation token.
     ///
     /// Returns the queue (for submitting tasks) and a handle (for shutdown).
-    ///
-    /// # Panics
-    ///
-    /// Panics if `worker_count` is zero.
+    /// A `worker_count` of zero is raised to one: a queue with no worker
+    /// would accept cleanup and never run it.
     pub fn new(worker_count: usize) -> (Self, ReleaseQueueHandle) {
         Self::with_cancel(worker_count, CancellationToken::new())
     }
@@ -532,14 +569,13 @@ impl ReleaseQueue {
     /// independent from acquisition cancellation when late guards still need
     /// to submit cleanup.
     ///
-    /// # Panics
-    ///
-    /// Panics if `worker_count` is zero.
+    /// A `worker_count` of zero is raised to one (the count is operator
+    /// configuration, and operator input never panics).
     pub fn with_cancel(
         worker_count: usize,
         cancel: CancellationToken,
     ) -> (Self, ReleaseQueueHandle) {
-        assert!(worker_count > 0, "worker_count must be at least 1");
+        let worker_count = worker_count.max(1);
 
         let mut workers = Vec::with_capacity(worker_count.saturating_mul(2).saturating_add(6));
 
@@ -579,8 +615,8 @@ impl ReleaseQueue {
     /// Submits a release task to the queue.
     ///
     /// The factory is called by a worker to produce the actual future.
-    /// If the round-robin primary worker's channel is full, the task
-    /// goes to the fallback channel.
+    /// If the lane's primary channel is full, the task goes to the fallback
+    /// channel.
     pub fn submit(&self, factory: impl FnOnce() -> ReleaseTask + Send + 'static) {
         if let Err(error) = self.enqueue(
             Box::new(move || {
@@ -696,9 +732,8 @@ impl ReleaseQueue {
             CompletionDisposition::Await
         };
         let lane = self.lane(class);
-        let idx = lane.next.fetch_add(1, Ordering::Relaxed) % lane.senders.len();
 
-        match lane.senders[idx].try_send(factory) {
+        match lane.primary_tx.try_send(factory) {
             Ok(()) => {},
             Err(mpsc::error::TrySendError::Full(factory)) => {
                 // Primary is full — try bounded fallback.
@@ -830,25 +865,19 @@ impl ReleaseQueue {
                 () = cancel.cancelled() => {
                     receiver.close();
                     while let Some(task) = receiver.recv().await {
-                        running.push(Self::execute_reentrant(task, Arc::clone(&identity)));
+                        running.push(Self::execute_scoped(task, Arc::clone(&identity)));
                     }
                     break;
                 }
                 task = receiver.recv() => {
                     if let Some(task) = task {
-                        running.push(Self::execute_reentrant(task, Arc::clone(&identity)));
+                        running.push(Self::execute_scoped(task, Arc::clone(&identity)));
                     } else { break; }
                 }
                 _ = running.next(), if !running.is_empty() => {}
             }
         }
         while running.next().await.is_some() {}
-    }
-
-    async fn execute_reentrant(queued: QueuedTask, identity: Arc<()>) {
-        CURRENT_QUEUE
-            .scope(identity, Self::execute_task(queued))
-            .await;
     }
 
     /// Returns the total number of tasks routed via the fallback channel.
@@ -942,35 +971,53 @@ impl ReleaseQueue {
         Err(error)
     }
 
-    /// Worker loop for bounded primary channels.
+    /// Worker loop for a lane's primary channel and for its fallback channel.
     ///
-    /// Uses `select!` with `biased` to prefer processing messages over
-    /// checking cancellation — ensuring buffered tasks are drained before
-    /// the worker exits.
-    async fn worker_loop(
-        mut rx: mpsc::Receiver<QueuedTask>,
-        cancel: CancellationToken,
-        identity: Arc<()>,
-    ) {
+    /// A worker drives up to [`JOBS_PER_WORKER`] jobs at once: it settles
+    /// whatever is ready, then takes the next job when it has a free slot.
+    /// It never awaits one job to its end before looking at the next, so a
+    /// teardown that hangs holds a slot and the jobs behind it still run (see
+    /// the module docs, "Isolation between resources").
+    ///
+    /// `select!` is `biased`: settling and receiving come before the
+    /// termination check, so buffered jobs are taken before the worker exits.
+    async fn worker_loop(rx: SharedReceiver, cancel: CancellationToken, identity: Arc<()>) {
+        let mut running = FuturesUnordered::new();
         loop {
             tokio::select! {
                 biased;
-                msg = rx.recv() => {
-                    match msg {
-                        Some(factory) => CURRENT_QUEUE.scope(Arc::clone(&identity), Self::execute_task(factory)).await,
+                _ = running.next(), if !running.is_empty() => {}
+                job = Self::next_job(&rx), if running.len() < JOBS_PER_WORKER => {
+                    match job {
+                        Some(job) => running.push(Self::execute_scoped(job, Arc::clone(&identity))),
                         None => break, // channel closed
                     }
                 }
                 () = cancel.cancelled() => {
-                    // Drain remaining buffered tasks, then exit.
+                    // Take what is still buffered, then exit once it settled.
+                    let mut rx = rx.lock().await;
                     rx.close();
-                    while let Some(factory) = rx.recv().await {
-                        CURRENT_QUEUE.scope(Arc::clone(&identity), Self::execute_task(factory)).await;
+                    while let Some(job) = rx.recv().await {
+                        running.push(Self::execute_scoped(job, Arc::clone(&identity)));
                     }
                     break;
                 }
             }
         }
+        while running.next().await.is_some() {}
+    }
+
+    /// The next job of a shared channel, or `None` once it is closed and
+    /// empty. Cancel safe: dropped while waiting, it has taken nothing and
+    /// holds no lock.
+    async fn next_job(rx: &SharedReceiver) -> Option<QueuedTask> {
+        rx.lock().await.recv().await
+    }
+
+    async fn execute_scoped(queued: QueuedTask, identity: Arc<()>) {
+        CURRENT_QUEUE
+            .scope(identity, Self::execute_task(queued))
+            .await;
     }
 
     async fn execute_task(queued: QueuedTask) {
@@ -1086,5 +1133,7 @@ fn record_drop(counter: &Arc<AtomicUsize>, reason: &'static str, count: usize) {
     }
 }
 
+#[cfg(test)]
+pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;
