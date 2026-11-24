@@ -4,7 +4,8 @@ use std::sync::{Arc, OnceLock};
 
 use nebula_action::effect::{
     ActionEffectContract, EffectPreparationContext, EffectPreparationError, PreparedRemoteEffect,
-    RemoteDestinationGuarantee, RemoteEffectAction, RemoteEffectDescriptor, RemoteEffectPolicy,
+    RemoteDestinationGuarantee, RemoteEffectAction, RemoteEffectDeclarationError,
+    RemoteEffectDescriptor, RemoteEffectPolicy,
 };
 use nebula_action::{
     Action, ActionContext, ActionError, ActionFactory, ActionMetadata, ActionResult,
@@ -357,9 +358,7 @@ diagnostic_trigger!(
     "secret_trigger"
 );
 
-struct DiagnosticRemoteAction {
-    descriptor: RemoteEffectDescriptor,
-}
+struct DiagnosticRemoteAction;
 
 impl Action for DiagnosticRemoteAction {
     const KEY: &'static str = "core.remote_control";
@@ -371,7 +370,6 @@ impl Action for DiagnosticRemoteAction {
             nebula_action::metadata_name!("remote_control"),
             "Remote effect diagnostic fixture",
         )
-        .with_effect_contract(ActionEffectContract::Remote(Box::new(remote_descriptor())))
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -380,8 +378,16 @@ impl Action for DiagnosticRemoteAction {
 }
 
 impl RemoteEffectAction for DiagnosticRemoteAction {
-    fn descriptor(&self) -> &RemoteEffectDescriptor {
-        &self.descriptor
+    fn descriptor() -> Result<RemoteEffectDescriptor, RemoteEffectDeclarationError> {
+        Ok(RemoteEffectDescriptor::new(
+            "activation.remote",
+            1,
+            RemoteEffectPolicy::builder(RemoteDestinationGuarantee::Opaque)
+                .maximum_invocations(1)
+                .maximum_queries(0)
+                .recovery_window(std::time::Duration::from_mins(1))
+                .build()?,
+        )?)
     }
 
     async fn prepare(
@@ -480,30 +486,14 @@ impl nebula_resource::Provider for FixtureResource {
 #[async_trait::async_trait]
 impl nebula_resource::ResidentProvider for FixtureResource {}
 
-fn remote_descriptor() -> RemoteEffectDescriptor {
-    RemoteEffectDescriptor::new(
-        "activation.remote",
-        1,
-        RemoteEffectPolicy::builder(RemoteDestinationGuarantee::Opaque)
-            .maximum_invocations(1)
-            .maximum_queries(0)
-            .recovery_window(std::time::Duration::from_mins(1))
-            .build()
-            .unwrap(),
-    )
-    .unwrap()
-}
-
 /// Builds a frozen registry covering activation-diagnostic rejection paths.
 ///
 /// The factories fail closed if compilation crosses into runtime construction,
 /// keeping this fixture limited to admission behavior.
 #[must_use]
 pub fn activation_diagnostic_registry() -> Arc<FrozenPluginRegistry> {
-    let remote = RemoteEffectInstanceFactory::new(DiagnosticRemoteAction {
-        descriptor: remote_descriptor(),
-    })
-    .expect("static remote diagnostic contract must admit");
+    let remote = RemoteEffectInstanceFactory::new(DiagnosticRemoteAction)
+        .expect("static remote diagnostic contract must admit");
 
     let actions: Vec<Arc<dyn ActionFactory>> = vec![
         instance(EchoFixture),

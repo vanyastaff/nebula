@@ -39,7 +39,7 @@ impl<const INDEX: usize> Provider for MetadataFixture<INDEX> {
     type Topology = Resident<Self>;
 
     fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("MetadataFixture"), "")
+        ResourceMetadata::new(nebula_resource::metadata_name!("Metadata fixture"), "")
     }
 
     const KEY: &'static str = match INDEX {
@@ -66,8 +66,7 @@ impl<const INDEX: usize> Provider for MetadataFixture<INDEX> {
 impl<const INDEX: usize> nebula_resource::ResidentProvider for MetadataFixture<INDEX> {}
 
 fn resource_factory_at<const INDEX: usize>() -> Arc<dyn ResourceFactory> {
-    let factory = KindActivator::<MetadataFixture<INDEX>, _, _>::with_metadata(
-        ResourceMetadata::new(nebula_resource::metadata_name!("Metadata fixture"), ""),
+    let factory = KindActivator::<MetadataFixture<INDEX>, _, _>::new(
         || MetadataFixture,
         nebula_resource::topology::fixed(|| Resident::new(ResidentConfig::default())),
     );

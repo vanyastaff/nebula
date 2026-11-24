@@ -265,8 +265,7 @@ impl Provider for FixtureResource {
 impl nebula_resource::ResidentProvider for FixtureResource {}
 
 fn resource_factory() -> Arc<dyn ResourceFactory> {
-    Arc::new(KindActivator::<FixtureResource, _, _>::with_metadata(
-        FixtureResource::metadata(),
+    Arc::new(KindActivator::<FixtureResource, _, _>::new(
         || FixtureResource,
         nebula_resource::topology::fixed(|| Resident::new(ResidentConfig::default())),
     ))

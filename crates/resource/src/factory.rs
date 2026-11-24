@@ -65,7 +65,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use crate::resource::{ProviderKey, ResourceDefinition, ResourceMetadata};
+use crate::resource::{ProviderKey, ResourceDefinition};
 use crate::topology::{ConfigurableTopology, Topology};
 use crate::{Manager, ScopeLevel, SlotIdentity, recovery::RecoveryGate, resource::Provider};
 use nebula_core::{CredentialId, Dependencies, SlotKind};
@@ -669,7 +669,6 @@ where
     topology_factory: FTopo,
     topology_schema: Option<TopologySchemaFn>,
     dependencies: Dependencies,
-    metadata: Option<ResourceMetadata>,
     definition: OnceLock<Result<ResourceDefinition, crate::MetadataBuildError>>,
     // Zero-sized marker — `R` is not stored but bounds the `impl`.
     _marker: std::marker::PhantomData<fn() -> R>,
@@ -714,27 +713,6 @@ where
             topology_factory,
             topology_schema: None,
             dependencies: R::dependencies(),
-            metadata: None,
-            definition: OnceLock::new(),
-            _marker: std::marker::PhantomData,
-        }
-    }
-
-    /// Builds an activator from explicit schema-free resource author intent.
-    ///
-    /// The supplied metadata cannot carry a schema. Admission still derives the
-    /// canonical schema from `R::Config` at this factory boundary.
-    pub fn with_metadata(
-        metadata: ResourceMetadata,
-        resource_factory: FRes,
-        topology_factory: FTopo,
-    ) -> Self {
-        Self {
-            resource_factory,
-            topology_factory,
-            topology_schema: None,
-            dependencies: R::dependencies(),
-            metadata: Some(metadata),
             definition: OnceLock::new(),
             _marker: std::marker::PhantomData,
         }
@@ -742,8 +720,7 @@ where
 
     fn admit_definition(&self) -> Result<ResourceDefinition, crate::MetadataBuildError> {
         let schema = nebula_schema::schema_of::<R::Config>()?;
-        let metadata = self.metadata.clone().unwrap_or_else(R::metadata);
-        ResourceDefinition::admit(R::key(), metadata, schema)
+        ResourceDefinition::admit(R::key(), R::metadata(), schema)
     }
 }
 
@@ -770,17 +747,6 @@ where
     /// the same settings type, so the two cannot disagree.
     pub fn configurable(resource_factory: FRes) -> Self {
         Self::new(
-            resource_factory,
-            <R::Topology as ConfigurableTopology<R>>::from_registration,
-        )
-        .with_settings_schema()
-    }
-
-    /// [`configurable`](Self::configurable) with explicit schema-free resource
-    /// author intent (see [`with_metadata`](Self::with_metadata)).
-    pub fn configurable_with_metadata(metadata: ResourceMetadata, resource_factory: FRes) -> Self {
-        Self::with_metadata(
-            metadata,
             resource_factory,
             <R::Topology as ConfigurableTopology<R>>::from_registration,
         )

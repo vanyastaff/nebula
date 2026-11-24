@@ -18,7 +18,10 @@ use super::*;
 use crate::{
     StatelessAction,
     action::Action,
-    effect::{RemoteDestinationGuarantee, RemoteEffectDescriptor, RemoteEffectPolicy},
+    effect::{
+        ActionEffectContract, EffectContractError, RemoteDestinationGuarantee,
+        RemoteEffectDeclarationError, RemoteEffectDescriptor, RemoteEffectPolicy,
+    },
     result::ActionResult,
     testing::TestContextBuilder,
 };
@@ -223,7 +226,6 @@ async fn instantiated_handle_shares_factory_metadata_allocation() {
 }
 
 struct RemoteValueProbe {
-    descriptor: RemoteEffectDescriptor,
     preparations: Arc<AtomicUsize>,
 }
 
@@ -233,7 +235,7 @@ impl Action for RemoteValueProbe {
     type Output = Value;
 
     fn metadata() -> ActionMetadata {
-        remote_draft(&remote_descriptor())
+        remote_metadata()
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -243,8 +245,8 @@ impl Action for RemoteValueProbe {
 }
 
 impl RemoteEffectAction for RemoteValueProbe {
-    fn descriptor(&self) -> &RemoteEffectDescriptor {
-        &self.descriptor
+    fn descriptor() -> Result<RemoteEffectDescriptor, RemoteEffectDeclarationError> {
+        remote_descriptor()
     }
 
     async fn prepare(
@@ -258,7 +260,6 @@ impl RemoteEffectAction for RemoteValueProbe {
 }
 
 struct RemoteBoolProbe {
-    descriptor: RemoteEffectDescriptor,
     preparations: Arc<AtomicUsize>,
 }
 
@@ -268,7 +269,7 @@ impl Action for RemoteBoolProbe {
     type Output = Value;
 
     fn metadata() -> ActionMetadata {
-        remote_draft(&remote_descriptor())
+        remote_metadata()
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -277,8 +278,8 @@ impl Action for RemoteBoolProbe {
 }
 
 impl RemoteEffectAction for RemoteBoolProbe {
-    fn descriptor(&self) -> &RemoteEffectDescriptor {
-        &self.descriptor
+    fn descriptor() -> Result<RemoteEffectDescriptor, RemoteEffectDeclarationError> {
+        remote_descriptor()
     }
 
     async fn prepare(
@@ -291,22 +292,20 @@ impl RemoteEffectAction for RemoteBoolProbe {
     }
 }
 
-fn remote_descriptor() -> RemoteEffectDescriptor {
+fn remote_descriptor() -> Result<RemoteEffectDescriptor, RemoteEffectDeclarationError> {
     let policy = RemoteEffectPolicy::builder(RemoteDestinationGuarantee::Opaque)
         .maximum_invocations(1)
         .maximum_queries(0)
         .recovery_window(Duration::from_mins(1))
-        .build()
-        .expect("fixture policy is valid");
-    RemoteEffectDescriptor::new("test.remote", 1, policy).expect("fixture descriptor is valid")
+        .build()?;
+    Ok(RemoteEffectDescriptor::new("test.remote", 1, policy)?)
 }
 
-fn remote_draft(descriptor: &RemoteEffectDescriptor) -> ActionMetadata {
+fn remote_metadata() -> ActionMetadata {
     ActionMetadata::new(
         crate::metadata_name!("Remote probe"),
         "Remote input contract probe",
     )
-    .with_effect_contract(ActionEffectContract::Remote(Box::new(descriptor.clone())))
 }
 
 fn effect_context() -> EffectPreparationContext {
@@ -321,15 +320,12 @@ fn effect_context() -> EffectPreparationContext {
 
 #[tokio::test]
 async fn equal_schema_remote_contract_rejects_foreign_factory_token() {
-    let descriptor = remote_descriptor();
     let right_preparations = Arc::new(AtomicUsize::new(0));
     let left = RemoteEffectInstanceFactory::new(RemoteValueProbe {
-        descriptor: descriptor.clone(),
         preparations: Arc::new(AtomicUsize::new(0)),
     })
     .expect("left factory admission succeeds");
     let right = RemoteEffectInstanceFactory::new(RemoteValueProbe {
-        descriptor,
         preparations: Arc::clone(&right_preparations),
     })
     .expect("right factory admission succeeds");
@@ -349,15 +345,12 @@ async fn equal_schema_remote_contract_rejects_foreign_factory_token() {
 
 #[tokio::test]
 async fn different_schema_remote_contract_rejects_foreign_factory_token() {
-    let descriptor = remote_descriptor();
     let right_preparations = Arc::new(AtomicUsize::new(0));
     let left = RemoteEffectInstanceFactory::new(RemoteValueProbe {
-        descriptor: descriptor.clone(),
         preparations: Arc::new(AtomicUsize::new(0)),
     })
     .expect("value factory admission succeeds");
     let right = RemoteEffectInstanceFactory::new(RemoteBoolProbe {
-        descriptor,
         preparations: Arc::clone(&right_preparations),
     })
     .expect("bool factory admission succeeds");
@@ -371,4 +364,154 @@ async fn different_schema_remote_contract_rejects_foreign_factory_token() {
 
     assert_eq!(error, EffectPreparationError::InvalidRequest);
     assert_eq!(right_preparations.load(Ordering::SeqCst), 0);
+}
+
+/// Remote fixture whose metadata declares an effect contract of its own.
+struct RemoteDeclaredInMetadata<const READ_ONLY: bool>;
+
+impl<const READ_ONLY: bool> Action for RemoteDeclaredInMetadata<READ_ONLY> {
+    const KEY: &'static str = "test.remote.declared";
+    type Input = Value;
+    type Output = Value;
+
+    fn metadata() -> ActionMetadata {
+        let contract = if READ_ONLY {
+            ActionEffectContract::ReadOnly
+        } else {
+            ActionEffectContract::Remote(Box::new(
+                remote_descriptor().expect("fixture descriptor is valid"),
+            ))
+        };
+        remote_metadata().with_effect_contract(contract)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        RemoteValueProbe::dependencies()
+    }
+}
+
+impl<const READ_ONLY: bool> RemoteEffectAction for RemoteDeclaredInMetadata<READ_ONLY> {
+    fn descriptor() -> Result<RemoteEffectDescriptor, RemoteEffectDeclarationError> {
+        remote_descriptor()
+    }
+
+    async fn prepare(
+        &self,
+        _input: Value,
+        _context: &EffectPreparationContext,
+    ) -> Result<PreparedRemoteEffect, EffectPreparationError> {
+        Err(EffectPreparationError::Unavailable)
+    }
+}
+
+/// Remote fixture whose descriptor is invalid.
+struct RemoteInvalidDescriptor;
+
+impl Action for RemoteInvalidDescriptor {
+    const KEY: &'static str = "test.remote.invalid";
+    type Input = Value;
+    type Output = Value;
+
+    fn metadata() -> ActionMetadata {
+        remote_metadata()
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        RemoteValueProbe::dependencies()
+    }
+}
+
+impl RemoteEffectAction for RemoteInvalidDescriptor {
+    fn descriptor() -> Result<RemoteEffectDescriptor, RemoteEffectDeclarationError> {
+        let policy = RemoteEffectPolicy::builder(RemoteDestinationGuarantee::Opaque)
+            .maximum_invocations(1)
+            .maximum_queries(0)
+            .recovery_window(Duration::from_mins(1))
+            .build()?;
+        Ok(RemoteEffectDescriptor::new("", 1, policy)?)
+    }
+
+    async fn prepare(
+        &self,
+        _input: Value,
+        _context: &EffectPreparationContext,
+    ) -> Result<PreparedRemoteEffect, EffectPreparationError> {
+        Err(EffectPreparationError::Unavailable)
+    }
+}
+
+/// Stateless fixture whose metadata declares a remote contract.
+struct LocalDeclaringRemote;
+
+impl Action for LocalDeclaringRemote {
+    const KEY: &'static str = "test.local.declares_remote";
+    type Input = Value;
+    type Output = Value;
+
+    fn metadata() -> ActionMetadata {
+        RemoteDeclaredInMetadata::<false>::metadata()
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        RemoteValueProbe::dependencies()
+    }
+}
+
+impl StatelessAction for LocalDeclaringRemote {
+    async fn execute(
+        &self,
+        input: Value,
+        _ctx: &(impl ActionContext + ?Sized),
+    ) -> Result<ActionResult<Value>, ActionError> {
+        Ok(ActionResult::success(input))
+    }
+}
+
+#[test]
+fn remote_factory_stamps_the_type_descriptor_as_the_effect_contract() {
+    let factory = RemoteEffectInstanceFactory::new(RemoteValueProbe {
+        preparations: Arc::new(AtomicUsize::new(0)),
+    })
+    .expect("remote fixture admits");
+    let descriptor = remote_descriptor().expect("fixture descriptor is valid");
+
+    assert_eq!(
+        ActionFactory::definition(&factory).effect_contract(),
+        &ActionEffectContract::Remote(Box::new(descriptor.clone()))
+    );
+    assert_eq!(RemoteEffectFactory::descriptor(&factory), &descriptor);
+    assert_eq!(
+        ActionFactory::definition(&factory).kind(),
+        ActionKind::Stateless
+    );
+}
+
+#[test]
+fn remote_factory_refuses_metadata_that_declares_an_effect_contract() {
+    assert_matches!(
+        RemoteEffectInstanceFactory::new(RemoteDeclaredInMetadata::<false>).map(drop),
+        Err(ActionMetadataAdmissionError::RemoteEffectContractInMetadata)
+    );
+    assert_matches!(
+        RemoteEffectInstanceFactory::new(RemoteDeclaredInMetadata::<true>).map(drop),
+        Err(ActionMetadataAdmissionError::EffectContractOnRemoteAction)
+    );
+}
+
+#[test]
+fn remote_factory_refuses_an_invalid_descriptor() {
+    assert_matches!(
+        RemoteEffectInstanceFactory::new(RemoteInvalidDescriptor).map(drop),
+        Err(ActionMetadataAdmissionError::RemoteEffectDeclaration(
+            RemoteEffectDeclarationError::Contract(EffectContractError::InvalidIdentifier)
+        ))
+    );
+}
+
+#[test]
+fn local_factory_refuses_a_remote_contract_in_metadata() {
+    assert_matches!(
+        InstanceFactory::new(LocalDeclaringRemote).map(drop),
+        Err(ActionMetadataAdmissionError::RemoteEffectContractInMetadata)
+    );
 }

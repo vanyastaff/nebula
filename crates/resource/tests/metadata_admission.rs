@@ -1,10 +1,7 @@
 //! Resource metadata is authored without a schema and admitted once by its factory.
 
 use nebula_resource::ProviderKey;
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::sync::Arc;
 
 use nebula_core::{Dependencies, resource_key};
 use nebula_resource::{
@@ -15,7 +12,32 @@ use nebula_resource::{
 use nebula_schema::{HasSchema, SchemaKind, ValidSchema, ValidationReport};
 use semver::Version;
 
-static SCHEMA_CALLS: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    /// Schema derivations on this thread; admission runs on the caller's
+    /// thread, so tests running in parallel do not count each other's.
+    static SCHEMA_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Metadata the probes' `Provider::metadata()` returns instead of their
+    /// default, installed by [`admitted`] while a factory admits its definition.
+    ///
+    /// A factory reads metadata only from its provider type; these tests vary
+    /// the authored metadata, so they install it for the admission.
+    static AUTHORED: std::cell::RefCell<Option<ResourceMetadata>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn authored_or(default: impl FnOnce() -> ResourceMetadata) -> ResourceMetadata {
+    AUTHORED.with_borrow(Clone::clone).unwrap_or_else(default)
+}
+
+/// Build `factory` with `authored` installed as its provider's metadata and
+/// admit (and cache) its definition before the metadata is cleared.
+fn admitted<F: ResourceFactory>(authored: ResourceMetadata, factory: impl FnOnce() -> F) -> F {
+    AUTHORED.set(Some(authored));
+    let factory = factory();
+    let _admission = factory.definition();
+    AUTHORED.set(None);
+    factory
+}
 
 #[derive(Clone, Debug, serde::Deserialize)]
 #[expect(
@@ -26,7 +48,7 @@ struct EmptyRecordConfig {}
 
 impl HasSchema for EmptyRecordConfig {
     fn schema() -> Result<ValidSchema, ValidationReport> {
-        SCHEMA_CALLS.fetch_add(1, Ordering::SeqCst);
+        SCHEMA_CALLS.set(SCHEMA_CALLS.get() + 1);
         Ok(ValidSchema::empty())
     }
 }
@@ -65,12 +87,14 @@ impl Provider for MetadataProbe {
     const KEY: &'static str = "test.metadata-probe";
 
     fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
-            nebula_resource::metadata_name!("Metadata probe"),
-            "Factory admission probe",
-        )
-        .mark_beta()
-        .with_tags(["metadata", "resource"])
+        authored_or(|| {
+            ResourceMetadata::new(
+                nebula_resource::metadata_name!("Metadata probe"),
+                "Factory admission probe",
+            )
+            .mark_beta()
+            .with_tags(["metadata", "resource"])
+        })
     }
 
     async fn create(
@@ -107,7 +131,9 @@ impl Provider for ExplicitMetadataProbe {
     type Topology = Resident<Self>;
 
     fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("ExplicitMetadataProbe"), "")
+        authored_or(|| {
+            ResourceMetadata::new(nebula_resource::metadata_name!("ExplicitMetadataProbe"), "")
+        })
     }
 
     const KEY: &'static str = "test.explicit-metadata-key";
@@ -135,14 +161,14 @@ fn factory() -> impl ResourceFactory {
 
 #[test]
 fn factory_binds_and_caches_the_canonical_config_schema_once() {
-    SCHEMA_CALLS.store(0, Ordering::SeqCst);
+    SCHEMA_CALLS.set(0);
     let factory = factory();
 
     let first = factory.definition().expect("valid static definition");
     let second = factory.definition().expect("cached static definition");
 
     assert!(std::ptr::eq(first, second));
-    assert_eq!(SCHEMA_CALLS.load(Ordering::SeqCst), 1);
+    assert_eq!(SCHEMA_CALLS.get(), 1);
     assert_eq!(first.base().key(), &MetadataProbe::key());
     assert_eq!(first.base().name(), "Metadata probe");
     assert_eq!(first.base().tags(), ["metadata", "resource"]);
@@ -179,13 +205,7 @@ fn authored_shared_authoring_surface_survives_factory_admission() {
         .add_tag("catalog")
         .mark_experimental()
         .mark_beta();
-    let factory = KindActivator::<MetadataProbe, _, _>::with_metadata(
-        authored,
-        || MetadataProbe,
-        nebula_resource::topology::fixed(|| {
-            Resident::new(nebula_resource::ResidentConfig::default())
-        }),
-    );
+    let factory = admitted(authored, factory);
     let metadata = factory.definition().expect("valid static definition");
     let base = metadata.base();
 
@@ -225,13 +245,7 @@ fn recorded_metadata_only_readmits_against_an_exact_fresh_definition() {
         "Factory admission probe",
     )
     .with_version(Version::new(2, 0, 0));
-    let changed_factory = KindActivator::<MetadataProbe, _, _>::with_metadata(
-        changed,
-        || MetadataProbe,
-        nebula_resource::topology::fixed(|| {
-            Resident::new(nebula_resource::ResidentConfig::default())
-        }),
-    );
+    let changed_factory = admitted(changed, crate::factory);
     let changed = changed_factory
         .definition()
         .expect("changed static definition is valid");
@@ -265,31 +279,29 @@ fn forged_recorded_metadata_cannot_become_an_admitted_definition() {
 
 #[test]
 fn explicit_metadata_is_admitted_under_the_providers_key() {
-    let factory = KindActivator::<ExplicitMetadataProbe, _, _>::with_metadata(
-        ResourceMetadata::new(nebula_resource::metadata_name!("Another name"), ""),
-        || ExplicitMetadataProbe,
-        nebula_resource::topology::fixed(|| {
-            Resident::new(nebula_resource::ResidentConfig::default())
-        }),
-    );
+    let factory = catalog_factory(ResourceMetadata::new(
+        nebula_resource::metadata_name!("Another name"),
+        "",
+    ));
 
     let metadata = factory.definition().expect("keyless metadata is admitted");
     assert_eq!(
         metadata.base().key(),
         &ExplicitMetadataProbe::key(),
-        "authored metadata names no key, so the admitted definition carries the provider's"
+        "metadata names no key, so the admitted definition carries the provider's"
     );
     assert_eq!(metadata.base().name(), "Another name");
 }
 
 fn catalog_factory(authored: ResourceMetadata) -> impl ResourceFactory {
-    KindActivator::<ExplicitMetadataProbe, _, _>::with_metadata(
-        authored,
-        || ExplicitMetadataProbe,
-        nebula_resource::topology::fixed(|| {
-            Resident::new(nebula_resource::ResidentConfig::default())
-        }),
-    )
+    admitted(authored, || {
+        KindActivator::<ExplicitMetadataProbe, _, _>::new(
+            || ExplicitMetadataProbe,
+            nebula_resource::topology::fixed(|| {
+                Resident::new(nebula_resource::ResidentConfig::default())
+            }),
+        )
+    })
 }
 
 #[test]
