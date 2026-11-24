@@ -16,8 +16,8 @@
 //! ```
 
 pub use nebula_action::{
-    Action, ActionEffectContract, Component, InputPort, IsolationLevel, JournalProtocol, Metadata,
-    OutputPort, key_of, kind,
+    Action, ActionEffectContract, Component, Dependencies, InputPort, IsolationLevel,
+    JournalProtocol, Metadata, OutputPort, Slot, key_of, kind,
 };
 pub use nebula_core::{ActionKey, action_key};
 pub use nebula_metadata::{

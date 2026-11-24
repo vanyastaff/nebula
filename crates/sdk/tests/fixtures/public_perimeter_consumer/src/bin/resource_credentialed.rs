@@ -6,9 +6,9 @@ use std::sync::Arc;
 
 use nebula_sdk::integration::credential::BearerTokenCredential;
 use nebula_sdk::integration::resource::{
-    Component, Cost, CredentialGuard, CredentialSlot, CredentialUnavailableReason, Effect, Error,
-    ErrorKind, Metadata, Operation, OperationCx, OperationError, PinSlots, Provider, Resident,
-    ResidentProvider, Resource, ResourceContext, ResourceHandle, kind,
+    Cost, CredentialGuard, CredentialSlot, CredentialUnavailableReason, Effect, Error, ErrorKind,
+    Operation, OperationCx, OperationError, PinSlots, Provider, Resident, ResidentProvider,
+    Resource, ResourceContext, ResourceHandle,
 };
 use nebula_sdk::prelude::{Deserialize, SecretString, SecretToken, Serialize};
 
