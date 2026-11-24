@@ -44,8 +44,10 @@ const CRATES: &[(&str, &str)] = &[
     ("nebula_resilience", "crates/resilience/src"),
     // `CredentialGuard`, re-exported for credential slots.
     ("nebula_credential", "crates/credential/src"),
-    // `Metadata`, which `Provider::metadata` returns under the alias `ResourceMetadata`.
+    // `Metadata`, which `Component::metadata` returns.
     ("nebula_metadata", "crates/metadata/src"),
+    // `Component`, `kind` and `key_of`: the contract a provider is built on.
+    ("nebula_component", "crates/component/src"),
 ];
 
 fn workspace() -> Workspace {
@@ -90,18 +92,6 @@ fn resource_targets(workspace: &Workspace) -> BTreeMap<Target, Vec<String>> {
         let target = workspace.resolve_path("nebula_sdk", &export.module, origin, 0);
         targets.entry(target).or_default().push(export.public_path);
     }
-    // `ResourceMetadata` is a type alias, and the walker stops at an alias.
-    // Its methods are the authoring surface, so pin the type behind it too.
-    let aliased = workspace.resolve_path(
-        "nebula_resource",
-        &["resource".to_owned()],
-        &["nebula_metadata".to_owned(), "Metadata".to_owned()],
-        0,
-    );
-    targets
-        .entry(aliased)
-        .or_default()
-        .push("nebula_sdk::prelude::ResourceMetadata (through the alias)".to_owned());
     targets
 }
 

@@ -13,10 +13,10 @@ use nebula_sdk::{
     },
     integration::credential::{TestFailureCode, TestResult},
     prelude::{
-        Action, ActionMetadata, ActionResult, AuthoredValue, Deserialize, Error, Expression,
-        PoolProvider, Pooled, ProgramSyntax, Provider, RemoteDestinationGuarantee,
+        Action, ActionMetadata, ActionResult, AuthoredValue, Component, Deserialize, Error,
+        Expression, PoolProvider, Pooled, ProgramSyntax, Provider, RemoteDestinationGuarantee,
         RemoteEffectPolicy, Resource, ResourceContext, Schema, Serialize, TeardownCx,
-        TeardownReason, TriggerHealthSnapshot, Value, WorkflowBuilder, metadata_name,
+        TeardownReason, TriggerHealthSnapshot, Value, WorkflowBuilder, kind, metadata_name,
         no_credential_slots,
     },
     simple_action,
@@ -147,20 +147,24 @@ struct ManualProvider;
 no_credential_slots!(ManualProvider);
 impl PoolProvider for ManualProvider {}
 
-#[async_trait::async_trait]
-impl Provider for ManualProvider {
+impl Component for ManualProvider {
+    type Kind = kind::Resource;
     type Config = ();
-    type Instance = OwnedClient;
-    type Topology = Pooled<Self>;
 
-    fn metadata() -> nebula_sdk::integration::resource::ResourceMetadata {
-        nebula_sdk::integration::resource::ResourceMetadata::new(
+    const KEY: &'static str = "example.manual-provider";
+
+    fn metadata() -> nebula_sdk::integration::resource::Metadata {
+        nebula_sdk::integration::resource::Metadata::new(
             nebula_sdk::prelude::metadata_name!("ManualProvider"),
             "",
         )
     }
+}
 
-    const KEY: &'static str = "example.manual-provider";
+#[async_trait::async_trait]
+impl Provider for ManualProvider {
+    type Instance = OwnedClient;
+    type Topology = Pooled<Self>;
 
     async fn create(&self, _: &(), _: &ResourceContext) -> Result<OwnedClient, Error> {
         Ok(OwnedClient(String::from("owned connection")))
@@ -182,20 +186,24 @@ struct CatalogProvider;
 
 impl PoolProvider for CatalogProvider {}
 
-#[async_trait::async_trait]
-impl Provider for CatalogProvider {
+impl Component for CatalogProvider {
+    type Kind = kind::Resource;
     type Config = ();
-    type Instance = ();
-    type Topology = Pooled<Self>;
 
-    fn metadata() -> nebula_sdk::integration::resource::ResourceMetadata {
-        nebula_sdk::integration::resource::ResourceMetadata::new(
+    const KEY: &'static str = "example.catalog-provider";
+
+    fn metadata() -> nebula_sdk::integration::resource::Metadata {
+        nebula_sdk::integration::resource::Metadata::new(
             nebula_sdk::prelude::metadata_name!("CatalogProvider"),
             "",
         )
     }
+}
 
-    const KEY: &'static str = "example.catalog-provider";
+#[async_trait::async_trait]
+impl Provider for CatalogProvider {
+    type Instance = ();
+    type Topology = Pooled<Self>;
 
     async fn create(&self, _: &(), _: &ResourceContext) -> Result<(), Error> {
         Ok(())
@@ -375,9 +383,7 @@ fn catalog_constructor_parity() {
         CatalogValueError, DeprecationNotice, DocumentationOrigin, MetadataError, MetadataField,
         MetadataVersion, RemovalDate, RemovalMilestone, RemovalSchedule, VersionReq,
     };
-    use nebula_sdk::integration::{
-        action::ActionMetadata, credential::Metadata, resource::ResourceMetadata,
-    };
+    use nebula_sdk::integration::{action::ActionMetadata, credential::Metadata};
     use nebula_sdk::prelude::action_key;
 
     let category: CatalogCategoryKey = "network.http".parse().expect("valid category");
@@ -444,12 +450,12 @@ fn catalog_constructor_parity() {
         .add_link(link.clone())
         .with_deprecation(notice.clone());
     assert_eq!(credential, credential_dynamic);
-    let resource = ResourceMetadata::new(metadata_name!("HTTP"), "")
+    let resource = Metadata::new(metadata_name!("HTTP"), "")
         .with_version(version.clone())
         .with_categories([category.clone()])
         .add_link(link.clone())
         .with_deprecation(notice.clone());
-    let resource_dynamic = ResourceMetadata::try_new("HTTP", "")
+    let resource_dynamic = Metadata::try_new("HTTP", "")
         .expect("valid name")
         .with_version(version)
         .with_categories([category])
@@ -460,5 +466,5 @@ fn catalog_constructor_parity() {
     let _: nebula_sdk::prelude::MetadataField = MetadataField::Links;
     assert!(ActionMetadata::try_new(" ", "").is_err());
     assert!(Metadata::try_new(" ", "").is_err());
-    assert!(ResourceMetadata::try_new(" ", "").is_err());
+    assert!(Metadata::try_new(" ", "").is_err());
 }

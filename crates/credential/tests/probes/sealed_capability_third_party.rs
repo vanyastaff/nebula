@@ -31,8 +31,8 @@ use nebula_credential::{
     SecretString, contract::plugin_capability_report, error::CredentialError,
     resolve::StaticResolveResult,
     scheme::SecretToken,
+    Component, kind,
 };
-use nebula_credential::{Component, kind};
 use serde::{Deserialize, Serialize};
 
 // ── Stand-in state ──────────────────────────────────────────────────────────

@@ -27,9 +27,9 @@ use super::super::{
     PinSlots, ResourceHandle, SentState, SessionSpec, StreamOperation, StreamSink, UnitScope,
 };
 use crate::{
-    AcquireOptions, CredentialAdmissionProfile, CredentialUnavailableReason, Error, ErrorKind,
-    Manager, PoolConfig, Pooled, Provider, RateLimitProfile, RegistrationSpec, ResourceContext,
-    ResourceGuard, ShutdownConfig, SlotIdentity,
+    AcquireOptions, Component, CredentialAdmissionProfile, CredentialUnavailableReason, Error,
+    ErrorKind, Manager, Metadata, PoolConfig, Pooled, Provider, RateLimitProfile, RegistrationSpec,
+    ResourceContext, ResourceGuard, ShutdownConfig, SlotIdentity, kind,
     manager::{
         CredentialReads,
         strict_fixtures::{
@@ -38,7 +38,7 @@ use crate::{
         },
     },
     rate_limit::{Rate, RowLimit},
-    resource::{ResourceConfig as _, ResourceMetadata},
+    resource::ResourceConfig as _,
     runtime::managed::ManagedResource,
     topology::{
         PoolProvider,
@@ -309,17 +309,21 @@ impl<R: Provider + PinSlots, const WRITE: bool> Operation<R> for Reply<WRITE> {
 #[derive(Clone)]
 struct PlainPool;
 
-#[async_trait::async_trait]
-impl Provider for PlainPool {
+impl Component for PlainPool {
+    type Kind = kind::Resource;
     type Config = crate::manager::strict_fixtures::Config;
-    type Instance = u64;
-    type Topology = Pooled<Self>;
 
     const KEY: &'static str = "row-plain-pool";
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(crate::metadata_name!("row-plain-pool"), "")
+    fn metadata() -> Metadata {
+        Metadata::new(crate::metadata_name!("row-plain-pool"), "")
     }
+}
+
+#[async_trait::async_trait]
+impl Provider for PlainPool {
+    type Instance = u64;
+    type Topology = Pooled<Self>;
 
     async fn create(
         &self,

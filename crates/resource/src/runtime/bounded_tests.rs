@@ -5,12 +5,9 @@ use nebula_core::ExecutionId;
 
 use super::*;
 use crate::topology::store::{InstanceStore, StoreView};
-use crate::{
-    resource::{ResourceConfig, ResourceMetadata},
-    topology::bounded::BoundedProvider,
-};
+use crate::{Metadata, resource::ResourceConfig, topology::bounded::BoundedProvider};
 
-#[derive(Debug, Clone, Copy, nebula_schema::Schema)]
+#[derive(Debug, Clone, Copy, nebula_schema::Schema, serde::Deserialize)]
 struct BoundedCfg;
 
 impl ResourceConfig for BoundedCfg {
@@ -39,13 +36,21 @@ impl MockBounded {
     }
 }
 
-#[async_trait]
-impl Provider for MockBounded {
+impl crate::Component for MockBounded {
+    type Kind = crate::kind::Resource;
     type Config = BoundedCfg;
-    type Instance = u32;
-    type Topology = Bounded<Self>;
 
     const KEY: &'static str = "mock-bounded";
+
+    fn metadata() -> Metadata {
+        Metadata::new(crate::metadata_name!("mock-bounded"), "")
+    }
+}
+
+#[async_trait]
+impl Provider for MockBounded {
+    type Instance = u32;
+    type Topology = Bounded<Self>;
 
     async fn create(&self, _config: &BoundedCfg, _ctx: &ResourceContext) -> Result<u32, Error> {
         Ok(7)
@@ -53,10 +58,6 @@ impl Provider for MockBounded {
 
     async fn destroy(&self, _instance: u32, _cx: crate::TeardownCx) -> Result<(), Error> {
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(crate::metadata_name!("mock-bounded"), "")
     }
 }
 
@@ -279,7 +280,7 @@ async fn create_entry_builds_a_fresh_instance() {
     assert_eq!(topo.tag(), TopologyTag::Bounded);
 }
 
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct PanickingFingerprint;
 
 impl ResourceConfig for PanickingFingerprint {
@@ -291,25 +292,30 @@ impl ResourceConfig for PanickingFingerprint {
 #[derive(Clone)]
 struct FingerprintResource(Arc<AtomicUsize>);
 
-#[async_trait]
-impl Provider for FingerprintResource {
+impl crate::Component for FingerprintResource {
+    type Kind = crate::kind::Resource;
     type Config = PanickingFingerprint;
-    type Instance = u32;
-    type Topology = Bounded<Self>;
 
     const KEY: &'static str = "fingerprint-ownership-regression";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
+            crate::metadata_name!("fingerprint-ownership-regression"),
+            "",
+        )
+    }
+}
+
+#[async_trait]
+impl Provider for FingerprintResource {
+    type Instance = u32;
+    type Topology = Bounded<Self>;
     async fn create(&self, _: &Self::Config, _: &ResourceContext) -> Result<u32, Error> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Ok(1)
     }
     async fn destroy(&self, _: u32, _: crate::TeardownCx) -> Result<(), Error> {
         Ok(())
-    }
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
-            crate::metadata_name!("fingerprint-ownership-regression"),
-            "",
-        )
     }
 }
 

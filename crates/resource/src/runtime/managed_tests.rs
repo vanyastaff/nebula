@@ -10,11 +10,12 @@ use tokio_util::sync::CancellationToken;
 
 use super::*;
 use crate::{
+    Metadata,
     context::ResourceContext,
     error::Error,
     options::AcquireOptions,
     release_queue::ReleaseQueue,
-    resource::{ResourceConfig, ResourceMetadata, TeardownCx, TeardownReason},
+    resource::{ResourceConfig, TeardownCx, TeardownReason},
     runtime::teardown::{destroy_within, teardown_deadline},
     topology::{Pooled, pooled::config::Config as PoolConfig, store::InstanceStore},
 };
@@ -23,7 +24,7 @@ use crate::{
 mod retained_tests;
 
 // A minimal pooled resource over which the framework acquire loop runs.
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct PoolCfg;
 impl ResourceConfig for PoolCfg {
     fn fingerprint(&self) -> u64 {
@@ -69,13 +70,21 @@ impl Mock {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for Mock {
+impl crate::Component for Mock {
+    type Kind = crate::kind::Resource;
     type Config = PoolCfg;
-    type Instance = u64;
-    type Topology = Pooled<Self>;
 
     const KEY: &'static str = "managed-loop-mock";
+
+    fn metadata() -> Metadata {
+        Metadata::new(crate::metadata_name!("managed-loop-mock"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for Mock {
+    type Instance = u64;
+    type Topology = Pooled<Self>;
 
     async fn create(&self, _config: &PoolCfg, _ctx: &ResourceContext) -> Result<u64, Error> {
         let id = self.created.fetch_add(1, Ordering::SeqCst);
@@ -110,10 +119,6 @@ impl Provider for Mock {
         self.destroyed.fetch_add(1, Ordering::SeqCst);
         self.destroy_finished.notify_one();
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(crate::metadata_name!("managed-loop-mock"), "")
     }
 }
 
@@ -637,13 +642,21 @@ impl SlowTeardown {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for SlowTeardown {
+impl crate::Component for SlowTeardown {
+    type Kind = crate::kind::Resource;
     type Config = PoolCfg;
-    type Instance = u64;
-    type Topology = Pooled<Self>;
 
     const KEY: &'static str = "slow-teardown-mock";
+
+    fn metadata() -> Metadata {
+        Metadata::new(crate::metadata_name!("slow-teardown-mock"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for SlowTeardown {
+    type Instance = u64;
+    type Topology = Pooled<Self>;
 
     async fn create(&self, _config: &PoolCfg, _ctx: &ResourceContext) -> Result<u64, Error> {
         Ok(0)
@@ -661,10 +674,6 @@ impl Provider for SlowTeardown {
         // this — the test proves the bound bites, not the body.
         std::future::pending::<()>().await;
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(crate::metadata_name!("slow-teardown-mock"), "")
     }
 }
 

@@ -6,8 +6,9 @@ use nebula_action::{
 };
 use nebula_core::{ArtifactSetDigest, Dependencies, OrgId, WorkspaceId, node_key};
 use nebula_plugin::{Plugin, PluginManifest, PluginRegistry, ResolvedPlugin};
+use nebula_resource::{Component, kind};
 use nebula_resource::{
-    KindActivator, Provider, Resident, ResidentConfig, ResourceFactory, ResourceMetadata,
+    KindActivator, Metadata, Provider, Resident, ResidentConfig, ResourceFactory,
 };
 use nebula_schema::{HasSchema, ValidSchema};
 use nebula_storage::{
@@ -239,17 +240,21 @@ impl nebula_resource::HasCredentialSlots for FixtureResource {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for FixtureResource {
+impl Component for FixtureResource {
+    type Kind = kind::Resource;
     type Config = ();
-    type Instance = ();
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "start.client";
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("Start Client"), "")
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("Start Client"), "")
     }
+}
+
+#[async_trait::async_trait]
+impl Provider for FixtureResource {
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,

@@ -1,7 +1,7 @@
 //! Operator-facing topology settings.
 //!
 //! Registration JSON configures two separate things: the resource's own
-//! [`Provider::Config`] (how to connect) and the
+//! [`Component::Config`](crate::Component::Config) (how to connect) and the
 //! topology (how much capacity to hold). This module is the wire format for
 //! the second one. Every field is optional, so `{}` or an absent value means
 //! the built-in defaults. The format is flat (no tagged unions) so it maps to

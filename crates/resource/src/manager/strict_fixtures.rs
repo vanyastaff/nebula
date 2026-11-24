@@ -22,10 +22,12 @@ pub(crate) use super::credential_reads::{
 };
 use super::{Manager, ManagerConfig, RegistrationSpec};
 use crate::{
-    Bounded, Error, ErrorKind, PinSlots, PoolConfig, Pooled, Provider, Resident, ResidentConfig,
-    ResourceConfig, ResourceContext, SlotCell, SlotIdentity, SlotInstallError, SlotUpdate,
+    Bounded, Component, Error, ErrorKind, Metadata, PinSlots, PoolConfig, Pooled, Provider,
+    Resident, ResidentConfig, ResourceConfig, ResourceContext, SlotCell, SlotIdentity,
+    SlotInstallError, SlotUpdate,
     call::{OperationError, SessionBinding, SessionClosed, SessionEnd, SessionProvider},
-    resource::{HasCredentialSlots, ResourceMetadata},
+    kind,
+    resource::HasCredentialSlots,
     runtime::managed::ManagedResource,
     topology::{
         BoundedProvider, PoolProvider, ResidentProvider,
@@ -33,7 +35,7 @@ use crate::{
     },
 };
 
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 pub(crate) struct Config {
     version: u64,
 }
@@ -221,17 +223,21 @@ macro_rules! strict_provider {
             }
         }
 
-        #[async_trait::async_trait]
-        impl Provider for $ty {
+        impl Component for $ty {
+            type Kind = kind::Resource;
             type Config = Config;
-            type Instance = u64;
-            type Topology = $topology;
 
             const KEY: &'static str = $key;
 
-            fn metadata() -> ResourceMetadata {
-                ResourceMetadata::new(crate::metadata_name!($key), "")
+            fn metadata() -> Metadata {
+                Metadata::new(crate::metadata_name!($key), "")
             }
+        }
+
+        #[async_trait::async_trait]
+        impl Provider for $ty {
+            type Instance = u64;
+            type Topology = $topology;
 
             async fn create(&self, _: &Config, _: &ResourceContext) -> Result<u64, Error> {
                 Ok(self.probe.create().await)
@@ -412,17 +418,21 @@ impl SessionProvider for StrictPooledSession {
 #[derive(Clone)]
 pub(crate) struct ProjectionlessRow;
 
-#[async_trait::async_trait]
-impl Provider for ProjectionlessRow {
+impl Component for ProjectionlessRow {
+    type Kind = kind::Resource;
     type Config = Config;
-    type Instance = u64;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "strict-projectionless";
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(crate::metadata_name!("strict-projectionless"), "")
+    fn metadata() -> Metadata {
+        Metadata::new(crate::metadata_name!("strict-projectionless"), "")
     }
+}
+
+#[async_trait::async_trait]
+impl Provider for ProjectionlessRow {
+    type Instance = u64;
+    type Topology = Resident<Self>;
 
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<u64, Error> {
         Ok(0)
@@ -449,17 +459,21 @@ impl ResidentProvider for ProjectionlessRow {}
 #[derive(Clone)]
 pub(crate) struct UnboundRow(pub(crate) Arc<Probe>);
 
-#[async_trait::async_trait]
-impl Provider for UnboundRow {
+impl Component for UnboundRow {
+    type Kind = kind::Resource;
     type Config = Config;
-    type Instance = u64;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "strict-unbound";
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(crate::metadata_name!("strict-unbound"), "")
+    fn metadata() -> Metadata {
+        Metadata::new(crate::metadata_name!("strict-unbound"), "")
     }
+}
+
+#[async_trait::async_trait]
+impl Provider for UnboundRow {
+    type Instance = u64;
+    type Topology = Resident<Self>;
 
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<u64, Error> {
         Ok(self.0.creates.fetch_add(1, Ordering::SeqCst) as u64)

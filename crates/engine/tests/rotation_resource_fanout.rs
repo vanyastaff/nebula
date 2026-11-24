@@ -21,10 +21,11 @@ use nebula_core::{OrgId, ScopeLevel, scope::Scope};
 use nebula_credential::CredentialId;
 use nebula_resource::Resident;
 use nebula_resource::{
-    AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
+    AcquireOptions, Component, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
     ResourceContext, SlotIdentity,
     error::Error as ResourceError,
-    resource::{HasCredentialSlots, ResourceMetadata},
+    kind,
+    resource::{HasCredentialSlots, Metadata},
     topology::resident::ResidentProvider,
 };
 use nebula_resource::{ResourceFanoutIndex, RotationOutcome};
@@ -44,7 +45,7 @@ impl From<HookError> for ResourceError {
     }
 }
 
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct Cfg;
 impl ResourceConfig for Cfg {
     fn validate(&self) -> Result<(), ResourceError> {
@@ -77,13 +78,21 @@ struct Ctl {
     refresh_entered: Arc<AtomicUsize>,
 }
 
-#[async_trait::async_trait]
-impl Provider for Ctl {
+impl Component for Ctl {
+    type Kind = kind::Resource;
     type Config = Cfg;
-    type Instance = ();
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "it-fanout-ctl";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("it-fanout-ctl"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for Ctl {
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     async fn create(&self, _c: &Cfg, _x: &ResourceContext) -> Result<(), ResourceError> {
         Ok(())
@@ -106,10 +115,6 @@ impl Provider for Ctl {
                 unreachable!()
             },
         }
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("it-fanout-ctl"), "")
     }
 }
 

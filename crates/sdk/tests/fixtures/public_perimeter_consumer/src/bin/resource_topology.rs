@@ -1,7 +1,7 @@
 use nebula_sdk::integration::resource::{
-    AdmissionPhase, CreatedEntry, Error, HookFault, Load, MaintenanceSchedule, Provider,
+    AdmissionPhase, Component, CreatedEntry, Error, HookFault, Load, MaintenanceSchedule, Provider,
     ResourceContext, RetainedId, RetainedLease, RetainedStore, StoreView, TeardownCx, Ticket,
-    Topology, Unavailable, no_credential_slots,
+    Topology, Unavailable, kind, no_credential_slots,
 };
 
 struct OwnedConnection(String);
@@ -9,20 +9,24 @@ struct CustomProvider;
 struct CustomTopology;
 no_credential_slots!(CustomProvider);
 
-#[async_trait::async_trait]
-impl Provider for CustomProvider {
+impl Component for CustomProvider {
+    type Kind = kind::Resource;
     type Config = ();
-    type Instance = OwnedConnection;
-    type Topology = CustomTopology;
 
-    fn metadata() -> nebula_sdk::integration::resource::ResourceMetadata {
-        nebula_sdk::integration::resource::ResourceMetadata::new(
+    const KEY: &'static str = "example.custom-topology";
+
+    fn metadata() -> nebula_sdk::integration::resource::Metadata {
+        nebula_sdk::integration::resource::Metadata::new(
             nebula_sdk::prelude::metadata_name!("CustomProvider"),
             "",
         )
     }
+}
 
-    const KEY: &'static str = "example.custom-topology";
+#[async_trait::async_trait]
+impl Provider for CustomProvider {
+    type Instance = OwnedConnection;
+    type Topology = CustomTopology;
 
     async fn create(&self, _: &(), _: &ResourceContext) -> Result<OwnedConnection, Error> {
         Ok(OwnedConnection(String::from("exclusive connection")))

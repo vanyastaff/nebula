@@ -7,8 +7,8 @@ use nebula_engine::resource::{
     ActivationContext, KindActivator, ResourceActivatorRegistry, StoredResourceActivator,
 };
 use nebula_resource::{
-    AcquireOptions, Manager, Provider, Resident, ResourceContext,
-    resource::{ResourceMetadata, TeardownCx},
+    AcquireOptions, Component, Manager, Provider, Resident, ResourceContext, kind,
+    resource::{Metadata, TeardownCx},
 };
 use nebula_storage::inmem::InMemoryResourceStore;
 use nebula_storage_port::{
@@ -30,17 +30,21 @@ impl DeclaresDependencies for RetiredResource {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for RetiredResource {
+impl Component for RetiredResource {
+    type Kind = kind::Resource;
     type Config = ();
-    type Instance = ();
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "test.worker.retirement";
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("Retirement probe"), "")
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("Retirement probe"), "")
     }
+}
+
+#[async_trait::async_trait]
+impl Provider for RetiredResource {
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     async fn create(&self, (): &(), _: &ResourceContext) -> Result<(), nebula_resource::Error> {
         Ok(())

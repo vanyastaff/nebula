@@ -7,8 +7,7 @@ use nebula_core::ExecutionId;
 
 use super::*;
 use crate::{
-    context::ResourceContext,
-    resource::{ResourceConfig, ResourceMetadata},
+    Metadata, context::ResourceContext, resource::ResourceConfig,
     topology::resident::ResidentProvider,
 };
 
@@ -40,13 +39,21 @@ impl ResourceConfig for bool {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for MockResident {
+impl crate::Component for MockResident {
+    type Kind = crate::kind::Resource;
     type Config = bool;
-    type Instance = u32;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "mock-resident";
+
+    fn metadata() -> Metadata {
+        Metadata::new(crate::metadata_name!("mock-resident"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for MockResident {
+    type Instance = u32;
+    type Topology = Resident<Self>;
 
     async fn create(&self, _config: &bool, _ctx: &ResourceContext) -> Result<u32, Error> {
         let count = self.create_count.fetch_add(1, Ordering::Relaxed);
@@ -56,10 +63,6 @@ impl Provider for MockResident {
 
     async fn destroy(&self, _runtime: u32, _cx: crate::TeardownCx) -> Result<(), Error> {
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(crate::metadata_name!("mock-resident"), "")
     }
 }
 
@@ -220,13 +223,21 @@ async fn topology_does_not_pool() {
 #[derive(Clone)]
 struct HangingResident;
 
-#[async_trait::async_trait]
-impl Provider for HangingResident {
+impl crate::Component for HangingResident {
+    type Kind = crate::kind::Resource;
     type Config = bool;
-    type Instance = u32;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "hanging-resident";
+
+    fn metadata() -> Metadata {
+        Metadata::new(crate::metadata_name!("hanging-resident"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for HangingResident {
+    type Instance = u32;
+    type Topology = Resident<Self>;
 
     async fn create(&self, _config: &bool, _ctx: &ResourceContext) -> Result<u32, Error> {
         tokio::time::sleep(Duration::from_hours(1)).await;
@@ -235,10 +246,6 @@ impl Provider for HangingResident {
 
     async fn destroy(&self, _runtime: u32, _cx: crate::TeardownCx) -> Result<(), Error> {
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(crate::metadata_name!("hanging-resident"), "")
     }
 }
 
@@ -298,13 +305,21 @@ struct SlotReadResident {
     park_before_read: StdArc<AtomicBool>,
 }
 
-#[async_trait::async_trait]
-impl Provider for SlotReadResident {
+impl crate::Component for SlotReadResident {
+    type Kind = crate::kind::Resource;
     type Config = bool;
-    type Instance = u32;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "slot-read-resident";
+
+    fn metadata() -> Metadata {
+        Metadata::new(crate::metadata_name!("slot-read-resident"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for SlotReadResident {
+    type Instance = u32;
+    type Topology = Resident<Self>;
 
     async fn create(&self, _config: &bool, _ctx: &ResourceContext) -> Result<u32, Error> {
         self.entered_before_read.notify_one();
@@ -321,10 +336,6 @@ impl Provider for SlotReadResident {
 
     async fn destroy(&self, _runtime: u32, _cx: crate::TeardownCx) -> Result<(), Error> {
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(crate::metadata_name!("slot-read-resident"), "")
     }
 }
 
@@ -504,13 +515,21 @@ impl MeetingResident {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for MeetingResident {
+impl crate::Component for MeetingResident {
+    type Kind = crate::kind::Resource;
     type Config = bool;
-    type Instance = u32;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "meeting-resident";
+
+    fn metadata() -> Metadata {
+        Metadata::new(crate::metadata_name!("meeting-resident"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for MeetingResident {
+    type Instance = u32;
+    type Topology = Resident<Self>;
 
     async fn create(&self, _config: &bool, _ctx: &ResourceContext) -> Result<u32, Error> {
         Ok(1)
@@ -520,10 +539,6 @@ impl Provider for MeetingResident {
         self.hook_entered.notify_one();
         self.hook_release.notified().await;
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(crate::metadata_name!("meeting-resident"), "")
     }
 }
 

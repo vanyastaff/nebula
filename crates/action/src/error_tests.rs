@@ -298,13 +298,13 @@ mod managed_unit {
         CredentialUnavailableReason, ErrorKind, Manager, RegistrationSpec, Resident,
         ResidentConfig, ResourceConfig, ResourceContext, SlotIdentity,
         call::{Cost, Operation, OperationCx, OperationError},
-        resource::{Provider, ResourceMetadata},
+        resource::{Metadata, Provider},
         topology::ResidentProvider,
     };
 
     use super::*;
 
-    #[derive(Clone, nebula_schema::Schema)]
+    #[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
     struct Config {
         version: u64,
     }
@@ -318,17 +318,21 @@ mod managed_unit {
     #[derive(Clone)]
     struct Ledger;
 
-    #[async_trait::async_trait]
-    impl Provider for Ledger {
+    impl nebula_resource::Component for Ledger {
+        type Kind = nebula_resource::kind::Resource;
         type Config = Config;
-        type Instance = ();
-        type Topology = Resident<Self>;
 
         const KEY: &'static str = "action.ledger";
 
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::new(nebula_resource::metadata_name!("ledger"), "")
+        fn metadata() -> Metadata {
+            Metadata::new(nebula_resource::metadata_name!("ledger"), "")
         }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for Ledger {
+        type Instance = ();
+        type Topology = Resident<Self>;
 
         async fn create(
             &self,

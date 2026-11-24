@@ -10,16 +10,16 @@ use std::{
 };
 
 use nebula_resource::{
-    AcquireOptions, Error, Manager, ManagerConfig, Pooled, RegistrationSpec, Resident,
+    AcquireOptions, Error, Manager, ManagerConfig, Metadata, Pooled, RegistrationSpec, Resident,
     ResidentConfig, ResourceContext, ScopeLevel, ShutdownConfig, SlotIdentity, TeardownCx,
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig},
     topology::{
         pooled::{BrokenCheck, PoolProvider},
         resident::ResidentProvider,
     },
 };
 
-#[derive(Clone, Debug, nebula_schema::Schema)]
+#[derive(Clone, Debug, nebula_schema::Schema, serde::Deserialize)]
 struct Config;
 impl ResourceConfig for Config {
     fn fingerprint(&self) -> u64 {
@@ -42,11 +42,10 @@ struct ResidentNode<const ID: usize> {
     destroy_order: DestroyOrder,
 }
 
-#[async_trait::async_trait]
-impl<const ID: usize> Provider for ResidentNode<ID> {
+impl<const ID: usize> nebula_resource::Component for ResidentNode<ID> {
+    type Kind = nebula_resource::kind::Resource;
     type Config = Config;
-    type Instance = Instance;
-    type Topology = Resident<Self>;
+
     const KEY: &'static str = match ID {
         0 => "dependency-node-0",
         1 => "dependency-node-1",
@@ -60,9 +59,16 @@ impl<const ID: usize> Provider for ResidentNode<ID> {
         9 => "dependency-node-9",
         _ => panic!("declare a key for this node id"),
     };
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("ResidentNode"), "")
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("ResidentNode"), "")
     }
+}
+
+#[async_trait::async_trait]
+impl<const ID: usize> Provider for ResidentNode<ID> {
+    type Instance = Instance;
+    type Topology = Resident<Self>;
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<Instance, Error> {
         Ok(Instance {
             dependencies: std::mem::take(&mut *self.dependencies.lock().unwrap()),
@@ -96,18 +102,24 @@ struct PooledParent {
     destroyed: Arc<AtomicUsize>,
 }
 nebula_resource::no_credential_slots!(PooledParent);
-#[async_trait::async_trait]
-impl Provider for PooledParent {
+impl nebula_resource::Component for PooledParent {
+    type Kind = nebula_resource::kind::Resource;
     type Config = Config;
-    type Instance = Instance;
-    type Topology = Pooled<Self>;
+
     const KEY: &'static str = "dependency-pooled-parent";
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
+
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_resource::metadata_name!("dependency-pooled-parent"),
             "",
         )
     }
+}
+
+#[async_trait::async_trait]
+impl Provider for PooledParent {
+    type Instance = Instance;
+    type Topology = Pooled<Self>;
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<Instance, Error> {
         Ok(Instance {
             dependencies: std::mem::take(&mut *self.dependencies.lock().unwrap()),

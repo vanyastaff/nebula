@@ -1,11 +1,11 @@
 use nebula_resource::{
-    Error, Provider, Resident, ResidentProvider, ResourceConfig, ResourceContext,
+    Component, Error, Provider, Resident, ResidentProvider, ResourceConfig, ResourceContext, kind,
 };
 
 struct LegacyProvider;
 nebula_resource::no_credential_slots!(LegacyProvider);
 
-#[derive(Clone, Default, nebula_schema::Schema)]
+#[derive(Clone, Default, nebula_schema::Schema, serde::Deserialize)]
 struct Config;
 
 impl ResourceConfig for Config {
@@ -14,13 +14,21 @@ impl ResourceConfig for Config {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for LegacyProvider {
+impl Component for LegacyProvider {
+    type Kind = kind::Resource;
     type Config = Config;
-    type Instance = ();
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "legacy.provider";
+
+    fn metadata() -> nebula_resource::Metadata {
+        nebula_resource::Metadata::new(nebula_resource::metadata_name!("LegacyProvider"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for LegacyProvider {
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     async fn create(&self, _config: &Config, _ctx: &ResourceContext) -> Result<(), Error> {
         Ok(())
@@ -28,10 +36,6 @@ impl Provider for LegacyProvider {
 
     async fn shutdown(&self, _instance: &()) -> Result<(), Error> {
         Ok(())
-    }
-
-    fn metadata() -> nebula_resource::ResourceMetadata {
-        nebula_resource::ResourceMetadata::new(nebula_resource::metadata_name!("LegacyProvider"), "")
     }
 }
 

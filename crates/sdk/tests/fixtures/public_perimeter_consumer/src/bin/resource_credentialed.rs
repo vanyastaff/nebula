@@ -6,9 +6,9 @@ use std::sync::Arc;
 
 use nebula_sdk::integration::credential::BearerTokenCredential;
 use nebula_sdk::integration::resource::{
-    Cost, CredentialGuard, CredentialSlot, CredentialUnavailableReason, Effect, Error, ErrorKind,
-    ResourceMetadata, Operation, OperationCx, OperationError, PinSlots, Provider, Resident,
-    ResidentProvider, Resource, ResourceContext, ResourceHandle,
+    Component, Cost, CredentialGuard, CredentialSlot, CredentialUnavailableReason, Effect, Error,
+    ErrorKind, Metadata, Operation, OperationCx, OperationError, PinSlots, Provider, Resident,
+    ResidentProvider, Resource, ResourceContext, ResourceHandle, kind,
 };
 use nebula_sdk::prelude::{Deserialize, SecretString, SecretToken, Serialize};
 
@@ -20,17 +20,21 @@ struct GitHub {
     token: CredentialSlot<BearerTokenCredential>,
 }
 
-#[async_trait::async_trait]
-impl Provider for GitHub {
+impl Component for GitHub {
+    type Kind = kind::Resource;
     type Config = ();
-    type Instance = ();
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "example.github";
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_sdk::prelude::metadata_name!("GitHub"), "")
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_sdk::prelude::metadata_name!("GitHub"), "")
     }
+}
+
+#[async_trait::async_trait]
+impl Provider for GitHub {
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     async fn create(&self, _: &(), _: &ResourceContext) -> Result<(), Error> {
         Ok(())

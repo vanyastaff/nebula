@@ -9,14 +9,14 @@ use nebula_core::{ExecutionId, OrgId, scope::Scope};
 use nebula_resource::topology::pooled::PoolProvider;
 use nebula_resource::topology::resident::ResidentProvider;
 use nebula_resource::{
-    AcquireOptions, Manager, RegistrationSpec, ResourceContext, ScopeLevel, SlotIdentity,
+    AcquireOptions, Manager, Metadata, RegistrationSpec, ResourceContext, ScopeLevel, SlotIdentity,
     error::Error,
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig},
 };
 use nebula_resource::{Pooled, Resident, ResidentConfig};
 use tokio_util::sync::CancellationToken;
 
-#[derive(Clone, Debug, Default, nebula_schema::Schema)]
+#[derive(Clone, Debug, Default, nebula_schema::Schema, serde::Deserialize)]
 struct ProbeConfig;
 
 impl ResourceConfig for ProbeConfig {
@@ -39,13 +39,24 @@ impl ProbeResource {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for ProbeResource {
+impl nebula_resource::Component for ProbeResource {
+    type Kind = nebula_resource::kind::Resource;
     type Config = ProbeConfig;
-    type Instance = Arc<AtomicU64>;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "test.acquire_erased.probe";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
+            nebula_resource::metadata_name!("test.acquire_erased.probe"),
+            "",
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for ProbeResource {
+    type Instance = Arc<AtomicU64>;
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,
@@ -55,13 +66,6 @@ impl Provider for ProbeResource {
         let counter = self.create_count.clone();
         counter.fetch_add(1, Ordering::Relaxed);
         Ok(counter)
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
-            nebula_resource::metadata_name!("test.acquire_erased.probe"),
-            "",
-        )
     }
 }
 
@@ -275,7 +279,7 @@ mod pool_parity {
 
     use super::*;
 
-    #[derive(Clone, Default, nebula_schema::Schema)]
+    #[derive(Clone, Default, nebula_schema::Schema, serde::Deserialize)]
     struct PoolParityCfg;
     impl ResourceConfig for PoolParityCfg {
         fn fingerprint(&self) -> u64 {
@@ -289,13 +293,21 @@ mod pool_parity {
         create_count: Arc<AtomicU64>,
     }
 
-    #[async_trait::async_trait]
-    impl Provider for PoolParity {
+    impl nebula_resource::Component for PoolParity {
+        type Kind = nebula_resource::kind::Resource;
         type Config = PoolParityCfg;
-        type Instance = u64;
-        type Topology = Pooled<Self>;
 
         const KEY: &'static str = "test.ae4.pool";
+
+        fn metadata() -> Metadata {
+            Metadata::new(nebula_resource::metadata_name!("test.ae4.pool"), "")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for PoolParity {
+        type Instance = u64;
+        type Topology = Pooled<Self>;
 
         async fn create(
             &self,
@@ -311,10 +323,6 @@ mod pool_parity {
             _cx: nebula_resource::TeardownCx,
         ) -> Result<(), Error> {
             Ok(())
-        }
-
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::new(nebula_resource::metadata_name!("test.ae4.pool"), "")
         }
     }
 
@@ -402,7 +410,7 @@ mod pool_parity {
 mod resident_erased_reuses_runtime {
     use super::*;
 
-    #[derive(Clone, Default, nebula_schema::Schema)]
+    #[derive(Clone, Default, nebula_schema::Schema, serde::Deserialize)]
     struct ResidentReuseCfg;
     impl ResourceConfig for ResidentReuseCfg {
         fn fingerprint(&self) -> u64 {
@@ -416,13 +424,24 @@ mod resident_erased_reuses_runtime {
         create_count: Arc<AtomicU64>,
     }
 
-    #[async_trait::async_trait]
-    impl Provider for ResidentReuse {
+    impl nebula_resource::Component for ResidentReuse {
+        type Kind = nebula_resource::kind::Resource;
         type Config = ResidentReuseCfg;
-        type Instance = Arc<AtomicU64>;
-        type Topology = Resident<Self>;
 
         const KEY: &'static str = "test.ae4.resident_reuse";
+
+        fn metadata() -> Metadata {
+            Metadata::new(
+                nebula_resource::metadata_name!("test.ae4.resident_reuse"),
+                "",
+            )
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for ResidentReuse {
+        type Instance = Arc<AtomicU64>;
+        type Topology = Resident<Self>;
 
         async fn create(
             &self,
@@ -431,13 +450,6 @@ mod resident_erased_reuses_runtime {
         ) -> Result<Arc<AtomicU64>, Error> {
             self.create_count.fetch_add(1, Ordering::SeqCst);
             Ok(Arc::clone(&self.create_count))
-        }
-
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::new(
-                nebula_resource::metadata_name!("test.ae4.resident_reuse"),
-                "",
-            )
         }
     }
 
@@ -523,7 +535,7 @@ mod resident_erased_reuses_runtime {
 mod pool_erased_distinct_instances {
     use super::*;
 
-    #[derive(Clone, Default, nebula_schema::Schema)]
+    #[derive(Clone, Default, nebula_schema::Schema, serde::Deserialize)]
     struct PoolErasedCfg;
     impl ResourceConfig for PoolErasedCfg {
         fn fingerprint(&self) -> u64 {
@@ -537,13 +549,21 @@ mod pool_erased_distinct_instances {
         create_count: Arc<AtomicU64>,
     }
 
-    #[async_trait::async_trait]
-    impl Provider for PoolErased {
+    impl nebula_resource::Component for PoolErased {
+        type Kind = nebula_resource::kind::Resource;
         type Config = PoolErasedCfg;
-        type Instance = u64;
-        type Topology = Pooled<Self>;
 
         const KEY: &'static str = "test.ae4.pool_erased";
+
+        fn metadata() -> Metadata {
+            Metadata::new(nebula_resource::metadata_name!("test.ae4.pool_erased"), "")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for PoolErased {
+        type Instance = u64;
+        type Topology = Pooled<Self>;
 
         async fn create(
             &self,
@@ -551,10 +571,6 @@ mod pool_erased_distinct_instances {
             _ctx: &ResourceContext,
         ) -> Result<u64, Error> {
             Ok(self.create_count.fetch_add(1, Ordering::SeqCst))
-        }
-
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::new(nebula_resource::metadata_name!("test.ae4.pool_erased"), "")
         }
     }
 

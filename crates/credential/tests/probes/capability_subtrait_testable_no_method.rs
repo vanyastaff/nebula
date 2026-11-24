@@ -8,8 +8,8 @@ use std::future::Future;
 use nebula_credential::{
     Credential, CredentialContext, Metadata, SecretString, Testable,
     error::CredentialError, resolve::StaticResolveResult, scheme::SecretToken,
+    Component, kind,
 };
-use nebula_credential::{Component, kind};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Serialize, Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]

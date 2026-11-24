@@ -240,7 +240,7 @@ mod tests {
         Manager, RegistrationSpec, Resident, ResidentConfig, ResourceContext, ScopeLevel,
         SlotIdentity,
         error::Error,
-        resource::{Provider, ResourceConfig, ResourceMetadata},
+        resource::{Metadata, Provider, ResourceConfig},
         topology::resident::ResidentProvider,
     };
 
@@ -263,7 +263,7 @@ mod tests {
         }
     }
 
-    #[derive(Clone, Debug, Default, nebula_schema::Schema)]
+    #[derive(Clone, Debug, Default, nebula_schema::Schema, serde::Deserialize)]
     struct AccConfig;
 
     impl ResourceConfig for AccConfig {
@@ -276,13 +276,24 @@ mod tests {
     #[derive(Clone)]
     struct AccResource;
 
-    #[async_trait::async_trait]
-    impl Provider for AccResource {
+    impl nebula_resource::Component for AccResource {
+        type Kind = nebula_resource::kind::Resource;
         type Config = AccConfig;
-        type Instance = Arc<AtomicU64>;
-        type Topology = Resident<Self>;
 
         const KEY: &'static str = "test.engine_accessor.acc";
+
+        fn metadata() -> Metadata {
+            Metadata::new(
+                nebula_resource::metadata_name!("test.engine_accessor.acc"),
+                "",
+            )
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for AccResource {
+        type Instance = Arc<AtomicU64>;
+        type Topology = Resident<Self>;
 
         async fn create(
             &self,
@@ -290,13 +301,6 @@ mod tests {
             _ctx: &ResourceContext,
         ) -> Result<Arc<AtomicU64>, Error> {
             Ok(Arc::new(AtomicU64::new(42)))
-        }
-
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::new(
-                nebula_resource::metadata_name!("test.engine_accessor.acc"),
-                "",
-            )
         }
     }
 

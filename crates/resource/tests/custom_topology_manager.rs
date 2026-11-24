@@ -29,10 +29,10 @@ use std::{
 
 use nebula_core::{ScopeLevel, scope::Scope};
 use nebula_resource::{
-    AcquireOptions, HasCredentialSlots, Manager, RegistrationSpec, ResourceContext, ShutdownConfig,
-    SlotIdentity,
+    AcquireOptions, HasCredentialSlots, Manager, Metadata, RegistrationSpec, ResourceContext,
+    ShutdownConfig, SlotIdentity,
     error::{Error, ErrorKind},
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig},
     topology::{StoreView, Ticket, Topology, Unavailable},
 };
 use tokio::sync::Semaphore;
@@ -40,7 +40,7 @@ use tokio_util::sync::CancellationToken;
 
 // ─── The resource ──────────────────────────────────────────────────────────
 
-#[derive(Clone, Default, nebula_schema::Schema)]
+#[derive(Clone, Default, nebula_schema::Schema, serde::Deserialize)]
 struct FfmpegCfg;
 impl ResourceConfig for FfmpegCfg {
     fn fingerprint(&self) -> u64 {
@@ -75,13 +75,21 @@ impl Ffmpeg {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for Ffmpeg {
+impl nebula_resource::Component for Ffmpeg {
+    type Kind = nebula_resource::kind::Resource;
     type Config = FfmpegCfg;
-    type Instance = Transcoder;
-    type Topology = FfmpegPool;
 
     const KEY: &'static str = "custom.ffmpeg";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("custom.ffmpeg"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for Ffmpeg {
+    type Instance = Transcoder;
+    type Topology = FfmpegPool;
 
     async fn create(
         &self,
@@ -99,10 +107,6 @@ impl Provider for Ffmpeg {
     ) -> Result<(), Error> {
         self.destroy_count.fetch_add(1, Ordering::SeqCst);
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("custom.ffmpeg"), "")
     }
 }
 

@@ -17,7 +17,7 @@
 //!
 //! ```text
 //! use nebula_credential::CredentialGuard;
-//! use nebula_resource::{Provider, Resource, SlotCell};
+//! use nebula_resource::{Provider, Resource, SlotCell, Component, kind};
 //!
 //! #[derive(Resource)]
 //! struct Postgres {
@@ -25,18 +25,23 @@
 //!     db_auth: SlotCell<CredentialGuard<DatabaseCredential>>,
 //! }
 //!
-//! impl Provider for Postgres {
+//! impl Component for Postgres {
+//!     type Kind = kind::Resource;
 //!     type Config = PostgresConfig;
-//!     type Instance = PgConnection;
-//!     type Topology = nebula_resource::Pooled<Self>;
 //!
 //!     const KEY: &'static str = "postgres";
-//!     fn metadata() -> nebula_resource::ResourceMetadata {
-//!         nebula_resource::ResourceMetadata::new(
+//!
+//!     fn metadata() -> nebula_resource::Metadata {
+//!         nebula_resource::Metadata::new(
 //!             nebula_resource::metadata_name!("Postgres"),
 //!             "Database pool",
 //!         )
 //!     }
+//! }
+//!
+//! impl Provider for Postgres {
+//!     type Instance = PgConnection;
+//!     type Topology = nebula_resource::Pooled<Self>;
 //!
 //!     async fn create(&self, cfg: &PostgresConfig, ctx: &ResourceContext)
 //!         -> Result<PgConnection, nebula_resource::Error>

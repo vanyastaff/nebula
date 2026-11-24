@@ -37,20 +37,22 @@ pub trait Component: Sized + Send + Sync + 'static {
 
 The kind traits have it as a supertrait and add only what that kind does:
 `Credential: Component<Kind = kind::Credential>` adds `Scheme`, `State`,
-`project` and `resolve`. `key_of::<C>()` returns the typed key the kind
+`project` and `resolve`; `Provider: Component<Kind = kind::Resource,
+Config: ResourceConfig>` adds `Instance`, `Topology`, `create` and the
+lifecycle hooks. `key_of::<C>()` returns the typed key the kind
 selects (`ActionKey`, `ResourceKey`, `CredentialKey`), and
 `nebula_component::admit::<C>()` is the one shared admission of metadata, key
-and `Config` schema. `Credential` is built on `Component` today; `Resource`
-and `Action` follow, and until they do they keep `Provider::Config` /
-`Action::Input` and their own metadata types.
+and `Config` schema. `Credential` and the resource `Provider` are built on
+`Component` today; `Action` follows, and until it does it keeps
+`Action::Input` and `ActionMetadata`.
 
 Every concept in Nebula's integration layer is described by two things:
 
 
 | Piece | Role |
 |---|---|
-| authored metadata | Author-owned UI/catalog intent: checked display name, version, lifecycle, and concept-specific declarations. `ActionMetadata`, `ResourceMetadata` and a credential's `Metadata` carry no key (identity is `Action::KEY` / `Provider::KEY` / `Component::KEY`). None can supply a schema or claim admission. |
-| Associated Rust type | The schema source of truth: `Action::{Input, Output}`, `Component::Config` for a credential, or `Provider::Config`. |
+| authored metadata | Author-owned UI/catalog intent: checked display name, version, lifecycle, and concept-specific declarations. `ActionMetadata` and the `Metadata` a credential or resource returns carry no key (identity is `Action::KEY` / `Component::KEY`). None can supply a schema or claim admission. |
+| Associated Rust type | The schema source of truth: `Action::{Input, Output}`, or `Component::Config` for a credential or resource. |
 | admitted definition | `ResourceDefinition`, `CredentialDefinition`, and for now `ActionDefinition`. Immutable catalog definition produced only by the owning factory/registry after deriving schemas and checking identity/package invariants. |
 | `Recorded*` | Deserialized evidence (`RecordedResourceDefinition`, `RecordedActionDefinition`, `RecordedCredentialDefinition`). It regains admitted status only by exact comparison with a fresh definition from the currently selected factory/registry. |
 
@@ -67,12 +69,11 @@ and uses its own checked builder; it is not a catalog-leaf admission bypass.
 #### Catalog construction and wire migration
 
 An action, a resource and a credential declare their identity once, as
-`Action::KEY`, `Provider::KEY` and `Credential::KEY`, and their `metadata()`
-returns key-free metadata: `ActionMetadata::new(MetadataName, description)`,
-`ResourceMetadata::new(MetadataName, description)` or
-`Metadata::new(MetadataName, description)` (the last two are the
-shared `nebula_metadata::Metadata`; `ActionMetadata` embeds it and adds ports
-and policies). The factory or registry stamps the key at admission, so a
+`Action::KEY` and `Component::KEY`, and their `metadata()` returns key-free
+metadata: `ActionMetadata::new(MetadataName, description)` or
+`Metadata::new(MetadataName, description)` (the shared
+`nebula_metadata::Metadata`, which a resource and a credential return
+unchanged; `ActionMetadata` embeds it and adds ports and policies). The factory or registry stamps the key at admission, so a
 catalog entry cannot name another component. This holds on every path,
 including the shared-instance `InstanceFactory::new(action)` and
 `KindActivator::new(..)`: one type is one catalog entry, and its metadata comes
@@ -146,8 +147,8 @@ APIs.
 **Target authoring:** `#[property(display(...), input(...), validate(...),
 options(...))]` describes values only; the blocks are optional according to the
 property's needs. `#[slot(credential, ...)]` and `#[slot(resource, ...)]` declare
-dependencies separately. `Action::Input`, `Credential::Config`, and
-`Provider::Config` remain permanently supported, canonical explicit data types;
+dependencies separately. `Action::Input` and a credential's or
+resource's `Component::Config` remain permanently supported, canonical explicit data types;
 `Action::Output` remains explicit too. They are not migration-only escape hatches,
 and no derive requires an associated type to be `Self`.
 
@@ -231,14 +232,14 @@ presentation identity or rewrite existing schema or plan bytes.
 entity-specific admission. Property display hints belong to schema authoring,
 not to a new catalog-leaf metadata type. SDK personas curate these contracts.
 
-| Shared concern | `ActionMetadata` | `Metadata` (credential) | `ResourceMetadata` |
+| Shared concern | `ActionMetadata` | `Metadata` (credential) | `Metadata` (resource) |
 |---|---|---|---|
-| Identity and text | `new(MetadataName, description)` / `try_new`; identity is `Action::KEY` | `new(MetadataName, description)` / `try_new`; identity is `Component::KEY` | `new(MetadataName, description)` / `try_new`; identity is `Provider::KEY` |
+| Identity and text | `new(MetadataName, description)` / `try_new`; identity is `Action::KEY` | `new(MetadataName, description)` / `try_new`; identity is `Component::KEY` | `new(MetadataName, description)` / `try_new`; identity is `Component::KEY` |
 | Revision | `with_version(MetadataVersion)` | `with_version(MetadataVersion)` | `with_version(MetadataVersion)` |
 | Icon | `with_icon`, `with_inline_icon`, `with_url_icon` | `with_icon`, `with_inline_icon`, `with_url_icon` | `with_icon`, `with_inline_icon`, `with_url_icon` |
 | Documentation and discovery | `with_documentation_url`, `with_categories`, `add_link`, `with_tags`, `add_tag` | `with_documentation_url`, `with_categories`, `add_link`, `with_tags`, `add_tag` | `with_documentation_url`, `with_categories`, `add_link`, `with_tags`, `add_tag` |
 | Lifecycle | `mark_experimental`, `mark_beta`, `mark_stable`, `with_deprecation` | `mark_experimental`, `mark_beta`, `mark_stable`, `with_deprecation` | `mark_experimental`, `mark_beta`, `mark_stable`, `with_deprecation` |
-| Schema ownership | Factory derives input schema from `Action::Input` and output schema from `Action::Output` | Registry derives config schema from `Component::Config` | Factory derives config schema from `Provider::Config` |
+| Schema ownership | Factory derives input schema from `Action::Input` and output schema from `Action::Output` | Registry derives config schema from `Component::Config` | Factory derives config schema from `Component::Config` |
 
 Entity-specific extras stay separate: actions add ports, isolation,
 checkpoint/effect policy, concurrency, admitted kind and output schema;
@@ -289,7 +290,7 @@ The **schema subsystem** (`nebula-schema` crate) is the **fifth concept**, share
 | Authored | `AuthoredValue` | Explicitly data or template authoring; no validation proof. |
 | Valid | `ValidValues` | Aliases/transforms applied once, programs compiled, declared secrets protected, pending checks explicit, schema snapshot retained. |
 | Resolved | `ResolvedValues` | Programs absent and every final rule/policy satisfied; still bound to the exact schema snapshot. |
-| Typed | `Action::Input`, `Credential::Config`, `Provider::Config`, or another destination type | Trusted decode at the owning boundary; proof wrappers do not enter author code. |
+| Typed | `Action::Input`, a credential or resource `Component::Config`, or another destination type | Trusted decode at the owning boundary; proof wrappers do not enter author code. |
 
 `ValidSchema::validate` consumes authored input. Only consuming completion
 through `resolve(context)` or data-only `resolve_data()` can produce
@@ -340,7 +341,7 @@ flowchart TB
     DATA["resolve_data()\nreject every program"]
     FULL["Full final validation\nno pending checks"]
     RV["ResolvedValues\nexpression-free, schema-bound"]
-    TYPED["Typed destination\nAction::Input / Credential::Config / Provider::Config"]
+    TYPED["Typed destination\nAction::Input / Component::Config"]
   end
 
   subgraph runtime["Runtime / engine"]
@@ -419,9 +420,9 @@ These are **schema-level** links: metadata and parameter types declare a closed 
 
 **Who** you are and **how** authentication is maintained. Credential code receives provider and transport capabilities through injected ports; a Credential must not depend on a Resource, Action, or ambient registry lookup. The `nebula-credential` crate owns rotation-state, refresh, lease, and the **stored state vs consumer-facing auth material** split (its runtime was consolidated there by ADR-0092; the engine keeps only accessor bridges). Authors declare a typed `Component::Config`, stored `State`, and projected `Scheme`; the runtime validates and typed-decodes the config before calling `resolve`. Initial acquisition and refresh receive separate narrow transports, and only refresh runs under the owned provider-to-persistence critical section. The built-in OAuth credential implements Authorization Code (mandatory PKCE S256) and Client Credentials only; there is no supported device-flow variant. Other auth families are available only where a concrete credential/composition path actually wires them. **Concrete shape:** see §3.7 (`nebula-credential`).
 
-**Resource** — `[ ResourceMetadata + Schema ]` — **may depend on Credential and/or other Resource types.**
+**Resource** — `[ Metadata + Schema ]` — **may depend on Credential and/or other Resource types.**
 
-Long-lived managed object: connection pool, SDK client, file handle. Resource lifecycle owns init, health-check, hot-reload via **ReloadOutcome**, bindings, per-slot credential-rotation fan-out, and scope-aware teardown. Authors declare `Provider::KEY` and return key-free `ResourceMetadata`; the selected `ResourceFactory` derives and caches the exact `R::Config` schema, and validation/registration consume that one definition before typed manager admission. A Resource may declare typed Credential slots and may build on other Resource types, but the resource dependency subgraph must remain acyclic and activation-validated. The author declares what the Resource **is**; the runtime provides it **healthy** or fails loudly. **Concrete shape:** see §3.6 (`nebula-resource`).
+Long-lived managed object: connection pool, SDK client, file handle. Resource lifecycle owns init, health-check, hot-reload via **ReloadOutcome**, bindings, per-slot credential-rotation fan-out, and scope-aware teardown. Authors declare `Component::KEY` and return key-free `Metadata`; the selected `ResourceFactory` derives and caches the exact `R::Config` schema, and validation/registration consume that one definition before typed manager admission. A Resource may declare typed Credential slots and may build on other Resource types, but the resource dependency subgraph must remain acyclic and activation-validated. The author declares what the Resource **is**; the runtime provides it **healthy** or fails loudly. **Concrete shape:** see §3.6 (`nebula-resource`).
 
 **Action** — `[ ActionDefinition + Schema ]` — **declares zero or more Resource and/or Credential kinds it needs** (by stable id / type reference in the **integration schema**, not ad hoc runtime lookup).
 

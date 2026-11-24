@@ -8,8 +8,8 @@ use std::sync::Arc;
 use nebula_credential::{
     Credential, CredentialContext, CredentialError, CredentialGuard, Metadata,
     SecretString, SecretToken, StaticResolveResult,
+    Component, kind,
 };
-use nebula_credential::{Component, kind};
 use nebula_resource::{CredentialSlot, HasCredentialSlots, PinSlots, Resource, SlotCell};
 use zeroize::Zeroize;
 

@@ -12,19 +12,16 @@ use nebula_core::{
     WorkflowVersionId, node_key,
 };
 use nebula_credential::{
-    AnyCredential, Credential, CredentialContext, Metadata, SecretString, SecretToken,
-    contract::plugin_capability_report, error::CredentialError, resolve::StaticResolveResult,
+    AnyCredential, Component, Credential, CredentialContext, Metadata, SecretString, SecretToken,
+    contract::plugin_capability_report, error::CredentialError, kind, resolve::StaticResolveResult,
 };
-use nebula_credential::{Component, kind};
 use nebula_error::Classify;
 use nebula_metadata::{PluginDependency, PluginManifest};
 use nebula_plugin::{
     Plugin, PluginManifestBuilder, PluginRegistry, RegistryFreezeError, ResolvedPlugin,
     RuntimeContractVersion, WorkerFlavorContext,
 };
-use nebula_resource::{
-    KindActivator, Provider, Resident, ResidentConfig, ResourceFactory, ResourceMetadata,
-};
+use nebula_resource::{KindActivator, Provider, Resident, ResidentConfig, ResourceFactory};
 use nebula_workflow::{NodeDefinition, WorkflowBuilder};
 use semver::{Version, VersionReq};
 
@@ -43,15 +40,9 @@ impl<const INDEX: usize> nebula_resource::HasCredentialSlots for MetadataFixture
 
 impl<const INDEX: usize> nebula_core::DeclaresDependencies for MetadataFixture<INDEX> {}
 
-#[async_trait::async_trait]
-impl<const INDEX: usize> Provider for MetadataFixture<INDEX> {
+impl<const INDEX: usize> Component for MetadataFixture<INDEX> {
+    type Kind = kind::Resource;
     type Config = ();
-    type Instance = ();
-    type Topology = Resident<Self>;
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("Metadata fixture"), "")
-    }
 
     const KEY: &'static str = match INDEX {
         0 => "alpha.db",
@@ -59,6 +50,16 @@ impl<const INDEX: usize> Provider for MetadataFixture<INDEX> {
         2 => "acme.storage.db",
         _ => panic!("resource metadata fixture index is not declared"),
     };
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("Metadata fixture"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl<const INDEX: usize> Provider for MetadataFixture<INDEX> {
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,

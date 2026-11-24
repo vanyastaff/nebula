@@ -1,11 +1,11 @@
 //! Queue rejection must not consume the installed epoch's hook admission.
 use super::{EpochRefreshOutcome, Manager, ManagerConfig, RegistrationSpec};
-use crate::resource::{HasCredentialSlots, ResourceMetadata};
 use crate::topology::resident::ResidentProvider;
 use crate::{
-    AcquireOptions, Error, Provider, Resident, ResidentConfig, ResourceConfig, ResourceContext,
-    SlotCell, SlotIdentity, SlotInstallError, SlotUpdate,
+    AcquireOptions, Component, Error, Provider, Resident, ResidentConfig, ResourceConfig,
+    ResourceContext, SlotCell, SlotIdentity, SlotInstallError, SlotUpdate, kind,
 };
+use crate::{Metadata, resource::HasCredentialSlots};
 use nebula_core::{CredentialId, ScopeLevel, scope::Scope};
 use nebula_credential::{CredentialGuard, CredentialGuardMetadata, ErasedCredentialGuard};
 use std::sync::{
@@ -14,7 +14,7 @@ use std::sync::{
 };
 use tokio_util::sync::CancellationToken;
 
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct Config;
 impl ResourceConfig for Config {
     fn fingerprint(&self) -> u64 {
@@ -36,15 +36,21 @@ struct SnapshotGate {
     released: std::sync::Mutex<bool>,
     resume: std::sync::Condvar,
 }
+impl Component for ProjectionResource {
+    type Kind = kind::Resource;
+    type Config = Config;
+
+    const KEY: &'static str = "projection-admission";
+
+    fn metadata() -> Metadata {
+        Metadata::new(crate::metadata_name!("projection-admission"), "")
+    }
+}
+
 #[async_trait::async_trait]
 impl Provider for ProjectionResource {
-    type Config = Config;
     type Instance = ();
     type Topology = Resident<Self>;
-    const KEY: &'static str = "projection-admission";
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(crate::metadata_name!("projection-admission"), "")
-    }
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<(), Error> {
         Ok(())
     }

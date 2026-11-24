@@ -24,27 +24,31 @@
 //! use async_trait::async_trait;
 //! use nebula_core::ScopeLevel;
 //! use nebula_resource::{
-//!     AcquireOptions, Error, Manager, PoolConfig, PoolProvider, Pooled, Provider,
-//!     RegistrationSpec, Resource, ResourceContext, SlotIdentity,
+//!     AcquireOptions, Component, Error, Manager, PoolConfig, PoolProvider, Pooled, Provider,
+//!     RegistrationSpec, Resource, ResourceContext, SlotIdentity, kind,
 //! };
 //!
 //! #[derive(Resource, Clone)]
 //! struct HttpClient;
 //!
-//! #[async_trait]
-//! impl Provider for HttpClient {
+//! impl Component for HttpClient {
+//!     type Kind = kind::Resource;
 //!     type Config = ();
-//!     type Instance = ();
-//!     type Topology = Pooled<Self>;
 //!
 //!     const KEY: &'static str = "quickstart.http_client";
 //!
-//!     fn metadata() -> nebula_resource::ResourceMetadata {
-//!         nebula_resource::ResourceMetadata::new(
+//!     fn metadata() -> nebula_resource::Metadata {
+//!         nebula_resource::Metadata::new(
 //!             nebula_resource::metadata_name!("HTTP client"),
 //!             "Pooled HTTP client",
 //!         )
 //!     }
+//! }
+//!
+//! #[async_trait]
+//! impl Provider for HttpClient {
+//!     type Instance = ();
+//!     type Topology = Pooled<Self>;
 //!
 //!     async fn create(&self, _config: &(), _ctx: &ResourceContext) -> Result<(), Error> {
 //!         Ok(())
@@ -294,7 +298,7 @@ pub use nebula_core::{ExecutionId, ResourceKey, ScopeLevel, WorkflowId, resource
 /// direct `nebula-eventbus` dependency.
 pub use nebula_eventbus::{EventBusStats, Subscriber};
 pub use nebula_metadata::{
-    DeprecationNotice, Icon, MaturityLevel, MetadataError, MetadataName, metadata_name,
+    DeprecationNotice, Icon, MaturityLevel, Metadata, MetadataError, MetadataName, metadata_name,
 };
 // Credential surface re-exported so resource consumers don't need a
 // direct nebula-credential dep for trait shape.
@@ -391,6 +395,8 @@ pub use factory::{
     ResourceActivatorRegistry, ResourceConfigInput, ResourceFactory, ResourceRegistrationOutcome,
     SlotBinding,
 };
+/// The shared component contract a resource provider is built on.
+pub use nebula_component::{Component, key_of, kind};
 pub use nebula_schema::{HasSchema, Schema, ValidSchema, impl_empty_has_schema};
 pub use options::AcquireOptions;
 pub use rate_limit::RateLimitProfile;
@@ -402,8 +408,8 @@ pub use release_queue::ReleaseQueue;
 pub use reload::ReloadOutcome;
 pub use resource::{
     CheckCost, HasCredentialSlots, Provider, RecordedResourceDefinition, ResourceAdmissionError,
-    ResourceCompatibilityError, ResourceConfig, ResourceDefinition, ResourceMetadata,
-    ResourceReadmissionError, TeardownCx, TeardownReason, key_of,
+    ResourceCompatibilityError, ResourceConfig, ResourceDefinition, ResourceReadmissionError,
+    TeardownCx, TeardownReason,
 };
 pub use slot::{CredentialSlot, SlotCell, SlotInstallError, SlotUpdate};
 // Runtime types — the framework topologies needed for `Manager::register()`.
@@ -448,15 +454,21 @@ pub use credential_fanout::{
 /// #[derive(Clone)]
 /// struct MyResource;
 ///
+/// impl Component for MyResource {
+///     type Kind = kind::Resource;
+///     type Config = ();
+///
+///     const KEY: &'static str = "my.resource";
+///
+///     fn metadata() -> Metadata {
+///         Metadata::new(nebula_resource::metadata_name!("My resource"), "")
+///     }
+/// }
+///
 /// #[async_trait::async_trait]
 /// impl Provider for MyResource {
-///     type Config = ();
 ///     type Instance = ();
 ///     type Topology = Pooled<Self>;
-///     const KEY: &'static str = "my.resource";
-///     fn metadata() -> ResourceMetadata {
-///         ResourceMetadata::new(nebula_resource::metadata_name!("My resource"), "")
-///     }
 ///     async fn create(&self, _: &(), _: &ResourceContext) -> Result<(), Error> {
 ///         Ok(())
 ///     }
@@ -470,9 +482,9 @@ pub use credential_fanout::{
 /// ```
 pub mod prelude {
     pub use crate::{
-        AcquireOptions, Error, ErrorKind, HasCredentialSlots, Manager, PoolConfig, Pooled,
-        Provider, RegistrationSpec, ReleaseOutcome, Resident, ResidentConfig, ResourceConfig,
-        ResourceContext, ResourceDefinition, ResourceGuard, ResourceKey, ResourceMetadata,
-        ScopeLevel, ShutdownConfig, SlotCell, SlotIdentity, TopologyTag, resource_key,
+        AcquireOptions, Component, Error, ErrorKind, HasCredentialSlots, Manager, Metadata,
+        PoolConfig, Pooled, Provider, RegistrationSpec, ReleaseOutcome, Resident, ResidentConfig,
+        ResourceConfig, ResourceContext, ResourceDefinition, ResourceGuard, ResourceKey,
+        ScopeLevel, ShutdownConfig, SlotCell, SlotIdentity, TopologyTag, kind, resource_key,
     };
 }

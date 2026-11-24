@@ -17,12 +17,11 @@ use nebula_core::auth::{
     AuthPattern, AuthScheme, EgressShape, RefreshStrategyKind, SchemeFamily, SensitiveScheme,
 };
 use nebula_credential::{
-    Capabilities, Credential, CredentialContext, CredentialRegistry, CredentialState, Metadata,
-    RefreshAttempt, RefreshReport, Refreshable, Revocable, SecretString,
-    contract::plugin_capability_report, error::CredentialError, resolve::StaticResolveResult,
+    Capabilities, Component, Credential, CredentialContext, CredentialRegistry, CredentialState,
+    Metadata, RefreshAttempt, RefreshReport, Refreshable, Revocable, SecretString,
+    contract::plugin_capability_report, error::CredentialError, kind, resolve::StaticResolveResult,
     scheme::SecretToken,
 };
-use nebula_credential::{Component, kind};
 use serde::{Deserialize, Serialize};
 
 // ── Static probe credential — zero capabilities ────────────────────

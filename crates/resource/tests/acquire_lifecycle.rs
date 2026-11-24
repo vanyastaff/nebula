@@ -20,11 +20,11 @@ use common::{
 };
 use nebula_core::resource_key;
 use nebula_resource::{
-    AcquireOptions, Manager, ManagerConfig, Pooled, RegistrationSpec, Resident, ResidentConfig,
-    ResourceContext, ScopeLevel, ShutdownConfig, SlotIdentity, TopologyTag,
+    AcquireOptions, Manager, ManagerConfig, Metadata, Pooled, RegistrationSpec, Resident,
+    ResidentConfig, ResourceContext, ScopeLevel, ShutdownConfig, SlotIdentity, TopologyTag,
     error::{Error, ErrorKind},
     guard::ResourceGuard,
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig},
     topology::pooled::{BrokenCheck, PoolProvider},
 };
 
@@ -616,13 +616,21 @@ struct SlowCreatePoolResource {
     peak: Arc<AtomicU64>,
 }
 
-#[async_trait::async_trait]
-impl Provider for SlowCreatePoolResource {
+impl nebula_resource::Component for SlowCreatePoolResource {
+    type Kind = nebula_resource::kind::Resource;
     type Config = TestConfig;
-    type Instance = Arc<AtomicU64>;
-    type Topology = Pooled<Self>;
 
     const KEY: &'static str = "slow-create-pool";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("slow-create-pool"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for SlowCreatePoolResource {
+    type Instance = Arc<AtomicU64>;
+    type Topology = Pooled<Self>;
 
     async fn create(
         &self,
@@ -646,10 +654,6 @@ impl Provider for SlowCreatePoolResource {
         _cx: nebula_resource::TeardownCx,
     ) -> Result<(), Error> {
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("slow-create-pool"), "")
     }
 }
 

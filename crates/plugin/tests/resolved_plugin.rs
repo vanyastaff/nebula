@@ -8,15 +8,12 @@ use nebula_action::{
 };
 use nebula_core::{ActionKey, CredentialKey, Dependencies, ResourceKey};
 use nebula_credential::{
-    AnyCredential, Credential, CredentialContext, Metadata, SecretString, SecretToken,
-    contract::plugin_capability_report, error::CredentialError, resolve::StaticResolveResult,
+    AnyCredential, Component, Credential, CredentialContext, Metadata, SecretString, SecretToken,
+    contract::plugin_capability_report, error::CredentialError, kind, resolve::StaticResolveResult,
 };
-use nebula_credential::{Component, kind};
 use nebula_metadata::PluginManifest;
 use nebula_plugin::{ComponentKind, Plugin, PluginError, ResolvedPlugin};
-use nebula_resource::{
-    KindActivator, Provider, Resident, ResidentConfig, ResourceFactory, ResourceMetadata,
-};
+use nebula_resource::{KindActivator, Provider, Resident, ResidentConfig, ResourceFactory};
 
 #[derive(Clone)]
 struct MetadataFixture<const INDEX: usize>;
@@ -33,15 +30,9 @@ impl<const INDEX: usize> nebula_resource::HasCredentialSlots for MetadataFixture
 
 impl<const INDEX: usize> nebula_core::DeclaresDependencies for MetadataFixture<INDEX> {}
 
-#[async_trait::async_trait]
-impl<const INDEX: usize> Provider for MetadataFixture<INDEX> {
+impl<const INDEX: usize> Component for MetadataFixture<INDEX> {
+    type Kind = kind::Resource;
     type Config = ();
-    type Instance = ();
-    type Topology = Resident<Self>;
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("Metadata fixture"), "")
-    }
 
     const KEY: &'static str = match INDEX {
         0 => "slack.http_client",
@@ -53,6 +44,16 @@ impl<const INDEX: usize> Provider for MetadataFixture<INDEX> {
         6 => "http.pool",
         _ => panic!("resource metadata fixture index is not declared"),
     };
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("Metadata fixture"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl<const INDEX: usize> Provider for MetadataFixture<INDEX> {
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,

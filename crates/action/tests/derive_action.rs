@@ -215,7 +215,7 @@ mod resource_handle_fields {
         AcquireOptions, ErrorKind, Manager, PinSlots, RegistrationSpec, Resident, ResidentConfig,
         ResourceConfig, ResourceContext, SlotIdentity,
         call::{Cost, Effect, Operation, OperationCx, OperationError, ResourceHandle},
-        resource::{Provider, ResourceMetadata},
+        resource::{Component, Metadata, Provider, kind},
         topology::ResidentProvider,
     };
     use nebula_workflow::NodeDefinition;
@@ -223,7 +223,7 @@ mod resource_handle_fields {
 
     use super::*;
 
-    #[derive(Clone, nebula_schema::Schema)]
+    #[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
     struct Config;
 
     impl ResourceConfig for Config {
@@ -237,17 +237,21 @@ mod resource_handle_fields {
             #[derive(Clone)]
             struct $ty;
 
-            #[async_trait::async_trait]
-            impl Provider for $ty {
+            impl Component for $ty {
+                type Kind = kind::Resource;
                 type Config = Config;
-                type Instance = u64;
-                type Topology = Resident<Self>;
 
                 const KEY: &'static str = $key;
 
-                fn metadata() -> ResourceMetadata {
-                    ResourceMetadata::new(nebula_resource::metadata_name!($key), "")
+                fn metadata() -> Metadata {
+                    Metadata::new(nebula_resource::metadata_name!($key), "")
                 }
+            }
+
+            #[async_trait::async_trait]
+            impl Provider for $ty {
+                type Instance = u64;
+                type Topology = Resident<Self>;
 
                 async fn create(
                     &self,

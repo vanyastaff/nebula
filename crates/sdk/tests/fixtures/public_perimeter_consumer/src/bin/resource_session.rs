@@ -3,9 +3,9 @@
 //! resource handle, all through `nebula_sdk::integration::resource`.
 
 use nebula_sdk::integration::resource::{
-    Cost, Effect, Error, OperationError, PoolProvider, Pooled, Provider, ResourceContext,
-    ResourceHandle, ResourceMetadata, SessionBinding, SessionClosed, SessionEnd, SessionProvider,
-    SessionSpec, no_credential_slots,
+    Component, Cost, Effect, Error, Metadata, OperationError, PoolProvider, Pooled, Provider,
+    ResourceContext, ResourceHandle, SessionBinding, SessionClosed, SessionEnd, SessionProvider,
+    SessionSpec, kind, no_credential_slots,
 };
 
 /// A connection that applies statements only when a transaction commits.
@@ -31,17 +31,21 @@ impl Tx<'_> {
 struct Ledger;
 no_credential_slots!(Ledger);
 
-#[async_trait::async_trait]
-impl Provider for Ledger {
+impl Component for Ledger {
+    type Kind = kind::Resource;
     type Config = ();
-    type Instance = Conn;
-    type Topology = Pooled<Self>;
 
     const KEY: &'static str = "example.ledger";
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_sdk::prelude::metadata_name!("Ledger"), "")
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_sdk::prelude::metadata_name!("Ledger"), "")
     }
+}
+
+#[async_trait::async_trait]
+impl Provider for Ledger {
+    type Instance = Conn;
+    type Topology = Pooled<Self>;
 
     async fn create(&self, _: &(), _: &ResourceContext) -> Result<Conn, Error> {
         Ok(Conn::default())

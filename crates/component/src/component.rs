@@ -37,7 +37,7 @@ use crate::kind::ComponentKind;
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a component",
     label = "this type does not implement `Component`",
-    note = "implement `Component` for it, or derive the kind you need: `#[derive(Action)]`, `#[derive(Resource)]`, `#[derive(Credential)]`"
+    note = "implement `Component` for it next to its kind trait; for a credential, `#[credential]` emits both impls"
 )]
 pub trait Component: Sized + Send + Sync + 'static {
     /// Which kind of component this is: [`kind::Action`](crate::kind::Action),

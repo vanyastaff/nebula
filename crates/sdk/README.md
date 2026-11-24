@@ -185,7 +185,7 @@ Standalone `ResourceConfig` derives supply a schema only for unit/null and genui
 empty braced records; they never publish an empty contract for a populated struct.
 
 `HasSchema::schema()` and `schema_of::<T>()` remain fallible authoring contracts.
-`Action::metadata`, `Credential::metadata`, and `Provider::metadata` return schema-free
+`Action::metadata` and `Component::metadata` (for a credential or resource) return schema-free
 authored metadata. Runtime factories derive schemas from the associated companion types
 and own the only admission into terminal definitions. `ActionDefinition`, `CredentialDefinition`,
 `ResourceDefinition`, `BaseDefinition`, and admission errors are therefore not supported
@@ -194,13 +194,13 @@ SDK persona types.
 ### Catalog construction migration
 
 Use the author types from `integration::{action, credential, resource}` or `prelude`.
-`ActionMetadata`, `ResourceMetadata` and a credential's `Metadata` take no key
+`ActionMetadata` and the `Metadata` a credential or resource returns take no key
 (`new(MetadataName, description)` / `try_new(name, description)`): the identity is
-`Action::KEY`, `Provider::KEY` or `Credential::KEY`, declared once on the type, and
+`Action::KEY` or `Component::KEY`, declared once on the type, and
 `key_of::<A>()` returns an action's typed key.
 Credential constructors take no auth
 pattern; the registry derives it from the associated scheme. Resource authors
-implement `Provider::metadata` explicitly; `from_key` is removed. Action macros
+implement `Component::metadata` next to `Provider`; `from_key` is removed. Action macros
 preserve full SemVer, including prerelease and build metadata.
 
 `integration` and `prelude` curate `CatalogCategoryKey`, `CatalogLink`,
@@ -234,7 +234,7 @@ Resource authoring types, traits, and derives are in the prelude and the explici
 
 | Surface | What you use |
 |--------|----------------|
-| **Prelude** | `nebula_sdk::prelude::*` re-exports the author surface: derives `Resource` / `ResourceConfig` / `ClassifyError`; traits `Provider`, `ResourceConfig`, `HasCredentialSlots`, `PoolProvider`, `ResidentProvider`, `BoundedProvider`; topologies `Pooled`, `Resident`, `Bounded` with `PoolConfig` / `ResidentConfig` / `BoundedMode`; and `ResourceMetadata`, `ResourceContext`, `ResourceKey`, `resource_key!`, `ScopeLevel`, `SlotCell`, `TopologyTag`, `ReloadOutcome`, `Error`, `ErrorKind`, `no_credential_slots!`. See `prelude.rs` for a runnable pooled-resource example. |
+| **Prelude** | `nebula_sdk::prelude::*` re-exports the author surface: derives `Resource` / `ResourceConfig` / `ClassifyError`; traits `Provider`, `ResourceConfig`, `HasCredentialSlots`, `PoolProvider`, `ResidentProvider`, `BoundedProvider`; topologies `Pooled`, `Resident`, `Bounded` with `PoolConfig` / `ResidentConfig` / `BoundedMode`; the `Component` contract with `kind` and `Metadata`; and `ResourceContext`, `ResourceKey`, `resource_key!`, `ScopeLevel`, `SlotCell`, `TopologyTag`, `ReloadOutcome`, `Error`, `ErrorKind`, `no_credential_slots!`. See `prelude.rs` for a runnable pooled-resource example. |
 | **Derives** | `Resource` and `ResourceConfig` are covered by the SDK-only derive compile contract. Manual `Provider` authoring, including a consuming `destroy` over a non-Clone instance using `TeardownCx` and `TeardownReason`, is separately compile-checked through the prelude plus the general-purpose `async-trait` crate. |
 
 **Managed call facade:** `nebula_sdk::integration::resource` (not the prelude —

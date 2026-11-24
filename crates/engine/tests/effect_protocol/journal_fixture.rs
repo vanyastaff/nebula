@@ -19,7 +19,7 @@ use nebula_resource::{
     Manager, RegistrationSpec, Resident, ResidentConfig, ResourceContext, SlotIdentity,
     call::{Cost, Effect, Operation, OperationCx, OperationError},
     error::Error as ResourceError,
-    resource::{Provider as ResourceProvider, ResourceMetadata},
+    resource::{Component, Metadata, Provider as ResourceProvider, kind},
     topology::resident::ResidentProvider,
 };
 use nebula_storage_port::dto::EffectOccurrenceRecord;
@@ -380,17 +380,21 @@ impl Gateway {
 #[derive(Clone)]
 pub(super) struct Payments(Arc<Gateway>);
 
-#[async_trait::async_trait]
-impl ResourceProvider for Payments {
+impl Component for Payments {
+    type Kind = kind::Resource;
     type Config = ();
-    type Instance = Arc<Gateway>;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "test.journal.payments";
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("JournalPayments"), "")
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("JournalPayments"), "")
     }
+}
+
+#[async_trait::async_trait]
+impl ResourceProvider for Payments {
+    type Instance = Arc<Gateway>;
+    type Topology = Resident<Self>;
 
     async fn create(&self, (): &(), _: &ResourceContext) -> Result<Arc<Gateway>, ResourceError> {
         Ok(Arc::clone(&self.0))

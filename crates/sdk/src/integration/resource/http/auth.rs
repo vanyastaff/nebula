@@ -56,9 +56,10 @@ impl BearerMaterial for OAuth2Token {}
 /// ```
 /// use nebula_sdk::integration::credential::BearerTokenCredential;
 /// use nebula_sdk::integration::resource::{
-///     CredentialSlot, Error, OperationError, Provider, Resident, ResidentProvider, Resource,
-///     ResourceMetadata, ResourceContext,
+///     Component, CredentialSlot, Error, Metadata, OperationError, Provider, Resident,
+///     ResidentProvider, Resource, ResourceContext,
 ///     http::{Authorize, HttpApi, HttpConfig, HttpTransport},
+///     kind,
 /// };
 ///
 /// #[derive(Resource)]
@@ -67,17 +68,21 @@ impl BearerMaterial for OAuth2Token {}
 ///     token: CredentialSlot<BearerTokenCredential>,
 /// }
 ///
-/// #[async_trait::async_trait]
-/// impl Provider for GitHub {
+/// impl Component for GitHub {
+///     type Kind = kind::Resource;
 ///     type Config = HttpConfig;
-///     type Instance = HttpTransport;
-///     type Topology = Resident<Self>;
 ///
 ///     const KEY: &'static str = "example.github";
 ///
-///     fn metadata() -> ResourceMetadata {
-///         ResourceMetadata::new(nebula_sdk::prelude::metadata_name!("GitHub"), "")
+///     fn metadata() -> Metadata {
+///         Metadata::new(nebula_sdk::prelude::metadata_name!("GitHub"), "")
 ///     }
+/// }
+///
+/// #[async_trait::async_trait]
+/// impl Provider for GitHub {
+///     type Instance = HttpTransport;
+///     type Topology = Resident<Self>;
 ///
 ///     async fn create(&self, config: &HttpConfig, _: &ResourceContext) -> Result<HttpTransport, Error> {
 ///         HttpTransport::new(config)

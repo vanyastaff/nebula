@@ -13,11 +13,12 @@ use std::sync::Arc;
 use common::{PoolTestResource, ResidentTestResource, poll_until, test_config, test_ctx};
 use nebula_core::resource_key;
 use nebula_resource::{
-    AcquireOptions, Error, ErrorKind, Manager, ManagerConfig, Pooled, Provider, RegistrationSpec,
-    Resident, ResidentConfig, ResidentProvider, ResourceContext, ResourceEvent,
+    AcquireOptions, Component, Error, ErrorKind, Manager, ManagerConfig, Pooled, Provider,
+    RegistrationSpec, Resident, ResidentConfig, ResidentProvider, ResourceContext, ResourceEvent,
     RetirementFailureStage, RetirementOrigin, ScopeLevel, ShutdownConfig, ShutdownError,
     SlotIdentity, TeardownCx,
     guard::ResourceGuard,
+    kind,
     recovery::{RecoveryGate, RecoveryGateConfig},
 };
 
@@ -35,18 +36,9 @@ impl<const ID: u8> nebula_resource::HasCredentialSlots for FailingRetirementReso
 }
 impl<const ID: u8> ResidentProvider for FailingRetirementResource<ID> {}
 
-#[async_trait::async_trait]
-impl<const ID: u8> Provider for FailingRetirementResource<ID> {
+impl<const ID: u8> Component for FailingRetirementResource<ID> {
+    type Kind = kind::Resource;
     type Config = common::TestConfig;
-    type Instance = ();
-    type Topology = Resident<Self>;
-
-    fn metadata() -> nebula_resource::ResourceMetadata {
-        nebula_resource::ResourceMetadata::new(
-            nebula_resource::metadata_name!("FailingRetirementResource"),
-            "",
-        )
-    }
 
     const KEY: &'static str = match ID {
         0 => "test-failing-retirement-0",
@@ -61,6 +53,19 @@ impl<const ID: u8> Provider for FailingRetirementResource<ID> {
         9 => "test-failing-retirement-9",
         _ => panic!("declare a key for this resource id"),
     };
+
+    fn metadata() -> nebula_resource::Metadata {
+        nebula_resource::Metadata::new(
+            nebula_resource::metadata_name!("FailingRetirementResource"),
+            "",
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl<const ID: u8> Provider for FailingRetirementResource<ID> {
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,

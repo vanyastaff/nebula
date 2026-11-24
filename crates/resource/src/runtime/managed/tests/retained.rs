@@ -9,8 +9,8 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    AcquireOptions, Error, ErrorKind, Provider, ReplaceStatus, ResourceContext, ResourceMetadata,
-    ResourceStatus, RetainStatus, RetainedId, RetainedStore, TeardownCx,
+    AcquireOptions, Component, Error, ErrorKind, Metadata, Provider, ReplaceStatus,
+    ResourceContext, ResourceStatus, RetainStatus, RetainedId, RetainedStore, TeardownCx, kind,
     release_queue::{ReleaseQueue, ReleaseQueueHandle, SubmissionOutcome},
     resource::ResourceConfig,
     runtime::{
@@ -23,7 +23,7 @@ use crate::{
     },
 };
 
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct RetainedConfig;
 
 impl ResourceConfig for RetainedConfig {
@@ -86,13 +86,21 @@ struct RetainedResource {
     destroy_completed: Arc<Notify>,
 }
 
-#[async_trait::async_trait]
-impl Provider for RetainedResource {
+impl Component for RetainedResource {
+    type Kind = kind::Resource;
     type Config = RetainedConfig;
-    type Instance = Root;
-    type Topology = RetainedTopology;
 
     const KEY: &'static str = "managed-retained-regression";
+
+    fn metadata() -> Metadata {
+        Metadata::new(crate::metadata_name!("managed-retained-regression"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for RetainedResource {
+    type Instance = Root;
+    type Topology = RetainedTopology;
 
     async fn create(
         &self,
@@ -107,10 +115,6 @@ impl Provider for RetainedResource {
         drop(runtime);
         self.destroy_completed.notify_waiters();
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(crate::metadata_name!("managed-retained-regression"), "")
     }
 }
 

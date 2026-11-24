@@ -6,8 +6,9 @@
 use std::{num::NonZeroU32, time::Duration};
 
 use nebula_sdk::integration::resource::{
-    Cost, Effect, Error, ErrorKind, ResourceMetadata, Operation, OperationCx, OperationError,
-    Provider, Resident, ResidentProvider, ResourceContext, ResourceHandle, no_credential_slots,
+    Component, Cost, Effect, Error, ErrorKind, Metadata, Operation, OperationCx, OperationError,
+    Provider, Resident, ResidentProvider, ResourceContext, ResourceHandle, kind,
+    no_credential_slots,
 };
 use nebula_sdk::prelude::{Deserialize, Serialize, metadata_name};
 
@@ -53,17 +54,21 @@ fn classify(answer: Answer) -> Result<u64, OperationError> {
 struct Inventory;
 no_credential_slots!(Inventory);
 
-#[async_trait::async_trait]
-impl Provider for Inventory {
+impl Component for Inventory {
+    type Kind = kind::Resource;
     type Config = ();
-    type Instance = InventoryClient;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "example.inventory";
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(metadata_name!("Inventory"), "")
+    fn metadata() -> Metadata {
+        Metadata::new(metadata_name!("Inventory"), "")
     }
+}
+
+#[async_trait::async_trait]
+impl Provider for Inventory {
+    type Instance = InventoryClient;
+    type Topology = Resident<Self>;
 
     async fn create(&self, (): &(), _: &ResourceContext) -> Result<InventoryClient, Error> {
         Ok(InventoryClient)

@@ -31,19 +31,14 @@
 //! is unnecessary since the epoch is structurally `0`.
 
 use async_trait::async_trait;
+/// The component contract [`Provider`] is built on, and the catalog metadata
+/// it returns, re-exported next to it.
+pub use nebula_component::{Component, kind};
 use nebula_core::ResourceKey;
-/// What a resource's author says about it for the catalog: name, description,
-/// version, icon, links, tags, maturity.
-///
-/// This is the shared [`nebula_metadata::Metadata`] under the name resource
-/// authors use. It holds neither a key nor a schema: the factory stamps
-/// [`Provider::KEY`] and derives the schema from [`Provider::Config`] when it
-/// admits the resource as a [`ResourceDefinition`].
-pub type ResourceMetadata = nebula_metadata::Metadata;
+pub use nebula_metadata::Metadata;
 use nebula_metadata::{
     BaseCompatError, BaseDefinition, Definition, RecordedBaseDefinition, validate_base_compat,
 };
-use nebula_schema::ValidSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::context::ResourceContext;
@@ -144,7 +139,7 @@ impl ResourceConfig for () {
 ///
 /// The schema is always derived from the resource's `R::Config` type. Fields
 /// are private and exposed through getters; to change a static definition,
-/// return different [`ResourceMetadata`] from the provider. This admitted form
+/// return different [`Metadata`] from the provider. This admitted form
 /// serializes for catalogs but cannot be deserialized from wire or persistence
 /// data.
 #[non_exhaustive]
@@ -157,18 +152,27 @@ impl ResourceDefinition {
     /// Admits a provider's metadata under the provider's own key and the
     /// schema derived from its `Config`.
     ///
-    /// The metadata carries neither: the key is [`Provider::KEY`] and the
+    /// The metadata carries neither: the key is [`Component::KEY`] and the
     /// schema comes from the config type, so an admitted definition cannot
     /// name a resource other than the one it was built from.
-    #[tracing::instrument(name = "resource.metadata.admit", skip_all, err)]
+    #[tracing::instrument(name = "resource.metadata.admit", skip_all, fields(resource_key = R::KEY), err)]
+    pub(crate) fn admit_for<R: Provider>() -> Result<Self, ResourceAdmissionError> {
+        Self::from_base(nebula_component::admit::<R>()?)
+    }
+
+    /// Test-only admission from explicit parts, for shapes no real provider
+    /// type needs to declare.
+    #[cfg(test)]
     pub(crate) fn admit(
         key: ResourceKey,
-        metadata: ResourceMetadata,
-        schema: ValidSchema,
+        metadata: Metadata,
+        schema: nebula_schema::ValidSchema,
     ) -> Result<Self, ResourceAdmissionError> {
-        let definition = Self {
-            base: metadata.bind(key, schema)?,
-        };
+        Self::from_base(metadata.bind(key, schema)?)
+    }
+
+    fn from_base(base: BaseDefinition<ResourceKey>) -> Result<Self, ResourceAdmissionError> {
+        let definition = Self { base };
         nebula_metadata::check_json_record(&definition)
             .map_err(nebula_metadata::MetadataBuildError::from)?;
         Ok(definition)
@@ -430,10 +434,10 @@ impl CheckCost {
     }
 }
 
-/// Definition-site check of [`Provider::KEY`], behind `#[derive(Resource)]` and
+/// Definition-site check of [`Component::KEY`], behind `#[derive(Resource)]` and
 /// [`no_credential_slots!`](crate::no_credential_slots).
 ///
-/// [`key_of`] rejects an invalid literal when it is instantiated,
+/// [`key_of`](nebula_component::key_of) rejects an invalid literal when it is instantiated,
 /// which a build does and `cargo check` or an editor does not. A constant that
 /// names the concrete type is evaluated by both, so the mistake is reported
 /// where the resource is declared.
@@ -469,7 +473,7 @@ pub mod key_check {
     }
 }
 
-/// Asserts at the definition site that a concrete type's [`Provider::KEY`], if
+/// Asserts at the definition site that a concrete type's [`Component::KEY`], if
 /// it has one, is a valid resource key. See [`key_check`].
 #[doc(hidden)]
 #[macro_export]
@@ -488,23 +492,6 @@ macro_rules! __assert_provider_key {
             );
         };
     };
-}
-
-/// The typed key of provider `R`, derived from [`Provider::KEY`].
-///
-/// An invalid [`Provider::KEY`] literal fails the build of whatever
-/// instantiates this function for `R`, which registration always does, so
-/// nothing is left to validate at run time.
-#[must_use]
-pub fn key_of<R: Provider>() -> ResourceKey {
-    const {
-        assert!(
-            ResourceKey::is_valid_key_const(R::KEY),
-            "`Provider::KEY` is not a valid resource key"
-        );
-    }
-    // Checked above: a valid key literal is already in canonical form.
-    ResourceKey::from_static_unchecked(R::KEY)
 }
 
 /// Provider trait — 3 associated types + lifecycle methods (slot model).
@@ -557,9 +544,9 @@ pub fn key_of<R: Provider>() -> ResourceKey {
 // the framework's rotation/revoke fan-out unable to see it) into one
 // compile-time-enforced contract.
 #[async_trait]
-pub trait Provider: HasCredentialSlots + Send + Sync + Sized + 'static {
-    /// Operational configuration type (no secrets).
-    type Config: ResourceConfig;
+pub trait Provider:
+    Component<Kind = kind::Resource, Config: ResourceConfig> + HasCredentialSlots
+{
     /// The live resource handle.
     type Instance: Send + Sync + 'static;
     /// The lease topology backing this resource — the framework dispatches
@@ -577,16 +564,6 @@ pub trait Provider: HasCredentialSlots + Send + Sync + Sized + 'static {
     /// `R::Instance`), so the trait carries `R` rather than splitting an
     /// R-agnostic open trait from an R-aware bridge.
     type Topology: crate::topology::Topology<Self>;
-
-    /// The unique key identifying this resource type, such as `"postgres"`.
-    ///
-    /// This is the one place a resource's identity is declared. The typed
-    /// [`ResourceKey`] every registry, error and event carries is
-    /// [`key_of::<Self>()`](key_of), derived from this constant; the admitted
-    /// [`ResourceDefinition`] is stamped with it, so the catalog cannot name a
-    /// different resource. A literal that is not a valid resource key fails
-    /// the build where the provider is first used, not at registration.
-    const KEY: &'static str;
 
     /// Creates a new instance from config.
     ///
@@ -803,14 +780,6 @@ pub trait Provider: HasCredentialSlots + Send + Sync + Sized + 'static {
         let _ = (instance, cx);
         Ok(())
     }
-
-    /// Returns what the catalog shows for this resource: name, description,
-    /// icon, tags, version.
-    ///
-    /// The metadata carries neither a key nor a schema. The resource factory
-    /// stamps [`Self::KEY`] and derives the canonical configuration schema
-    /// from [`Self::Config`]; authors cannot supply either.
-    fn metadata() -> ResourceMetadata;
 
     /// The provider's limits and how stored rows may override them.
     ///
@@ -1047,10 +1016,9 @@ mod tests {
     use nebula_schema::ValidSchema;
     use semver::Version;
 
-    use super::{
-        RecordedResourceDefinition, ResourceCompatibilityError, ResourceDefinition,
-        ResourceMetadata,
-    };
+    use nebula_metadata::Metadata;
+
+    use super::{RecordedResourceDefinition, ResourceCompatibilityError, ResourceDefinition};
 
     fn empty_schema() -> ValidSchema {
         ValidSchema::empty()
@@ -1059,7 +1027,7 @@ mod tests {
     fn md(major: u64, minor: u64) -> ResourceDefinition {
         ResourceDefinition::admit(
             crate::resource_key!("postgres"),
-            ResourceMetadata::new(crate::metadata_name!("pg"), "d")
+            Metadata::new(crate::metadata_name!("pg"), "d")
                 .with_version(Version::new(major, minor, 0)),
             empty_schema(),
         )
@@ -1081,7 +1049,7 @@ mod tests {
         let historical: ValidSchema = serde_json::from_str(r#"{"fields":[]}"#).unwrap();
         let result = ResourceDefinition::admit(
             crate::resource_key!("postgres"),
-            ResourceMetadata::new(crate::metadata_name!("pg"), "d"),
+            Metadata::new(crate::metadata_name!("pg"), "d"),
             historical,
         );
         std::assert_matches!(result, Err(super::ResourceAdmissionError::Definition(nebula_metadata::MetadataBuildError::Schema(report)))
@@ -1134,7 +1102,7 @@ mod tests {
         let version = Version::parse("2.1.3-alpha.1+build.7").expect("valid test version");
         let metadata = ResourceDefinition::admit(
             crate::resource_key!("postgres"),
-            ResourceMetadata::new(crate::metadata_name!("pg"), "d").with_version(version.clone()),
+            Metadata::new(crate::metadata_name!("pg"), "d").with_version(version.clone()),
             empty_schema(),
         )
         .expect("valid resource metadata");

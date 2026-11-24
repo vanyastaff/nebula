@@ -17,7 +17,7 @@ use nebula_resource::prelude::*;
 use nebula_resource::topology::pooled::{BrokenCheck, PoolProvider};
 use tokio_util::sync::CancellationToken;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Deserialize)]
 struct HttpConfig {
     base_url: String,
 }
@@ -56,17 +56,21 @@ struct HttpClient {
 #[derive(Clone)]
 struct HttpResource;
 
-#[async_trait::async_trait]
-impl Provider for HttpResource {
+impl Component for HttpResource {
+    type Kind = kind::Resource;
     type Config = HttpConfig;
-    type Instance = HttpClient;
-    type Topology = Pooled<Self>;
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("HttpResource"), "")
-    }
 
     const KEY: &'static str = "http.client.prelude";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("HttpResource"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for HttpResource {
+    type Instance = HttpClient;
+    type Topology = Pooled<Self>;
 
     async fn create(
         &self,

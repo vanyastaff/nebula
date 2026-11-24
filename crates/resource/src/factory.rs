@@ -719,8 +719,7 @@ where
     }
 
     fn admit_definition(&self) -> Result<ResourceDefinition, crate::ResourceAdmissionError> {
-        let schema = nebula_schema::schema_of::<R::Config>()?;
-        ResourceDefinition::admit(crate::key_of::<R>(), R::metadata(), schema)
+        ResourceDefinition::admit_for::<R>()
     }
 }
 

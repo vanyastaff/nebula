@@ -21,14 +21,14 @@ use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use nebula_resource::{
-    AcquireOptions, Error, Manager, PoolConfig, Pooled, Provider, RegistrationSpec, Resident,
-    ResidentConfig, ResourceConfig, ResourceContext, ScopeLevel, SlotIdentity,
-    resource::ResourceMetadata,
+    AcquireOptions, Component, Error, Manager, PoolConfig, Pooled, Provider, RegistrationSpec,
+    Resident, ResidentConfig, ResourceConfig, ResourceContext, ScopeLevel, SlotIdentity, kind,
+    resource::Metadata,
     topology::pooled::{PoolProvider, RecycleDecision},
     topology::resident::ResidentProvider,
 };
 
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct BenchCfg;
 
 impl ResourceConfig for BenchCfg {
@@ -47,20 +47,24 @@ impl ResourceConfig for BenchCfg {
 #[derive(Clone)]
 struct KeepPool;
 
-#[async_trait::async_trait]
-impl Provider for KeepPool {
+impl Component for KeepPool {
+    type Kind = kind::Resource;
     type Config = BenchCfg;
-    type Instance = u64;
-    type Topology = Pooled<Self>;
 
     const KEY: &'static str = "bench-pool-keep";
 
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("bench-pool-keep"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for KeepPool {
+    type Instance = u64;
+    type Topology = Pooled<Self>;
+
     async fn create(&self, _config: &BenchCfg, _ctx: &ResourceContext) -> Result<u64, Error> {
         Ok(0xBEEF)
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("bench-pool-keep"), "")
     }
 }
 
@@ -73,20 +77,24 @@ impl PoolProvider for KeepPool {}
 #[derive(Clone)]
 struct DiscardPool;
 
-#[async_trait::async_trait]
-impl Provider for DiscardPool {
+impl Component for DiscardPool {
+    type Kind = kind::Resource;
     type Config = BenchCfg;
-    type Instance = u64;
-    type Topology = Pooled<Self>;
 
     const KEY: &'static str = "bench-pool-discard";
 
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("bench-pool-discard"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for DiscardPool {
+    type Instance = u64;
+    type Topology = Pooled<Self>;
+
     async fn create(&self, _config: &BenchCfg, _ctx: &ResourceContext) -> Result<u64, Error> {
         Ok(0xDEAD)
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("bench-pool-discard"), "")
     }
 }
 
@@ -106,20 +114,24 @@ impl PoolProvider for DiscardPool {
 #[derive(Clone)]
 struct SharedResident;
 
-#[async_trait::async_trait]
-impl Provider for SharedResident {
+impl Component for SharedResident {
+    type Kind = kind::Resource;
     type Config = BenchCfg;
-    type Instance = u64;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "bench-resident";
 
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("bench-resident"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for SharedResident {
+    type Instance = u64;
+    type Topology = Resident<Self>;
+
     async fn create(&self, _config: &BenchCfg, _ctx: &ResourceContext) -> Result<u64, Error> {
         Ok(0xF00D)
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("bench-resident"), "")
     }
 }
 
@@ -260,20 +272,24 @@ impl BoundResident {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for BoundResident {
+impl Component for BoundResident {
+    type Kind = kind::Resource;
     type Config = BenchCfg;
-    type Instance = u64;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "bench-bound-resident";
 
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("bench-bound-resident"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for BoundResident {
+    type Instance = u64;
+    type Topology = Resident<Self>;
+
     async fn create(&self, _config: &BenchCfg, _ctx: &ResourceContext) -> Result<u64, Error> {
         Ok(0xCAFE)
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("bench-bound-resident"), "")
     }
 }
 

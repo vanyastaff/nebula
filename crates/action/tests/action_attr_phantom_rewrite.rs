@@ -40,10 +40,9 @@ use nebula_action::{
     StatelessAction,
 };
 use nebula_credential::{
-    AuthPattern, AuthScheme, Credential, CredentialContext, Metadata, error::CredentialError,
-    resolve::StaticResolveResult,
+    AuthPattern, AuthScheme, Component, Credential, CredentialContext, Metadata,
+    error::CredentialError, kind, resolve::StaticResolveResult,
 };
-use nebula_credential::{Component, kind};
 use serde::{Deserialize, Serialize};
 
 //.1 - the crate author declares the sealed module manually

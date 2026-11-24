@@ -49,7 +49,7 @@ use nebula_resource::Resident;
 use nebula_resource::{
     Manager, ScopeLevel, SlotIdentity,
     error::Error as ResourceError,
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Metadata, Provider, ResourceConfig},
     topology::resident,
 };
 
@@ -108,13 +108,24 @@ impl XResource {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for XResource {
+impl nebula_resource::Component for XResource {
+    type Kind = nebula_resource::kind::Resource;
     type Config = XConfig;
-    type Instance = Arc<AtomicU64>;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "xcross.widget";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
+            nebula_resource::metadata_name!("xcross.widget"),
+            String::new(),
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for XResource {
+    type Instance = Arc<AtomicU64>;
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,
@@ -123,13 +134,6 @@ impl Provider for XResource {
     ) -> Result<Arc<AtomicU64>, nebula_resource::Error> {
         let id = self.create_counter.fetch_add(1, Ordering::Relaxed);
         Ok(Arc::new(AtomicU64::new(id)))
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
-            nebula_resource::metadata_name!("xcross.widget"),
-            String::new(),
-        )
     }
 }
 

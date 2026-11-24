@@ -37,17 +37,21 @@ impl DummyResource {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for DummyResource {
+impl crate::Component for DummyResource {
+    type Kind = crate::kind::Resource;
     type Config = ();
-    type Instance = Payload;
-    type Topology = Pooled<Self>;
-
-    fn metadata() -> crate::ResourceMetadata {
-        crate::ResourceMetadata::new(crate::metadata_name!("DummyResource"), "")
-    }
 
     const KEY: &'static str = "guard-test";
+
+    fn metadata() -> crate::Metadata {
+        crate::Metadata::new(crate::metadata_name!("DummyResource"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for DummyResource {
+    type Instance = Payload;
+    type Topology = Pooled<Self>;
 
     async fn create(&self, (): &(), _: &ResourceContext) -> Result<Payload, crate::Error> {
         Ok(Payload {

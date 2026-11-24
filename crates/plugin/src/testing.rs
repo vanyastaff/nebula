@@ -459,20 +459,24 @@ impl nebula_resource::HasCredentialSlots for FixtureResource {
 
 impl nebula_core::DeclaresDependencies for FixtureResource {}
 
-#[async_trait::async_trait]
-impl nebula_resource::Provider for FixtureResource {
+impl nebula_resource::Component for FixtureResource {
+    type Kind = nebula_resource::kind::Resource;
     type Config = ();
-    type Instance = ();
-    type Topology = nebula_resource::Resident<Self>;
 
     const KEY: &'static str = "provider.resident";
 
-    fn metadata() -> nebula_resource::ResourceMetadata {
-        nebula_resource::ResourceMetadata::new(
+    fn metadata() -> nebula_resource::Metadata {
+        nebula_resource::Metadata::new(
             nebula_resource::metadata_name!("Resident"),
             "Admission-only resource",
         )
     }
+}
+
+#[async_trait::async_trait]
+impl nebula_resource::Provider for FixtureResource {
+    type Instance = ();
+    type Topology = nebula_resource::Resident<Self>;
 
     async fn create(
         &self,

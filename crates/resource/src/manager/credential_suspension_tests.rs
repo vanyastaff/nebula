@@ -19,11 +19,11 @@ use super::{
     Manager, RegistrationSpec,
 };
 use crate::{
-    AcquireOptions, Bounded, CredentialUnavailableReason, Error, ErrorKind, PoolConfig, Pooled,
-    Provider, Resident, ResidentConfig, ResourceConfig, ResourceContext, ResourceEvent,
-    ResourceGuard, SlotCell, SlotIdentity, SlotInstallError, SlotUpdate,
+    AcquireOptions, Bounded, Component, CredentialUnavailableReason, Error, ErrorKind, Metadata,
+    PoolConfig, Pooled, Provider, Resident, ResidentConfig, ResourceConfig, ResourceContext,
+    ResourceEvent, ResourceGuard, SlotCell, SlotIdentity, SlotInstallError, SlotUpdate, kind,
     recovery::{GateState, RecoveryGate, RecoveryGateConfig},
-    resource::{HasCredentialSlots, ResourceMetadata},
+    resource::HasCredentialSlots,
     runtime::managed::ManagedResource,
     topology::{
         BoundedProvider, PoolProvider, ResidentProvider,
@@ -35,7 +35,7 @@ const REAUTH: CredentialUnavailableReason = CredentialUnavailableReason::ReauthR
 const BLOCKED: CredentialUnavailableReason = CredentialUnavailableReason::OperationBlocked;
 const WAKE: Duration = Duration::from_secs(5);
 
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct Config {
     version: u64,
 }
@@ -95,17 +95,21 @@ macro_rules! credential_bound_provider {
             }
         }
 
-        #[async_trait::async_trait]
-        impl Provider for $ty {
+        impl Component for $ty {
+            type Kind = kind::Resource;
             type Config = Config;
-            type Instance = u64;
-            type Topology = $topology;
 
             const KEY: &'static str = $key;
 
-            fn metadata() -> ResourceMetadata {
-                ResourceMetadata::new(crate::metadata_name!($key), "")
+            fn metadata() -> Metadata {
+                Metadata::new(crate::metadata_name!($key), "")
             }
+        }
+
+        #[async_trait::async_trait]
+        impl Provider for $ty {
+            type Instance = u64;
+            type Topology = $topology;
 
             async fn create(&self, _: &Config, _: &ResourceContext) -> Result<u64, Error> {
                 self.probe.create().await
@@ -201,17 +205,21 @@ impl BoundedProvider for BoundedRow {}
 #[derive(Clone)]
 struct Unbound;
 
-#[async_trait::async_trait]
-impl Provider for Unbound {
+impl Component for Unbound {
+    type Kind = kind::Resource;
     type Config = Config;
-    type Instance = ();
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "suspension-unbound";
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(crate::metadata_name!("suspension-unbound"), "")
+    fn metadata() -> Metadata {
+        Metadata::new(crate::metadata_name!("suspension-unbound"), "")
     }
+}
+
+#[async_trait::async_trait]
+impl Provider for Unbound {
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<(), Error> {
         Ok(())

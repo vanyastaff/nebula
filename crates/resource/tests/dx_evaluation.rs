@@ -12,9 +12,10 @@ use std::sync::Arc;
 use nebula_core::ExecutionId;
 use nebula_resource::topology::pooled::PoolProvider;
 use nebula_resource::{
-    AcquireOptions, Manager, PoolConfig, Pooled, Provider, RegistrationSpec, ResidentConfig,
-    ResourceConfig, ResourceContext, ScopeLevel, ShutdownConfig, SlotIdentity,
+    AcquireOptions, Component, Manager, PoolConfig, Pooled, Provider, RegistrationSpec,
+    ResidentConfig, ResourceConfig, ResourceContext, ScopeLevel, ShutdownConfig, SlotIdentity,
     error::{Error, ErrorKind},
+    kind,
     topology::{Resident, pooled::BrokenCheck, resident::ResidentProvider},
 };
 use tokio_util::sync::CancellationToken;
@@ -37,7 +38,7 @@ use tokio_util::sync::CancellationToken;
 // Use Case 1: Pooled HTTP client
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct HttpConfig {
     base_url: String,
 }
@@ -73,17 +74,21 @@ struct HttpResource;
 // `type Error` removed from the trait, the impl is now just `Config` and
 // `Runtime` — the two that actually matter for a simple pooled resource.
 
-#[async_trait::async_trait]
-impl Provider for HttpResource {
+impl Component for HttpResource {
+    type Kind = kind::Resource;
     type Config = HttpConfig;
-    type Instance = HttpClient;
-    type Topology = Pooled<Self>;
-
-    fn metadata() -> nebula_resource::ResourceMetadata {
-        nebula_resource::ResourceMetadata::new(nebula_resource::metadata_name!("HttpResource"), "")
-    }
 
     const KEY: &'static str = "http.client";
+
+    fn metadata() -> nebula_resource::Metadata {
+        nebula_resource::Metadata::new(nebula_resource::metadata_name!("HttpResource"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for HttpResource {
+    type Instance = HttpClient;
+    type Topology = Pooled<Self>;
 
     async fn create(
         &self,
@@ -197,7 +202,7 @@ async fn use_case_1_invalid_config_is_rejected() {
 // Use Case 2: Resident config store
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct ConfigStoreConfig {
     env: String,
 }
@@ -221,20 +226,21 @@ struct ConfigStore {
 #[derive(Clone)]
 struct ConfigStoreResource;
 
-#[async_trait::async_trait]
-impl Provider for ConfigStoreResource {
+impl Component for ConfigStoreResource {
+    type Kind = kind::Resource;
     type Config = ConfigStoreConfig;
-    type Instance = ConfigStore;
-    type Topology = Resident<Self>;
-
-    fn metadata() -> nebula_resource::ResourceMetadata {
-        nebula_resource::ResourceMetadata::new(
-            nebula_resource::metadata_name!("ConfigStoreResource"),
-            "",
-        )
-    }
 
     const KEY: &'static str = "config.store";
+
+    fn metadata() -> nebula_resource::Metadata {
+        nebula_resource::Metadata::new(nebula_resource::metadata_name!("ConfigStoreResource"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for ConfigStoreResource {
+    type Instance = ConfigStore;
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,
@@ -322,7 +328,7 @@ async fn use_case_2_resident_config_store() {
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-#[derive(Clone, Debug, nebula_schema::Schema)]
+#[derive(Clone, Debug, nebula_schema::Schema, serde::Deserialize)]
 struct DbConfig {
     dsn: String,
     pool_size: u32,
@@ -363,17 +369,21 @@ impl DbResource {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for DbResource {
+impl Component for DbResource {
+    type Kind = kind::Resource;
     type Config = DbConfig;
-    type Instance = DbConnection;
-    type Topology = Pooled<Self>;
-
-    fn metadata() -> nebula_resource::ResourceMetadata {
-        nebula_resource::ResourceMetadata::new(nebula_resource::metadata_name!("DbResource"), "")
-    }
 
     const KEY: &'static str = "db.connection";
+
+    fn metadata() -> nebula_resource::Metadata {
+        nebula_resource::Metadata::new(nebula_resource::metadata_name!("DbResource"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for DbResource {
+    type Instance = DbConnection;
+    type Topology = Pooled<Self>;
 
     async fn create(
         &self,

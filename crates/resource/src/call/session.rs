@@ -80,9 +80,10 @@ pub type SessionFuture<'s, T> =
 /// use async_trait::async_trait;
 /// use nebula_core::ScopeLevel;
 /// use nebula_resource::{
-///     Error, Manager, ResourceMetadata, PoolConfig, PoolProvider, Pooled, Provider, RegistrationSpec,
-///     Resource, ResourceContext, SlotIdentity, metadata_name,
+///     Component, Error, Manager, Metadata, PoolConfig, PoolProvider, Pooled, Provider,
+///     RegistrationSpec, Resource, ResourceContext, SlotIdentity,
 ///     call::{Cost, OperationError, SessionClosed, SessionEnd, SessionProvider, SessionSpec},
+///     kind, metadata_name,
 /// };
 ///
 /// /// A connection that applies statements only when a transaction commits.
@@ -107,17 +108,21 @@ pub type SessionFuture<'s, T> =
 /// #[derive(Resource, Clone)]
 /// struct Ledger;
 ///
-/// #[async_trait]
-/// impl Provider for Ledger {
+/// impl Component for Ledger {
+///     type Kind = kind::Resource;
 ///     type Config = ();
-///     type Instance = Conn;
-///     type Topology = Pooled<Self>;
 ///
 ///     const KEY: &'static str = "doctest.ledger";
 ///
-///     fn metadata() -> ResourceMetadata {
-///         ResourceMetadata::new(metadata_name!("Ledger"), "")
+///     fn metadata() -> Metadata {
+///         Metadata::new(metadata_name!("Ledger"), "")
 ///     }
+/// }
+///
+/// #[async_trait]
+/// impl Provider for Ledger {
+///     type Instance = Conn;
+///     type Topology = Pooled<Self>;
 ///
 ///     async fn create(&self, _: &(), _: &ResourceContext) -> Result<Conn, Error> {
 ///         Ok(Conn::default())

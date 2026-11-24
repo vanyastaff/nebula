@@ -44,7 +44,7 @@ use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResidentConfig, ResourceContext,
     dedup::SlotIdentity,
     error::Error as ResourceError,
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Metadata, Provider, ResourceConfig},
     topology::resident::ResidentProvider,
 };
 use tokio::sync::broadcast;
@@ -52,7 +52,7 @@ use tokio_util::sync::CancellationToken;
 
 // ─── Fake bot resource ─────────────────────────────────────────────────────
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Deserialize)]
 struct TelegramConfig {
     /// What we'd register the bot under in Telegram (display only).
     handle: String,
@@ -132,13 +132,21 @@ impl TelegramBot {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for TelegramBot {
+impl nebula_resource::Component for TelegramBot {
+    type Kind = nebula_resource::kind::Resource;
     type Config = TelegramConfig;
-    type Instance = Arc<TelegramBotInner>;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "demo.telegram.bot";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("demo.telegram.bot"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for TelegramBot {
+    type Instance = Arc<TelegramBotInner>;
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,
@@ -167,10 +175,6 @@ impl Provider for TelegramBot {
     ) -> Result<(), ResourceError> {
         tracing::info!(instance_id = runtime.instance_id, "destroying Telegram bot");
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("demo.telegram.bot"), "")
     }
 }
 

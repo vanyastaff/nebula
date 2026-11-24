@@ -93,13 +93,24 @@ impl PgRow {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for PgRow {
+impl Component for PgRow {
+    type Kind = nebula_resource::kind::Resource;
     type Config = PgConfig;
-    type Instance = PgConnection;
-    type Topology = Pooled<Self>;
 
     const KEY: &'static str = "activation.pg";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
+            nebula_resource::metadata_name!("activation.pg"),
+            String::new(),
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for PgRow {
+    type Instance = PgConnection;
+    type Topology = Pooled<Self>;
 
     async fn create(
         &self,
@@ -140,13 +151,6 @@ impl Provider for PgRow {
             // Dropped past the deadline: the socket closes with it.
             Err(_elapsed) => Ok(()),
         }
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
-            nebula_resource::metadata_name!("activation.pg"),
-            String::new(),
-        )
     }
 }
 

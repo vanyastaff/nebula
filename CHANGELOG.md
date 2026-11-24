@@ -11,6 +11,25 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **A resource provider is a `Component`.** `Provider` now has
+  `Component<Kind = kind::Resource, Config: ResourceConfig>` as its supertrait
+  and keeps `Instance`, `Topology`, `create` and the lifecycle hooks. The key,
+  the config type and the catalog metadata move to the `Component` impl, the
+  same one a credential has. `Action` moves onto `Component` next.
+
+  | Before | After |
+  |---|---|
+  | `impl Provider for R { type Config = C; type Instance = I; type Topology = T; const KEY = ..; fn metadata() .. }` | `impl Component for R { type Kind = kind::Resource; type Config = C; const KEY = ..; fn metadata() .. }` plus `impl Provider for R { type Instance = I; type Topology = T; .. }` |
+  | `ResourceMetadata` | `nebula_metadata::Metadata` (re-exported as `nebula_resource::Metadata`, in `nebula_sdk::integration::resource` and the SDK prelude) |
+  | `nebula_resource::key_of` (resource-only) | `nebula_component::key_of`, re-exported as `nebula_resource::key_of` |
+  | `R::KEY`, `R::metadata()` with only `Provider` in scope | the same, with `Component` in scope (`nebula_resource::{Component, kind}`) |
+
+  A resource config must now be `DeserializeOwned`, which `Component::Config`
+  requires; registration already decoded it, so only configs that never went
+  through the factory need `#[derive(Deserialize)]`. `#[async_trait]` stays on
+  the `Provider` impl; the `Component` impl has no async methods.
+  `#[derive(Resource)]` is unchanged and still emits no `Component` impl.
+
 - **A credential is a `Component`.** The new `nebula-component` crate holds the
   one contract every integration component implements: `Kind`, `Config`, `KEY`
   and `metadata()`. `Credential` now has `Component<Kind = kind::Credential>`

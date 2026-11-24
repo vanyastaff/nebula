@@ -1,7 +1,7 @@
 error[E0407]: method `shutdown` is not a member of trait `Provider`
-  --> tests/probes/provider_has_no_shutdown_hook.rs:29:5
+  --> tests/probes/provider_has_no_shutdown_hook.rs:37:5
    |
-29 | /     async fn shutdown(&self, _instance: &()) -> Result<(), Error> {
-30 | |         Ok(())
-31 | |     }
+37 | /     async fn shutdown(&self, _instance: &()) -> Result<(), Error> {
+38 | |         Ok(())
+39 | |     }
    | |_____^ not a member of trait `Provider`

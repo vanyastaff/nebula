@@ -44,7 +44,7 @@ use nebula_resource::Resident;
 use nebula_resource::{
     Manager, RegistrationSpec, ResidentConfig, ResourceContext, SlotIdentity,
     error::Error as ResourceError,
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Metadata, Provider, ResourceConfig},
     topology::resident::ResidentProvider,
 };
 use nebula_workflow::{
@@ -110,7 +110,7 @@ impl StatelessAction for PipelineWitness {
 
 // ── Resource fixture for slot-binding integration check ────────────────────
 
-#[derive(Clone, Debug, nebula_schema::Schema)]
+#[derive(Clone, Debug, nebula_schema::Schema, serde::Deserialize)]
 struct WitnessResourceConfig {
     label: String,
 }
@@ -169,13 +169,24 @@ impl From<WitnessError> for ResourceError {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for WitnessResource {
+impl nebula_resource::Component for WitnessResource {
+    type Kind = nebula_resource::kind::Resource;
     type Config = WitnessResourceConfig;
-    type Instance = Arc<WitnessResourceInner>;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "phase9-witness-resource";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
+            nebula_resource::metadata_name!("phase9-witness-resource"),
+            "",
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for WitnessResource {
+    type Instance = Arc<WitnessResourceInner>;
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,
@@ -195,13 +206,6 @@ impl Provider for WitnessResource {
         _cx: nebula_resource::TeardownCx,
     ) -> Result<(), ResourceError> {
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
-            nebula_resource::metadata_name!("phase9-witness-resource"),
-            "",
-        )
     }
 }
 

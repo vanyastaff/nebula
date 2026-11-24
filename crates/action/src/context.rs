@@ -1048,7 +1048,7 @@ mod tests {
             ErrorKind, Manager, RegistrationSpec, Resident, ResidentConfig, ResourceConfig,
             ResourceContext, SlotIdentity,
             call::ResourceHandle,
-            resource::{Provider, ResourceMetadata},
+            resource::{Metadata, Provider},
             topology::ResidentProvider,
         };
 
@@ -1056,7 +1056,7 @@ mod tests {
 
         const RESOURCE_ID_CANARY: &str = "opaque_resource_canary_207";
 
-        #[derive(Clone, nebula_schema::Schema)]
+        #[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
         struct Config;
 
         impl ResourceConfig for Config {
@@ -1068,17 +1068,21 @@ mod tests {
         #[derive(Clone)]
         struct Ledger;
 
-        #[async_trait::async_trait]
-        impl Provider for Ledger {
+        impl nebula_resource::Component for Ledger {
+            type Kind = nebula_resource::kind::Resource;
             type Config = Config;
-            type Instance = ();
-            type Topology = Resident<Self>;
 
             const KEY: &'static str = "action.context.ledger";
 
-            fn metadata() -> ResourceMetadata {
-                ResourceMetadata::new(nebula_resource::metadata_name!("ledger"), "")
+            fn metadata() -> Metadata {
+                Metadata::new(nebula_resource::metadata_name!("ledger"), "")
             }
+        }
+
+        #[async_trait::async_trait]
+        impl Provider for Ledger {
+            type Instance = ();
+            type Topology = Resident<Self>;
 
             async fn create(
                 &self,

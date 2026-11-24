@@ -11,11 +11,12 @@ use tokio_util::sync::CancellationToken;
 
 use super::*;
 use crate::{
+    Metadata,
     context::ResourceContext,
     error::Error,
     recovery::gate::{RecoveryGate, RecoveryGateConfig},
     release_queue::ReleaseQueue,
-    resource::{Provider, ResourceConfig, ResourceMetadata, TeardownCx},
+    resource::{Provider, ResourceConfig, TeardownCx},
     runtime::managed::ManagedResource,
     state::ResourceStatus,
     topology::{
@@ -291,7 +292,7 @@ async fn hook_receipt_settles_before_blocked_retained_cleanup() {
 }
 
 // Minimal pooled resource config used by both test helpers.
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct PoolCfg;
 impl ResourceConfig for PoolCfg {
     fn fingerprint(&self) -> u64 {
@@ -351,13 +352,21 @@ impl Mock {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for Mock {
+impl crate::Component for Mock {
+    type Kind = crate::kind::Resource;
     type Config = PoolCfg;
-    type Instance = u64;
-    type Topology = Pooled<Self>;
 
     const KEY: &'static str = "acquire-loop-guard-mock";
+
+    fn metadata() -> Metadata {
+        Metadata::new(crate::metadata_name!("acquire-loop-guard-mock"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for Mock {
+    type Instance = u64;
+    type Topology = Pooled<Self>;
 
     async fn create(&self, _config: &PoolCfg, _ctx: &ResourceContext) -> Result<u64, Error> {
         let id = self.created.fetch_add(1, Ordering::SeqCst);
@@ -422,10 +431,6 @@ impl Provider for Mock {
             std::time::Duration::from_secs(30)
         }
     }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(crate::metadata_name!("acquire-loop-guard-mock"), "")
-    }
 }
 
 crate::no_credential_slots!(Mock);
@@ -447,13 +452,21 @@ impl RetainedHookMock {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for RetainedHookMock {
+impl crate::Component for RetainedHookMock {
+    type Kind = crate::kind::Resource;
     type Config = PoolCfg;
-    type Instance = u64;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "retained-hook-settlement-mock";
+
+    fn metadata() -> Metadata {
+        Metadata::new(crate::metadata_name!("retained-hook-settlement-mock"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for RetainedHookMock {
+    type Instance = u64;
+    type Topology = Resident<Self>;
 
     async fn create(&self, _config: &PoolCfg, _ctx: &ResourceContext) -> Result<u64, Error> {
         Ok(0)
@@ -463,10 +476,6 @@ impl Provider for RetainedHookMock {
         self.destroyed.fetch_add(1, Ordering::SeqCst);
         self.destroy_finished.notify_one();
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(crate::metadata_name!("retained-hook-settlement-mock"), "")
     }
 }
 

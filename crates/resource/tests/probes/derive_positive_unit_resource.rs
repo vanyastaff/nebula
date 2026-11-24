@@ -7,12 +7,12 @@
 //! - No `#[resource(...)]` container attribute is required.
 
 use nebula_resource::topology::resident::ResidentProvider;
-use nebula_resource::{Error, Resident, Resource, ResourceContext, resource::Provider};
+use nebula_resource::{Component, Error, Resident, Resource, ResourceContext, kind, resource::Provider};
 
 #[derive(Clone, Resource)]
 struct UnitResource;
 
-#[derive(Clone, Default, nebula_schema::Schema)]
+#[derive(Clone, Default, nebula_schema::Schema, serde::Deserialize)]
 struct MyConfig;
 
 impl nebula_resource::resource::ResourceConfig for MyConfig {
@@ -21,17 +21,21 @@ impl nebula_resource::resource::ResourceConfig for MyConfig {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for UnitResource {
+impl Component for UnitResource {
+    type Kind = kind::Resource;
     type Config = MyConfig;
-    type Instance = ();
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "positive.unit";
 
-    fn metadata() -> nebula_resource::ResourceMetadata {
-        nebula_resource::ResourceMetadata::new(nebula_resource::metadata_name!("UnitResource"), "")
+    fn metadata() -> nebula_resource::Metadata {
+        nebula_resource::Metadata::new(nebula_resource::metadata_name!("UnitResource"), "")
     }
+}
+
+#[async_trait::async_trait]
+impl Provider for UnitResource {
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     async fn create(&self, _config: &MyConfig, _ctx: &ResourceContext) -> Result<(), Error> {
         Ok(())

@@ -46,7 +46,7 @@ use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResidentConfig, ResourceContext,
     dedup::SlotIdentity,
     error::Error as ResourceError,
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Metadata, Provider, ResourceConfig},
     topology::resident::ResidentProvider,
 };
 use parking_lot::RwLock;
@@ -186,7 +186,7 @@ fn sheets_api() -> &'static MockSheetsApi {
 
 // ─── Resident resource ─────────────────────────────────────────────────────
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Deserialize)]
 struct GoogleSheetsConfig {
     /// Namespace tag for tracing — would carry timeout, retries, rate-limit
     /// caps in production.
@@ -309,13 +309,21 @@ impl GoogleSheets {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for GoogleSheets {
+impl nebula_resource::Component for GoogleSheets {
+    type Kind = nebula_resource::kind::Resource;
     type Config = GoogleSheetsConfig;
-    type Instance = GoogleSheetsClient;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "demo.google.sheets";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("demo.google.sheets"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for GoogleSheets {
+    type Instance = GoogleSheetsClient;
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,
@@ -343,10 +351,6 @@ impl Provider for GoogleSheets {
     ) -> Result<(), ResourceError> {
         tracing::info!("Resource::destroy — releasing GoogleSheetsClient");
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("demo.google.sheets"), "")
     }
 }
 

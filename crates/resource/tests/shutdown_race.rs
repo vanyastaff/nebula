@@ -30,10 +30,10 @@ use std::{
 use nebula_core::{ExecutionId, scope::Scope};
 use nebula_resource::ResidentConfig;
 use nebula_resource::{
-    AcquireOptions, Manager, Pooled, RegistrationSpec, Resident, ResourceContext, ScopeLevel,
-    ShutdownConfig, SlotIdentity, TopologyTag,
+    AcquireOptions, Manager, Metadata, Pooled, RegistrationSpec, Resident, ResourceContext,
+    ScopeLevel, ShutdownConfig, SlotIdentity, TopologyTag,
     error::{Error, ErrorKind},
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig},
     topology::{
         pooled::{BrokenCheck, PoolProvider},
         resident::ResidentProvider,
@@ -51,7 +51,7 @@ use tokio_util::sync::CancellationToken;
 // Custom error boilerplate removed — Resource lifecycle methods now return
 // `crate::Error` directly (HasCredentialSlots redesign).
 
-#[derive(Clone, Debug, Default, nebula_schema::Schema)]
+#[derive(Clone, Debug, Default, nebula_schema::Schema, serde::Deserialize)]
 struct SlowConfig;
 
 impl ResourceConfig for SlowConfig {
@@ -76,13 +76,24 @@ impl SlowCreateResource {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for SlowCreateResource {
+impl nebula_resource::Component for SlowCreateResource {
+    type Kind = nebula_resource::kind::Resource;
     type Config = SlowConfig;
-    type Instance = ();
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "test.shutdown_race.slow";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
+            nebula_resource::metadata_name!("test.shutdown_race.slow"),
+            "",
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for SlowCreateResource {
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     async fn create(&self, _config: &Self::Config, _ctx: &ResourceContext) -> Result<(), Error> {
         let delay = self.create_delay;
@@ -90,13 +101,6 @@ impl Provider for SlowCreateResource {
         tokio::time::sleep(delay).await;
         counter.fetch_add(1, Ordering::Relaxed);
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
-            nebula_resource::metadata_name!("test.shutdown_race.slow"),
-            "",
-        )
     }
 }
 
@@ -292,7 +296,7 @@ async fn lookup_rejects_acquire_after_shutdown_starts() {
 // not a barrier: maintenance publishes cleanup without awaiting queue receipts.
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug, Default, nebula_schema::Schema)]
+#[derive(Clone, Debug, Default, nebula_schema::Schema, serde::Deserialize)]
 struct PausablePoolConfig;
 
 impl ResourceConfig for PausablePoolConfig {
@@ -319,13 +323,24 @@ impl PausableEvictResource {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for PausableEvictResource {
+impl nebula_resource::Component for PausableEvictResource {
+    type Kind = nebula_resource::kind::Resource;
     type Config = PausablePoolConfig;
-    type Instance = ();
-    type Topology = Pooled<Self>;
 
     const KEY: &'static str = "test.shutdown_race.pausable_evict";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
+            nebula_resource::metadata_name!("test.shutdown_race.pausable_evict"),
+            "",
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for PausableEvictResource {
+    type Instance = ();
+    type Topology = Pooled<Self>;
 
     async fn create(&self, _config: &Self::Config, _ctx: &ResourceContext) -> Result<(), Error> {
         self.create_count.fetch_add(1, Ordering::SeqCst);
@@ -336,13 +351,6 @@ impl Provider for PausableEvictResource {
         self.check_entered.notify_one();
         self.release_check.notified().await;
         Err(Error::cancelled())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
-            nebula_resource::metadata_name!("test.shutdown_race.pausable_evict"),
-            "",
-        )
     }
 }
 

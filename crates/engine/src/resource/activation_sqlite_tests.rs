@@ -95,13 +95,24 @@ impl BearerRow {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for BearerRow {
+impl Component for BearerRow {
+    type Kind = nebula_resource::kind::Resource;
     type Config = LabelConfig;
-    type Instance = Arc<AtomicU64>;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "activation.bearer";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
+            nebula_resource::metadata_name!("activation.bearer"),
+            String::new(),
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for BearerRow {
+    type Instance = Arc<AtomicU64>;
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,
@@ -109,13 +120,6 @@ impl Provider for BearerRow {
         _ctx: &ResourceContext,
     ) -> Result<Arc<AtomicU64>, ResourceError> {
         Ok(Arc::new(AtomicU64::new(1)))
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
-            nebula_resource::metadata_name!("activation.bearer"),
-            String::new(),
-        )
     }
 }
 

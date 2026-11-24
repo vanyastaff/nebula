@@ -838,11 +838,12 @@ mod fanout_dispatch {
     use std::time::Duration;
 
     use crate::{
-        AcquireOptions, Manager, ManagerConfig, Provider, Resident, ResidentConfig, ResourceConfig,
-        ResourceContext, ResourceEvent,
+        AcquireOptions, Component, Manager, ManagerConfig, Metadata, Provider, Resident,
+        ResidentConfig, ResourceConfig, ResourceContext, ResourceEvent,
         error::Error as ResourceError,
+        kind,
         release_queue::{ReleaseQueue, SubmissionOutcome},
-        resource::{HasCredentialSlots, ResourceMetadata},
+        resource::HasCredentialSlots,
         topology::resident::ResidentProvider,
     };
     use futures::FutureExt;
@@ -922,7 +923,7 @@ mod fanout_dispatch {
 
     /// Behaviour is keyed off the resolved slot identity carried by
     /// `CtlResource`, not config — so config is empty.
-    #[derive(Clone, nebula_schema::Schema)]
+    #[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
     struct Cfg;
 
     impl ResourceConfig for Cfg {
@@ -945,13 +946,21 @@ mod fanout_dispatch {
         ledger: Ledger,
     }
 
-    #[async_trait::async_trait]
-    impl Provider for CtlResource {
+    impl Component for CtlResource {
+        type Kind = kind::Resource;
         type Config = Cfg;
-        type Instance = Runtime;
-        type Topology = Resident<Self>;
 
         const KEY: &'static str = "fanout-ctl";
+
+        fn metadata() -> Metadata {
+            Metadata::new(crate::metadata_name!("fanout-ctl"), "")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for CtlResource {
+        type Instance = Runtime;
+        type Topology = Resident<Self>;
 
         async fn create(
             &self,
@@ -1016,10 +1025,6 @@ mod fanout_dispatch {
                     Ok(())
                 },
             }
-        }
-
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::new(crate::metadata_name!("fanout-ctl"), "")
         }
     }
 

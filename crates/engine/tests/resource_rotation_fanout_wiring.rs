@@ -37,10 +37,11 @@ use nebula_eventbus::EventBus;
 use nebula_metrics::MetricsRegistry;
 use nebula_resource::Resident;
 use nebula_resource::{
-    AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
+    AcquireOptions, Component, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
     ResourceContext, SlotIdentity,
     error::Error as ResourceError,
-    resource::{HasCredentialSlots, ResourceMetadata},
+    kind,
+    resource::{HasCredentialSlots, Metadata},
     topology::resident::ResidentProvider,
 };
 use nebula_resource::{ResourceFanoutDriver, ResourceFanoutIndex};
@@ -1558,13 +1559,24 @@ struct ReplacementResource {
     revocations: Arc<AtomicUsize>,
 }
 
-#[async_trait::async_trait]
-impl Provider for ReplacementResource {
+impl Component for ReplacementResource {
+    type Kind = kind::Resource;
     type Config = NoCfg;
-    type Instance = ();
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "fanout-replacement-order";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
+            nebula_resource::metadata_name!("fanout-replacement-order"),
+            "",
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for ReplacementResource {
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     async fn create(&self, _c: &NoCfg, _x: &ResourceContext) -> Result<(), ResourceError> {
         Ok(())
@@ -1581,13 +1593,6 @@ impl Provider for ReplacementResource {
         self.observed.store(value.0 as usize, Ordering::SeqCst);
         self.hooks.fetch_add(1, Ordering::SeqCst);
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
-            nebula_resource::metadata_name!("fanout-replacement-order"),
-            "",
-        )
     }
 }
 
@@ -1861,13 +1866,21 @@ struct Recording {
     rec: Recorder,
 }
 
-#[async_trait::async_trait]
-impl Provider for Recording {
+impl Component for Recording {
+    type Kind = kind::Resource;
     type Config = NoCfg;
-    type Instance = ();
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "fanout-wiring-rec";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("fanout-wiring-rec"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for Recording {
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     async fn create(&self, _c: &NoCfg, _x: &ResourceContext) -> Result<(), ResourceError> {
         Ok(())
@@ -1881,10 +1894,6 @@ impl Provider for Recording {
     async fn on_credential_revoke(&self, _s: &str, _r: &()) -> Result<(), ResourceError> {
         self.rec.revoke.fetch_add(1, Ordering::SeqCst);
         drive(self.behaviour).await
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("fanout-wiring-rec"), "")
     }
 }
 
@@ -1928,7 +1937,7 @@ async fn drive(b: Behaviour) -> Result<(), ResourceError> {
     }
 }
 
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct NoCfg;
 impl ResourceConfig for NoCfg {
     fn validate(&self) -> Result<(), ResourceError> {

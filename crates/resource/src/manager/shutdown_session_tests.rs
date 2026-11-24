@@ -14,9 +14,9 @@ use super::{
     DrainTimeoutPolicy, Manager, ManagerConfig, RegistrationSpec, ShutdownConfig, ShutdownError,
 };
 use crate::{
-    Error, ResourceContext, ResourceGuard, RetainStatus, RetainedStore, ScopeLevel, SlotIdentity,
-    TeardownCx,
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    Error, Metadata, ResourceContext, ResourceGuard, RetainStatus, RetainedStore, ScopeLevel,
+    SlotIdentity, TeardownCx,
+    resource::{Provider, ResourceConfig},
     topology::{CreatedEntry, Ticket, Topology, Unavailable, store::StoreView},
 };
 
@@ -63,7 +63,7 @@ async fn graceful_shutdown_clears_attached_rotation_bindings() {
     assert!(index.affected(&credential_id).is_empty());
 }
 
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct Config;
 impl ResourceConfig for Config {
     fn fingerprint(&self) -> u64 {
@@ -77,15 +77,21 @@ struct LeasedResource {
 }
 crate::no_credential_slots!(LeasedResource);
 
+impl crate::Component for LeasedResource {
+    type Kind = crate::kind::Resource;
+    type Config = Config;
+
+    const KEY: &'static str = "shutdown-session-lease";
+
+    fn metadata() -> Metadata {
+        Metadata::new(crate::metadata_name!("shutdown-session-lease"), "")
+    }
+}
+
 #[async_trait::async_trait]
 impl Provider for LeasedResource {
-    type Config = Config;
     type Instance = AtomicUsize;
     type Topology = QuiescingTopology;
-    const KEY: &'static str = "shutdown-session-lease";
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(crate::metadata_name!("shutdown-session-lease"), "")
-    }
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<AtomicUsize, Error> {
         Ok(AtomicUsize::new(7))
     }
@@ -593,15 +599,21 @@ struct ParentResource {
 }
 crate::no_credential_slots!(ParentResource);
 
+impl crate::Component for ParentResource {
+    type Kind = crate::kind::Resource;
+    type Config = Config;
+
+    const KEY: &'static str = "shutdown-session-parent";
+
+    fn metadata() -> Metadata {
+        Metadata::new(crate::metadata_name!("shutdown-session-parent"), "")
+    }
+}
+
 #[async_trait::async_trait]
 impl Provider for ParentResource {
-    type Config = Config;
     type Instance = ResourceGuard<LeasedResource>;
     type Topology = crate::Resident<Self>;
-    const KEY: &'static str = "shutdown-session-parent";
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(crate::metadata_name!("shutdown-session-parent"), "")
-    }
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<Self::Instance, Error> {
         self.child
             .lock()
