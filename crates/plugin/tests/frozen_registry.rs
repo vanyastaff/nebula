@@ -925,7 +925,7 @@ fn freeze_admits_overlapping_plugin_namespaces_with_distinct_keys() {
             .chain(
                 frozen
                     .all_credentials()
-                    .map(|(plugin, credential)| (plugin, credential.credential_key().to_owned())),
+                    .map(|(plugin, credential)| (plugin, credential.key().to_string())),
             )
             .chain(
                 frozen

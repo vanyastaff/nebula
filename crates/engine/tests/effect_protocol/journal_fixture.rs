@@ -3,7 +3,6 @@
 //! or of another [`Kind`] — submits effect units on the resource handle of a fake payment gateway that counts every
 //! provider call and deduplicates by the idempotency key it receives.
 
-use nebula_resource::ProviderKey;
 use std::{
     collections::HashMap,
     num::NonZeroU32,
@@ -655,7 +654,8 @@ async fn run_script(
     ctx: &(impl ActionContext + ?Sized),
 ) -> Result<Value, ActionError> {
     controls.dispatches.fetch_add(1, Ordering::SeqCst);
-    let handle = ctx.resource_handle_by_id::<Payments>(Payments::key().as_str())?;
+    let handle =
+        ctx.resource_handle_by_id::<Payments>(nebula_resource::key_of::<Payments>().as_str())?;
     if controls.drop_unpolled_once.swap(false, Ordering::SeqCst) {
         drop(handle.submit(Charge::<false>(UnitSpec {
             idempotent: false,
@@ -822,7 +822,8 @@ impl StatefulAction for StatefulCharge {
     ) -> Result<ActionResult<Value>, ActionError> {
         let script: IterationScript = serde_json::from_value(input.clone())
             .map_err(|error| ActionError::fatal(format!("bad script: {error}")))?;
-        let handle = ctx.resource_handle_by_id::<Payments>(Payments::key().as_str())?;
+        let handle =
+            ctx.resource_handle_by_id::<Payments>(nebula_resource::key_of::<Payments>().as_str())?;
         let iteration = state.next;
         let plan = handle.submit(Consult { iteration }).await?;
         if plan.fail {
@@ -998,7 +999,8 @@ async fn agent_turn(
 ) -> Result<ActionResult<Value>, ActionError> {
     let script: AgentScript = serde_json::from_value(state.script.clone())
         .map_err(|error| ActionError::fatal(format!("bad script: {error}")))?;
-    let handle = ctx.resource_handle_by_id::<Payments>(Payments::key().as_str())?;
+    let handle =
+        ctx.resource_handle_by_id::<Payments>(nebula_resource::key_of::<Payments>().as_str())?;
     let turn = state.turn;
     let plan = handle.submit(ConsultTurn { turn }).await?;
     let prompt = plan
@@ -1441,7 +1443,7 @@ impl JournalFixture {
             .with_resource_manager(Arc::clone(&self.manager));
         engine.record_resource_slot_identity(
             ScopeLevel::Global,
-            Payments::key(),
+            nebula_resource::key_of::<Payments>(),
             self.identity.lock().clone(),
         );
         // The registry resolves the node's action by its full key.
@@ -1489,7 +1491,7 @@ impl JournalFixture {
             );
         engine.record_resource_slot_identity(
             ScopeLevel::Global,
-            Payments::key(),
+            nebula_resource::key_of::<Payments>(),
             self.identity.lock().clone(),
         );
         engine

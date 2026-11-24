@@ -57,16 +57,16 @@ impl RegistryCredentialSchema {
         meta: &CredentialDefinition,
         caps: Capabilities,
     ) -> Result<CredentialTypeDescriptor, JsonSchemaExportError> {
-        let key = meta.key().as_str().to_owned();
-        let schema_json = meta.schema().json_schema()?.to_value();
+        let key = meta.base().key().as_str().to_owned();
+        let schema_json = meta.base().schema().json_schema()?.to_value();
         Ok(CredentialTypeDescriptor {
             key,
-            name: meta.name().to_owned(),
-            description: meta.description().to_owned(),
+            name: meta.base().name().to_owned(),
+            description: meta.base().description().to_owned(),
             auth_pattern: format!("{:?}", meta.pattern()),
             capabilities: Self::flags(caps),
-            icon: meta.icon().as_inline().map(str::to_owned),
-            documentation_url: meta.documentation_url().map(str::to_owned),
+            icon: meta.base().icon().as_inline().map(str::to_owned),
+            documentation_url: meta.base().documentation_url().map(str::to_owned),
             schema_json,
         })
     }
@@ -178,12 +178,13 @@ mod tests {
         assert_eq!(listed.len(), registry.catalog().count());
         for (metadata, capabilities) in registry.catalog() {
             let descriptor = port
-                .get_type(metadata.key().as_str())
+                .get_type(metadata.base().key().as_str())
                 .expect("catalog snapshot contains every admitted definition");
-            assert_eq!(descriptor.name, metadata.name());
+            assert_eq!(descriptor.name, metadata.base().name());
             assert_eq!(
                 descriptor.schema_json,
                 metadata
+                    .base()
                     .schema()
                     .json_schema()
                     .expect("admitted schema exports")

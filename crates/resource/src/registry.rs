@@ -3,7 +3,6 @@
 //! [`Registry`] stores managed resources indexed by [`ResourceKey`] and
 //! [`TypeId`], supporting scope-aware lookup and typed downcasting.
 
-use crate::resource::ProviderKey;
 use std::{
     any::{Any, TypeId},
     sync::Arc,
@@ -371,7 +370,7 @@ where
     R::Topology: crate::topology::Topology<R>,
 {
     fn resource_key(&self) -> ResourceKey {
-        R::key()
+        crate::key_of::<R>()
     }
 
     fn begin_close(&self) {

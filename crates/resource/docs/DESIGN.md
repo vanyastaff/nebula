@@ -48,7 +48,7 @@
 ## 4. Внутренняя архитектура
 
 - `lib.rs` — фасад, реэкспорты, `prelude`.
-- `resource.rs` — `Provider`, `ResourceConfig`, `HasCredentialSlots`, `Provider::KEY` + derived `ProviderKey::key()`, immutable `ResourceDefinition` (admitted from the shared key-free `ResourceMetadata`), recorded readmission evidence, `TeardownCx/Reason`, `CheckCost`.
+- `resource.rs` — `Provider`, `ResourceConfig`, `HasCredentialSlots`, `Provider::KEY` + derived `key_of::<R>()`, immutable `ResourceDefinition` (admitted from the shared key-free `ResourceMetadata`), recorded readmission evidence, `TeardownCx/Reason`, `CheckCost`.
 - `manager/` — `mod` (`Manager`, каноническая doc двухфазного revoke-инварианта), `acquire`, `gate`, `options`, `registration`, `rotation`, `shutdown`.
 - `topology/` — `contract` (открытый `Topology<R>`), `store` (`InstanceStore`), `pooled`/`resident`/`bounded` (hook-трейты + конфиги).
 - `runtime/` — `pool`/`resident`/`bounded` (сами структуры топологий), `managed` (`ManagedResource` — framework acquire loop).

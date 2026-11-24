@@ -182,11 +182,11 @@ impl RegistryCredentialSchema {
         metadata: &nebula_credential::CredentialDefinition,
         capabilities: Capabilities,
     ) -> Result<CredentialTypeDescriptor, JsonSchemaExportError> {
-        let key = metadata.key().as_str().to_owned();
+        let key = metadata.base().key().as_str().to_owned();
         Ok(CredentialTypeDescriptor {
             key,
-            name: metadata.name().to_owned(),
-            description: metadata.description().to_owned(),
+            name: metadata.base().name().to_owned(),
+            description: metadata.base().description().to_owned(),
             auth_pattern: format!("{:?}", metadata.pattern()),
             capabilities: CredentialCapabilityFlags {
                 interactive: capabilities.contains(Capabilities::INTERACTIVE),
@@ -194,9 +194,9 @@ impl RegistryCredentialSchema {
                 testable: capabilities.contains(Capabilities::TESTABLE),
                 revocable: capabilities.contains(Capabilities::REVOCABLE),
             },
-            icon: metadata.icon().as_inline().map(str::to_owned),
-            documentation_url: metadata.documentation_url().map(str::to_owned),
-            schema_json: metadata.schema().json_schema()?.to_value(),
+            icon: metadata.base().icon().as_inline().map(str::to_owned),
+            documentation_url: metadata.base().documentation_url().map(str::to_owned),
+            schema_json: metadata.base().schema().json_schema()?.to_value(),
         })
     }
 }

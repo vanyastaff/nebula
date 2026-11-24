@@ -7,7 +7,6 @@
 //!
 //! Topology policy transfers ownership; only the framework invokes destruction.
 
-use crate::resource::ProviderKey;
 use std::time::{Duration, Instant};
 
 use crate::{
@@ -69,7 +68,7 @@ pub(crate) async fn destroy_within<R: Provider>(
         Ok(Ok(())) => Ok(()),
         Ok(Err(error)) => {
             tracing::warn!(
-                resource = %R::key(),
+                resource = %crate::key_of::<R>(),
                 ?reason,
                 error.kind = ?error.kind(),
                 "resource destroy failed"
@@ -82,13 +81,16 @@ pub(crate) async fn destroy_within<R: Provider>(
             // a system-overload `Backpressure` condition — classify it as
             // `Cancelled` so downstream routing is not misled.
             tracing::warn!(
-                resource = %R::key(),
+                resource = %crate::key_of::<R>(),
                 ?reason,
                 "resource destroy abandoned — exceeded teardown budget"
             );
             Err(Error::new(
                 crate::error::ErrorKind::Cancelled,
-                format!("{}: destroy abandoned — exceeded teardown budget", R::key()),
+                format!(
+                    "{}: destroy abandoned — exceeded teardown budget",
+                    crate::key_of::<R>()
+                ),
             ))
         },
     }

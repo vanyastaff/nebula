@@ -3,9 +3,9 @@
 use std::{cell::RefCell, sync::OnceLock};
 
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionFactory, ActionMetadata,
-    ActionMetadataAdmissionError, ActionResult, InstanceFactory, MetadataVersion,
-    RecordedActionDefinition, StatelessAction, metadata_name,
+    Action, ActionAdmissionError, ActionContext, ActionError, ActionFactory, ActionMetadata,
+    ActionResult, InstanceFactory, MetadataVersion, RecordedActionDefinition, StatelessAction,
+    metadata_name,
 };
 use nebula_core::{Dependencies, action_key};
 use nebula_metadata::{
@@ -85,7 +85,7 @@ impl<A: StatelessAction> StatelessAction for WithMetadata<A> {
 fn admit<A: StatelessAction>(
     action: A,
     metadata: ActionMetadata,
-) -> Result<InstanceFactory<WithMetadata<A>>, ActionMetadataAdmissionError> {
+) -> Result<InstanceFactory<WithMetadata<A>>, ActionAdmissionError> {
     METADATA.set(Some(metadata));
     let factory = InstanceFactory::new(WithMetadata(action));
     METADATA.set(None);
@@ -132,7 +132,7 @@ fn historical_checkpoint_tags_preserve_wire_order_and_require_fresh_evidence() {
         } else {
             assert_eq!(
                 recorded.readmit_against(admitted),
-                Err(nebula_action::ActionMetadataReadmissionError::DefinitionMismatch)
+                Err(nebula_action::ActionReadmissionError::DefinitionMismatch)
             );
         }
     }
@@ -181,7 +181,7 @@ fn invalid_shared_catalog_fields_never_produce_a_factory() {
                 .err()
                 .expect("invalid metadata must prevent factory construction");
             std::assert_matches!(error,
-                ActionMetadataAdmissionError::Schema(nebula_metadata::MetadataBuildError::Metadata(actual))
+                ActionAdmissionError::Schema(nebula_metadata::MetadataBuildError::Metadata(actual))
                 if actual == expected);
         }
     }
@@ -320,7 +320,7 @@ fn hidden_version_literal_is_checked_and_the_last_setter_wins() {
             .expect("invalid literal cannot admit");
         std::assert_matches!(
             error,
-            ActionMetadataAdmissionError::Schema(nebula_metadata::MetadataBuildError::Metadata(
+            ActionAdmissionError::Schema(nebula_metadata::MetadataBuildError::Metadata(
                 MetadataError::InvalidVersion(MetadataField::Version)
             ))
         );
@@ -480,7 +480,7 @@ fn whole_canonical_leaf_budget_includes_both_schemas_and_leaf_overhead() {
     .expect("one byte beyond the canonical record ceiling cannot publish a factory");
     std::assert_matches!(
         error,
-        ActionMetadataAdmissionError::Schema(nebula_metadata::MetadataBuildError::Metadata(
+        ActionAdmissionError::Schema(nebula_metadata::MetadataBuildError::Metadata(
             MetadataError::RecordTooLarge
         ))
     );

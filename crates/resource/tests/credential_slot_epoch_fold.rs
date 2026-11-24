@@ -20,7 +20,6 @@
 //!    treat the runtime as stale and deliver `on_credential_refresh`
 //!    (the end-to-end rotation invariant).
 
-use nebula_resource::ProviderKey;
 use std::{
     assert_matches,
     sync::{
@@ -432,7 +431,11 @@ async fn resident_reconcile_fires_when_non_max_slot_rotates() {
         .slot_a
         .store(Arc::new(CredentialGuard::new(FakeCred(99))));
     let outcome = mgr
-        .refresh_slot(&TwoSlotResident::key(), ScopeLevel::Global, "slot_a")
+        .refresh_slot(
+            &nebula_resource::key_of::<TwoSlotResident>(),
+            ScopeLevel::Global,
+            "slot_a",
+        )
         .await
         .expect("refresh_slot must succeed (the hook ran — a real success)");
     assert_matches!(
@@ -482,7 +485,11 @@ async fn refresh_slot_rejects_a_name_not_in_the_declared_slot_list() {
     .expect("resident registration must succeed");
 
     let err = mgr
-        .refresh_slot(&TwoSlotResident::key(), ScopeLevel::Global, "slot_c")
+        .refresh_slot(
+            &nebula_resource::key_of::<TwoSlotResident>(),
+            ScopeLevel::Global,
+            "slot_c",
+        )
         .await
         .expect_err("an undeclared slot name must be rejected, not dispatched");
 
@@ -505,7 +512,11 @@ async fn refresh_slot_rejects_a_name_not_in_the_declared_slot_list() {
     // the same shared `accepts_credential_slot_name` gate — spot-check
     // `taint_slot` too so the fix is proven at more than one call site.
     let taint_err = mgr
-        .taint_slot(&TwoSlotResident::key(), ScopeLevel::Global, "slot_c")
+        .taint_slot(
+            &nebula_resource::key_of::<TwoSlotResident>(),
+            ScopeLevel::Global,
+            "slot_c",
+        )
         .expect_err("taint_slot must also reject the undeclared slot name");
     assert!(
         taint_err.to_string().contains("slot_c"),

@@ -1,4 +1,3 @@
-use nebula_resource::ProviderKey;
 use std::collections::VecDeque;
 
 use nebula_resource::{
@@ -812,7 +811,7 @@ impl Harness {
     fn handle_on(manager: &Manager, journal: &NodeEffectJournal) -> ResourceHandle<Gateway> {
         *manager
             .handle_any_journaled(
-                &Gateway::key(),
+                &nebula_resource::key_of::<Gateway>(),
                 &ResourceContext::minimal(
                     nebula_core::scope::Scope::default(),
                     CancellationToken::new(),

@@ -23,7 +23,6 @@
 //! [`DaemonError::DuplicateKey`] rather than overwriting. Operators resolve
 //! the collision by renaming the daemon's `Resource::key`.
 
-use nebula_resource::ProviderKey;
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use dashmap::DashMap;
@@ -163,7 +162,7 @@ impl DaemonRegistry {
         if self.parent_cancel.is_cancelled() {
             return Err(DaemonError::RegistryCancelled);
         }
-        let key = D::key();
+        let key = nebula_resource::key_of::<D>();
         let runtime_state = Arc::new(DaemonRuntime::<D>::new(config, self.parent_cancel.clone()));
         let handle: Arc<dyn AnyDaemonHandle> = Arc::new(TypedDaemonHandle {
             daemon,
@@ -425,10 +424,16 @@ mod tests {
         // Give the daemon time to enter the cancel-await.
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
-        assert!(reg.is_running(&CountedDaemon::key()).await);
+        assert!(
+            reg.is_running(&nebula_resource::key_of::<CountedDaemon>())
+                .await
+        );
 
         reg.shutdown().await;
-        assert!(!reg.is_running(&CountedDaemon::key()).await);
+        assert!(
+            !reg.is_running(&nebula_resource::key_of::<CountedDaemon>())
+                .await
+        );
     }
 
     #[tokio::test]
@@ -522,8 +527,14 @@ mod tests {
         // blocked the other.
         assert_eq!(attempts_a.load(Ordering::SeqCst), 1);
         assert_eq!(attempts_b.load(Ordering::SeqCst), 1);
-        assert!(reg.is_running(&CountedDaemon::key()).await);
-        assert!(reg.is_running(&CountedDaemonB::key()).await);
+        assert!(
+            reg.is_running(&nebula_resource::key_of::<CountedDaemon>())
+                .await
+        );
+        assert!(
+            reg.is_running(&nebula_resource::key_of::<CountedDaemonB>())
+                .await
+        );
 
         reg.shutdown().await;
     }
@@ -560,8 +571,14 @@ mod tests {
 
         reg.start_all().await.expect("first start_all ok");
         tokio::time::sleep(Duration::from_millis(20)).await;
-        assert!(reg.is_running(&CountedDaemon::key()).await);
-        assert!(reg.is_running(&CountedDaemonB::key()).await);
+        assert!(
+            reg.is_running(&nebula_resource::key_of::<CountedDaemon>())
+                .await
+        );
+        assert!(
+            reg.is_running(&nebula_resource::key_of::<CountedDaemonB>())
+                .await
+        );
 
         // Second start_all — both daemons still have running tasks, so each
         // `DaemonRuntime::start` returns Err("daemon is already running").
@@ -576,8 +593,14 @@ mod tests {
 
         // Both daemons remain running — the failed start_all did not poison
         // their state.
-        assert!(reg.is_running(&CountedDaemon::key()).await);
-        assert!(reg.is_running(&CountedDaemonB::key()).await);
+        assert!(
+            reg.is_running(&nebula_resource::key_of::<CountedDaemon>())
+                .await
+        );
+        assert!(
+            reg.is_running(&nebula_resource::key_of::<CountedDaemonB>())
+                .await
+        );
 
         reg.shutdown().await;
     }

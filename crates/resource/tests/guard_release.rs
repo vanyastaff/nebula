@@ -8,7 +8,6 @@
 //! Split out of the former monolithic `basic_integration.rs` (pure move, no
 //! test-body changes) — shared mocks/helpers live in `tests/common/mod.rs`.
 
-use nebula_resource::ProviderKey;
 mod common;
 
 #[derive(Clone)]
@@ -371,7 +370,7 @@ async fn graceful_shutdown_reports_terminal_failure_and_finishes_sibling_rows() 
         .unwrap_err();
     match error {
         nebula_resource::ShutdownError::ResourceTeardownFailed { key, source } => {
-            assert_eq!(key, ResidentLifecycleResource::key());
+            assert_eq!(key, nebula_resource::key_of::<ResidentLifecycleResource>());
             assert_eq!(*source.kind(), nebula_resource::ErrorKind::Permanent);
         },
         other => panic!("expected typed terminal failure, got {other:?}"),
@@ -1685,7 +1684,7 @@ async fn aborted_or_cancelled_drain_keeps_late_cleanup_available() {
                 ));
             }
         }
-        assert!(manager.contains(&PoolTestResource::key()));
+        assert!(manager.contains(&nebula_resource::key_of::<PoolTestResource>()));
         tokio::task::yield_now().await;
         drop(guard);
         tokio::time::timeout(std::time::Duration::from_secs(1), async {

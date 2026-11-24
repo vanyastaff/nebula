@@ -252,10 +252,10 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
 
 /// Emit a definition-site check of the provider's `KEY` literal.
 ///
-/// `ProviderKey::key` rejects an invalid literal when it is instantiated, which
+/// `nebula_resource::key_of` rejects an invalid literal when it is instantiated, which
 /// `cargo check` and an editor never do. This item names the concrete type, so
 /// the same mistake is reported where the resource is declared. A generic
-/// struct has no concrete `KEY` to evaluate here and relies on `key()` alone.
+/// struct has no concrete `KEY` to evaluate here and relies on `key_of` alone.
 fn emit_key_check(input: &DeriveInput) -> proc_macro2::TokenStream {
     if !input.generics.params.is_empty() {
         return quote! {};

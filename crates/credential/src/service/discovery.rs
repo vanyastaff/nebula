@@ -38,9 +38,9 @@ impl CredentialService {
         capabilities: crate::Capabilities,
     ) -> CredentialTypeInfo {
         CredentialTypeInfo {
-            key: metadata.key().as_str().to_owned(),
-            name: metadata.name().to_owned(),
-            description: metadata.description().to_owned(),
+            key: metadata.base().key().as_str().to_owned(),
+            name: metadata.base().name().to_owned(),
+            description: metadata.base().description().to_owned(),
             pattern: metadata.pattern(),
             capabilities: TypeCapabilities {
                 interactive: capabilities.contains(crate::Capabilities::INTERACTIVE),

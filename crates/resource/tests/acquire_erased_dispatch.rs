@@ -1,6 +1,5 @@
 //! `Manager::acquire_any` exercises the registry-stored acquire dispatch hook.
 
-use nebula_resource::ProviderKey;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -94,7 +93,7 @@ async fn acquire_erased_returns_guard_and_runs_create_once() {
         .expect("register");
 
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
-    let key = ProbeResource::key();
+    let key = nebula_resource::key_of::<ProbeResource>();
     let boxed = Manager::acquire_any(
         Arc::clone(&manager),
         &key,
@@ -130,7 +129,7 @@ async fn acquire_erased_finds_org_scoped_row_from_execution_scope_bag() {
         })
         .expect("register at org scope");
 
-    let key = ProbeResource::key();
+    let key = nebula_resource::key_of::<ProbeResource>();
     assert!(
         manager.has_registered_for_identity(
             &key,
@@ -154,7 +153,7 @@ async fn acquire_erased_finds_org_scoped_row_from_execution_scope_bag() {
 
     let boxed = Manager::acquire_any(
         Arc::clone(&manager),
-        &ProbeResource::key(),
+        &nebula_resource::key_of::<ProbeResource>(),
         &ctx,
         &AcquireOptions::default(),
         &SlotIdentity::Unbound,
@@ -209,7 +208,7 @@ async fn acquire_erased_and_typed_pick_org_not_global_fallback() {
         ..Default::default()
     };
     let ctx = ResourceContext::minimal(scope, CancellationToken::new());
-    let key = ProbeResource::key();
+    let key = nebula_resource::key_of::<ProbeResource>();
 
     let boxed = Manager::acquire_any(
         Arc::clone(&manager),
@@ -356,7 +355,7 @@ mod pool_parity {
             .expect("register pooled Global");
 
         let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
-        let key = PoolParity::key();
+        let key = nebula_resource::key_of::<PoolParity>();
 
         let erased = Manager::acquire_any(
             Arc::clone(&manager),
@@ -478,7 +477,7 @@ mod resident_erased_reuses_runtime {
         );
 
         let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
-        let key = ResidentReuse::key();
+        let key = nebula_resource::key_of::<ResidentReuse>();
 
         let g1 = Manager::acquire_any(
             Arc::clone(&manager),
@@ -596,7 +595,7 @@ mod pool_erased_distinct_instances {
             .expect("PoolErased must register without error");
 
         let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
-        let key = PoolErased::key();
+        let key = nebula_resource::key_of::<PoolErased>();
         assert_eq!(
             create_count.load(Ordering::SeqCst),
             0,

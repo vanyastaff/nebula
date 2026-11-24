@@ -3,7 +3,6 @@
 //! in the health snapshot, the erased view and the erased handle; a strict
 //! manager refuses a row it cannot observe.
 
-use crate::resource::ProviderKey;
 use std::sync::{Arc, atomic::Ordering};
 
 use nebula_core::ScopeLevel;
@@ -27,7 +26,7 @@ fn observer() -> Arc<dyn CredentialAvailabilityObserver> {
 
 fn view_profile<R: Provider>(manager: &Manager) -> CredentialAdmissionProfile {
     manager
-        .get_row(&R::key(), &ScopeLevel::Global, &tenant())
+        .get_row(&crate::key_of::<R>(), &ScopeLevel::Global, &tenant())
         .expect("row")
         .credential_admission_profile()
 }
@@ -67,7 +66,11 @@ fn reported<R: Provider>(manager: &Manager) -> CredentialAdmissionProfile {
         .expect("health")
         .credential_admission;
     let handle = manager
-        .lookup_any_for_slot_identity_structural(&R::key(), &ScopeLevel::Global, &tenant())
+        .lookup_any_for_slot_identity_structural(
+            &crate::key_of::<R>(),
+            &ScopeLevel::Global,
+            &tenant(),
+        )
         .expect("row")
         .credential_admission_profile();
     assert_eq!(health, view_profile::<R>(manager));
@@ -110,7 +113,11 @@ async fn a_strict_row_reports_per_attempt_once_it_serves_a_facade() {
         "latched for the row's life"
     );
     let view = manager
-        .get_row(&StrictResident::key(), &ScopeLevel::Global, &tenant())
+        .get_row(
+            &crate::key_of::<StrictResident>(),
+            &ScopeLevel::Global,
+            &tenant(),
+        )
         .expect("row");
     assert!(format!("{view:?}").contains("credential_admission_profile: StrictPerAttempt"));
 
@@ -158,7 +165,11 @@ async fn a_manager_with_an_observer_makes_credential_bound_rows_strict() {
         CredentialAdmissionProfile::StrictPerAcquire
     );
     let view = manager
-        .get_row(&StrictResident::key(), &ScopeLevel::Global, &tenant())
+        .get_row(
+            &crate::key_of::<StrictResident>(),
+            &ScopeLevel::Global,
+            &tenant(),
+        )
         .expect("row");
     assert!(
         format!("{view:?}").contains("credential_admission_profile: StrictPerAcquire"),
@@ -216,7 +227,11 @@ async fn a_strict_manager_refuses_a_row_whose_slot_it_cannot_observe() {
     assert!(error.to_string().contains("cannot observe slot `db`"));
     assert!(
         manager
-            .get_row(&ProjectionlessRow::key(), &ScopeLevel::Global, &tenant())
+            .get_row(
+                &crate::key_of::<ProjectionlessRow>(),
+                &ScopeLevel::Global,
+                &tenant()
+            )
             .is_none(),
         "nothing was registered"
     );

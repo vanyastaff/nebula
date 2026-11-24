@@ -126,7 +126,7 @@ pub mod __private {
     pub mod resource {
         pub use nebula_resource::{
             __assert_provider_key, ConfigFingerprint, Error, HasCredentialSlots, PinSlots,
-            ResourceConfig, SlotInstallError, SlotUpdate,
+            ResourceConfig, SlotInstallError, SlotUpdate, key_of,
         };
 
         /// Opaque resource contribution contracts used by SDK-only derives.
@@ -142,7 +142,7 @@ pub mod __private {
             reason = "the hidden macro ABI mirrors nebula_resource::resource paths emitted by existing derives"
         )]
         pub mod resource {
-            pub use nebula_resource::resource::{Provider, ProviderKey};
+            pub use nebula_resource::resource::Provider;
         }
 
         pub mod topology {

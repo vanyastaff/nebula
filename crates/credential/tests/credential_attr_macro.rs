@@ -70,10 +70,13 @@ fn synthesized_metadata_uses_curated_inline_icon() {
         .definition(MetadataOnly::KEY)
         .expect("registered metadata is available");
 
-    assert_eq!(metadata.icon(), &nebula_credential::Icon::inline("key"));
+    assert_eq!(
+        metadata.base().icon(),
+        &nebula_credential::Icon::inline("key")
+    );
     assert_eq!(metadata.pattern(), AuthPattern::SecretToken);
     assert_eq!(
-        metadata.documentation_url(),
+        metadata.base().documentation_url(),
         Some("https://example.test/credentials/metadata-only")
     );
 }

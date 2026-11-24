@@ -11,7 +11,7 @@ use nebula_credential::{
     AnyCredential, Credential, CredentialContext, CredentialMetadata, SecretString, SecretToken,
     contract::plugin_capability_report, error::CredentialError, resolve::StaticResolveResult,
 };
-use nebula_metadata::{Definition, PluginManifest};
+use nebula_metadata::PluginManifest;
 use nebula_plugin::{ComponentKind, Plugin, PluginError, ResolvedPlugin};
 use nebula_resource::{
     KindActivator, Provider, Resident, ResidentConfig, ResourceFactory, ResourceMetadata,
@@ -674,7 +674,7 @@ fn mutable_and_frozen_accessors_preserve_component_ownership_across_plugins() {
     );
     let mut credentials: Vec<_> = frozen
         .all_credentials()
-        .map(|(plugin, credential)| (plugin.to_string(), credential.credential_key().to_owned()))
+        .map(|(plugin, credential)| (plugin.to_string(), credential.key().to_string()))
         .collect();
     credentials.sort();
     assert_eq!(

@@ -5,13 +5,13 @@ use nebula_credential::{AnyCredential, Capabilities, CredentialDefinition};
 struct SelfAttested;
 
 impl AnyCredential for SelfAttested {
-    fn credential_key(&self) -> &str {
-        "self_attested"
+    fn key(&self) -> nebula_core::CredentialKey {
+        unimplemented!()
     }
 
     fn definition(
         &self,
-    ) -> Result<CredentialDefinition, nebula_credential::CredentialMetadataAdmissionError> {
+    ) -> Result<CredentialDefinition, nebula_credential::CredentialAdmissionError> {
         unimplemented!()
     }
 

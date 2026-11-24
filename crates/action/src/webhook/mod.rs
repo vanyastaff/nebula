@@ -1747,7 +1747,7 @@ impl<A: WebhookAction> WebhookTriggerAdapter<A> {
     /// # Errors
     /// Returns a typed catalog error if metadata or an associated schema is invalid.
     #[tracing::instrument(name = "action.metadata.admit", skip_all, err)]
-    pub fn new(action: A) -> Result<Self, crate::ActionMetadataAdmissionError> {
+    pub fn new(action: A) -> Result<Self, crate::ActionAdmissionError> {
         let config = action.config();
         let meta = <A as Action>::metadata().admit_for::<A>(crate::ActionKind::Trigger)?;
         Ok(Self {

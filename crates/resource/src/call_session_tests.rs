@@ -3,7 +3,6 @@
 //! session destroys its instance, and a connection-bound session never runs
 //! on an instance built on superseded credentials.
 
-use crate::resource::ProviderKey;
 use std::{
     num::NonZeroU32,
     sync::{
@@ -388,7 +387,7 @@ async fn a_session_bound_session_reuses_an_instance_built_on_older_credentials()
 fn suspend(manager: &Manager) {
     manager
         .suspend_credential_row(
-            &StrictPooled::key(),
+            &crate::key_of::<StrictPooled>(),
             &ScopeLevel::Global,
             &tenant(),
             "db",

@@ -77,7 +77,7 @@ fn construction_rejects_invalid_metadata() {
     let Err(error) = GenericStatelessFactory::<InvalidMetadataAction>::new() else {
         panic!("invalid metadata cannot produce a factory");
     };
-    let ActionMetadataAdmissionError::Package(errors) = error else {
+    let ActionAdmissionError::Package(errors) = error else {
         panic!("empty description must be a package admission error");
     };
     assert_matches!(
@@ -490,11 +490,11 @@ fn remote_factory_stamps_the_type_descriptor_as_the_effect_contract() {
 fn remote_factory_refuses_metadata_that_declares_an_effect_contract() {
     assert_matches!(
         RemoteEffectInstanceFactory::new(RemoteDeclaredInMetadata::<false>).map(drop),
-        Err(ActionMetadataAdmissionError::RemoteEffectContractInMetadata)
+        Err(ActionAdmissionError::RemoteEffectContractInMetadata)
     );
     assert_matches!(
         RemoteEffectInstanceFactory::new(RemoteDeclaredInMetadata::<true>).map(drop),
-        Err(ActionMetadataAdmissionError::EffectContractOnRemoteAction)
+        Err(ActionAdmissionError::EffectContractOnRemoteAction)
     );
 }
 
@@ -502,7 +502,7 @@ fn remote_factory_refuses_metadata_that_declares_an_effect_contract() {
 fn remote_factory_refuses_an_invalid_descriptor() {
     assert_matches!(
         RemoteEffectInstanceFactory::new(RemoteInvalidDescriptor).map(drop),
-        Err(ActionMetadataAdmissionError::RemoteEffectDeclaration(
+        Err(ActionAdmissionError::RemoteEffectDeclaration(
             RemoteEffectDeclarationError::Contract(EffectContractError::InvalidIdentifier)
         ))
     );
@@ -512,6 +512,6 @@ fn remote_factory_refuses_an_invalid_descriptor() {
 fn local_factory_refuses_a_remote_contract_in_metadata() {
     assert_matches!(
         InstanceFactory::new(LocalDeclaringRemote).map(drop),
-        Err(ActionMetadataAdmissionError::RemoteEffectContractInMetadata)
+        Err(ActionAdmissionError::RemoteEffectContractInMetadata)
     );
 }

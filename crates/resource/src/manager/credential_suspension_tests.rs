@@ -1,7 +1,6 @@
 //! Credential suspension: a bound credential denying use at its current
 //! material stops a row admitting work, closes every lease admitted before,
 //! and keeps the row's physical owners for reuse when it reopens.
-use crate::resource::ProviderKey;
 use std::{
     sync::{
         Arc,
@@ -283,7 +282,11 @@ fn bounded(manager: &Manager) -> BoundedRow {
 
 fn row<R: Provider>(manager: &Manager) -> Arc<ManagedResource<R>> {
     manager
-        .lookup_any_for_slot_identity_structural(&R::key(), &ScopeLevel::Global, &tenant())
+        .lookup_any_for_slot_identity_structural(
+            &crate::key_of::<R>(),
+            &ScopeLevel::Global,
+            &tenant(),
+        )
         .expect("row is registered")
         .as_any_arc()
         .downcast::<ManagedResource<R>>()
@@ -302,7 +305,7 @@ fn suspend<R: Provider>(
 ) -> CredentialSuspendOutcome {
     manager
         .suspend_credential_row(
-            &R::key(),
+            &crate::key_of::<R>(),
             &ScopeLevel::Global,
             &tenant(),
             "db",
@@ -314,7 +317,7 @@ fn suspend<R: Provider>(
 
 fn ticket<R: Provider>(manager: &Manager) -> CredentialGateTicket {
     manager
-        .credential_gate_ticket(&R::key(), &ScopeLevel::Global, &tenant())
+        .credential_gate_ticket(&crate::key_of::<R>(), &ScopeLevel::Global, &tenant())
         .expect("ticket")
 }
 
@@ -330,7 +333,7 @@ fn reopen_at<R: Provider>(
 ) -> CredentialReopenOutcome {
     manager
         .reopen_credential_row(
-            &R::key(),
+            &crate::key_of::<R>(),
             &ScopeLevel::Global,
             &tenant(),
             "db",
@@ -347,7 +350,7 @@ fn suspend_at<R: Provider>(
 ) -> CredentialSuspendOutcome {
     manager
         .suspend_credential_row(
-            &R::key(),
+            &crate::key_of::<R>(),
             &ScopeLevel::Global,
             &tenant(),
             "db",
@@ -419,7 +422,7 @@ async fn install_public<R: Provider>(
 ) -> super::EpochRefreshOutcome {
     manager
         .install_and_refresh_slot_for_identity(
-            &R::key(),
+            &crate::key_of::<R>(),
             ScopeLevel::Global,
             "db",
             &tenant(),
@@ -433,7 +436,7 @@ async fn install_public<R: Provider>(
 async fn install_material(manager: &Manager, epoch: u64) -> super::EpochRefreshOutcome {
     manager
         .install_and_refresh_slot_for_identity(
-            &ResidentRow::key(),
+            &crate::key_of::<ResidentRow>(),
             ScopeLevel::Global,
             "db",
             &tenant(),
@@ -459,11 +462,15 @@ async fn install_guard_resolved<R: Provider>(
     reopen: Option<CredentialGateTicket>,
 ) -> super::EpochRefreshOutcome {
     let managed = manager
-        .lookup_any_for_slot_identity_structural(&R::key(), &ScopeLevel::Global, &tenant())
+        .lookup_any_for_slot_identity_structural(
+            &crate::key_of::<R>(),
+            &ScopeLevel::Global,
+            &tenant(),
+        )
         .expect("row");
     manager
         .install_and_refresh_resolved(
-            &R::key(),
+            &crate::key_of::<R>(),
             "db",
             managed,
             guard,
@@ -479,7 +486,7 @@ async fn install_guard_resolved<R: Provider>(
 
 fn is_suspended<R: Provider>(manager: &Manager) -> bool {
     manager
-        .get_row(&R::key(), &ScopeLevel::Global, &tenant())
+        .get_row(&crate::key_of::<R>(), &ScopeLevel::Global, &tenant())
         .expect("row")
         .credential_suspension()
         .is_some()
@@ -505,7 +512,7 @@ async fn a_suspended_row_refuses_acquires_for_every_topology() {
 
     let error = acquire::<ResidentRow>(&manager).await.expect_err("refused");
     assert_credential_unavailable(&error, REAUTH);
-    assert_eq!(error.resource_key(), Some(&ResidentRow::key()));
+    assert_eq!(error.resource_key(), Some(&crate::key_of::<ResidentRow>()));
     assert_credential_unavailable(
         &acquire::<PooledRow>(&manager).await.expect_err("refused"),
         BLOCKED,
@@ -716,7 +723,11 @@ async fn a_reload_while_suspended_does_not_reopen() {
     );
     assert!(
         manager
-            .get_row(&ResidentRow::key(), &ScopeLevel::Global, &tenant())
+            .get_row(
+                &crate::key_of::<ResidentRow>(),
+                &ScopeLevel::Global,
+                &tenant()
+            )
             .expect("row")
             .credential_suspension()
             .is_some()
@@ -731,7 +742,12 @@ async fn taint_wins_over_suspension() {
     suspend::<ResidentRow>(&manager, REAUTH);
     let current = ticket::<ResidentRow>(&manager);
     let _tainted = manager
-        .taint_slot_for_identity(&ResidentRow::key(), ScopeLevel::Global, "db", &tenant())
+        .taint_slot_for_identity(
+            &crate::key_of::<ResidentRow>(),
+            ScopeLevel::Global,
+            "db",
+            &tenant(),
+        )
         .expect("taint");
     let error = acquire::<ResidentRow>(&manager).await.expect_err("refused");
     assert_eq!(*error.kind(), ErrorKind::Revoked);
@@ -760,7 +776,12 @@ async fn until_accepting_fails_fast_on_a_suspended_row() {
     suspend::<ResidentRow>(&manager, REAUTH);
     let error = tokio::time::timeout(
         WAKE,
-        manager.until_accepting(&ResidentRow::key(), &ScopeLevel::Global, &tenant(), None),
+        manager.until_accepting(
+            &crate::key_of::<ResidentRow>(),
+            &ScopeLevel::Global,
+            &tenant(),
+            None,
+        ),
     )
     .await
     .expect("returns without waiting")
@@ -792,7 +813,11 @@ async fn status_view_and_events_report_the_suspension() {
     reopen::<ResidentRow>(&manager, ticket::<ResidentRow>(&manager));
     assert!(
         manager
-            .get_row(&ResidentRow::key(), &ScopeLevel::Global, &tenant())
+            .get_row(
+                &crate::key_of::<ResidentRow>(),
+                &ScopeLevel::Global,
+                &tenant()
+            )
             .expect("row")
             .credential_suspension()
             .is_none()
@@ -812,7 +837,7 @@ async fn status_view_and_events_report_the_suspension() {
     );
     assert!(seen.iter().any(|event| matches!(
         event,
-        ResourceEvent::CredentialReopened { key } if *key == ResidentRow::key()
+        ResourceEvent::CredentialReopened { key } if *key == crate::key_of::<ResidentRow>()
     )));
 }
 
@@ -822,7 +847,7 @@ async fn unknown_slots_are_rejected_and_slotless_rows_are_unaffected() {
     resident(&manager);
     let error = manager
         .suspend_credential_row(
-            &ResidentRow::key(),
+            &crate::key_of::<ResidentRow>(),
             &ScopeLevel::Global,
             &tenant(),
             "nope",
@@ -850,7 +875,7 @@ async fn unknown_slots_are_rejected_and_slotless_rows_are_unaffected() {
         .expect("register");
     let error = manager
         .suspend_credential_row(
-            &Unbound::key(),
+            &crate::key_of::<Unbound>(),
             &ScopeLevel::Global,
             &SlotIdentity::Unbound,
             "db",
@@ -878,7 +903,7 @@ async fn an_observation_older_than_the_installed_material_is_ignored() {
     ));
     let stale = manager
         .suspend_credential_row(
-            &ResidentRow::key(),
+            &crate::key_of::<ResidentRow>(),
             &ScopeLevel::Global,
             &tenant(),
             "db",
@@ -894,7 +919,7 @@ async fn an_observation_older_than_the_installed_material_is_ignored() {
     );
     let current = manager
         .suspend_credential_row(
-            &ResidentRow::key(),
+            &crate::key_of::<ResidentRow>(),
             &ScopeLevel::Global,
             &tenant(),
             "db",
@@ -960,7 +985,7 @@ async fn an_install_into_one_slot_leaves_another_slots_suspension() {
     drop(acquire::<TwoSlotRow>(&manager).await.expect("warm"));
     manager
         .suspend_credential_row(
-            &TwoSlotRow::key(),
+            &crate::key_of::<TwoSlotRow>(),
             &ScopeLevel::Global,
             &tenant(),
             "cache",
@@ -974,7 +999,11 @@ async fn an_install_into_one_slot_leaves_another_slots_suspension() {
         super::EpochRefreshOutcome::Applied(_)
     ));
     let suspension = manager
-        .get_row(&TwoSlotRow::key(), &ScopeLevel::Global, &tenant())
+        .get_row(
+            &crate::key_of::<TwoSlotRow>(),
+            &ScopeLevel::Global,
+            &tenant(),
+        )
         .expect("row")
         .credential_suspension()
         .expect("cache still denies use");
@@ -1069,7 +1098,11 @@ async fn a_missed_denial_interval_readmits_a_resident_row_without_closing_or_reb
     assert!(!held.is_closing(), "only an observed block closes a lease");
     assert_eq!(
         manager
-            .credential_gate_ticket(&ResidentRow::key(), &ScopeLevel::Global, &tenant())
+            .credential_gate_ticket(
+                &crate::key_of::<ResidentRow>(),
+                &ScopeLevel::Global,
+                &tenant()
+            )
             .expect("ticket"),
         ticket,
         "readmission is not a suspension"
@@ -1136,7 +1169,11 @@ async fn a_reauth_read_at_a_revision_ignores_available_at_that_revision() {
     assert!(is_suspended::<ResidentRow>(&manager));
     assert_eq!(
         manager
-            .credential_gate_ticket(&ResidentRow::key(), &ScopeLevel::Global, &tenant())
+            .credential_gate_ticket(
+                &crate::key_of::<ResidentRow>(),
+                &ScopeLevel::Global,
+                &tenant()
+            )
             .expect("ticket"),
         ticket,
         "a refusal mutates nothing"
@@ -1267,7 +1304,12 @@ async fn a_readmit_on_a_tainted_row_is_tainted() {
     seed::<ResidentRow>(&manager, material_at(1, 5)).await;
     let ticket = ticket::<ResidentRow>(&manager);
     let _tainted = manager
-        .taint_slot_for_identity(&ResidentRow::key(), ScopeLevel::Global, "db", &tenant())
+        .taint_slot_for_identity(
+            &crate::key_of::<ResidentRow>(),
+            ScopeLevel::Global,
+            "db",
+            &tenant(),
+        )
         .expect("taint");
     assert_eq!(
         reopen_at::<ResidentRow>(&manager, ticket, at(1, 6)),

@@ -1,6 +1,5 @@
 //! Queue-owned, constant-message teardown of an owned collection of entries.
 
-use crate::resource::ProviderKey;
 use std::{collections::VecDeque, sync::Arc};
 
 use crate::{
@@ -89,7 +88,7 @@ impl<R: Provider> DestroyBatch<R> {
             tokio::task::consume_budget().await;
         }
         if failed_entries != 0 {
-            tracing::warn!(resource.key = %R::key(), failed_entries, "resource teardown batch completed with failures");
+            tracing::warn!(resource.key = %crate::key_of::<R>(), failed_entries, "resource teardown batch completed with failures");
         }
         outcome
     }

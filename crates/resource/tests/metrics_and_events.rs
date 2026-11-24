@@ -6,7 +6,6 @@
 //! Split out of the former monolithic `basic_integration.rs` (pure move, no
 //! test-body changes) — shared mocks/helpers live in `tests/common/mod.rs`.
 
-use nebula_resource::ProviderKey;
 mod common;
 
 use std::sync::Arc;
@@ -185,8 +184,8 @@ async fn shutdown_emits_one_redacted_failure_event_for_each_failing_row() {
         panic!("expected first typed row failure, got {error:?}");
     };
     assert!(
-        key == FailingRetirementResource::<1>::key()
-            || key == FailingRetirementResource::<2>::key()
+        key == nebula_resource::key_of::<FailingRetirementResource<1>>()
+            || key == nebula_resource::key_of::<FailingRetirementResource<2>>()
     );
     assert_eq!(source.kind(), &ErrorKind::Permanent);
     assert_eq!(
@@ -222,8 +221,8 @@ async fn shutdown_emits_one_redacted_failure_event_for_each_failing_row() {
     assert_eq!(
         failed_keys,
         vec![
-            FailingRetirementResource::<1>::key(),
-            FailingRetirementResource::<2>::key(),
+            nebula_resource::key_of::<FailingRetirementResource<1>>(),
+            nebula_resource::key_of::<FailingRetirementResource<2>>(),
         ]
     );
 }
@@ -248,11 +247,14 @@ async fn replacement_and_removal_failures_keep_their_retirement_origin() {
     })
     .await
     .expect("replacement cleanup settles");
-    assert_eq!(replacement, FailingRetirementResource::<3>::key());
+    assert_eq!(
+        replacement,
+        nebula_resource::key_of::<FailingRetirementResource<3>>()
+    );
 
     instantiate::<3>(&manager).await;
     manager
-        .remove(&FailingRetirementResource::<3>::key())
+        .remove(&nebula_resource::key_of::<FailingRetirementResource<3>>())
         .expect("registered row removes");
     let removal = tokio::time::timeout(std::time::Duration::from_secs(1), async {
         loop {
@@ -266,7 +268,10 @@ async fn replacement_and_removal_failures_keep_their_retirement_origin() {
     })
     .await
     .expect("removal cleanup settles");
-    assert_eq!(removal, FailingRetirementResource::<3>::key());
+    assert_eq!(
+        removal,
+        nebula_resource::key_of::<FailingRetirementResource<3>>()
+    );
 }
 
 #[tokio::test]
@@ -286,7 +291,7 @@ async fn manager_drop_reports_each_row_abandoned_without_enqueuing_terminal_work
             stage: RetirementFailureStage::TerminalCleanup,
             kind: ErrorKind::Cancelled,
             ..
-        }) if key == FailingRetirementResource::<4>::key()
+        }) if key == nebula_resource::key_of::<FailingRetirementResource<4>>()
     );
     assert!(
         events.try_recv().is_none(),

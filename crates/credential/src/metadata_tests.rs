@@ -5,7 +5,7 @@ use nebula_metadata::{
 };
 use semver::Version;
 
-use super::{CredentialDefinition, CredentialMetadata, MetadataCompatibilityError};
+use super::{CredentialCompatibilityError, CredentialDefinition, CredentialMetadata};
 use crate::AuthPattern;
 
 fn admitted(pattern: AuthPattern, major: u64, minor: u64) -> CredentialDefinition {
@@ -52,16 +52,19 @@ fn authored_fields_survive_admission() {
     )
     .expect("valid credential metadata");
 
-    assert_eq!(metadata.version(), &version);
-    assert_eq!(metadata.icon(), &Icon::inline("key"));
+    assert_eq!(metadata.base().version(), &version);
+    assert_eq!(metadata.base().icon(), &Icon::inline("key"));
     assert_eq!(
-        metadata.documentation_url(),
+        metadata.base().documentation_url(),
         Some("https://example.test/credentials/cred")
     );
-    assert_eq!(metadata.categories(), std::slice::from_ref(&category));
-    assert_eq!(metadata.links(), [documentation_link, link]);
-    assert_eq!(metadata.tags(), ["catalog", "credential"]);
-    assert_eq!(metadata.maturity(), MaturityLevel::Beta);
+    assert_eq!(
+        metadata.base().categories(),
+        std::slice::from_ref(&category)
+    );
+    assert_eq!(metadata.base().links(), [documentation_link, link]);
+    assert_eq!(metadata.base().tags(), ["catalog", "credential"]);
+    assert_eq!(metadata.base().maturity(), MaturityLevel::Beta);
     assert_eq!(metadata.pattern(), AuthPattern::SecretToken);
 }
 
@@ -91,9 +94,12 @@ fn authored_icon_methods_preserve_curated_variants() {
     )
     .expect("valid credential metadata");
 
-    assert_eq!(inline.icon(), &Icon::inline("key"));
-    assert_eq!(url.icon(), &Icon::url("https://example.test/icon.svg"));
-    assert_eq!(none.icon(), &Icon::None);
+    assert_eq!(inline.base().icon(), &Icon::inline("key"));
+    assert_eq!(
+        url.base().icon(),
+        &Icon::url("https://example.test/icon.svg")
+    );
+    assert_eq!(none.base().icon(), &Icon::None);
 }
 
 #[test]
@@ -142,12 +148,12 @@ fn authored_lifecycle_and_tags_survive_admission() {
     )
     .expect("valid credential metadata");
 
-    assert_eq!(experimental.maturity(), MaturityLevel::Experimental);
-    assert_eq!(beta.maturity(), MaturityLevel::Beta);
-    assert_eq!(stable.maturity(), MaturityLevel::Stable);
-    assert_eq!(deprecated.maturity(), MaturityLevel::Deprecated);
-    assert_eq!(deprecated.deprecation(), Some(&notice));
-    assert_eq!(deprecated.tags(), ["auth", "legacy"]);
+    assert_eq!(experimental.base().maturity(), MaturityLevel::Experimental);
+    assert_eq!(beta.base().maturity(), MaturityLevel::Beta);
+    assert_eq!(stable.base().maturity(), MaturityLevel::Stable);
+    assert_eq!(deprecated.base().maturity(), MaturityLevel::Deprecated);
+    assert_eq!(deprecated.base().deprecation(), Some(&notice));
+    assert_eq!(deprecated.base().tags(), ["auth", "legacy"]);
 }
 
 #[test]
@@ -179,7 +185,7 @@ fn historical_schema_cannot_admit_credential_metadata() {
     );
     std::assert_matches!(
         result,
-        Err(super::CredentialMetadataAdmissionError::CatalogMetadata)
+        Err(super::CredentialAdmissionError::CatalogMetadata)
     );
 }
 
@@ -203,7 +209,7 @@ fn pattern_change_requires_major_bump() {
     let next = admitted(AuthPattern::OAuth2, 1, 1);
     assert_eq!(
         next.validate_compatibility(&previous),
-        Err(MetadataCompatibilityError::PatternChangeWithoutMajorBump)
+        Err(CredentialCompatibilityError::PatternChangeWithoutMajorBump)
     );
 }
 
@@ -226,7 +232,7 @@ fn key_change_is_rejected() {
     .expect("valid credential metadata");
     assert_eq!(
         next.validate_compatibility(&previous),
-        Err(MetadataCompatibilityError::Base(
+        Err(CredentialCompatibilityError::Base(
             BaseCompatError::KeyChanged {
                 previous: credential_key!("cred"),
                 current: credential_key!("other"),

@@ -4,7 +4,7 @@
 
 use nebula_sdk::integration::resource::{
     Cost, Effect, Error, ResourceMetadata, OperationError, PoolProvider, Pooled, Provider,
-    ProviderKey, ResourceContext, ResourceHandle, SessionBinding, SessionClosed, SessionEnd,
+    ResourceContext, ResourceHandle, SessionBinding, SessionClosed, SessionEnd,
     SessionProvider, SessionSpec, no_credential_slots,
 };
 

@@ -14,7 +14,6 @@
 //! The end-to-end Manager-driven safety proof lives in
 //! `custom_topology_manager.rs`; this file pins the standalone hook shape.
 
-use nebula_resource::ProviderKey;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -203,7 +202,7 @@ async fn created_entry_is_acquired_and_released_through_manager() {
 
     let erased_guard = Manager::acquire_any(
         Arc::clone(&manager),
-        &PermitRes::key(),
+        &nebula_resource::key_of::<PermitRes>(),
         &test_ctx(),
         &AcquireOptions::default(),
         &SlotIdentity::Unbound,

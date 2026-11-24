@@ -11,6 +11,32 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **Metadata errors, the resource key helper and the credential definition
+  follow one naming scheme across actions, resources and credentials.** No
+  behavior changes; rename at the call site.
+
+  | Before | After |
+  |---|---|
+  | `ActionMetadataAdmissionError` | `ActionAdmissionError` |
+  | `ActionMetadataReadmissionError` | `ActionReadmissionError` |
+  | `nebula_action::MetadataCompatibilityError` | `ActionCompatibilityError` |
+  | `nebula_resource::MetadataBuildError` | `ResourceAdmissionError` |
+  | `nebula_resource::MetadataCompatibilityError` | `ResourceCompatibilityError` |
+  | `nebula_metadata::MetadataReadmissionError` returned by `RecordedResourceDefinition::readmit_against` | `ResourceReadmissionError` |
+  | `CredentialMetadataAdmissionError` | `CredentialAdmissionError` |
+  | `CredentialMetadataReadmissionError` | `CredentialReadmissionError` |
+  | `nebula_credential::MetadataCompatibilityError` | `CredentialCompatibilityError` |
+  | `ProviderKey` trait, `R::key()` | `nebula_resource::key_of::<R>()` |
+  | `AnyCredential::credential_key() -> &str` | `AnyCredential::key() -> CredentialKey` |
+  | `CredentialDefinition::name()`, `key()`, `schema()` and the other shared getters | `definition.base().name()` and so on, or the `nebula_metadata::Definition` trait |
+
+  `ProviderKey` leaves `nebula_sdk::prelude`; the typed key is
+  `nebula_sdk::integration::resource::key_of`. `ActionMetadata` gains
+  `with_description` and `with_links`, so it has every builder method the
+  shared `Metadata` has. `nebula_resource` no longer re-exports
+  `MetadataReadmissionError`; take it from `nebula_metadata`. Earlier entries
+  in this section still name the old error types.
+
 - **A remote action's effect contract is its `RemoteEffectAction::descriptor()`,
   declared once on the type.** A remote action declared its descriptor twice:
   as `ActionEffectContract::Remote(..)` in its metadata and as the instance's

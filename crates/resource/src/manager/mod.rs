@@ -454,7 +454,6 @@
 //! [#718]: https://github.com/vanyastaff/nebula/issues/718
 //! [#719]: https://github.com/vanyastaff/nebula/issues/719
 
-use crate::resource::ProviderKey;
 use std::{
     sync::{
         Arc,
@@ -888,16 +887,16 @@ impl Manager {
             HandleLookupOutcome::Found(any) => any
                 .as_any_arc()
                 .downcast::<ManagedResource<R>>()
-                .map_err(|_| Error::not_found(&R::key())),
-            HandleLookupOutcome::NotFound => Err(Error::not_found(&R::key())),
+                .map_err(|_| Error::not_found(&crate::key_of::<R>())),
+            HandleLookupOutcome::NotFound => Err(Error::not_found(&crate::key_of::<R>())),
             HandleLookupOutcome::Ambiguous { rows } => Err(Error::ambiguous(format!(
                 "{}: {rows} resolved-credential registrations exist at this scope; \
                  acquire without a resolved slot identity is refused to prevent \
                  cross-tenant runtime bleed — acquire via the resolved-slot-identity \
                  path",
-                R::key()
+                crate::key_of::<R>()
             ))
-            .with_resource_key(R::key())),
+            .with_resource_key(crate::key_of::<R>())),
         }
     }
 
@@ -918,8 +917,8 @@ impl Manager {
             PinnedHandleLookup::Found(any) => any
                 .as_any_arc()
                 .downcast::<ManagedResource<R>>()
-                .map_err(|_| Error::not_found(&R::key())),
-            PinnedHandleLookup::NotFound => Err(Error::not_found(&R::key())),
+                .map_err(|_| Error::not_found(&crate::key_of::<R>())),
+            PinnedHandleLookup::NotFound => Err(Error::not_found(&crate::key_of::<R>())),
         }
     }
 
@@ -985,7 +984,7 @@ impl Manager {
     ) -> Result<ResourceHealthSnapshot, Error> {
         let managed = self.lookup::<R>(scope)?;
         Ok(ResourceHealthSnapshot {
-            key: R::key(),
+            key: crate::key_of::<R>(),
             phase: managed.status().phase,
             gate_state: managed.recovery_gate.as_ref().map(|g| g.state()),
             metrics: self.metrics.as_ref().map(ResourceOpsMetrics::snapshot),

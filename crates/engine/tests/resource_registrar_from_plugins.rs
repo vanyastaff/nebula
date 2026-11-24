@@ -40,7 +40,6 @@ use nebula_engine::{
     PluginManifest, PluginRegistry, ResolvedPlugin, ResourceActivatorRegistry, WorkflowEngine,
 };
 use nebula_metrics::MetricsRegistry;
-use nebula_resource::ProviderKey;
 use nebula_resource::Resident;
 use nebula_resource::{
     ScopeLevel,
@@ -334,7 +333,10 @@ async fn wired_registrar_performs_typed_registration() {
 
     assert!(
         manager
-            .get_any(&<DemoResource as ProviderKey>::key(), &ScopeLevel::Global)
+            .get_any(
+                &nebula_resource::key_of::<DemoResource>(),
+                &ScopeLevel::Global
+            )
             .is_some(),
         "the plugin-declared resource must be resolvable in the manager \
          after registration"

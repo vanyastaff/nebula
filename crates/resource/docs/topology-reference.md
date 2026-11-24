@@ -167,7 +167,7 @@ manager.register(RegistrationSpec {
 
 ### Cross-workflow dedupe
 
-The Manager dedupes by `(R::key(), ScopeLevel, SlotIdentity)`. 10 concurrent
+The Manager dedupes by `(key_of::<R>(), ScopeLevel, SlotIdentity)`. 10 concurrent
 acquires at the same scope and credential identity produce **one**
 `Provider::create`; every lease points at the current retained master through a
 topology-owned entry. See

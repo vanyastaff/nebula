@@ -28,7 +28,6 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use nebula_core::{CredentialId, Dependencies, SlotField, credential_key, dependencies::SlotKind};
 use nebula_engine::{KindActivator, RegistrarError, ResourceActivatorRegistry};
-use nebula_resource::ProviderKey;
 use nebula_resource::Resident;
 use nebula_resource::{
     HasCredentialSlots, Manager, ScopeLevel,
@@ -259,7 +258,7 @@ async fn known_kind_schema_valid_config_is_ok_and_no_manager_mutation() {
     let manager = Manager::new();
     assert!(
         manager
-            .get_any(&<HttpPool as ProviderKey>::key(), &ScopeLevel::Global)
+            .get_any(&nebula_resource::key_of::<HttpPool>(), &ScopeLevel::Global)
             .is_none(),
         "validating a config must NEVER live-register the resource \
          (config CRUD is separate from engine activation — §13.1)"

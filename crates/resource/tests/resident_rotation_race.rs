@@ -16,7 +16,6 @@
 //! yield-budget guessing; the ordering is enforced by a barrier and the
 //! resident `create_lock`.
 
-use nebula_resource::ProviderKey;
 use std::assert_matches;
 use std::sync::{
     Arc,
@@ -250,7 +249,11 @@ fn build(park: bool) -> (Arc<Manager>, ResourceKey, RaceResource) {
         rate_limit: None,
     })
     .expect("resident registration must succeed");
-    (Arc::new(mgr), RaceResource::key(), resource)
+    (
+        Arc::new(mgr),
+        nebula_resource::key_of::<RaceResource>(),
+        resource,
+    )
 }
 
 /// THE #680 regression. The first acquire's `create()` reads the OLD

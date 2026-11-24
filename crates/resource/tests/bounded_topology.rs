@@ -10,7 +10,6 @@
 //!
 //! [`Bounded`]: nebula_resource::Bounded
 
-use nebula_resource::ProviderKey;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -190,7 +189,7 @@ async fn capped_gates_concurrency_through_manager() {
     let manager = Arc::new(Manager::new());
     let seats = Seats::new();
     register(&manager, seats, Bounded::capped(2).expect("cap >= 1"));
-    let key = Seats::key();
+    let key = nebula_resource::key_of::<Seats>();
     let ctx = ctx();
 
     let g1 = acquire(&manager, &key, &ctx).await.expect("first lease");
@@ -234,7 +233,7 @@ async fn exclusive_reuses_one_instance_and_resets() {
     let create_count = Arc::clone(&seats.create_count);
     let reset_count = Arc::clone(&seats.reset_count);
     register(&manager, seats, Bounded::exclusive());
-    let key = Seats::key();
+    let key = nebula_resource::key_of::<Seats>();
     let ctx = ctx();
 
     // Lease, release (resets + returns the one instance to the store), lease
@@ -275,7 +274,7 @@ async fn exclusive_failed_reset_destroys_then_recreates() {
     let destroy_count = Arc::clone(&seats.destroy_count);
     seats.reset_ok.store(false, Ordering::SeqCst);
     register(&manager, seats, Bounded::exclusive());
-    let key = Seats::key();
+    let key = nebula_resource::key_of::<Seats>();
     let ctx = ctx();
 
     let g = acquire(&manager, &key, &ctx).await.expect("first lease");
@@ -307,7 +306,7 @@ async fn unbounded_never_rejects_through_manager() {
     let manager = Arc::new(Manager::new());
     let seats = Seats::new();
     register(&manager, seats, Bounded::unbounded());
-    let key = Seats::key();
+    let key = nebula_resource::key_of::<Seats>();
     let ctx = ctx();
 
     let mut guards = Vec::new();
@@ -338,7 +337,7 @@ async fn exclusive_permit_held_until_reset_completes_on_drop() -> Result<(), Err
     let reset_count = Arc::clone(&seats.reset_count);
     let reset_gate = Arc::clone(&seats.reset_gate);
     register(&manager, seats, Bounded::exclusive());
-    let key = Seats::key();
+    let key = nebula_resource::key_of::<Seats>();
     let ctx = ctx();
 
     let a = acquire(&manager, &key, &ctx).await?;

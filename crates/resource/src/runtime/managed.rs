@@ -11,7 +11,6 @@
 //! `acquire_loop` module. This module holds only the
 //! admission-surface + status/phase/taint/drain impl blocks.
 
-use crate::resource::ProviderKey;
 use std::{
     sync::{
         Arc,
@@ -293,7 +292,7 @@ impl<R: Provider> std::fmt::Debug for ManagedResource<R> {
         // `R::Instance`s with no `Debug` bound — print the process-visible
         // bookkeeping counters instead of the instance payload.
         f.debug_struct("ManagedResource")
-            .field("key", &R::key())
+            .field("key", &crate::key_of::<R>())
             .field("generation", &self.generation.load(Ordering::Relaxed))
             .field("tainted", &self.tainted.load(Ordering::Relaxed))
             .field(
@@ -332,7 +331,7 @@ impl<R: Provider> ManagedResource<R> {
     }
 
     /// Joins maintenance outside the release queue so author hooks may release dependencies.
-    #[tracing::instrument(skip_all, fields(resource.key = %R::key()))]
+    #[tracing::instrument(skip_all, fields(resource.key = %crate::key_of::<R>()))]
     pub(crate) async fn join_maintenance(&self) -> Result<(), crate::Error> {
         self.maintenance.join().await
     }
@@ -341,7 +340,7 @@ impl<R: Provider> ManagedResource<R> {
     ///
     /// Runs inside a queue-owned coordinator; each entry receives its own
     /// fault boundary and budget, not one timeout for the entire collection.
-    #[tracing::instrument(skip_all, fields(resource.key = %R::key()))]
+    #[tracing::instrument(skip_all, fields(resource.key = %crate::key_of::<R>()))]
     pub(crate) async fn close_retained(self: &Arc<Self>) -> Result<(), crate::Error> {
         self.begin_close();
         let entries = self.store.close_and_drain().await;
@@ -358,7 +357,7 @@ impl<R: Provider> ManagedResource<R> {
         let quiesce = match quiesce {
             Ok(result) => result,
             Err(fault) => {
-                fault.observe(&R::key(), "quiesce");
+                fault.observe(&crate::key_of::<R>(), "quiesce");
                 Err(match fault {
                     crate::hook_guard::HookFault::Panicked => {
                         crate::Error::permanent("topology quiesce hook panicked")

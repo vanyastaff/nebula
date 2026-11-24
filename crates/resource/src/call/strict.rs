@@ -42,7 +42,6 @@
 //! outcome's call (a `Write` whose earlier attempt was sent is
 //! `OutcomeUnknown`).
 
-use crate::resource::ProviderKey;
 use tokio_util::sync::CancellationToken;
 
 use super::{
@@ -122,7 +121,7 @@ pub(crate) fn capture_pin<R: Provider + PinSlots>(
         if stable || tries >= PIN_CAPTURE_TRIES {
             if !stable {
                 tracing::debug!(
-                    resource.key = %R::key(),
+                    resource.key = %crate::key_of::<R>(),
                     tries,
                     "credential slots kept rotating while a unit pinned them"
                 );
@@ -204,7 +203,7 @@ pub(super) fn register_grant<R: Provider, P>(
         generation_refusal(managed, generation)?;
         return shared.grant();
     };
-    let key = R::key();
+    let key = crate::key_of::<R>();
     let link = reads.link();
     let _admission = link.lock();
     if managed.is_tainted() {

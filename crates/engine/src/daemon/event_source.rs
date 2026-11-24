@@ -20,8 +20,8 @@ use std::{
 };
 
 use nebula_action::{
-    Action, ActionError, ActionMetadata, ActionMetadataAdmissionError, TriggerAction,
-    TriggerActionAdapter, TriggerContext, TriggerEventOutcome, TriggerSource,
+    Action, ActionAdmissionError, ActionError, ActionMetadata, TriggerAction, TriggerActionAdapter,
+    TriggerContext, TriggerEventOutcome, TriggerSource,
 };
 use nebula_core::Dependencies;
 use nebula_resource::{ResourceContext, error::ErrorKind as ResourceErrorKind, resource::Provider};
@@ -191,7 +191,7 @@ where
     ///
     /// Returns a typed admission error when the source metadata or its associated schemas fail
     /// catalog admission.
-    pub fn into_handler(self) -> Result<TriggerActionAdapter<Self>, ActionMetadataAdmissionError> {
+    pub fn into_handler(self) -> Result<TriggerActionAdapter<Self>, ActionAdmissionError> {
         TriggerActionAdapter::new(self)
     }
 }

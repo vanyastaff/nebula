@@ -1,6 +1,5 @@
 //! Resource config admission must retain schema preparation and reject secrets.
 
-use nebula_resource::ProviderKey;
 use std::{
     hash::{DefaultHasher, Hash, Hasher},
     marker::PhantomData,
@@ -277,7 +276,7 @@ fn invalid_config_schema_retains_typed_catalog_failure() {
     let error = factory::<RejectedConfig>()
         .definition()
         .expect_err("invalid static schema must fail factory admission");
-    let nebula_resource::MetadataBuildError::Definition(shared_error) = &error else {
+    let nebula_resource::ResourceAdmissionError::Definition(shared_error) = &error else {
         panic!("schema construction must produce the typed definition variant");
     };
     let report = std::error::Error::source(shared_error)
@@ -369,7 +368,7 @@ async fn template_result_cannot_introduce_undeclared_secret_fields() {
     assert!(error.to_string().contains("/endpoint/password"));
     assert!(error.to_string().contains("not declared"));
     assert!(!format!("{error:?} {error}").contains("private-result-marker"));
-    assert!(!manager.contains(&ConfigProbe::<NestedConfig>::key()));
+    assert!(!manager.contains(&nebula_resource::key_of::<ConfigProbe<NestedConfig>>()));
 }
 
 #[tokio::test]
@@ -439,7 +438,7 @@ async fn templates_require_a_permitting_field_declaration() {
         .downcast_ref::<ValidationReport>()
         .unwrap();
     assert!(report.errors().any(|error| error.code() == "expression.forbidden" && error.path().as_str() == "/host"));
-    assert!(!manager.contains(&ConfigProbe::<EmptyConfig>::key()));
+    assert!(!manager.contains(&nebula_resource::key_of::<ConfigProbe<EmptyConfig>>()));
 }
 
 #[tokio::test]
@@ -496,7 +495,7 @@ async fn data_config_never_executes_expression_shaped_objects() {
             .errors()
             .any(|error| error.code() == "type_mismatch" && error.path().as_str() == "/host")
     );
-    assert!(!manager.contains(&ConfigProbe::<PreparedConfig>::key()));
+    assert!(!manager.contains(&nebula_resource::key_of::<ConfigProbe<PreparedConfig>>()));
 }
 
 #[tokio::test]
@@ -561,7 +560,9 @@ async fn equal_schema_factory_rechecks_its_typed_config_contract() {
             .to_string()
             .contains("factory B rejected config admitted by factory A")
     );
-    assert!(!manager.contains(&ConfigProbe::<EqualSchemaFactoryBConfig>::key()));
+    assert!(!manager.contains(&nebula_resource::key_of::<
+        ConfigProbe<EqualSchemaFactoryBConfig>,
+    >()));
 }
 
 #[tokio::test]
@@ -625,7 +626,9 @@ async fn different_schema_factory_rechecks_its_own_schema() {
             .errors()
             .any(|error| error.code() == "type_mismatch" && error.path().as_str() == "/mode")
     );
-    assert!(!manager.contains(&ConfigProbe::<DifferentSchemaFactoryBConfig>::key()));
+    assert!(!manager.contains(&nebula_resource::key_of::<
+        ConfigProbe<DifferentSchemaFactoryBConfig>,
+    >()));
 }
 
 #[test]

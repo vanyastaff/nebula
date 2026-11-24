@@ -4,7 +4,7 @@ use std::assert_matches;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionMetadataAdmissionError, ActionResult,
+    Action, ActionAdmissionError, ActionContext, ActionError, ActionResult,
     GenericStatelessFactory, MetadataBuildError, StatelessAction,
 };
 use nebula_schema::{HasSchema, ValidSchema, ValidationError, ValidationReport};
@@ -47,7 +47,7 @@ fn input_schema_failure_prevents_factory_construction() {
     };
     assert_matches!(
         &error,
-        ActionMetadataAdmissionError::Schema(MetadataBuildError::Schema(report))
+        ActionAdmissionError::Schema(MetadataBuildError::Schema(report))
             if report.errors().next().unwrap().code() == "test.invalid_schema"
     );
     assert!(!format!("{error}: {error:?}").contains("authored_private_schema_text"));
@@ -105,7 +105,7 @@ fn output_schema_failure_prevents_factory_construction() {
     };
     assert_matches!(
         &error,
-        ActionMetadataAdmissionError::Schema(MetadataBuildError::Schema(report))
+        ActionAdmissionError::Schema(MetadataBuildError::Schema(report))
             if report.errors().next().unwrap().code() == "test.invalid_output_schema"
     );
     assert!(!format!("{error}: {error:?}").contains("authored_private_output_schema_text"));
@@ -143,6 +143,6 @@ fn historical_output_schema_cannot_acquire_factory_authority() {
     let Err(error) = GenericStatelessFactory::<HistoricalOutputAction>::new() else {
         panic!("historical output schema cannot produce a factory");
     };
-    assert_matches!(&error, ActionMetadataAdmissionError::Schema(MetadataBuildError::Schema(report))
+    assert_matches!(&error, ActionAdmissionError::Schema(MetadataBuildError::Schema(report))
         if report.errors().any(|error| error.code() == "schema.unsupported_policy"));
 }

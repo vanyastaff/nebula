@@ -3,7 +3,6 @@
 //! ends early — drop, cancel, deadline, row closing. Paused time; no
 //! transport.
 
-use crate::resource::ProviderKey;
 use std::{
     num::NonZeroUsize,
     sync::{
@@ -85,7 +84,7 @@ fn feed(manager: &Manager) -> ResourceHandle<Feed> {
 fn leases(manager: &Manager) -> u64 {
     manager
         .lookup_any_for_slot_identity_structural(
-            &Feed::key(),
+            &crate::key_of::<Feed>(),
             &ScopeLevel::Global,
             &SlotIdentity::Unbound,
         )
@@ -377,7 +376,7 @@ async fn a_closing_row_ends_a_stream_that_selects_on_it() {
     let running = tokio::spawn(stream.finish());
     probe.granted.notified().await;
 
-    manager.remove(&Feed::key()).expect("remove");
+    manager.remove(&crate::key_of::<Feed>()).expect("remove");
     let error = running.await.expect("task").expect_err("closing");
     assert_eq!(*error.kind(), ErrorKind::Cancelled);
     assert_eq!(error.sent(), SentState::Sent);

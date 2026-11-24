@@ -1,13 +1,12 @@
 //! Resource metadata is authored without a schema and admitted once by its factory.
 
-use nebula_resource::ProviderKey;
 use std::sync::Arc;
 
 use nebula_core::{Dependencies, resource_key};
 use nebula_resource::{
-    Error, HasCredentialSlots, KindActivator, MetadataBuildError, Provider,
-    RecordedResourceDefinition, Resident, ResourceActivatorRegistry, ResourceConfig,
-    ResourceContext, ResourceFactory, ResourceMetadata,
+    Error, HasCredentialSlots, KindActivator, Provider, RecordedResourceDefinition, Resident,
+    ResourceActivatorRegistry, ResourceAdmissionError, ResourceConfig, ResourceContext,
+    ResourceFactory, ResourceMetadata,
 };
 use nebula_schema::{HasSchema, SchemaKind, ValidSchema, ValidationReport};
 use semver::Version;
@@ -169,7 +168,10 @@ fn factory_binds_and_caches_the_canonical_config_schema_once() {
 
     assert!(std::ptr::eq(first, second));
     assert_eq!(SCHEMA_CALLS.get(), 1);
-    assert_eq!(first.base().key(), &MetadataProbe::key());
+    assert_eq!(
+        first.base().key(),
+        &nebula_resource::key_of::<MetadataProbe>()
+    );
     assert_eq!(first.base().name(), "Metadata probe");
     assert_eq!(first.base().tags(), ["metadata", "resource"]);
     assert_eq!(first.base().schema().kind(), SchemaKind::Record);
@@ -209,7 +211,7 @@ fn authored_shared_authoring_surface_survives_factory_admission() {
     let metadata = factory.definition().expect("valid static definition");
     let base = metadata.base();
 
-    assert_eq!(base.key(), &MetadataProbe::key());
+    assert_eq!(base.key(), &nebula_resource::key_of::<MetadataProbe>());
     assert_eq!(base.name(), "Metadata probe");
     assert_eq!(base.description(), "Factory admission probe");
     assert_eq!(base.version(), &version);
@@ -272,7 +274,7 @@ fn forged_recorded_metadata_cannot_become_an_admitted_definition() {
             serde_json::from_value(forged).expect("recorded evidence accepts valid wire shapes");
         std::assert_matches!(
             recorded.readmit_against(fresh),
-            Err(nebula_resource::MetadataReadmissionError::DefinitionMismatch)
+            Err(nebula_resource::ResourceReadmissionError::DefinitionMismatch)
         );
     }
 }
@@ -287,7 +289,7 @@ fn explicit_metadata_is_admitted_under_the_providers_key() {
     let metadata = factory.definition().expect("keyless metadata is admitted");
     assert_eq!(
         metadata.base().key(),
-        &ExplicitMetadataProbe::key(),
+        &nebula_resource::key_of::<ExplicitMetadataProbe>(),
         "metadata names no key, so the admitted definition carries the provider's"
     );
     assert_eq!(metadata.base().name(), "Another name");
@@ -325,9 +327,9 @@ fn shared_catalog_failures_are_cached_before_registry_mutation() {
         let mut registry = ResourceActivatorRegistry::new();
         for _ in 0..2 {
             std::assert_matches!(factory.definition(),
-                Err(MetadataBuildError::Definition(nebula_metadata::MetadataBuildError::Metadata(actual))) if actual == expected);
-            std::assert_matches!(registry.insert(ExplicitMetadataProbe::key().as_str(), factory.clone()).map(|_| ()),
-                Err(MetadataBuildError::Definition(nebula_metadata::MetadataBuildError::Metadata(actual))) if actual == expected);
+                Err(ResourceAdmissionError::Definition(nebula_metadata::MetadataBuildError::Metadata(actual))) if actual == expected);
+            std::assert_matches!(registry.insert(nebula_resource::key_of::<ExplicitMetadataProbe>().as_str(), factory.clone()).map(|_| ()),
+                Err(ResourceAdmissionError::Definition(nebula_metadata::MetadataBuildError::Metadata(actual))) if actual == expected);
             assert!(registry.is_empty());
         }
     }
@@ -367,7 +369,7 @@ fn same_semver_catalog_changes_require_exact_fresh_evidence() {
         assert_eq!(original.base().version(), changed.base().version());
         std::assert_matches!(
             recorded.readmit_against(changed),
-            Err(nebula_metadata::MetadataReadmissionError::DefinitionMismatch)
+            Err(nebula_resource::ResourceReadmissionError::DefinitionMismatch)
         );
         let current = RecordedResourceDefinition::from_slice(
             &serde_json::to_vec(changed).expect("serializable"),

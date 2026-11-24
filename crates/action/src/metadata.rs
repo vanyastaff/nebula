@@ -64,7 +64,7 @@ enum RecordedCheckpointPolicy {
 /// Compatibility failure between two admitted action definitions.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
-pub enum MetadataCompatibilityError {
+pub enum ActionCompatibilityError {
     /// A shared metadata compatibility rule failed.
     #[error(transparent)]
     Base(#[from] nebula_metadata::BaseCompatError<ActionKey>),
@@ -82,7 +82,7 @@ pub enum MetadataCompatibilityError {
 /// Failure while admitting an authored action definition.
 #[derive(Debug, Clone, thiserror::Error)]
 #[non_exhaustive]
-pub enum ActionMetadataAdmissionError {
+pub enum ActionAdmissionError {
     /// An associated Rust type could not produce a valid schema.
     #[error(transparent)]
     Schema(#[from] MetadataBuildError),
@@ -108,7 +108,7 @@ pub enum ActionMetadataAdmissionError {
 /// Failure while re-admitting recorded action metadata.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
-pub enum ActionMetadataReadmissionError {
+pub enum ActionReadmissionError {
     /// Shared metadata evidence differs from the fresh definition.
     #[error(transparent)]
     Base(#[from] MetadataReadmissionError),
@@ -199,6 +199,12 @@ impl ActionMetadata {
         self
     }
 
+    /// Replace the description; its byte budget is checked at admission.
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.base = self.base.with_description(description);
+        self
+    }
+
     /// Set the documentation URL.
     pub fn with_documentation_url(mut self, url: impl Into<String>) -> Self {
         self.base = self.base.with_documentation_url(url);
@@ -211,6 +217,15 @@ impl ActionMetadata {
         categories: impl IntoIterator<Item = nebula_metadata::CatalogCategoryKey>,
     ) -> Self {
         self.base = self.base.with_categories(categories);
+        self
+    }
+
+    /// Replace all typed catalog links.
+    pub fn with_links(
+        mut self,
+        links: impl IntoIterator<Item = nebula_metadata::CatalogLink>,
+    ) -> Self {
+        self.base = self.base.with_links(links);
         self
     }
 
@@ -323,10 +338,10 @@ impl ActionMetadata {
     pub(crate) fn admit_for<A: crate::Action>(
         mut self,
         kind: ActionKind,
-    ) -> Result<ActionDefinition, ActionMetadataAdmissionError> {
+    ) -> Result<ActionDefinition, ActionAdmissionError> {
         let effect_contract = match self.effect_contract.take() {
             Some(ActionEffectContract::Remote(_)) => {
-                return Err(ActionMetadataAdmissionError::RemoteEffectContractInMetadata);
+                return Err(ActionAdmissionError::RemoteEffectContractInMetadata);
             },
             declared => declared.unwrap_or_default(),
         };
@@ -339,12 +354,12 @@ impl ActionMetadata {
     pub(crate) fn admit_remote_for<A: crate::Action>(
         self,
         descriptor: crate::RemoteEffectDescriptor,
-    ) -> Result<ActionDefinition, ActionMetadataAdmissionError> {
+    ) -> Result<ActionDefinition, ActionAdmissionError> {
         match self.effect_contract {
             Some(ActionEffectContract::Remote(_)) => {
-                return Err(ActionMetadataAdmissionError::RemoteEffectContractInMetadata);
+                return Err(ActionAdmissionError::RemoteEffectContractInMetadata);
             },
-            Some(_) => return Err(ActionMetadataAdmissionError::EffectContractOnRemoteAction),
+            Some(_) => return Err(ActionAdmissionError::EffectContractOnRemoteAction),
             None => {},
         }
         self.admit_with::<A>(
@@ -357,7 +372,7 @@ impl ActionMetadata {
         self,
         kind: ActionKind,
         effect_contract: ActionEffectContract,
-    ) -> Result<ActionDefinition, ActionMetadataAdmissionError> {
+    ) -> Result<ActionDefinition, ActionAdmissionError> {
         let key = crate::key_of::<A>();
         let input_schema =
             nebula_schema::schema_of::<A::Input>().map_err(MetadataBuildError::from)?;
@@ -476,18 +491,15 @@ impl ActionDefinition {
     }
 
     /// Validate revision compatibility with an earlier admitted definition.
-    pub fn validate_compatibility(
-        &self,
-        previous: &Self,
-    ) -> Result<(), MetadataCompatibilityError> {
+    pub fn validate_compatibility(&self, previous: &Self) -> Result<(), ActionCompatibilityError> {
         nebula_metadata::validate_base_compat(&self.base, &previous.base)?;
         let same_major = self.base.version().major == previous.base.version().major;
 
         if same_major && self.effect_contract != previous.effect_contract {
-            return Err(MetadataCompatibilityError::EffectContractChangeWithoutMajorBump);
+            return Err(ActionCompatibilityError::EffectContractChangeWithoutMajorBump);
         }
         if same_major && (self.inputs != previous.inputs || self.outputs != previous.outputs) {
-            return Err(MetadataCompatibilityError::PortsChangeWithoutMajorBump);
+            return Err(ActionCompatibilityError::PortsChangeWithoutMajorBump);
         }
         if same_major
             && matches!(
@@ -496,7 +508,7 @@ impl ActionDefinition {
                 nebula_schema::Assignability::No(_)
             )
         {
-            return Err(MetadataCompatibilityError::OutputSchemaNarrowedWithoutMajorBump);
+            return Err(ActionCompatibilityError::OutputSchemaNarrowedWithoutMajorBump);
         }
         Ok(())
     }
@@ -596,7 +608,7 @@ impl RecordedActionDefinition {
     pub fn readmit_against(
         &self,
         fresh_definition: &ActionDefinition,
-    ) -> Result<ActionDefinition, ActionMetadataReadmissionError> {
+    ) -> Result<ActionDefinition, ActionReadmissionError> {
         self.base.readmit_against(&fresh_definition.base)?;
         if self.inputs.as_ref() == fresh_definition.inputs()
             && self.outputs.as_ref() == fresh_definition.outputs()
@@ -613,7 +625,7 @@ impl RecordedActionDefinition {
                 error_code = "ACTION:RECORDED_METADATA_MISMATCH",
                 "recorded action metadata rejected"
             );
-            Err(ActionMetadataReadmissionError::DefinitionMismatch)
+            Err(ActionReadmissionError::DefinitionMismatch)
         }
     }
 }

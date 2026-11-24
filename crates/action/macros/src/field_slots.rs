@@ -273,7 +273,7 @@ pub(crate) fn emit_slot_field_registrations(slots: &[ParsedSlotField]) -> TokenS
                     ::nebula_core::SlotKind::Resource {
                         type_id: ::std::any::TypeId::of::<#inner_ty>(),
                         type_name: ::std::any::type_name::<#inner_ty>(),
-                        key: <#inner_ty as ::nebula_resource::resource::ProviderKey>::key(),
+                        key: ::nebula_resource::key_of::<#inner_ty>(),
                     }
                 },
                 SlotKind::Credential => quote! {
@@ -348,7 +348,7 @@ pub(crate) fn emit_slot_resolution_block(slots: &[ParsedSlotField]) -> (TokenStr
                                 Err(error) => return Err(error),
                             }
                         } else {
-                            let resource_key = <#inner_ty as ::nebula_resource::resource::ProviderKey>::key();
+                            let resource_key = ::nebula_resource::key_of::<#inner_ty>();
                             match <dyn ::nebula_action::ActionContext as ::nebula_action::ActionContextExt>
                                 ::try_resource_handle_by_id::<#inner_ty>(ctx, resource_key.as_str())
                             {
@@ -365,7 +365,7 @@ pub(crate) fn emit_slot_resolution_block(slots: &[ParsedSlotField]) -> (TokenStr
                             <dyn ::nebula_action::ActionContext as ::nebula_action::ActionContextExt>
                                 ::resource_handle_by_id::<#inner_ty>(ctx, slot_id)
                         } else {
-                            let resource_key = <#inner_ty as ::nebula_resource::resource::ProviderKey>::key();
+                            let resource_key = ::nebula_resource::key_of::<#inner_ty>();
                             <dyn ::nebula_action::ActionContext as ::nebula_action::ActionContextExt>
                                 ::resource_handle_by_id::<#inner_ty>(ctx, resource_key.as_str())
                         };
@@ -590,7 +590,7 @@ mod tests {
                 "{expanded}"
             );
             assert!(
-                expanded.contains("< Db as :: nebula_resource :: resource :: Provider > :: key ()"),
+                expanded.contains(":: nebula_resource :: key_of :: < Db > ()"),
                 "{expanded}"
             );
             assert!(expanded.contains("resource_key . as_str ()"), "{expanded}");
@@ -614,7 +614,7 @@ mod tests {
         };
         let registration = emit_slot_field_registrations(&[row]).to_string();
         assert!(
-            registration.contains("< Db as :: nebula_resource :: resource :: Provider > :: key ()"),
+            registration.contains(":: nebula_resource :: key_of :: < Db > ()"),
             "{registration}"
         );
         assert!(

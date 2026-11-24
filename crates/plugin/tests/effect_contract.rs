@@ -99,8 +99,7 @@ thread_local! {
 fn admit(
     descriptor: RemoteEffectDescriptor,
     metadata_contract: Option<ActionEffectContract>,
-) -> Result<RemoteEffectInstanceFactory<RemoteAction>, nebula_action::ActionMetadataAdmissionError>
-{
+) -> Result<RemoteEffectInstanceFactory<RemoteAction>, nebula_action::ActionAdmissionError> {
     DESCRIPTOR.set(Some(descriptor));
     METADATA_CONTRACT.set(metadata_contract);
     let factory = RemoteEffectInstanceFactory::new(RemoteAction);
@@ -154,11 +153,11 @@ fn remote_contract_declared_in_metadata_is_rejected_before_instantiation() {
             Some(ActionEffectContract::Remote(Box::new(contract.clone())))
         )
         .map(drop),
-        Err(nebula_action::ActionMetadataAdmissionError::RemoteEffectContractInMetadata)
+        Err(nebula_action::ActionAdmissionError::RemoteEffectContractInMetadata)
     );
     assert_matches!(
         admit(contract, Some(ActionEffectContract::ReadOnly)).map(drop),
-        Err(nebula_action::ActionMetadataAdmissionError::EffectContractOnRemoteAction)
+        Err(nebula_action::ActionAdmissionError::EffectContractOnRemoteAction)
     );
 }
 

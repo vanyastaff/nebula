@@ -14,7 +14,7 @@ use nebula_sdk::{
     integration::credential::{TestFailureCode, TestResult},
     prelude::{
         Action, ActionMetadata, ActionResult, AuthoredValue, Deserialize, Error, Expression,
-        PoolProvider, Pooled, ProgramSyntax, Provider, ProviderKey, RemoteDestinationGuarantee,
+        PoolProvider, Pooled, ProgramSyntax, Provider, RemoteDestinationGuarantee,
         RemoteEffectPolicy, Resource, ResourceContext, Schema, Serialize, TeardownCx,
         TeardownReason, TriggerHealthSnapshot, Value, WorkflowBuilder, metadata_name,
         no_credential_slots,

@@ -1044,7 +1044,6 @@ mod tests {
 
     mod resource_handle {
         use nebula_core::ScopeLevel;
-        use nebula_resource::ProviderKey;
         use nebula_resource::{
             ErrorKind, Manager, RegistrationSpec, Resident, ResidentConfig, ResourceConfig,
             ResourceContext, SlotIdentity,
@@ -1184,9 +1183,9 @@ mod tests {
             let context = context_with(RowResponse::Manager(manager));
 
             let row: ResourceHandle<Ledger> = context
-                .resource_handle_by_id::<Ledger>(Ledger::key().as_str())
+                .resource_handle_by_id::<Ledger>(nebula_resource::key_of::<Ledger>().as_str())
                 .expect("row facade");
-            assert_eq!(row.resource_key(), &Ledger::key());
+            assert_eq!(row.resource_key(), &nebula_resource::key_of::<Ledger>());
         }
 
         #[test]

@@ -21,7 +21,6 @@
 //! [`managed`](super::managed) so code that never touches the topology can import
 //! a lighter set of bounds.
 
-use crate::resource::ProviderKey;
 use std::sync::Arc;
 
 use futures::stream::{self, StreamExt};
@@ -67,7 +66,7 @@ impl<R: Provider> Drop for RetiredEntriesGuard<R> {
             Some(Ok(submission)) => submission.detach(),
             Some(Err(error)) => tracing::warn!(
                 error.kind = ?error.kind(),
-                resource.key = %R::key(),
+                resource.key = %crate::key_of::<R>(),
                 "retired-entry cleanup submission was rejected"
             ),
             None => {},
@@ -93,18 +92,18 @@ where
             Ok(submission) => match submission.wait().await {
                 Ok(SubmissionOutcome::Completed) => {},
                 Ok(SubmissionOutcome::Deferred) => tracing::debug!(
-                    resource.key = %R::key(),
+                    resource.key = %crate::key_of::<R>(),
                     "background resource cleanup remains queue-owned"
                 ),
                 Err(error) => tracing::warn!(
                     error.kind = ?error.kind(),
-                    resource.key = %R::key(),
+                    resource.key = %crate::key_of::<R>(),
                     "background resource cleanup did not complete successfully"
                 ),
             },
             Err(error) => tracing::warn!(
                 error.kind = ?error.kind(),
-                resource.key = %R::key(),
+                resource.key = %crate::key_of::<R>(),
                 "background resource cleanup submission was rejected"
             ),
         }
@@ -115,7 +114,7 @@ where
             Ok(submission) => submission.detach(),
             Err(error) => tracing::warn!(
                 error.kind = ?error.kind(),
-                resource.key = %R::key(),
+                resource.key = %crate::key_of::<R>(),
                 "background resource cleanup submission was rejected"
             ),
         }
@@ -182,7 +181,7 @@ where
         let permit = self
             .topology
             .try_reserve(crate::topology::store::StoreView::new(&self.store))
-            .map_err(|u| u.into_error(R::key()))?
+            .map_err(|u| u.into_error(crate::key_of::<R>()))?
             .into_permit();
 
         // 2-5. Fenced checkout → destroy stale → accept-or-create. The whole
@@ -216,7 +215,7 @@ where
                 self.queue_destroy(cancel_guard.defuse(), TeardownReason::Shutdown),
             )
             .await;
-            return Err(Error::cancelled().with_resource_key(R::key()));
+            return Err(Error::cancelled().with_resource_key(crate::key_of::<R>()));
         }
 
         // 7. Snapshot author metadata while the entry remains armed, then
@@ -256,7 +255,7 @@ where
     ) -> Result<(EntryCreateGuard<R>, u64, bool), Error> {
         loop {
             if self.store.is_closed() {
-                return Err(Error::cancelled().with_resource_key(R::key()));
+                return Err(Error::cancelled().with_resource_key(crate::key_of::<R>()));
             }
             let checkout = self.store.checkout().await;
             // Cancel-safety: arm the fresh entry's guard NOW, before the stale
@@ -298,7 +297,7 @@ where
                         self.queue_destroy(cancel_guard.defuse(), TeardownReason::Shutdown),
                     )
                     .await;
-                    return Err(Error::cancelled().with_resource_key(R::key()));
+                    return Err(Error::cancelled().with_resource_key(crate::key_of::<R>()));
                 }
                 // Fresh-create fence (HikariCP #1836) — POOLED topologies only.
                 // A pooled instance created against a credential revoked while
@@ -319,7 +318,7 @@ where
                     return Err(Error::revoked(format!(
                         "{}: credential revoked while the instance was being \
                          created — fenced before admission (HikariCP #1836)",
-                        R::key()
+                        crate::key_of::<R>()
                     )));
                 }
                 // No await between `create_entry` returning and this wrap, so
@@ -400,7 +399,7 @@ where
         let (entries, blocked) = self.retained.drain_retired().into_parts();
         if let Some(blocked) = blocked {
             tracing::debug!(
-                resource.key = %R::key(),
+                resource.key = %crate::key_of::<R>(),
                 reason = ?blocked.reason(),
                 "retained cleanup left fenced generations in the backlog"
             );
@@ -430,7 +429,7 @@ where
         metrics: Option<ResourceOpsMetrics>,
     ) -> ResourceGuard<R> {
         let identity = crate::guard::GuardIdentity {
-            resource_key: R::key(),
+            resource_key: crate::key_of::<R>(),
             topology_tag: self.topology.tag(),
         };
         ResourceGuard::new(
@@ -693,7 +692,7 @@ where
                     match outcome? {
                         Some(Ok(true)) => created += 1,
                         Some(Err(error)) => tracing::warn!(
-                            key = %R::key(),
+                            key = %crate::key_of::<R>(),
                             error.kind = ?error.kind(),
                             "parallel warmup: create_entry failed"
                         ),
@@ -713,7 +712,7 @@ where
                         Some(Ok(false)) => {},
                         Some(Err(error)) => {
                             tracing::warn!(
-                                key = %R::key(),
+                                key = %crate::key_of::<R>(),
                                 error.kind = ?error.kind(),
                                 created,
                                 "warmup: create_entry failed, stopping early"
@@ -727,7 +726,7 @@ where
             },
         }
         if created > 0 {
-            tracing::info!(key = %R::key(), created, target, "resource warmup complete");
+            tracing::info!(key = %crate::key_of::<R>(), created, target, "resource warmup complete");
         }
         Ok(created)
     }
@@ -855,7 +854,7 @@ where
                 Ok(false) => {}, // deposit-time eviction (revoke race) — this attempt is spent
                 Err(e) => {
                     tracing::warn!(
-                        key = %R::key(),
+                        key = %crate::key_of::<R>(),
                         error.kind = ?e.kind(),
                         created,
                         target,
@@ -867,7 +866,7 @@ where
         }
         if created > 0 {
             tracing::debug!(
-                key = %R::key(),
+                key = %crate::key_of::<R>(),
                 created,
                 deficit,
                 idle_before,
@@ -915,7 +914,8 @@ where
                 })) {
                     evict
                 } else {
-                    crate::hook_guard::HookFault::Panicked.observe(&R::key(), "idle_evictable");
+                    crate::hook_guard::HookFault::Panicked
+                        .observe(&crate::key_of::<R>(), "idle_evictable");
                     true
                 }
             })
@@ -1023,7 +1023,7 @@ where
     /// silently — this closes the batch-wide exposure the plain-local shape
     /// had before the drain became fenced per batch.
     async fn probe_idle_entries(self: &Arc<Self>) -> super::destroy_batch::DestroyBatch<R> {
-        let key = R::key();
+        let key = crate::key_of::<R>();
         let mut failed = super::destroy_batch::DestroyBatch::new(
             Arc::clone(self),
             Vec::new(),
@@ -1342,7 +1342,7 @@ where
             Ok(submission) => submission.detach(),
             Err(error) => tracing::warn!(
                 error.kind = ?error.kind(),
-                resource.key = %R::key(),
+                resource.key = %crate::key_of::<R>(),
                 "cancel-safety destroy submission was rejected after ownership settlement"
             ),
         }

@@ -40,7 +40,7 @@ use crate::{
         TriggerHandle,
     },
     input::{ActionInput, ActionInputContract, PreparedActionInput},
-    metadata::{ActionDefinition, ActionKind, ActionMetadata, ActionMetadataAdmissionError},
+    metadata::{ActionAdmissionError, ActionDefinition, ActionKind, ActionMetadata},
     resource::ResourceAction,
     result::ActionResult,
     stateful::{StatefulAction, StatefulActionAdapter},
@@ -52,7 +52,7 @@ use crate::{
 fn admit_metadata<A: Action>(
     metadata: ActionMetadata,
     kind: ActionKind,
-) -> Result<Arc<ActionDefinition>, ActionMetadataAdmissionError> {
+) -> Result<Arc<ActionDefinition>, ActionAdmissionError> {
     metadata.admit_for::<A>(kind).map(Arc::new)
 }
 
@@ -138,7 +138,7 @@ impl<A: Action> GenericStatelessFactory<A> {
     ///
     /// Returns a typed admission failure when associated schemas or authored
     /// package declarations are invalid.
-    pub fn new() -> Result<Self, ActionMetadataAdmissionError> {
+    pub fn new() -> Result<Self, ActionAdmissionError> {
         Ok(Self {
             meta: admit_metadata::<A>(A::metadata(), ActionKind::Stateless)?,
             _phantom: PhantomData,
@@ -261,7 +261,7 @@ impl<A: Action> InstanceFactory<A> {
     ///
     /// # Errors
     /// Returns a typed catalog error if metadata or an associated schema is invalid.
-    pub fn new(action: A) -> Result<Self, ActionMetadataAdmissionError> {
+    pub fn new(action: A) -> Result<Self, ActionAdmissionError> {
         Ok(Self {
             action: Arc::new(action),
             meta: admit_metadata::<A>(A::metadata(), ActionKind::Stateless)?,
@@ -328,7 +328,7 @@ where
     ///
     /// Returns a typed admission failure for invalid metadata, metadata that
     /// declares an effect contract of its own, or an invalid descriptor.
-    pub fn new(action: A) -> Result<Self, ActionMetadataAdmissionError> {
+    pub fn new(action: A) -> Result<Self, ActionAdmissionError> {
         let descriptor = A::descriptor()?;
         let meta = Arc::new(A::metadata().admit_remote_for::<A>(descriptor.clone())?);
         let input_contract = ActionInputContract::new(meta.base().schema());
@@ -454,7 +454,7 @@ impl<A: Action> GenericStatefulFactory<A> {
     ///
     /// Returns a typed admission failure when associated schemas or authored
     /// package declarations are invalid.
-    pub fn new() -> Result<Self, ActionMetadataAdmissionError> {
+    pub fn new() -> Result<Self, ActionAdmissionError> {
         Ok(Self {
             meta: admit_metadata::<A>(A::metadata(), ActionKind::Stateful)?,
             _phantom: PhantomData,
@@ -508,7 +508,7 @@ impl<A: Action> GenericTriggerFactory<A> {
     ///
     /// Returns a typed admission failure when associated schemas or authored
     /// package declarations are invalid.
-    pub fn new() -> Result<Self, ActionMetadataAdmissionError> {
+    pub fn new() -> Result<Self, ActionAdmissionError> {
         Ok(Self {
             meta: admit_metadata::<A>(A::metadata(), ActionKind::Trigger)?,
             _phantom: PhantomData,
@@ -617,7 +617,7 @@ impl<A: Action> GenericResourceFactory<A> {
     ///
     /// Returns a typed admission failure when associated schemas or authored
     /// package declarations are invalid.
-    pub fn new() -> Result<Self, ActionMetadataAdmissionError> {
+    pub fn new() -> Result<Self, ActionAdmissionError> {
         Ok(Self {
             meta: admit_metadata::<A>(A::metadata(), ActionKind::Resource)?,
             _phantom: PhantomData,
@@ -715,7 +715,7 @@ impl<A: Action> GenericControlFactory<A> {
     ///
     /// Returns a typed admission failure when associated schemas or authored
     /// package declarations are invalid.
-    pub fn new() -> Result<Self, ActionMetadataAdmissionError> {
+    pub fn new() -> Result<Self, ActionAdmissionError> {
         Ok(Self {
             meta: admit_metadata::<A>(A::metadata(), ActionKind::Control)?,
             _phantom: PhantomData,
@@ -817,7 +817,7 @@ impl<A: Action> GenericStreamFactory<A> {
     ///
     /// Returns a typed admission failure when associated schemas or authored
     /// package declarations are invalid.
-    pub fn new() -> Result<Self, ActionMetadataAdmissionError> {
+    pub fn new() -> Result<Self, ActionAdmissionError> {
         Ok(Self {
             meta: admit_metadata::<A>(A::metadata(), ActionKind::Stream)?,
             _phantom: PhantomData,
@@ -941,7 +941,7 @@ impl<A: Action> GenericAgentFactory<A> {
     ///
     /// Returns a typed admission failure when associated schemas or authored
     /// package declarations are invalid.
-    pub fn new() -> Result<Self, ActionMetadataAdmissionError> {
+    pub fn new() -> Result<Self, ActionAdmissionError> {
         Ok(Self {
             meta: admit_metadata::<A>(A::metadata(), ActionKind::Agent)?,
             _phantom: PhantomData,

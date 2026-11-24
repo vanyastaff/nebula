@@ -489,11 +489,11 @@ fn project_credential_snapshot(
 ) -> Result<RecordedCredentialV1, ContractProjectionError> {
     let metadata = snapshot.definition();
     Ok(RecordedCredentialV1 {
-        key: snapshot.definition().key().to_string(),
+        key: snapshot.definition().base().key().to_string(),
         plugin_key: plugin_key.to_string(),
-        version: record_semver(metadata.version()),
+        version: record_semver(metadata.base().version()),
         pattern: project_auth_pattern(metadata.pattern())?,
-        properties_schema: record_schema(metadata.schema().clone()),
+        properties_schema: record_schema(metadata.base().schema().clone()),
         capability_bits: snapshot.capabilities().bits(),
     })
 }
@@ -1464,7 +1464,7 @@ impl<'a> GraphCompiler<'a> {
                     return;
                 }
                 let provider_key = provider.key().clone();
-                let version = snapshot.definition().version().clone();
+                let version = snapshot.definition().base().version().clone();
                 let capabilities = snapshot.capabilities().bits();
                 if !self.validate_plugin_edge(&owner_plugin, &provider_key, path) {
                     return;

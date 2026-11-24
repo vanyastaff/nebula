@@ -1,6 +1,5 @@
 //! Fault injection at the private publisher seam; public behavior uses real leases.
 
-use crate::resource::ProviderKey;
 use std::{
     sync::{
         Arc,
@@ -498,7 +497,7 @@ async fn scoped_shared_rows_remain_usable_until_each_final_consumer_releases() {
         for _ in 0..2 {
             let guard = Manager::acquire_any(
                 Arc::clone(&manager),
-                &LeasedResource::key(),
+                &crate::key_of::<LeasedResource>(),
                 &context,
                 &Default::default(),
                 &SlotIdentity::Unbound,

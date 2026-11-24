@@ -4,7 +4,6 @@
 //! The ledger seeding writes an earlier dispatch's crash residue directly:
 //! a slot of the node with a granted call that was never explained.
 
-use nebula_resource::ProviderKey;
 use std::sync::Mutex;
 
 use serde_json::json;
@@ -487,7 +486,11 @@ async fn a_scope_that_shadows_a_global_row_refuses_the_journaled_handle() {
     let shadowing = Arc::new(DashScopedResourceMap::new());
     let branch = BranchId::from_node_key(node_key!("branch"));
     shadowing.register_branch(branch.clone(), None);
-    assert!(shadowing.push(branch.clone(), Payments::key(), Arc::new(7_u32)));
+    assert!(shadowing.push(
+        branch.clone(),
+        nebula_resource::key_of::<Payments>(),
+        Arc::new(7_u32)
+    ));
     shadowing.set_current_branch(Some(branch));
 
     for (scoped, shadowed) in [
@@ -507,7 +510,7 @@ async fn a_scope_that_shadows_a_global_row_refuses_the_journaled_handle() {
         });
         let journal = task.effect_journal().expect("a journal on a durable turn");
         let resources = task.journaled_resources(Some(&journal));
-        let handle = resources.resource_handle_any(&Payments::key());
+        let handle = resources.resource_handle_any(&nebula_resource::key_of::<Payments>());
         if shadowed {
             let Err(error) = handle else {
                 panic!("a shadowed key must not reach the global row");
@@ -623,7 +626,7 @@ async fn read_only_and_remote_contracts_get_read_only_handles_only() {
         for journal in [None, Some(&journal)] {
             let resources = task.dispatch_resources(&contract, journal);
             let handle = resources
-                .resource_handle_any(&Payments::key())
+                .resource_handle_any(&nebula_resource::key_of::<Payments>())
                 .expect("the global row is served")
                 .downcast::<ResourceHandle<Payments>>()
                 .expect("a ResourceHandle<Payments>");

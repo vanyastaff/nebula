@@ -7,7 +7,6 @@
 //!          `ActionContextExt::resource_handle_by_id`)
 //!         -> submits a unit, which checks out the instance per attempt
 
-use nebula_resource::ProviderKey;
 use std::{
     collections::HashMap,
     sync::{
@@ -362,7 +361,7 @@ impl StatelessAction for IntegrationAcquireHandler {
         // A read-only action reaches the row through a read-only handle.
         use nebula_action::ActionContextExt as _;
 
-        let key = IntegrationProbeResource::key();
+        let key = nebula_resource::key_of::<IntegrationProbeResource>();
         let handle = ctx.resource_handle_by_id::<IntegrationProbeResource>(key.as_str())?;
         let value = handle.submit(ReadProbe).await?;
         Ok(ActionResult::success(serde_json::json!({ "read": value })))
@@ -432,7 +431,7 @@ async fn engine_acquires_org_scoped_resource_through_accessor() {
         });
     engine.record_resource_slot_identity(
         ScopeLevel::Organization(org),
-        IntegrationProbeResource::key(),
+        nebula_resource::key_of::<IntegrationProbeResource>(),
         SlotIdentity::Unbound,
     );
 
@@ -507,12 +506,12 @@ async fn workspaces_with_different_binding_shapes_each_reach_their_own_row() {
         .with_resource_manager(Arc::clone(&manager));
     engine.record_resource_slot_identity(
         ScopeLevel::Workspace(bound_workspace),
-        IntegrationProbeResource::key(),
+        nebula_resource::key_of::<IntegrationProbeResource>(),
         bound_identity,
     );
     engine.record_resource_slot_identity(
         ScopeLevel::Workspace(unbound_workspace),
-        IntegrationProbeResource::key(),
+        nebula_resource::key_of::<IntegrationProbeResource>(),
         SlotIdentity::Unbound,
     );
 
@@ -604,7 +603,7 @@ async fn durable_turn_acquires_the_executions_workspace_row() {
         );
     engine.record_resource_slot_identity(
         ScopeLevel::Workspace(workspace),
-        IntegrationProbeResource::key(),
+        nebula_resource::key_of::<IntegrationProbeResource>(),
         SlotIdentity::Unbound,
     );
 
@@ -673,7 +672,10 @@ async fn action_resource_fails_without_manager() {
     let wf = make_workflow(vec![
         NodeDefinition::new(node.clone(), "A", "core", "test.resource_probe.handle")
             .unwrap()
-            .with_resource_binding("probe", IntegrationProbeResource::key().as_str()),
+            .with_resource_binding(
+                "probe",
+                nebula_resource::key_of::<IntegrationProbeResource>().as_str(),
+            ),
     ]);
 
     let result = engine
@@ -714,7 +716,7 @@ async fn action_resource_fails_without_manager() {
 //
 // Architecture note (deviation from the original Phase 8 task wording):
 // the `R::Credential` associated type was retired in Phase 4 , and
-// the manager dedupes by `(R::key(), ScopeLevel)` — the static type-level key
+// the manager dedupes by `(key_of::<R>(), ScopeLevel)` — the static type-level key
 // of the registered `Resource`, not a runtime `ResourceId`. The "10 workflows
 // declaring the same `ResourceId`" framing collapses to "10 acquires of the
 // same `Resource` impl at the same scope." Resident topology is the natural
@@ -722,7 +724,6 @@ async fn action_resource_fails_without_manager() {
 // `create_lock` mutex that double-checks after wakeup.
 
 mod shared_resource {
-    use nebula_resource::ProviderKey;
     use std::sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -861,7 +862,7 @@ mod shared_resource {
         }
     }
 
-    /// A second resource type — different `R::key()` — used by the
+    /// A second resource type — different `key_of::<R>()` — used by the
     /// "different IDs distinct" edge case. Distinct `Resource` impls
     /// produce distinct registry rows even when configured identically.
     #[derive(Clone)]
@@ -1021,7 +1022,7 @@ mod shared_resource {
     }
 
     // -----------------------------------------------------------------------
-    // Edge case A — different `R::key()` produce distinct instances even
+    // Edge case A — different `key_of::<R>()` produce distinct instances even
     // when configured with identical configs at identical scopes.
     // -----------------------------------------------------------------------
 
@@ -1090,7 +1091,7 @@ mod shared_resource {
     }
 
     // -----------------------------------------------------------------------
-    // Edge case B — same `R::key()` registered at two different scopes
+    // Edge case B — same `key_of::<R>()` registered at two different scopes
     // produces two independent instances (closest-ancestor lookup, not
     // unifying).
     // -----------------------------------------------------------------------
@@ -1217,7 +1218,7 @@ mod shared_resource {
         for _ in 0..16 {
             match events.try_recv() {
                 Some(ResourceEvent::ConfigReloaded { key }) => {
-                    assert_eq!(key, TelegramBot::key());
+                    assert_eq!(key, nebula_resource::key_of::<TelegramBot>());
                     found = true;
                     break;
                 },
@@ -1569,7 +1570,11 @@ mod resource_handle {
 
         let result = run(
             &engine,
-            node_of("test.resource_handle.journaled", "svc", &Svc::key()),
+            node_of(
+                "test.resource_handle.journaled",
+                "svc",
+                &nebula_resource::key_of::<Svc>(),
+            ),
             serde_json::json!(null),
             ExecutionBudget::default(),
         )
@@ -1646,7 +1651,11 @@ mod resource_handle {
 
         let result = run(
             &engine,
-            node_of("test.resource_handle.journaled_agent", "svc", &Svc::key()),
+            node_of(
+                "test.resource_handle.journaled_agent",
+                "svc",
+                &nebula_resource::key_of::<Svc>(),
+            ),
             serde_json::json!(null),
             ExecutionBudget::default(),
         )
@@ -1711,7 +1720,11 @@ mod resource_handle {
 
         let result = run(
             &engine,
-            node_of("test.resource_handle.read_only_write", "svc", &Svc::key()),
+            node_of(
+                "test.resource_handle.read_only_write",
+                "svc",
+                &nebula_resource::key_of::<Svc>(),
+            ),
             serde_json::json!(null),
             ExecutionBudget::default(),
         )
@@ -1783,7 +1796,11 @@ mod resource_handle {
 
         let result = runtime
             .execute_action_with_node(
-                &node_of("test.resource_handle.journaled", "svc", &Svc::key()),
+                &node_of(
+                    "test.resource_handle.journaled",
+                    "svc",
+                    &nebula_resource::key_of::<Svc>(),
+                ),
                 None,
                 serde_json::json!(null),
                 &ctx,
@@ -1803,7 +1820,7 @@ mod resource_handle {
         // provider with a write.
         let row = nebula_core::accessor::ResourceAccessor::resource_handle_any(
             accessor.as_ref(),
-            &Svc::key(),
+            &nebula_resource::key_of::<Svc>(),
         )
         .expect("facade")
         .downcast::<ResourceHandle<Svc>>()
@@ -1908,7 +1925,11 @@ mod resource_handle {
 
         let result = run(
             &engine,
-            node_of("test.resource_handle.book", "ledger", &Ledger::key()),
+            node_of(
+                "test.resource_handle.book",
+                "ledger",
+                &nebula_resource::key_of::<Ledger>(),
+            ),
             serde_json::json!({ "entry": "a", "fail": false }),
             ExecutionBudget::default(),
         )
@@ -1989,7 +2010,11 @@ mod resource_handle {
             async move {
                 run(
                     &engine,
-                    node_of("test.resource_handle.twice", "svc", &Svc::key()),
+                    node_of(
+                        "test.resource_handle.twice",
+                        "svc",
+                        &nebula_resource::key_of::<Svc>(),
+                    ),
                     serde_json::json!(null),
                     ExecutionBudget::default(),
                 )
@@ -2062,7 +2087,13 @@ mod resource_handle {
                 .register_stateless_factory::<UnitDeadline>()
                 .expect("register");
         });
-        let node = || node_of("test.resource_handle.deadline", "svc", &Svc::key());
+        let node = || {
+            node_of(
+                "test.resource_handle.deadline",
+                "svc",
+                &nebula_resource::key_of::<Svc>(),
+            )
+        };
         let remaining = |result: &nebula_engine::ExecutionResult| {
             output(result)["remaining"]
                 .as_f64()
@@ -2146,7 +2177,11 @@ mod resource_handle {
                 .register_stateless_factory::<Hinted>()
                 .expect("register");
         });
-        let mut node = node_of("test.resource_handle.hinted", "svc", &Svc::key());
+        let mut node = node_of(
+            "test.resource_handle.hinted",
+            "svc",
+            &nebula_resource::key_of::<Svc>(),
+        );
         node.retry_policy = Some(nebula_workflow::RetryConfig::exponential(3, 1, 10_000));
 
         let result = run(
@@ -2215,7 +2250,11 @@ mod resource_handle {
 
         let result = run(
             &engine,
-            node_of("test.resource_handle.idempotent", "svc", &Svc::key()),
+            node_of(
+                "test.resource_handle.idempotent",
+                "svc",
+                &nebula_resource::key_of::<Svc>(),
+            ),
             serde_json::json!(null),
             ExecutionBudget::default(),
         )
@@ -2271,7 +2310,11 @@ mod resource_handle {
                 .register_stateless_factory::<UnknownWrite>()
                 .expect("register");
         });
-        let mut node = node_of("test.resource_handle.unknown", "svc", &Svc::key());
+        let mut node = node_of(
+            "test.resource_handle.unknown",
+            "svc",
+            &nebula_resource::key_of::<Svc>(),
+        );
         node.retry_policy = Some(nebula_workflow::RetryConfig::exponential(3, 1, 10));
 
         let result = run(

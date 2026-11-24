@@ -50,7 +50,6 @@
 //! [`AdmissionLink`](super::AdmissionLink), with the unit's credential pin
 //! checked under the same lock (`call::strict`).
 
-use crate::resource::ProviderKey;
 use std::time::Duration;
 
 use nebula_core::ResourceKey;
@@ -267,7 +266,7 @@ impl<R: Provider> ManagedResource<R> {
         let deadline = remaining.and_then(|remaining| started.checked_add(remaining));
         let span = tracing::debug_span!(
             "resource.credential_admission",
-            resource.key = %R::key(),
+            resource.key = %crate::key_of::<R>(),
             slots = targets.len(),
         );
         let slots = if targets.len() == 1 {
@@ -329,7 +328,7 @@ impl<R: Provider> ManagedResource<R> {
             return !verdict.cancelled;
         };
         tracing::debug!(
-            resource.key = %R::key(),
+            resource.key = %crate::key_of::<R>(),
             %reason,
             "strict credential read: background create skipped"
         );
@@ -480,10 +479,15 @@ impl Manager {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.reject_if_tainted_or_shutting_down_post_count::<R>(managed)?;
-        self.apply_strict_reading_under_admission(&R::key(), &**managed, &reading, reads)?;
+        self.apply_strict_reading_under_admission(
+            &crate::key_of::<R>(),
+            &**managed,
+            &reading,
+            reads,
+        )?;
         if let Some(suspension) = managed.admission.suspension() {
             return Err(Self::credential_unavailable_error(
-                &R::key(),
+                &crate::key_of::<R>(),
                 suspension.reason(),
             ));
         }

@@ -137,7 +137,7 @@ impl SlotIdentity {
 /// against cross-tenant runtime bleed.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DedupKey {
-    /// The static, type-level resource key (`R::key()`).
+    /// The static, type-level resource key (`key_of::<R>()`).
     pub resource_key: ResourceKey,
     /// The scope the resource was registered at.
     pub scope: ScopeLevel,

@@ -104,7 +104,7 @@ pub(crate) type DrainTrackers = (DrainTracker, DrainTracker);
 /// ```compile_fail
 /// use nebula_resource::{Provider, ResourceGuard};
 /// fn fabricate<R: Provider>(instance: R::Instance) {
-///     ResourceGuard::<R>::owned(instance, R::key(), nebula_resource::TopologyTag::Resident);
+///     ResourceGuard::<R>::owned(instance, nebula_resource::key_of::<R>(), nebula_resource::TopologyTag::Resident);
 /// }
 /// ```
 #[must_use = "dropping a ResourceGuard immediately releases the resource"]

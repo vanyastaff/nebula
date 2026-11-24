@@ -21,8 +21,8 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use nebula_action::{
-    Action, ActionDefinition, ActionError, ActionFactory, ActionMetadataAdmissionError,
-    AgentAction, ControlAction, FromWorkflowNode, GenericAgentFactory, GenericControlFactory,
+    Action, ActionAdmissionError, ActionDefinition, ActionError, ActionFactory, AgentAction,
+    ControlAction, FromWorkflowNode, GenericAgentFactory, GenericControlFactory,
     GenericResourceFactory, GenericStatefulFactory, GenericStatelessFactory, GenericStreamFactory,
     GenericTriggerFactory, InstanceFactory, OutputPort, ResourceAction, StatefulAction,
     StatelessAction, StreamAction, TriggerAction, WebhookActionFactory,
@@ -114,7 +114,7 @@ impl ActionRegistry {
     /// Requires the action to implement [`FromWorkflowNode`] (auto-emitted
     /// by `#[derive(Action)]`). The factory builds a fresh `A` per
     /// dispatch via `A::from_workflow_node(node, ctx)`.
-    pub fn register_stateless_factory<A>(&self) -> Result<(), ActionMetadataAdmissionError>
+    pub fn register_stateless_factory<A>(&self) -> Result<(), ActionAdmissionError>
     where
         A: StatelessAction + FromWorkflowNode<Error = ActionError>,
         <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
@@ -132,10 +132,7 @@ impl ActionRegistry {
     /// dispatch, this shares the one instance across dispatches. The key and
     /// metadata are the type's own (`A::KEY`, `A::metadata()`), as on every
     /// other path: one type is one catalog entry. Backed by [`InstanceFactory`].
-    pub fn register_stateless_instance<A>(
-        &self,
-        action: A,
-    ) -> Result<(), ActionMetadataAdmissionError>
+    pub fn register_stateless_instance<A>(&self, action: A) -> Result<(), ActionAdmissionError>
     where
         A: StatelessAction + Send + Sync + 'static,
         <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
@@ -147,7 +144,7 @@ impl ActionRegistry {
     }
 
     /// Register a stateful action via the factory pipeline (Variant A).
-    pub fn register_stateful_factory<A>(&self) -> Result<(), ActionMetadataAdmissionError>
+    pub fn register_stateful_factory<A>(&self) -> Result<(), ActionAdmissionError>
     where
         A: StatefulAction + FromWorkflowNode<Error = ActionError>,
         <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
@@ -160,7 +157,7 @@ impl ActionRegistry {
     }
 
     /// Register a trigger action via the factory pipeline (Variant A).
-    pub fn register_trigger_factory<A>(&self) -> Result<(), ActionMetadataAdmissionError>
+    pub fn register_trigger_factory<A>(&self) -> Result<(), ActionAdmissionError>
     where
         A: TriggerAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
         <A as TriggerAction>::Error: Into<ActionError>,
@@ -171,7 +168,7 @@ impl ActionRegistry {
     }
 
     /// Register a resource action via the factory pipeline (Variant A).
-    pub fn register_resource_factory<A>(&self) -> Result<(), ActionMetadataAdmissionError>
+    pub fn register_resource_factory<A>(&self) -> Result<(), ActionAdmissionError>
     where
         A: ResourceAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
     {
@@ -186,7 +183,7 @@ impl ActionRegistry {
     /// drives the chunk stream fully in-process and delivers one folded value
     /// to the downstream node — identical to stateless dispatch from the
     /// engine's perspective.
-    pub fn register_stream_factory<A>(&self) -> Result<(), ActionMetadataAdmissionError>
+    pub fn register_stream_factory<A>(&self) -> Result<(), ActionAdmissionError>
     where
         A: StreamAction + FromWorkflowNode<Error = ActionError>,
         <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
@@ -203,7 +200,7 @@ impl ActionRegistry {
     /// is dispatched through the engine's own agent turn loop
     /// (`execute_agent_handle`), which enforces `max_turns()` and the
     /// per-turn wall-clock timeout without the `StatefulStuck` digest guard.
-    pub fn register_agent_factory<A>(&self) -> Result<(), ActionMetadataAdmissionError>
+    pub fn register_agent_factory<A>(&self) -> Result<(), ActionAdmissionError>
     where
         A: AgentAction + FromWorkflowNode<Error = ActionError>,
         <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
@@ -216,7 +213,7 @@ impl ActionRegistry {
     }
 
     /// Register a control action via the factory pipeline (Variant A).
-    pub fn register_control_factory<A>(&self) -> Result<(), ActionMetadataAdmissionError>
+    pub fn register_control_factory<A>(&self) -> Result<(), ActionAdmissionError>
     where
         A: ControlAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
     {
@@ -447,8 +444,7 @@ mod tests {
         let error = registry
             .register_stateless_factory::<InvalidSchemaAction>()
             .unwrap_err();
-        let ActionMetadataAdmissionError::Schema(nebula_action::MetadataBuildError::Schema(report)) =
-            error
+        let ActionAdmissionError::Schema(nebula_action::MetadataBuildError::Schema(report)) = error
         else {
             panic!("expected schema construction report, got: {error:?}");
         };

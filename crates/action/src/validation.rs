@@ -201,7 +201,7 @@ mod tests {
             .expect("terminal control metadata must admit");
         assert!(admitted.outputs().is_empty());
 
-        let crate::ActionMetadataAdmissionError::Package(error) = terminal
+        let crate::ActionAdmissionError::Package(error) = terminal
             .admit_for::<ValidationAction>(crate::ActionKind::Stateless)
             .expect_err("stateless actions must retain an output port")
         else {
@@ -221,7 +221,7 @@ mod tests {
                 .with_isolation_level(isolation)
         };
 
-        let crate::ActionMetadataAdmissionError::Package(error) =
+        let crate::ActionAdmissionError::Package(error) =
             draft(crate::IsolationLevel::CapabilityGated)
                 .admit_for::<ValidationAction>(crate::ActionKind::Agent)
                 .expect_err("the runtime never runs a capability-gated agent")
@@ -253,7 +253,7 @@ mod tests {
                 OutputPort::error(port_key!("out")),
             ]);
 
-        let crate::ActionMetadataAdmissionError::Package(err) = draft
+        let crate::ActionAdmissionError::Package(err) = draft
             .admit_for::<ValidationAction>(crate::ActionKind::Stateless)
             .unwrap_err()
         else {
@@ -287,7 +287,7 @@ mod tests {
                 include_fallback: false,
             })]);
 
-        let crate::ActionMetadataAdmissionError::Package(err) = draft
+        let crate::ActionAdmissionError::Package(err) = draft
             .admit_for::<ValidationAction>(crate::ActionKind::Stateless)
             .unwrap_err()
         else {

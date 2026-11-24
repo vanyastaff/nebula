@@ -97,7 +97,7 @@ impl Topology<CustomResource> for CustomTopology {
 async fn acquire(manager: &Arc<crate::Manager>) -> ResourceGuard<CustomResource> {
     *crate::Manager::acquire_any(
         Arc::clone(manager),
-        &CustomResource::key(),
+        &crate::key_of::<CustomResource>(),
         &test_ctx(),
         &AcquireOptions::default(),
         &crate::SlotIdentity::Unbound,

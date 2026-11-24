@@ -11,7 +11,6 @@
 //! invariant under test: one slow/wedged resource MUST NOT abort or fail its
 //! siblings — every row's outcome is independent.
 
-use nebula_resource::ProviderKey;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -195,7 +194,13 @@ async fn engine_fanout_reports_terminal_timeout_for_wedged_resource() {
             .await
             .expect("warm tenant runtime");
 
-        idx.bind(cid, Ctl::key(), scope.clone(), "db", id);
+        idx.bind(
+            cid,
+            nebula_resource::key_of::<Ctl>(),
+            scope.clone(),
+            "db",
+            id,
+        );
     }
 
     // Per-resource hook budget: the wedged row becomes a terminal timeout;

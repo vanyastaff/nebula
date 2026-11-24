@@ -1,6 +1,6 @@
 use nebula_sdk::integration::resource::{
     AdmissionPhase, CreatedEntry, Error, HookFault, Load, MaintenanceSchedule, Provider,
-    ProviderKey, ResourceContext, RetainedId, RetainedLease, RetainedStore, StoreView, TeardownCx,
+    ResourceContext, RetainedId, RetainedLease, RetainedStore, StoreView, TeardownCx,
     Ticket, Topology, Unavailable, no_credential_slots,
 };
 

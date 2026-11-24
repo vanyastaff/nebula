@@ -9,7 +9,6 @@
 //! canonical request, key part, recovery, recorded output) are covered
 //! here too.
 
-use crate::resource::ProviderKey;
 use std::{
     collections::{BTreeMap, HashMap},
     num::{NonZeroU32, NonZeroUsize},
@@ -223,7 +222,7 @@ impl FakeOwner {
         self.seed_unit(
             occurrence,
             (
-                StrictPooled::key().to_string(),
+                crate::key_of::<StrictPooled>().to_string(),
                 UnitKind::Operation,
                 operation.to_owned(),
                 1,
@@ -984,7 +983,7 @@ impl Fixture {
         *self
             .manager
             .handle_any_journaled(
-                &StrictPooled::key(),
+                &crate::key_of::<StrictPooled>(),
                 &self.ctx(),
                 &AcquireOptions::default(),
                 &tenant(),
@@ -999,7 +998,7 @@ impl Fixture {
         *self
             .manager
             .handle_any(
-                &StrictPooled::key(),
+                &crate::key_of::<StrictPooled>(),
                 &self.ctx(),
                 &AcquireOptions::default(),
                 &tenant(),
@@ -1013,7 +1012,7 @@ impl Fixture {
         *self
             .manager
             .handle_any_read_only(
-                &StrictPooled::key(),
+                &crate::key_of::<StrictPooled>(),
                 &self.ctx(),
                 &AcquireOptions::default(),
                 &tenant(),
@@ -2644,8 +2643,13 @@ async fn a_read_on_a_journaled_row_is_never_prepared_and_keys_locally() {
     row.submit(keyed).await.expect("a keyed read runs");
 
     assert_eq!(calls.made(), 2);
-    let local = local_idempotency_key(&StrictPooled::key(), "billing.look", 1, "look-1")
-        .expect("local key");
+    let local = local_idempotency_key(
+        &crate::key_of::<StrictPooled>(),
+        "billing.look",
+        1,
+        "look-1",
+    )
+    .expect("local key");
     assert_eq!(calls.keys(), vec![None, Some(local.to_string())]);
     assert!(fixture.owner.log().is_empty(), "never prepared");
     assert_eq!(fixture.owner.in_flight.load(Ordering::SeqCst), 0);
@@ -2666,7 +2670,8 @@ async fn a_library_row_runs_effects_plain_and_a_read_only_row_refuses_them() {
         .submit(Pay::<true>::new(&calls, vec![Reply::Ok(4)]).keyed("order-1"))
         .await
         .expect("a keyed library effect");
-    let local = local_idempotency_key(&StrictPooled::key(), PAY, 1, "order-1").expect("local key");
+    let local = local_idempotency_key(&crate::key_of::<StrictPooled>(), PAY, 1, "order-1")
+        .expect("local key");
     assert_eq!(
         calls.keys(),
         vec![None, Some(local.to_string())],
@@ -2698,7 +2703,7 @@ async fn a_library_row_runs_effects_plain_and_a_read_only_row_refuses_them() {
     let explained = *fixture
         .manager
         .handle_any_read_only_because(
-            &StrictPooled::key(),
+            &crate::key_of::<StrictPooled>(),
             &fixture.ctx(),
             &AcquireOptions::default(),
             &tenant(),
@@ -2776,8 +2781,13 @@ async fn a_keyed_stream_presents_a_local_key_to_its_attempt() {
         .finish()
         .await
         .expect("a keyed library stream");
-    let local = local_idempotency_key(&StrictPooled::key(), "billing.ticks", 1, "tick-1")
-        .expect("local key");
+    let local = local_idempotency_key(
+        &crate::key_of::<StrictPooled>(),
+        "billing.ticks",
+        1,
+        "tick-1",
+    )
+    .expect("local key");
     assert_eq!(calls.keys(), vec![Some(local.to_string())]);
 }
 
@@ -3510,7 +3520,7 @@ async fn a_recorded_read_whose_ceiling_is_spent_fails_exhausted_never_unknown() 
     fixture.owner.seed_unit(
         &occurrence(1),
         (
-            StrictPooled::key().to_string(),
+            crate::key_of::<StrictPooled>().to_string(),
             UnitKind::Operation,
             ASK.to_owned(),
             1,

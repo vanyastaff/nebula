@@ -41,10 +41,10 @@ mod sealed {
 /// reports. Integrations cannot self-attest erased keys, metadata,
 /// capabilities, or downcast identity.
 pub trait AnyCredential: sealed::Sealed + Any + Send + Sync + 'static {
-    /// The normalized key identifying this credential type.
-    fn credential_key(&self) -> &str;
+    /// The typed key of this credential type, [`key_of::<C>()`](crate::key_of).
+    fn key(&self) -> nebula_core::CredentialKey;
     /// The admitted integration-catalog definition of this credential type.
-    fn definition(&self) -> Result<CredentialDefinition, crate::CredentialMetadataAdmissionError>;
+    fn definition(&self) -> Result<CredentialDefinition, crate::CredentialAdmissionError>;
     /// Capabilities computed from the credential's five report traits.
     fn capabilities(&self) -> Capabilities;
     /// Type-erased `self` for downcast — required by the KEY-keyed
@@ -66,12 +66,11 @@ where
         + IsDynamic
         + 'static,
 {
-    fn credential_key(&self) -> &str {
-        // SAFETY: Credential::KEY is a static string reference -- always valid.
-        C::KEY
+    fn key(&self) -> nebula_core::CredentialKey {
+        crate::key_of::<C>()
     }
 
-    fn definition(&self) -> Result<CredentialDefinition, crate::CredentialMetadataAdmissionError> {
+    fn definition(&self) -> Result<CredentialDefinition, crate::CredentialAdmissionError> {
         CredentialDefinition::admit_for::<C>(C::metadata())
     }
 
