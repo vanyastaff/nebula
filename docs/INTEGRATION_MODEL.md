@@ -53,10 +53,15 @@ returns key-free metadata: `ActionMetadata::new(MetadataName, description)`,
 shared `nebula_metadata::Metadata`; `ActionMetadata` embeds it and adds ports
 and policies). The factory or registry stamps the key at admission, so a
 catalog entry cannot name another component. This holds on every path,
-including the shared-instance `InstanceFactory::new(action)`: one type is one
-catalog entry. To expose an implementation under another key or version,
-declare a new type for that entry; `nebula_action::stateless_entry!` declares
-one that delegates execution to an existing stateless action.
+including the shared-instance `InstanceFactory::new(action)` and
+`KindActivator::new(..)`: one type is one catalog entry, and its metadata comes
+only from its `metadata()`. To expose an implementation under another key,
+version or metadata, declare a new type for that entry;
+`nebula_action::stateless_entry!` declares one that delegates execution to an
+existing stateless action. A remote action's effect contract is part of its
+type the same way: `RemoteEffectAction::descriptor()` is an associated function,
+`RemoteEffectInstanceFactory` stamps it as the definition's `Remote` contract,
+and metadata declares no remote contract of its own.
 Inferred display names are removed. Credential metadata no longer takes or exposes an auth pattern:
 admission derives it from `<C::Scheme as AuthScheme>::pattern()`. Action macros
 preserve the full SemVer, including prerelease and build metadata.

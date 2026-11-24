@@ -12,8 +12,8 @@ pub use nebula_action::{
     EffectInvocationOutcome, EffectPreparationContext, EffectPreparationError, EffectQueryContext,
     EffectReconciliationOutcome, JournalProtocol, OperationCallId, OperationId,
     PreparedEffectAdapter, PreparedRemoteEffect, ReadOnlyEffectQuery, RemoteDestinationGuarantee,
-    RemoteEffectAction, RemoteEffectDescriptor, RemoteEffectPolicy, RemoteEffectPolicyBuilder,
-    RemoteEffectPolicyError, StableKeyGuarantee,
+    RemoteEffectAction, RemoteEffectDeclarationError, RemoteEffectDescriptor, RemoteEffectPolicy,
+    RemoteEffectPolicyBuilder, RemoteEffectPolicyError, StableKeyGuarantee,
 };
 pub use nebula_core::{ExecutionId, NodeKey, OrgId, WorkflowId, WorkspaceId};
 pub use tokio_util::sync::CancellationToken;

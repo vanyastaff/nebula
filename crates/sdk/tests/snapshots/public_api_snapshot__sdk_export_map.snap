@@ -108,6 +108,7 @@ nebula_sdk::integration::action::PreparedRemoteEffect => nebula_action::Prepared
 nebula_sdk::integration::action::ReadOnlyEffectQuery => nebula_action::ReadOnlyEffectQuery [use]
 nebula_sdk::integration::action::RemoteDestinationGuarantee => nebula_action::RemoteDestinationGuarantee [use]
 nebula_sdk::integration::action::RemoteEffectAction => nebula_action::RemoteEffectAction [use]
+nebula_sdk::integration::action::RemoteEffectDeclarationError => nebula_action::RemoteEffectDeclarationError [use]
 nebula_sdk::integration::action::RemoteEffectDescriptor => nebula_action::RemoteEffectDescriptor [use]
 nebula_sdk::integration::action::RemoteEffectPolicy => nebula_action::RemoteEffectPolicy [use]
 nebula_sdk::integration::action::RemoteEffectPolicyBuilder => nebula_action::RemoteEffectPolicyBuilder [use]

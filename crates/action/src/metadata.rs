@@ -89,12 +89,20 @@ pub enum ActionMetadataAdmissionError {
     /// Action-specific metadata declarations are structurally invalid.
     #[error(transparent)]
     Package(#[from] ActionPackageValidationErrors),
-    /// A remote-effect factory was built from metadata without a remote contract.
-    #[error("remote-effect factory requires a remote effect contract")]
-    RemoteEffectContractRequired,
-    /// The typed remote adapter descriptor differs from authored metadata.
-    #[error("remote-effect adapter descriptor does not match admitted metadata")]
-    RemoteEffectDescriptorMismatch,
+    /// Metadata declared a remote effect contract.
+    ///
+    /// A remote contract is the action type's own
+    /// [`RemoteEffectAction::descriptor`](crate::RemoteEffectAction::descriptor),
+    /// stamped by [`RemoteEffectInstanceFactory`](crate::RemoteEffectInstanceFactory);
+    /// metadata never carries one.
+    #[error("a remote effect contract comes from the action's descriptor, not its metadata")]
+    RemoteEffectContractInMetadata,
+    /// A remote action's metadata declared a non-remote effect contract.
+    #[error("a remote-effect action's metadata must not declare an effect contract")]
+    EffectContractOnRemoteAction,
+    /// A remote action's descriptor could not be built.
+    #[error(transparent)]
+    RemoteEffectDeclaration(#[from] crate::effect::RemoteEffectDeclarationError),
 }
 
 /// Failure while re-admitting recorded action metadata.
@@ -125,7 +133,7 @@ pub struct ActionMetadata {
     inputs: Vec<InputPort>,
     outputs: Vec<OutputPort>,
     isolation_level: IsolationLevel,
-    effect_contract: ActionEffectContract,
+    effect_contract: Option<ActionEffectContract>,
     max_concurrent: Option<NonZeroU32>,
 }
 
@@ -152,7 +160,7 @@ impl ActionMetadata {
             inputs: port::default_input_ports(),
             outputs: port::default_output_ports(),
             isolation_level: IsolationLevel::None,
-            effect_contract: ActionEffectContract::default(),
+            effect_contract: None,
             max_concurrent: None,
         }
     }
@@ -283,8 +291,15 @@ impl ActionMetadata {
     }
 
     /// Declare external-effect authority.
+    ///
+    /// Undeclared, an action is [`ActionEffectContract::Journaled`]. Only
+    /// [`Journaled`](ActionEffectContract::Journaled) and
+    /// [`ReadOnly`](ActionEffectContract::ReadOnly) are declared here: a remote
+    /// contract is the type's
+    /// [`RemoteEffectAction::descriptor`](crate::RemoteEffectAction::descriptor),
+    /// and admission refuses one declared in metadata.
     pub fn with_effect_contract(mut self, effect_contract: ActionEffectContract) -> Self {
-        self.effect_contract = effect_contract;
+        self.effect_contract = Some(effect_contract);
         self
     }
 
@@ -306,8 +321,42 @@ impl ActionMetadata {
     /// Returns a typed schema-construction or package-validation failure.
     #[tracing::instrument(name = "action.metadata.admit", skip_all, fields(?kind), err)]
     pub(crate) fn admit_for<A: crate::Action>(
+        mut self,
+        kind: ActionKind,
+    ) -> Result<ActionDefinition, ActionMetadataAdmissionError> {
+        let effect_contract = match self.effect_contract.take() {
+            Some(ActionEffectContract::Remote(_)) => {
+                return Err(ActionMetadataAdmissionError::RemoteEffectContractInMetadata);
+            },
+            declared => declared.unwrap_or_default(),
+        };
+        self.admit_with::<A>(kind, effect_contract)
+    }
+
+    /// Admit a remote-effect action: stamp the stateless kind and its
+    /// [`descriptor`](crate::RemoteEffectAction::descriptor) as the effect
+    /// contract.
+    pub(crate) fn admit_remote_for<A: crate::Action>(
+        self,
+        descriptor: crate::RemoteEffectDescriptor,
+    ) -> Result<ActionDefinition, ActionMetadataAdmissionError> {
+        match self.effect_contract {
+            Some(ActionEffectContract::Remote(_)) => {
+                return Err(ActionMetadataAdmissionError::RemoteEffectContractInMetadata);
+            },
+            Some(_) => return Err(ActionMetadataAdmissionError::EffectContractOnRemoteAction),
+            None => {},
+        }
+        self.admit_with::<A>(
+            ActionKind::Stateless,
+            ActionEffectContract::Remote(Box::new(descriptor)),
+        )
+    }
+
+    fn admit_with<A: crate::Action>(
         self,
         kind: ActionKind,
+        effect_contract: ActionEffectContract,
     ) -> Result<ActionDefinition, ActionMetadataAdmissionError> {
         let key = crate::key_of::<A>();
         let input_schema =
@@ -324,7 +373,7 @@ impl ActionMetadata {
             isolation_level: self.isolation_level,
             kind,
             checkpoint_policy: RecordedCheckpointPolicy::Inherit,
-            effect_contract: self.effect_contract,
+            effect_contract,
             max_concurrent: self.max_concurrent,
             output_schema,
         };

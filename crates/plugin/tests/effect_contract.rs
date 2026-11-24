@@ -1,15 +1,13 @@
+use std::assert_matches;
 use std::cell::RefCell;
-use std::sync::{
-    Arc, OnceLock,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Arc, OnceLock};
 
 use nebula_action::{
     Action, ActionFactory, ActionMetadata, RemoteEffectInstanceFactory,
     effect::{
         ActionEffectContract, EffectPreparationContext, EffectPreparationError,
         PreparedRemoteEffect, RemoteDestinationGuarantee, RemoteEffectAction,
-        RemoteEffectDescriptor, RemoteEffectPolicy,
+        RemoteEffectDeclarationError, RemoteEffectDescriptor, RemoteEffectPolicy,
     },
 };
 use nebula_core::{ActionKey, ArtifactSetDigest, Dependencies, WorkflowVersionId, node_key};
@@ -19,11 +17,7 @@ use nebula_plugin::{
 };
 use nebula_workflow::{NodeDefinition, WorkflowBuilder};
 
-struct RemoteAction {
-    descriptor: RemoteEffectDescriptor,
-    changed_descriptor: RemoteEffectDescriptor,
-    changed: Arc<AtomicBool>,
-}
+struct RemoteAction;
 
 fn policy(
     destination_guarantee: RemoteDestinationGuarantee,
@@ -63,10 +57,8 @@ impl Action for RemoteAction {
             nebula_action::metadata_name!("Remote"),
             "No-I/O capability fixture",
         );
-        match DECLARED_CONTRACT.with_borrow(Clone::clone) {
-            Some(contract) => {
-                metadata.with_effect_contract(ActionEffectContract::Remote(Box::new(contract)))
-            },
+        match METADATA_CONTRACT.with_borrow(Clone::clone) {
+            Some(contract) => metadata.with_effect_contract(contract),
             None => metadata,
         }
     }
@@ -78,12 +70,10 @@ impl Action for RemoteAction {
 }
 
 impl RemoteEffectAction for RemoteAction {
-    fn descriptor(&self) -> &RemoteEffectDescriptor {
-        if self.changed.load(Ordering::Relaxed) {
-            &self.changed_descriptor
-        } else {
-            &self.descriptor
-        }
+    fn descriptor() -> Result<RemoteEffectDescriptor, RemoteEffectDeclarationError> {
+        Ok(DESCRIPTOR
+            .with_borrow(Clone::clone)
+            .expect("a descriptor is installed during fixture admission"))
     }
 
     async fn prepare(
@@ -96,36 +86,31 @@ impl RemoteEffectAction for RemoteAction {
 }
 
 thread_local! {
-    /// The remote contract `RemoteAction::metadata` declares.
+    /// The descriptor `RemoteAction::descriptor` returns.
     ///
-    /// Admission reads metadata only from the type; these tests vary the
-    /// declared contract, so they install it before building a factory.
-    static DECLARED_CONTRACT: RefCell<Option<RemoteEffectDescriptor>> =
-        const { RefCell::new(None) };
+    /// Admission reads the remote contract only from the type; these tests
+    /// vary it, so they install it before building a factory.
+    static DESCRIPTOR: RefCell<Option<RemoteEffectDescriptor>> = const { RefCell::new(None) };
+    /// An effect contract `RemoteAction::metadata` declares, which admission
+    /// must refuse.
+    static METADATA_CONTRACT: RefCell<Option<ActionEffectContract>> = const { RefCell::new(None) };
 }
 
 fn admit(
-    declared: Option<RemoteEffectDescriptor>,
-    action: RemoteAction,
+    descriptor: RemoteEffectDescriptor,
+    metadata_contract: Option<ActionEffectContract>,
 ) -> Result<RemoteEffectInstanceFactory<RemoteAction>, nebula_action::ActionMetadataAdmissionError>
 {
-    DECLARED_CONTRACT.set(declared);
-    let factory = RemoteEffectInstanceFactory::new(action);
-    DECLARED_CONTRACT.set(None);
+    DESCRIPTOR.set(Some(descriptor));
+    METADATA_CONTRACT.set(metadata_contract);
+    let factory = RemoteEffectInstanceFactory::new(RemoteAction);
+    DESCRIPTOR.set(None);
+    METADATA_CONTRACT.set(None);
     factory
 }
 
-fn remote_factory(
-    contract: RemoteEffectDescriptor,
-) -> (RemoteEffectInstanceFactory<RemoteAction>, Arc<AtomicBool>) {
-    let changed = Arc::new(AtomicBool::new(false));
-    let action = RemoteAction {
-        descriptor: contract.clone(),
-        changed_descriptor: descriptor("changed.contract", 1),
-        changed: Arc::clone(&changed),
-    };
-    let factory = admit(Some(contract), action).expect("coherent remote fixture admits");
-    (factory, changed)
+fn remote_factory(contract: RemoteEffectDescriptor) -> RemoteEffectInstanceFactory<RemoteAction> {
+    admit(contract, None).expect("coherent remote fixture admits")
 }
 
 struct FixturePlugin(Arc<dyn ActionFactory>);
@@ -161,30 +146,26 @@ fn freeze(factory: Arc<dyn ActionFactory>) -> FrozenPluginRegistry {
 }
 
 #[test]
-fn incoherent_remote_capabilities_are_rejected_before_instantiation() {
+fn remote_contract_declared_in_metadata_is_rejected_before_instantiation() {
     let contract = descriptor("demo.contract", 1);
-    let action = RemoteAction {
-        descriptor: contract.clone(),
-        changed_descriptor: descriptor("changed.contract", 1),
-        changed: Arc::new(AtomicBool::new(false)),
-    };
-    assert!(admit(None, action).is_err());
-
-    let mismatched = descriptor("different.contract", 1);
-    let action = RemoteAction {
-        descriptor: contract,
-        changed_descriptor: descriptor("changed.contract", 1),
-        changed: Arc::new(AtomicBool::new(false)),
-    };
-    assert!(admit(Some(mismatched), action).is_err());
+    assert_matches!(
+        admit(
+            contract.clone(),
+            Some(ActionEffectContract::Remote(Box::new(contract.clone())))
+        )
+        .map(drop),
+        Err(nebula_action::ActionMetadataAdmissionError::RemoteEffectContractInMetadata)
+    );
+    assert_matches!(
+        admit(contract, Some(ActionEffectContract::ReadOnly)).map(drop),
+        Err(nebula_action::ActionMetadataAdmissionError::EffectContractOnRemoteAction)
+    );
 }
 
 #[test]
 fn exact_loading_rechecks_actual_remote_capability_without_instantiating() {
     let contract = descriptor("demo.contract", 1);
-    let (factory, changed) = remote_factory(contract.clone());
-    let factory = Arc::new(factory);
-    let registry = freeze(factory);
+    let registry = freeze(Arc::new(remote_factory(contract.clone())));
     let workflow = WorkflowBuilder::new("Remote")
         .add_node(NodeDefinition::new(node_key!("remote"), "Remote", "demo", "remote").unwrap())
         .build()
@@ -198,13 +179,15 @@ fn exact_loading_rechecks_actual_remote_capability_without_instantiating() {
             .unwrap(),
         PlanActionEffectContract::Declared(ActionEffectContract::Remote(Box::new(contract)))
     );
-    changed.store(true, Ordering::Relaxed);
-    assert!(plan.validate_against(&registry).is_err());
+    // The same action type built with another descriptor is a different
+    // catalog entry: the plan no longer loads against it.
+    let changed = freeze(Arc::new(remote_factory(descriptor("changed.contract", 1))));
+    assert!(plan.validate_against(&changed).is_err());
 }
 
 #[test]
 fn remote_non_stateless_actions_are_not_durably_compilable() {
-    let (factory, _) = remote_factory(descriptor("demo.contract", 1));
+    let factory = remote_factory(descriptor("demo.contract", 1));
     assert_eq!(
         ActionFactory::definition(&factory).kind(),
         nebula_action::ActionKind::Stateless
@@ -274,7 +257,7 @@ fn complete_static_effect_policy_changes_plan_identity() {
         )
         .unwrap(),
     ] {
-        let (factory, _) = remote_factory(contract);
+        let factory = remote_factory(contract);
         let registry = freeze(Arc::new(factory));
         let plan = registry
             .compile_graph_v1(WorkflowVersionId::from_bytes([0x93; 16]), &workflow)

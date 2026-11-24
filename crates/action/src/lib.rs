@@ -122,9 +122,9 @@ pub use effect::{
     ActionEffectContract, EffectContractError, EffectFailureCode, EffectInvocationContext,
     EffectInvocationOutcome, EffectPreparationContext, EffectPreparationError, EffectQueryContext,
     EffectReconciliationOutcome, JournalProtocol, PreparedEffectAdapter, PreparedRemoteEffect,
-    ReadOnlyEffectQuery, RemoteDestinationGuarantee, RemoteEffectAction, RemoteEffectDescriptor,
-    RemoteEffectFactory, RemoteEffectPolicy, RemoteEffectPolicyBuilder, RemoteEffectPolicyError,
-    StableKeyGuarantee,
+    ReadOnlyEffectQuery, RemoteDestinationGuarantee, RemoteEffectAction,
+    RemoteEffectDeclarationError, RemoteEffectDescriptor, RemoteEffectFactory, RemoteEffectPolicy,
+    RemoteEffectPolicyBuilder, RemoteEffectPolicyError, StableKeyGuarantee,
 };
 pub use error::{
     ActionError, ActionErrorExt, MAX_VALIDATION_DETAIL, RetryHintCode, ValidationReason,
