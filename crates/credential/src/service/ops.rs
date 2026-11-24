@@ -49,9 +49,6 @@ pub enum DispatchError {
     /// The credential definition could not be admitted before dispatch setup.
     #[error("credential dispatch catalog admission failed")]
     Metadata(#[from] crate::CredentialMetadataAdmissionError),
-    /// Metadata identity disagrees with the registered credential key.
-    #[error("credential dispatch metadata identity mismatch")]
-    MetadataKeyMismatch,
     /// Two registrations shared a `Credential::KEY`. First wins; second
     /// rejected; table unchanged.
     #[error("duplicate credential dispatch key '{key}'")]
@@ -648,10 +645,7 @@ where
         return Err(DispatchError::DuplicateKey { key });
     }
 
-    let metadata = C::metadata().admit_for::<C>()?;
-    if metadata.key().as_str() != key {
-        return Err(DispatchError::MetadataKeyMismatch);
-    }
+    let metadata = crate::CredentialDefinition::admit_for::<C>(C::metadata())?;
     let validation_schema = metadata.schema().clone();
     let resolve_schema = Arc::new(validation_schema.clone());
     let acquire_schema = Arc::new(validation_schema.clone());

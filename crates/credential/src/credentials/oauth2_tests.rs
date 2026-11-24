@@ -235,7 +235,7 @@ fn metadata_has_correct_fields() {
         .register(OAuth2Credential, "oauth2-metadata-test")
         .expect("valid OAuth2 definition");
     let meta = registry
-        .metadata(OAuth2Credential::KEY)
+        .definition(OAuth2Credential::KEY)
         .expect("registered OAuth2 metadata");
     assert_eq!(meta.pattern(), AuthPattern::OAuth2);
 }

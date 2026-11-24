@@ -249,13 +249,11 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
         let description = description.as_deref().unwrap_or(name);
         if icon.is_none() && doc_url.is_none() {
             quote! {
-                fn metadata() -> ::nebula_credential::CredentialMetadataDraft
+                fn metadata() -> ::nebula_credential::CredentialMetadata
                 where
                     Self: Sized,
                 {
-                    ::nebula_credential::CredentialMetadataDraft::new(
-                        ::nebula_credential::credential_key!(#key),
-                        ::nebula_credential::metadata_name!(#name),
+                    ::nebula_credential::CredentialMetadata::new(::nebula_credential::metadata_name!(#name),
                         #description,
                     )
                 }
@@ -264,9 +262,7 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
             // Every required field is known at expansion time, so start with
             // the infallible constructor and add optional catalog fields.
             let mut metadata = quote! {
-                ::nebula_credential::CredentialMetadataDraft::new(
-                    ::nebula_credential::credential_key!(#key),
-                    ::nebula_credential::metadata_name!(#name),
+                ::nebula_credential::CredentialMetadata::new(::nebula_credential::metadata_name!(#name),
                     #description,
                 )
             };
@@ -279,7 +275,7 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
                 metadata = quote! { #metadata.with_documentation_url(#url) };
             }
             quote! {
-                fn metadata() -> ::nebula_credential::CredentialMetadataDraft
+                fn metadata() -> ::nebula_credential::CredentialMetadata
                 where
                     Self: Sized,
                 {

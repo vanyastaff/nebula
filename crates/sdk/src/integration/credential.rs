@@ -5,6 +5,6 @@
 //! `SecretToken`.
 
 pub use nebula_credential::{
-    BearerTokenCredential, Credential, CredentialMetadataDraft, ResolveResult, StaticResolveResult,
+    BearerTokenCredential, Credential, CredentialMetadata, ResolveResult, StaticResolveResult,
     TestFailureCode, TestResult,
 };

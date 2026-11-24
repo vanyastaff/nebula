@@ -28,10 +28,10 @@ Every concept in Nebula's integration layer is described by two things:
 
 | Piece | Role |
 |---|---|
-| authored metadata | Author-owned UI/catalog intent: checked display name, version, lifecycle, and concept-specific declarations. `ResourceMetadata` carries no key (identity is `Provider::KEY`); `ActionMetadataDraft` and `CredentialMetadataDraft` still take one until they move to the same shape. None can supply a schema or claim admission. |
+| authored metadata | Author-owned UI/catalog intent: checked display name, version, lifecycle, and concept-specific declarations. `ResourceMetadata` and `CredentialMetadata` carry no key (identity is `Provider::KEY` / `Credential::KEY`); `ActionMetadataDraft` still takes one until it moves to the same shape. None can supply a schema or claim admission. |
 | Associated Rust type | The schema source of truth: `Action::{Input, Output}`, `Credential::Properties`, or `Provider::Config`. |
-| admitted definition | `ResourceDefinition`, and for now `ActionMetadata` / `CredentialMetadata`. Immutable catalog definition produced only by the owning factory/registry after deriving schemas and checking identity/package invariants. |
-| `Recorded*` | Deserialized evidence (`RecordedResourceDefinition`, `RecordedActionMetadata`, `RecordedCredentialMetadata`). It regains admitted status only by exact comparison with a fresh definition from the currently selected factory/registry. |
+| admitted definition | `ResourceDefinition`, `CredentialDefinition`, and for now `ActionMetadata`. Immutable catalog definition produced only by the owning factory/registry after deriving schemas and checking identity/package invariants. |
+| `Recorded*` | Deserialized evidence (`RecordedResourceDefinition`, `RecordedActionMetadata`, `RecordedCredentialDefinition`). It regains admitted status only by exact comparison with a fresh definition from the currently selected factory/registry. |
 
 This is the canon's `*Metadata + Schema` contract expressed as a one-way
 lifecycle, not permission for authors to construct terminal metadata. Action
@@ -45,13 +45,14 @@ and uses its own checked builder; it is not a catalog-leaf admission bypass.
 
 #### Catalog construction and wire migration
 
-`ActionMetadataDraft` and `CredentialMetadataDraft` each provide `new(key, MetadataName, description)`
-and `try_new(key, name, description)`. A resource declares its identity once, as
-`Provider::KEY`, and `Provider::metadata` returns the key-free
-`ResourceMetadata::new(MetadataName, description)` (the shared
-`nebula_metadata::Metadata`); the factory stamps the key at
-admission, so a resource's catalog entry cannot name another resource. Action
-and credential move to the same shape next. Inferred display names are removed. Credential metadata no longer takes or exposes an auth pattern:
+`ActionMetadataDraft` provides `new(key, MetadataName, description)` and
+`try_new(key, name, description)`. A resource and a credential declare their
+identity once, as `Provider::KEY` and `Credential::KEY`, and their `metadata()`
+returns the key-free `ResourceMetadata::new(MetadataName, description)` or
+`CredentialMetadata::new(MetadataName, description)` (both are the shared
+`nebula_metadata::Metadata`); the factory or registry stamps the key at
+admission, so a catalog entry cannot name another component. Action moves to
+the same shape next. Inferred display names are removed. Credential metadata no longer takes or exposes an auth pattern:
 admission derives it from `<C::Scheme as AuthScheme>::pattern()`. Action macros
 preserve the full SemVer, including prerelease and build metadata.
 
@@ -199,9 +200,9 @@ presentation identity or rewrite existing schema or plan bytes.
 entity-specific admission. Property display hints belong to schema authoring,
 not to a new catalog-leaf metadata type. SDK personas curate these contracts.
 
-| Shared concern | `ActionMetadataDraft` | `CredentialMetadataDraft` | `ResourceMetadata` |
+| Shared concern | `ActionMetadataDraft` | `CredentialMetadata` | `ResourceMetadata` |
 |---|---|---|---|
-| Identity and text | `new(ActionKey, MetadataName, description)` / `try_new` | `new(CredentialKey, MetadataName, description)` / `try_new` | `new(MetadataName, description)` / `try_new`; identity is `Provider::KEY` |
+| Identity and text | `new(ActionKey, MetadataName, description)` / `try_new` | `new(MetadataName, description)` / `try_new`; identity is `Credential::KEY` | `new(MetadataName, description)` / `try_new`; identity is `Provider::KEY` |
 | Revision | `with_version(MetadataVersion)` | `with_version(MetadataVersion)` | `with_version(MetadataVersion)` |
 | Icon | `with_icon`, `with_inline_icon`, `with_url_icon` | `with_icon`, `with_inline_icon`, `with_url_icon` | `with_icon`, `with_inline_icon`, `with_url_icon` |
 | Documentation and discovery | `with_documentation_url`, `with_categories`, `add_link`, `with_tags`, `add_tag` | `with_documentation_url`, `with_categories`, `add_link`, `with_tags`, `add_tag` | `with_documentation_url`, `with_categories`, `add_link`, `with_tags`, `add_tag` |
@@ -215,14 +216,12 @@ credentials add the admitted auth pattern derived from
 trait implementations; resources add no catalog fields beyond the shared base,
 while topology and live instances remain resource runtime contracts.
 
-The exact common constructor contract is the following, with `K` replaced by
-`ActionKey` or `CredentialKey` on the action and credential types (`ResourceMetadata`
-takes no key):
+The exact constructor contract of `ResourceMetadata` and `CredentialMetadata`
+is the following; `ActionMetadataDraft` still takes a leading `key: ActionKey`:
 
 ```rust,ignore
-pub fn new(key: K, name: MetadataName, description: impl Into<String>) -> Self;
+pub fn new(name: MetadataName, description: impl Into<String>) -> Self;
 pub fn try_new(
-    key: K,
     name: impl Into<String>,
     description: impl Into<String>,
 ) -> Result<Self, MetadataError>;

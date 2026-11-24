@@ -15,7 +15,7 @@ use crate::ports::credential_schema::{
 use nebula_credential::{
     ApiKeyCredential, BasicAuthCredential, OAuth2Credential, SigningKeyCredential,
 };
-use nebula_credential::{Capabilities, CredentialMetadata, CredentialRegistry};
+use nebula_credential::{Capabilities, CredentialDefinition, CredentialRegistry};
 use nebula_schema::JsonSchemaExportError;
 
 /// Complete catalog snapshot exported from a registered credential set.
@@ -54,7 +54,7 @@ impl RegistryCredentialSchema {
     }
 
     fn descriptor(
-        meta: &CredentialMetadata,
+        meta: &CredentialDefinition,
         caps: Capabilities,
     ) -> Result<CredentialTypeDescriptor, JsonSchemaExportError> {
         let key = meta.key().as_str().to_owned();

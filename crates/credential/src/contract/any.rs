@@ -6,7 +6,7 @@ use super::capability_report::{
     Capabilities, compute_capabilities,
     plugin_capability_report::{IsDynamic, IsInteractive, IsRefreshable, IsRevocable, IsTestable},
 };
-use crate::CredentialMetadata;
+use crate::CredentialDefinition;
 
 mod sealed {
     use super::{IsDynamic, IsInteractive, IsRefreshable, IsRevocable, IsTestable};
@@ -43,8 +43,8 @@ mod sealed {
 pub trait AnyCredential: sealed::Sealed + Any + Send + Sync + 'static {
     /// The normalized key identifying this credential type.
     fn credential_key(&self) -> &str;
-    /// Integration-catalog metadata describing this credential type.
-    fn metadata(&self) -> Result<CredentialMetadata, crate::CredentialMetadataAdmissionError>;
+    /// The admitted integration-catalog definition of this credential type.
+    fn definition(&self) -> Result<CredentialDefinition, crate::CredentialMetadataAdmissionError>;
     /// Capabilities computed from the credential's five report traits.
     fn capabilities(&self) -> Capabilities;
     /// Type-erased `self` for downcast — required by the KEY-keyed
@@ -71,8 +71,8 @@ where
         C::KEY
     }
 
-    fn metadata(&self) -> Result<CredentialMetadata, crate::CredentialMetadataAdmissionError> {
-        C::metadata().admit_for::<C>()
+    fn definition(&self) -> Result<CredentialDefinition, crate::CredentialMetadataAdmissionError> {
+        CredentialDefinition::admit_for::<C>(C::metadata())
     }
 
     fn capabilities(&self) -> Capabilities {

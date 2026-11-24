@@ -67,7 +67,7 @@ fn synthesized_metadata_uses_curated_inline_icon() {
         .register(MetadataOnly, "credential-attribute-metadata-test")
         .expect("the synthesized static credential metadata is valid");
     let metadata = registry
-        .metadata(MetadataOnly::KEY)
+        .definition(MetadataOnly::KEY)
         .expect("registered metadata is available");
 
     assert_eq!(metadata.icon(), &nebula_credential::Icon::inline("key"));
@@ -136,8 +136,7 @@ fn erased_credential_exposes_exact_computed_capabilities() {
 fn refresh_only_synthesizes_metadata_from_args() {
     assert_eq!(
         RefreshOnly::metadata(),
-        nebula_credential::CredentialMetadataDraft::new(
-            nebula_core::credential_key!("test_refresh_only"),
+        nebula_credential::CredentialMetadata::new(
             nebula_credential::metadata_name!("Refresh Only"),
             "fixture",
         )

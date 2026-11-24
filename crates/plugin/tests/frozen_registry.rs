@@ -12,9 +12,8 @@ use nebula_core::{
     WorkflowVersionId, node_key,
 };
 use nebula_credential::{
-    AnyCredential, Credential, CredentialContext, CredentialMetadataDraft, SecretString,
-    SecretToken, contract::plugin_capability_report, error::CredentialError,
-    resolve::StaticResolveResult,
+    AnyCredential, Credential, CredentialContext, CredentialMetadata, SecretString, SecretToken,
+    contract::plugin_capability_report, error::CredentialError, resolve::StaticResolveResult,
 };
 use nebula_error::Classify;
 use nebula_metadata::{PluginDependency, PluginManifest};
@@ -191,9 +190,8 @@ macro_rules! credential_fixture {
 
             const KEY: &'static str = $key;
 
-            fn metadata() -> CredentialMetadataDraft {
-                CredentialMetadataDraft::new(
-                    nebula_core::credential_key!($key),
+            fn metadata() -> CredentialMetadata {
+                CredentialMetadata::new(
                     nebula_credential::metadata_name!("Test credential"),
                     "test credential",
                 )

@@ -179,7 +179,7 @@ impl RegistryCredentialSchema {
     }
 
     fn descriptor(
-        metadata: &nebula_credential::CredentialMetadata,
+        metadata: &nebula_credential::CredentialDefinition,
         capabilities: Capabilities,
     ) -> Result<CredentialTypeDescriptor, JsonSchemaExportError> {
         let key = metadata.key().as_str().to_owned();

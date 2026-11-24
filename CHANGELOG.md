@@ -11,6 +11,35 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **A credential's metadata carries no key, and its admitted form is
+  `CredentialDefinition`.** `Credential::KEY` was already the credential's
+  identity, yet `Credential::metadata` repeated it in
+  `CredentialMetadataDraft::new(credential_key!("x"), name, description)`, and
+  the registry compared the two at run time. `Credential::metadata` now returns
+  `CredentialMetadata`, an alias of the shared `nebula_metadata::Metadata`:
+  `CredentialMetadata::new(name, description)` and `try_new(name, description)`.
+  The registry stamps `Credential::KEY` at admission, so a catalog entry cannot
+  name another credential. `nebula_credential::key_of::<C>()` is the typed
+  `CredentialKey` of a credential type; it checks the literal at compile time
+  and does no validation at run time.
+
+  | Before | After |
+  |---|---|
+  | `CredentialMetadataDraft` | `CredentialMetadata` (keyless, alias of `nebula_metadata::Metadata`) |
+  | admitted `CredentialMetadata` | `CredentialDefinition` |
+  | `RecordedCredentialMetadata` | `RecordedCredentialDefinition` |
+  | `CredentialRegistry::metadata(key)` | `CredentialRegistry::definition(key)` |
+  | `AnyCredential::metadata()` | `AnyCredential::definition()` |
+
+  `RegisterError::MetadataKeyMismatch` and `DispatchError::MetadataKeyMismatch`
+  are removed: the mismatch they reported can no longer be written. For the
+  same reason `PluginError::ComponentKeyMismatch` and
+  `PluginError::InvalidComponentKey` (codes `PLUGIN:COMPONENT_KEY_MISMATCH`,
+  `PLUGIN:INVALID_COMPONENT_KEY`) are removed for credentials and resources: an
+  invalid `KEY` literal is a compile error, and a definition's key is the
+  component's own. Migrate a credential by dropping the key argument of its
+  metadata constructor; code written with `#[credential(...)]` needs no change.
+
 - **A resource declares its key once, as `Provider::KEY`, and authored
   metadata is no longer called a draft.** A resource wrote its key twice, in
   `Provider::key()` and again in the `ResourceMetadataDraft` it returned, and

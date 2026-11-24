@@ -26,7 +26,7 @@ impl CredentialService {
     #[must_use]
     pub fn get_type(&self, key: &str) -> Option<CredentialTypeInfo> {
         Some(Self::type_info(
-            self.registry.metadata(key)?,
+            self.registry.definition(key)?,
             self.registry.capabilities_of(key)?,
         ))
     }
@@ -34,7 +34,7 @@ impl CredentialService {
     /// Build a [`CredentialTypeInfo`] from the registry metadata +
     /// capability bitflag.
     fn type_info(
-        metadata: &crate::CredentialMetadata,
+        metadata: &crate::CredentialDefinition,
         capabilities: crate::Capabilities,
     ) -> CredentialTypeInfo {
         CredentialTypeInfo {
@@ -65,7 +65,7 @@ mod tests {
             .register(ApiKeyCredential, "discovery-projection-test")
             .expect("valid credential");
         let metadata = registry
-            .metadata(ApiKeyCredential::KEY)
+            .definition(ApiKeyCredential::KEY)
             .expect("registered metadata");
         for capabilities in [
             Capabilities::empty(),

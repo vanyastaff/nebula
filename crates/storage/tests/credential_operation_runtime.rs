@@ -39,12 +39,12 @@ use nebula_credential::{
     AuthorizationDecision, CredentialActor, CredentialAuthorizationError, CredentialAvailability,
     CredentialAvailabilityObservation, CredentialBlock, CredentialCommand, CredentialCommandResult,
     CredentialContext, CredentialController, CredentialControllerError, CredentialDisplay,
-    CredentialDisplayPatch, CredentialMetadataDraft, CredentialOperation,
-    CredentialProjectionRuntime, CredentialRegistry, CredentialService, CredentialServiceError,
-    CredentialSlotResolveError, CredentialSlotResolver, CredentialTenantAuthority, DispatchOps,
-    ErasedPendingStore, NoopObserver, RefreshAttempt, RefreshReport, StateSource,
-    StateWireFingerprint, TenantScope, identity_state, register_refreshable_ops,
-    register_revocable_ops, register_runtime_ops, register_testable_ops,
+    CredentialDisplayPatch, CredentialMetadata, CredentialOperation, CredentialProjectionRuntime,
+    CredentialRegistry, CredentialService, CredentialServiceError, CredentialSlotResolveError,
+    CredentialSlotResolver, CredentialTenantAuthority, DispatchOps, ErasedPendingStore,
+    NoopObserver, RefreshAttempt, RefreshReport, StateSource, StateWireFingerprint, TenantScope,
+    identity_state, register_refreshable_ops, register_revocable_ops, register_runtime_ops,
+    register_testable_ops,
 };
 use nebula_storage::credential::{
     CacheConfig, CacheLayer, EncryptionLayer, EnvKeyProvider, InMemoryPendingStore,
@@ -121,9 +121,8 @@ impl ProbeCredential {
     type Scheme = ProbeScheme;
     type State = ProbeScheme;
 
-    fn metadata() -> CredentialMetadataDraft {
-        CredentialMetadataDraft::new(
-            nebula_core::credential_key!("operation_incident_probe"),
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::new(
             nebula_credential::metadata_name!("Operation Incident Probe"),
             "credential used to prove typed revoke-incident runtime behavior",
         )

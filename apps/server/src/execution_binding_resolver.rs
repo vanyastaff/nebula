@@ -89,7 +89,7 @@ impl ServerExecutionBindingResolver {
                     .resolve_credential(key)
                     .ok_or(BindingResolutionError::Incompatible)?;
                 let registered_metadata = registered
-                    .metadata()
+                    .definition()
                     .map_err(|_| BindingResolutionError::Incompatible)?;
                 if selected.credential_key != key.as_str()
                     || registered_metadata.base().version() != version

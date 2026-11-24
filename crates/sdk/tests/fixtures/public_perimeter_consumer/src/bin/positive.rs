@@ -374,9 +374,9 @@ fn catalog_constructor_parity() {
         MetadataVersion, RemovalDate, RemovalMilestone, RemovalSchedule, VersionReq,
     };
     use nebula_sdk::integration::{
-        action::ActionMetadataDraft, credential::CredentialMetadataDraft, resource::ResourceMetadata,
+        action::ActionMetadataDraft, credential::CredentialMetadata, resource::ResourceMetadata,
     };
-    use nebula_sdk::prelude::{action_key, credential_key};
+    use nebula_sdk::prelude::action_key;
 
     let category: CatalogCategoryKey = "network.http".parse().expect("valid category");
     let target: CatalogLinkTarget = "/integrations/http/setup".parse().expect("valid target");
@@ -435,22 +435,17 @@ fn catalog_constructor_parity() {
             .add_link(link.clone())
             .with_deprecation(notice.clone());
     assert_eq!(action, action_dynamic);
-    let credential = CredentialMetadataDraft::new(
-        credential_key!("example.token"),
-        metadata_name!("Token"),
-        "",
-    )
-    .with_version(version.clone())
-    .with_categories([category.clone()])
-    .add_link(link.clone())
-    .with_deprecation(notice.clone());
-    let credential_dynamic =
-        CredentialMetadataDraft::try_new(credential_key!("example.token"), "Token", "")
-            .expect("valid name")
-            .with_version(version.clone())
-            .with_categories([category.clone()])
-            .add_link(link.clone())
-            .with_deprecation(notice.clone());
+    let credential = CredentialMetadata::new(metadata_name!("Token"), "")
+        .with_version(version.clone())
+        .with_categories([category.clone()])
+        .add_link(link.clone())
+        .with_deprecation(notice.clone());
+    let credential_dynamic = CredentialMetadata::try_new("Token", "")
+        .expect("valid name")
+        .with_version(version.clone())
+        .with_categories([category.clone()])
+        .add_link(link.clone())
+        .with_deprecation(notice.clone());
     assert_eq!(credential, credential_dynamic);
     let resource = ResourceMetadata::new(metadata_name!("HTTP"), "")
         .with_version(version.clone())
@@ -467,6 +462,6 @@ fn catalog_constructor_parity() {
     let _: nebula_sdk::prelude::VersionReq = requirement;
     let _: nebula_sdk::prelude::MetadataField = MetadataField::Links;
     assert!(ActionMetadataDraft::try_new(action_key!("example.echo"), " ", "").is_err());
-    assert!(CredentialMetadataDraft::try_new(credential_key!("example.token"), " ", "").is_err());
+    assert!(CredentialMetadata::try_new(" ", "").is_err());
     assert!(ResourceMetadata::try_new(" ", "").is_err());
 }

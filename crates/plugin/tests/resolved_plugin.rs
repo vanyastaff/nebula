@@ -8,9 +8,8 @@ use nebula_action::{
 };
 use nebula_core::{ActionKey, CredentialKey, Dependencies, ResourceKey};
 use nebula_credential::{
-    AnyCredential, Credential, CredentialContext, CredentialMetadataDraft, SecretString,
-    SecretToken, contract::plugin_capability_report, error::CredentialError,
-    resolve::StaticResolveResult,
+    AnyCredential, Credential, CredentialContext, CredentialMetadata, SecretString, SecretToken,
+    contract::plugin_capability_report, error::CredentialError, resolve::StaticResolveResult,
 };
 use nebula_metadata::{Definition, PluginManifest};
 use nebula_plugin::{ComponentKind, Plugin, PluginError, ResolvedPlugin};
@@ -135,7 +134,7 @@ impl StatelessAction for MetadataAction {
 // ── Stub AnyCredential ───────────────────────────────────────────────────────
 
 macro_rules! credential_fixture {
-    ($type:ident, $projected_key:literal, $metadata_key:literal) => {
+    ($type:ident, $key:literal) => {
         struct $type;
 
         impl Credential for $type {
@@ -143,11 +142,10 @@ macro_rules! credential_fixture {
             type Scheme = SecretToken;
             type State = SecretToken;
 
-            const KEY: &'static str = $projected_key;
+            const KEY: &'static str = $key;
 
-            fn metadata() -> CredentialMetadataDraft {
-                CredentialMetadataDraft::new(
-                    nebula_core::credential_key!($metadata_key),
+            fn metadata() -> CredentialMetadata {
+                CredentialMetadata::new(
                     nebula_credential::metadata_name!("Stub"),
                     "stub credential",
                 )
@@ -185,26 +183,18 @@ macro_rules! credential_fixture {
     };
 }
 
-credential_fixture!(SlackOauthCredential, "slack.oauth2", "slack.oauth2");
-credential_fixture!(SlackBotCredential, "slack.bot_token", "slack.bot_token");
-credential_fixture!(GithubOauthCredential, "github.oauth2", "github.oauth2");
-credential_fixture!(MismatchedCredential, "slack.oauth2", "slack.bot_token");
-credential_fixture!(InvalidBadCredential, "slack.bad!", "slack.oauth2");
-credential_fixture!(InvalidLowCredential, "slack.low!", "slack.beta");
-credential_fixture!(InvalidZzzCredential, "slack.zzz!", "slack.alpha");
-credential_fixture!(InvalidAaaCredential, "slack.aaa!", "slack.alpha");
+credential_fixture!(SlackOauthCredential, "slack.oauth2");
+credential_fixture!(SlackBotCredential, "slack.bot_token");
+credential_fixture!(GithubOauthCredential, "github.oauth2");
+credential_fixture!(GithubBotCredential, "github.bot_token");
 
-fn credential_fixture(projected_key: &str, metadata_key: &str) -> Arc<dyn AnyCredential> {
-    match (projected_key, metadata_key) {
-        ("slack.oauth2", "slack.oauth2") => Arc::new(SlackOauthCredential),
-        ("slack.bot_token", "slack.bot_token") => Arc::new(SlackBotCredential),
-        ("github.oauth2", "github.oauth2") => Arc::new(GithubOauthCredential),
-        ("slack.oauth2", "slack.bot_token") => Arc::new(MismatchedCredential),
-        ("slack.bad!", "slack.oauth2") => Arc::new(InvalidBadCredential),
-        ("slack.low!", "slack.beta") => Arc::new(InvalidLowCredential),
-        ("slack.zzz!", "slack.alpha") => Arc::new(InvalidZzzCredential),
-        ("slack.aaa!", "slack.alpha") => Arc::new(InvalidAaaCredential),
-        _ => panic!("credential fixture ({projected_key:?}, {metadata_key:?}) is not declared"),
+fn credential_fixture(key: &str) -> Arc<dyn AnyCredential> {
+    match key {
+        "slack.oauth2" => Arc::new(SlackOauthCredential),
+        "slack.bot_token" => Arc::new(SlackBotCredential),
+        "github.oauth2" => Arc::new(GithubOauthCredential),
+        "github.bot_token" => Arc::new(GithubBotCredential),
+        _ => panic!("credential fixture {key:?} is not declared"),
     }
 }
 
@@ -241,24 +231,7 @@ impl StubPlugin {
     }
 
     fn with_credential(mut self, cred_key: &str) -> Self {
-        self.credentials
-            .push(credential_fixture(cred_key, cred_key));
-        self
-    }
-
-    fn with_mismatched_credential(mut self, projected_key: &str, metadata_key: &str) -> Self {
-        self.credentials
-            .push(credential_fixture(projected_key, metadata_key));
-        self
-    }
-
-    fn with_invalid_credential_projection(
-        mut self,
-        projected_key: &str,
-        metadata_key: &str,
-    ) -> Self {
-        self.credentials
-            .push(credential_fixture(projected_key, metadata_key));
+        self.credentials.push(credential_fixture(cred_key));
         self
     }
 
@@ -348,41 +321,6 @@ fn resolved_plugin_accepts_well_namespaced_credential() {
 }
 
 #[test]
-fn resolved_plugin_rejects_credential_key_metadata_mismatch() {
-    let plugin =
-        StubPlugin::new("slack").with_mismatched_credential("slack.oauth2", "slack.bot_token");
-    let error = ResolvedPlugin::from(plugin).expect_err("key mismatch must fail resolution");
-
-    assert!(matches!(
-        error,
-        PluginError::ComponentKeyMismatch {
-            plugin,
-            kind: ComponentKind::Credential,
-            projected_key,
-            metadata_key,
-        } if plugin.as_str() == "slack"
-            && projected_key == "slack.oauth2"
-            && metadata_key == "slack.bot_token"
-    ));
-}
-
-#[test]
-fn resolved_plugin_rejects_invalid_credential_key_projection() {
-    let plugin =
-        StubPlugin::new("slack").with_invalid_credential_projection("slack.bad!", "slack.oauth2");
-    let error = ResolvedPlugin::from(plugin).expect_err("invalid projected key must fail");
-
-    assert!(matches!(
-        error,
-        PluginError::InvalidComponentKey {
-            plugin,
-            kind: ComponentKind::Credential,
-            projected_key,
-        } if plugin.as_str() == "slack" && projected_key == "slack.bad!"
-    ));
-}
-
-#[test]
 fn typed_credential_blanket_preserves_downcast_identity() {
     let credential = SlackOauthCredential;
     let erased: &dyn AnyCredential = &credential;
@@ -398,13 +336,13 @@ fn typed_credential_blanket_preserves_downcast_identity() {
 #[test]
 fn credential_validation_error_is_deterministic_across_contribution_order() {
     let forward = StubPlugin::new("slack")
-        .with_invalid_credential_projection("slack.low!", "slack.beta")
-        .with_invalid_credential_projection("slack.zzz!", "slack.alpha")
-        .with_invalid_credential_projection("slack.aaa!", "slack.alpha");
+        .with_credential("slack.oauth2")
+        .with_credential("github.oauth2")
+        .with_credential("github.bot_token");
     let reversed = StubPlugin::new("slack")
-        .with_invalid_credential_projection("slack.aaa!", "slack.alpha")
-        .with_invalid_credential_projection("slack.zzz!", "slack.alpha")
-        .with_invalid_credential_projection("slack.low!", "slack.beta");
+        .with_credential("github.bot_token")
+        .with_credential("github.oauth2")
+        .with_credential("slack.oauth2");
 
     let forward_error =
         ResolvedPlugin::from(forward).expect_err("the invalid credential set must fail");
@@ -414,11 +352,11 @@ fn credential_validation_error_is_deterministic_across_contribution_order() {
     for error in [forward_error, reversed_error] {
         std::assert_matches!(
             error,
-            PluginError::InvalidComponentKey {
+            PluginError::NamespaceMismatch {
                 plugin,
                 kind: ComponentKind::Credential,
-                projected_key,
-            } if plugin.as_str() == "slack" && projected_key == "slack.aaa!"
+                offending_key,
+            } if plugin.as_str() == "slack" && offending_key == "github.bot_token"
         );
     }
 }
@@ -582,7 +520,7 @@ fn registry_resolve_credential_finds_across_plugins() {
         .resolve_credential(&CredentialKey::new("slack.oauth2").unwrap())
         .expect("oauth2");
     assert_eq!(
-        cred.metadata()
+        cred.definition()
             .expect("fixture metadata is valid")
             .base()
             .key()

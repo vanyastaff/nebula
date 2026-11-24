@@ -8,7 +8,7 @@ use nebula_schema::Schema;
 use serde::Deserialize;
 
 use crate::{
-    Credential, CredentialContext, CredentialError, CredentialMetadataDraft, SecretString,
+    Credential, CredentialContext, CredentialError, CredentialMetadata, SecretString,
     contract::plugin_capability_report, contract::resolve::StaticResolveResult, scheme::SigningKey,
 };
 
@@ -34,9 +34,8 @@ impl Credential for SigningKeyCredential {
 
     const KEY: &'static str = "signing_key";
 
-    fn metadata() -> CredentialMetadataDraft {
-        CredentialMetadataDraft::new(
-            nebula_core::credential_key!("signing_key"),
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::new(
             crate::metadata_name!("Signing Key"),
             "Request-signing secret (HMAC, SigV4, webhook signatures).",
         )

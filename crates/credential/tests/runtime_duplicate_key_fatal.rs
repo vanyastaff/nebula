@@ -17,7 +17,7 @@
 //! [`CredentialRegistry`]: nebula_credential::CredentialRegistry
 
 use nebula_credential::{
-    Credential, CredentialContext, CredentialMetadataDraft, CredentialRegistry, RegisterError,
+    Credential, CredentialContext, CredentialMetadata, CredentialRegistry, RegisterError,
     SecretString, contract::plugin_capability_report, error::CredentialError,
     resolve::StaticResolveResult, scheme::SecretToken,
 };
@@ -36,9 +36,8 @@ impl Credential for CredA {
 
     const KEY: &'static str = SHARED_KEY;
 
-    fn metadata() -> CredentialMetadataDraft {
-        CredentialMetadataDraft::new(
-            nebula_core::credential_key!("shared.duplicate"),
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::new(
             nebula_credential::metadata_name!("CredA"),
             "first credential — wins on collision",
         )
@@ -87,9 +86,8 @@ impl Credential for CredB {
 
     const KEY: &'static str = SHARED_KEY;
 
-    fn metadata() -> CredentialMetadataDraft {
-        CredentialMetadataDraft::new(
-            nebula_core::credential_key!("shared.duplicate"),
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::new(
             nebula_credential::metadata_name!("CredB"),
             "second credential — rejected on collision",
         )

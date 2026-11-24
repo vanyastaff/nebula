@@ -30,7 +30,7 @@ use std::future::Future;
 
 use super::CredentialState;
 use crate::{
-    AuthScheme, CredentialContext, CredentialMetadataDraft, error::CredentialError,
+    AuthScheme, CredentialContext, CredentialMetadata, error::CredentialError,
     resolve::StaticResolveResult,
 };
 
@@ -77,7 +77,7 @@ use crate::{
 ///
 /// ```
 /// use nebula_credential::{
-///     Credential, CredentialContext, CredentialMetadataDraft, SecretString,
+///     Credential, CredentialContext, CredentialMetadata, SecretString,
 ///     scheme::SecretToken,
 /// };
 /// use nebula_credential::error::CredentialError;
@@ -102,10 +102,8 @@ use crate::{
 ///
 ///     const KEY: &'static str = "slack_bot_token";
 ///
-///     fn metadata() -> CredentialMetadataDraft {
-///         CredentialMetadataDraft::new(
-///             credential_key!("slack_bot_token"),
-///             nebula_credential::metadata_name!("Slack Bot Token"),
+///     fn metadata() -> CredentialMetadata {
+///         CredentialMetadata::new(nebula_credential::metadata_name!("Slack Bot Token"),
 ///             "Slack bot OAuth token",
 ///         )
 ///     }
@@ -149,12 +147,19 @@ pub trait Credential: Send + Sync + 'static {
     type State: CredentialState;
 
     /// Stable key for this credential type (e.g., `"github_oauth2"`).
+    ///
+    /// This is the one declaration of the credential's identity:
+    /// [`key_of`] is its typed [`CredentialKey`](nebula_core::CredentialKey),
+    /// and the admitted catalog entry is stamped with it, so the entry cannot
+    /// name a different credential. A literal that is not a valid credential
+    /// key fails compilation.
     const KEY: &'static str;
 
-    /// Integration-catalog metadata: key, name, icon, documentation
-    /// URL, and auth pattern. The draft cannot carry a schema; registry
-    /// admission derives it from [`Self::Properties`].
-    fn metadata() -> CredentialMetadataDraft
+    /// What the integration catalog shows for this credential: name,
+    /// description, icon, documentation URL. The metadata carries neither a
+    /// key nor a schema; registry admission stamps [`Self::KEY`] and derives the
+    /// schema from [`Self::Properties`].
+    fn metadata() -> CredentialMetadata
     where
         Self: Sized;
 
@@ -184,4 +189,21 @@ pub trait Credential: Send + Sync + 'static {
     ) -> impl Future<Output = Result<StaticResolveResult<Self::State>, CredentialError>> + Send
     where
         Self: Sized;
+}
+
+/// The typed key of credential type `C`, derived from [`Credential::KEY`].
+///
+/// An invalid literal fails the build of whatever instantiates this function
+/// for `C`, which registration always does, so nothing is left to validate at
+/// run time.
+#[must_use]
+pub fn key_of<C: Credential + ?Sized>() -> nebula_core::CredentialKey {
+    const {
+        assert!(
+            nebula_core::CredentialKey::is_valid_key_const(C::KEY),
+            "`Credential::KEY` is not a valid credential key"
+        );
+    }
+    // Checked above: a valid key literal is already in canonical form.
+    nebula_core::CredentialKey::from_static_unchecked(C::KEY)
 }

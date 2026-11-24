@@ -139,7 +139,7 @@ impl PluginContractDescriptor {
             .collect::<Vec<_>>();
         let mut credential_keys = plugin
             .credential_contracts()
-            .map(|contract| contract.projected_key().clone())
+            .map(|contract| contract.metadata().key().clone())
             .collect::<Vec<_>>();
         action_keys.sort_unstable();
         resource_keys.sort_unstable();

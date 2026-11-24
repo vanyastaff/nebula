@@ -4,7 +4,7 @@
 
 #[expect(unused_imports)]
 use nebula_credential::{
-    AuthScheme, CredentialContext, CredentialError, CredentialId, CredentialMetadata,
+    AuthScheme, CredentialContext, CredentialDefinition, CredentialError, CredentialId,
     CredentialRecord, CredentialRegistry, CredentialSnapshot, CredentialState, Dynamic,
     Interactive, PendingStateStore, Refreshable, Revocable, SecretString, TestFailureCode,
     Testable,

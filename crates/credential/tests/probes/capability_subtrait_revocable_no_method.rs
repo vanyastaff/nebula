@@ -6,7 +6,7 @@
 use std::future::Future;
 
 use nebula_credential::{
-    Credential, CredentialContext, CredentialMetadataDraft, Revocable, SecretString,
+    Credential, CredentialContext, CredentialMetadata, Revocable, SecretString,
     error::CredentialError, resolve::StaticResolveResult, scheme::SecretToken,
 };
 use serde::{Deserialize, Serialize};
@@ -30,7 +30,7 @@ impl Credential for Dummy {
 
     const KEY: &'static str = "dummy";
 
-    fn metadata() -> CredentialMetadataDraft {
+    fn metadata() -> CredentialMetadata {
         unimplemented!()
     }
 

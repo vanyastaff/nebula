@@ -40,7 +40,7 @@ use crate::{Credential, CredentialContext, error::CredentialError};
 /// ```
 /// use std::time::Duration;
 /// use nebula_credential::{
-///     Credential, CredentialContext, CredentialMetadataDraft, Dynamic,
+///     Credential, CredentialContext, CredentialMetadata, Dynamic,
 ///     SecretString, scheme::SecretToken,
 /// };
 /// use nebula_credential::error::CredentialError;
@@ -54,9 +54,8 @@ use crate::{Credential, CredentialContext, error::CredentialError};
 /// #     type Scheme = SecretToken;
 /// #     type State = SecretToken;
 /// #     const KEY: &'static str = "vault_db_cred";
-/// #     fn metadata() -> CredentialMetadataDraft {
-/// #         CredentialMetadataDraft::new(
-/// #             credential_key!("vault_db_cred"), nebula_credential::metadata_name!("Vault DB"), "demo",
+/// #     fn metadata() -> CredentialMetadata {
+/// #         CredentialMetadata::new(nebula_credential::metadata_name!("Vault DB"), "demo",
 /// #         )
 /// #     }
 /// #     fn project(state: &SecretToken) -> SecretToken { state.clone() }

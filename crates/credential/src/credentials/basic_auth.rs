@@ -7,7 +7,7 @@ use nebula_schema::Schema;
 use serde::Deserialize;
 
 use crate::{
-    CredentialContext, SecretString, error::CredentialError, metadata::CredentialMetadataDraft,
+    CredentialContext, SecretString, error::CredentialError, metadata::CredentialMetadata,
     resolve::StaticResolveResult, scheme::IdentityPassword,
 };
 
@@ -50,9 +50,8 @@ impl BasicAuthCredential {
     type Scheme = IdentityPassword;
     type State = IdentityPassword;
 
-    fn metadata() -> CredentialMetadataDraft {
-        CredentialMetadataDraft::new(
-            nebula_core::credential_key!("basic_auth"),
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::new(
             crate::metadata_name!("Basic Auth"),
             "HTTP Basic authentication (username + password).",
         )

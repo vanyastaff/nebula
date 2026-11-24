@@ -1,6 +1,6 @@
 use nebula_credential::{
-    ApiKeyCredential, AuthPattern, Credential, CredentialMetadata, CredentialMetadataDraft,
-    CredentialRegistry, RecordedCredentialMetadata,
+    ApiKeyCredential, AuthPattern, Credential, CredentialDefinition, CredentialMetadata,
+    CredentialRegistry, RecordedCredentialDefinition,
 };
 use nebula_schema::schema_of;
 
@@ -12,7 +12,7 @@ fn registry_admits_the_properties_schema_into_immutable_metadata() {
         .expect("the built-in definition is valid");
 
     let admitted = registry
-        .metadata(ApiKeyCredential::KEY)
+        .definition(ApiKeyCredential::KEY)
         .expect("registered metadata is available");
     assert_eq!(admitted.key().as_str(), ApiKeyCredential::KEY);
     assert_eq!(admitted.pattern(), AuthPattern::SecretToken);
@@ -34,13 +34,13 @@ fn recorded_metadata_is_evidence_readmitted_against_a_fresh_definition() {
         .register(ApiKeyCredential, "terminal-metadata-test")
         .expect("the built-in definition is valid");
     let fresh = registry
-        .metadata(ApiKeyCredential::KEY)
+        .definition(ApiKeyCredential::KEY)
         .expect("registered metadata is available");
 
     let wire = serde_json::to_value(fresh).expect("admitted metadata serializes");
-    let recorded: RecordedCredentialMetadata =
+    let recorded: RecordedCredentialDefinition =
         serde_json::from_value(wire).expect("wire metadata records as evidence");
-    let readmitted: CredentialMetadata = recorded
+    let readmitted: CredentialDefinition = recorded
         .readmit_against(fresh)
         .expect("matching evidence readmits the fresh definition");
 
@@ -49,5 +49,5 @@ fn recorded_metadata_is_evidence_readmitted_against_a_fresh_definition() {
 
 #[test]
 fn static_metadata_draft_construction_is_infallible() {
-    let _: CredentialMetadataDraft = ApiKeyCredential::metadata();
+    let _: CredentialMetadata = ApiKeyCredential::metadata();
 }

@@ -115,7 +115,7 @@ pub use nebula_credential::{
     Credential,
     CredentialError,
     // Author-owned integration-catalog metadata intent
-    CredentialMetadataDraft,
+    CredentialMetadata,
     // Typed credential access
     CredentialSnapshot,
     CredentialState,

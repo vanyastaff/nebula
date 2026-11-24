@@ -135,10 +135,10 @@ pub struct TypeCapabilities {
 }
 
 /// Secret-free descriptor of a registered credential type for discovery
-/// UIs / pickers. Projected from [`CredentialMetadata`] + the
+/// UIs / pickers. Projected from [`CredentialDefinition`] + the
 /// [`CredentialRegistry`] capability bitflag.
 ///
-/// [`CredentialMetadata`]: crate::CredentialMetadata
+/// [`CredentialDefinition`]: crate::CredentialDefinition
 #[derive(Debug, Clone, Serialize)]
 pub struct CredentialTypeInfo {
     /// `Credential::KEY` (normalized type key).

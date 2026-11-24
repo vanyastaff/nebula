@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::{
-    CredentialError, CredentialMetadataDraft, DisplayData, InteractionRequest, Interactive,
+    CredentialError, CredentialMetadata, DisplayData, InteractionRequest, Interactive,
     NoPendingState, PendingState, PendingStoreError, ResolveResult, SecretString, SecretToken,
     StaticResolveResult, UserInput,
 };
@@ -85,9 +85,8 @@ impl Credential for NormalizedCredential {
     type Scheme = SecretToken;
     const KEY: &'static str = "normalized_test";
 
-    fn metadata() -> CredentialMetadataDraft {
-        CredentialMetadataDraft::new(
-            nebula_core::credential_key!("normalized_test"),
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::new(
             crate::metadata_name!("Normalized"),
             "Normalized credential fixture",
         )
@@ -115,9 +114,8 @@ impl Credential for HangingCredential {
     type Scheme = SecretToken;
     const KEY: &'static str = "hanging_provider_test";
 
-    fn metadata() -> CredentialMetadataDraft {
-        CredentialMetadataDraft::new(
-            nebula_core::credential_key!("hanging_provider_test"),
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::new(
             crate::metadata_name!("Hanging provider"),
             "Provider timeout classification fixture",
         )
@@ -259,9 +257,8 @@ impl Credential for InteractiveEvidenceCredential {
     type Scheme = SecretToken;
     const KEY: &'static str = "interactive_evidence_test";
 
-    fn metadata() -> CredentialMetadataDraft {
-        CredentialMetadataDraft::new(
-            nebula_core::credential_key!("interactive_evidence_test"),
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::new(
             crate::metadata_name!("Interactive evidence"),
             "Interactive completion evidence fixture",
         )
@@ -610,9 +607,8 @@ impl Credential for UnserializableCredential {
     type Scheme = ();
     const KEY: &'static str = "unserializable_fixture";
 
-    fn metadata() -> CredentialMetadataDraft {
-        CredentialMetadataDraft::new(
-            nebula_core::credential_key!("unserializable_fixture"),
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::new(
             crate::metadata_name!("Unserializable"),
             "Failing serializer fixture",
         )

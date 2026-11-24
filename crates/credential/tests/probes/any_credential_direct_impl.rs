@@ -1,6 +1,6 @@
 use std::any::Any;
 
-use nebula_credential::{AnyCredential, Capabilities, CredentialMetadata};
+use nebula_credential::{AnyCredential, Capabilities, CredentialDefinition};
 
 struct SelfAttested;
 
@@ -9,9 +9,9 @@ impl AnyCredential for SelfAttested {
         "self_attested"
     }
 
-    fn metadata(
+    fn definition(
         &self,
-    ) -> Result<CredentialMetadata, nebula_credential::CredentialMetadataAdmissionError> {
+    ) -> Result<CredentialDefinition, nebula_credential::CredentialMetadataAdmissionError> {
         unimplemented!()
     }
 

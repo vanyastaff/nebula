@@ -27,7 +27,7 @@ mod testable;
 
 pub use any::AnyCredential;
 pub use capability_report::{Capabilities, compute_capabilities, plugin_capability_report};
-pub use credential::Credential;
+pub use credential::{Credential, key_of};
 pub use dynamic::Dynamic;
 pub use interactive::Interactive;
 pub use pending::{NoPendingState, PendingState, PendingToken};

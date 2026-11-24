@@ -8,7 +8,7 @@ use nebula_schema::Schema;
 use serde::Deserialize;
 
 use crate::{
-    CredentialContext, SecretString, error::CredentialError, metadata::CredentialMetadataDraft,
+    CredentialContext, SecretString, error::CredentialError, metadata::CredentialMetadata,
     resolve::StaticResolveResult, scheme::SecretToken,
 };
 
@@ -66,9 +66,8 @@ impl ApiKeyCredential {
     type Scheme = SecretToken;
     type State = SecretToken;
 
-    fn metadata() -> CredentialMetadataDraft {
-        CredentialMetadataDraft::new(
-            nebula_core::credential_key!("api_key"),
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::new(
             crate::metadata_name!("API Key"),
             "Static API key or bearer token for HTTP APIs.",
         )

@@ -31,7 +31,7 @@ use crate::{
         CredentialError, ProviderErrorContext, ProviderErrorKind, RefreshDiagnosticCode,
         RefreshErrorKind, RefreshFailureSpec, RetryAdvice, SecretFreeMessage,
     },
-    metadata::CredentialMetadataDraft,
+    metadata::CredentialMetadata,
     resolve::{InteractionRequest, ResolveResult, StaticResolveResult, UserInput},
     runtime::refresh::token_refresh::{
         CompletedTokenRefresh, OAuthProviderErrorCode, PrepareTokenRefreshError,
@@ -346,10 +346,8 @@ impl OAuth2Credential {
     type Scheme = OAuth2Token;
     type State = OAuth2State;
 
-    fn metadata() -> CredentialMetadataDraft {
-        CredentialMetadataDraft::new(
-            nebula_core::credential_key!("oauth2"),
-            crate::metadata_name!("OAuth2"),
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::new(crate::metadata_name!("OAuth2"),
             "OAuth2 authentication supporting Authorization Code and Client Credentials grant types.",
         )
         .with_icon(nebula_metadata::Icon::inline("oauth2"))
