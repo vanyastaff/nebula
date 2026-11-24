@@ -11,7 +11,7 @@ use nebula_storage_port::{
 
 use super::*;
 use crate::{
-    BearerTokenCredential, Credential, CredentialService, CredentialState, SecretString, SharedKey,
+    BearerTokenCredential, Component, CredentialService, CredentialState, SecretString, SharedKey,
     StateWireFingerprint, scheme::SecretToken,
 };
 

@@ -15,7 +15,7 @@ struct Bad;
 
 #[nebula_credential::credential(key = "bad", name = "Bad")]
 impl Bad {
-    type Properties = serde_json::Value;
+    type Config = serde_json::Value;
     type Scheme = SecretToken;
     type State = SecretToken;
     // Orphan — `type Pending` with no `fn continue_resolve` to consume it.
@@ -26,7 +26,7 @@ impl Bad {
     }
 
     async fn resolve(
-        _properties: &Self::Properties,
+        _properties: &Self::Config,
         _ctx: &CredentialContext,
     ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
         Ok(StaticResolveResult::Complete(SecretToken::new(

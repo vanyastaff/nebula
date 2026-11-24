@@ -6,9 +6,10 @@
 use std::future::Future;
 
 use nebula_credential::{
-    Credential, CredentialContext, CredentialMetadata, Dynamic, SecretString,
+    Credential, CredentialContext, Metadata, Dynamic, SecretString,
     error::CredentialError, resolve::StaticResolveResult, scheme::SecretToken,
 };
+use nebula_credential::{Component, kind};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Serialize, Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
@@ -23,23 +24,27 @@ impl nebula_credential::CredentialState for DummyState {
 
 struct Dummy;
 
-impl Credential for Dummy {
-    type Properties = serde_json::Value;
-    type Scheme = SecretToken;
-    type State = DummyState;
+impl Component for Dummy {
+    type Kind = kind::Credential;
+    type Config = serde_json::Value;
 
     const KEY: &'static str = "dummy";
 
-    fn metadata() -> CredentialMetadata {
+    fn metadata() -> Metadata {
         unimplemented!()
     }
+}
+
+impl Credential for Dummy {
+    type Scheme = SecretToken;
+    type State = DummyState;
 
     fn project(state: &DummyState) -> SecretToken {
         SecretToken::new(SecretString::new(state.token.clone()))
     }
 
     fn resolve(
-        _properties: &Self::Properties,
+        _properties: &Self::Config,
         _ctx: &CredentialContext,
     ) -> impl Future<Output = Result<StaticResolveResult<DummyState>, CredentialError>> + Send {
         async { unimplemented!() }

@@ -39,11 +39,11 @@ use nebula_credential::provider::{
 use nebula_credential::resolve::StaticResolveResult;
 use nebula_credential::{
     CredentialActor, CredentialCommand, CredentialCommandResult, CredentialContext,
-    CredentialControllerError, CredentialDisplay, CredentialDisplayPatch, CredentialMetadata,
-    CredentialRegistry, CredentialService, CredentialServiceError, DispatchOps, ErasedPendingStore,
-    ManagementRefreshReport, RefreshAttempt, RefreshReport, SecretString, StateWireFingerprint,
-    TenantScope, ValidatedCredentialBindingError, identity_state, register_refreshable_ops,
-    register_revocable_ops, register_runtime_ops,
+    CredentialControllerError, CredentialDisplay, CredentialDisplayPatch, CredentialRegistry,
+    CredentialService, CredentialServiceError, DispatchOps, ErasedPendingStore,
+    ManagementRefreshReport, Metadata, RefreshAttempt, RefreshReport, SecretString,
+    StateWireFingerprint, TenantScope, ValidatedCredentialBindingError, identity_state,
+    register_refreshable_ops, register_revocable_ops, register_runtime_ops,
 };
 use nebula_schema::Schema;
 use nebula_storage::credential::EnvKeyProvider;
@@ -128,12 +128,12 @@ struct TestLifecycleCred;
 
 #[nebula_credential::credential(key = "test_lifecycle")]
 impl TestLifecycleCred {
-    type Properties = TestProps;
+    type Config = TestProps;
     type Scheme = TestScheme;
     type State = TestScheme;
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_credential::metadata_name!("Test Lifecycle Credential"),
             "non-interactive refreshable+revocable credential for facade E2E tests",
         )

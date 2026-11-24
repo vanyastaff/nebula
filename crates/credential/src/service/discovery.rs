@@ -56,7 +56,7 @@ impl CredentialService {
 #[cfg(test)]
 mod tests {
     use super::CredentialService;
-    use crate::{ApiKeyCredential, Capabilities, Credential, CredentialRegistry};
+    use crate::{ApiKeyCredential, Capabilities, Component, CredentialRegistry};
 
     #[test]
     fn discovery_preserves_all_five_registry_capabilities() {

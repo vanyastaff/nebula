@@ -254,7 +254,7 @@ impl CredentialRegistry {
             });
         }
 
-        let metadata = crate::CredentialDefinition::admit_for::<C>(C::metadata())?;
+        let metadata = crate::CredentialDefinition::admit_for::<C>()?;
         let arc_key: Arc<str> = key.into();
         self.entries.insert(
             arc_key,

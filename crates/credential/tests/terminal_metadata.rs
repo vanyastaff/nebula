@@ -1,6 +1,6 @@
 use nebula_credential::{
-    ApiKeyCredential, AuthPattern, Credential, CredentialDefinition, CredentialMetadata,
-    CredentialRegistry, RecordedCredentialDefinition,
+    ApiKeyCredential, AuthPattern, Component, Credential, CredentialDefinition, CredentialRegistry,
+    Metadata, RecordedCredentialDefinition,
 };
 use nebula_schema::schema_of;
 
@@ -22,7 +22,7 @@ fn registry_admits_the_properties_schema_into_immutable_metadata() {
     );
     assert_eq!(
         admitted.base().schema(),
-        &schema_of::<<ApiKeyCredential as Credential>::Properties>()
+        &schema_of::<<ApiKeyCredential as Component>::Config>()
             .expect("built-in properties schema is valid"),
     );
 }
@@ -49,5 +49,5 @@ fn recorded_metadata_is_evidence_readmitted_against_a_fresh_definition() {
 
 #[test]
 fn static_metadata_draft_construction_is_infallible() {
-    let _: CredentialMetadata = ApiKeyCredential::metadata();
+    let _: Metadata = ApiKeyCredential::metadata();
 }

@@ -27,11 +27,12 @@
 use std::future::Future;
 
 use nebula_credential::{
-    Credential, CredentialContext, CredentialMetadata, CredentialState, Refreshable,
+    Credential, CredentialContext, Metadata, CredentialState, Refreshable,
     SecretString, contract::plugin_capability_report, error::CredentialError,
     resolve::StaticResolveResult,
     scheme::SecretToken,
 };
+use nebula_credential::{Component, kind};
 use serde::{Deserialize, Serialize};
 
 // ── Stand-in state ──────────────────────────────────────────────────────────
@@ -54,35 +55,33 @@ impl CredentialState for ThirdPartyState {
 
 struct ThirdPartyLiar;
 
-impl Credential for ThirdPartyLiar {
-    type Properties = serde_json::Value;
-    type Scheme = SecretToken;
-    type State = ThirdPartyState;
+impl Component for ThirdPartyLiar {
+    type Kind = kind::Credential;
+    type Config = serde_json::Value;
 
     const KEY: &'static str = "third_party_liar";
 
-    fn metadata() -> CredentialMetadata
-    where
-        Self: Sized,
+    fn metadata() -> Metadata
     {
         // guard-justified: compile-fail probe fixture; this body is never executed —
         // the file is expected to fail to compile at the `impl Refreshable` line below.
         unimplemented!("fixture")
     }
+}
+
+impl Credential for ThirdPartyLiar {
+    type Scheme = SecretToken;
+    type State = ThirdPartyState;
 
     fn project(state: &ThirdPartyState) -> SecretToken
-    where
-        Self: Sized,
     {
         SecretToken::new(SecretString::new(state.token.clone()))
     }
 
     fn resolve(
-        _properties: &Self::Properties,
+        _properties: &Self::Config,
         _ctx: &CredentialContext,
     ) -> impl Future<Output = Result<StaticResolveResult<ThirdPartyState>, CredentialError>> + Send
-    where
-        Self: Sized,
     {
         async {
             // guard-justified: compile-fail probe fixture; this body is never executed —

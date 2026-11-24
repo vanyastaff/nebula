@@ -7,8 +7,9 @@
 use nebula_schema::Schema;
 use serde::Deserialize;
 
+use crate::{Component, kind};
 use crate::{
-    Credential, CredentialContext, CredentialError, CredentialMetadata, SecretString,
+    Credential, CredentialContext, CredentialError, Metadata, SecretString,
     contract::plugin_capability_report, contract::resolve::StaticResolveResult, scheme::SigningKey,
 };
 
@@ -27,20 +28,24 @@ pub struct SigningKeyProperties {
 /// + algorithm) directly as the auth scheme.
 pub struct SigningKeyCredential;
 
-impl Credential for SigningKeyCredential {
-    type Properties = SigningKeyProperties;
-    type Scheme = SigningKey;
-    type State = SigningKey;
+impl Component for SigningKeyCredential {
+    type Kind = kind::Credential;
+    type Config = SigningKeyProperties;
 
     const KEY: &'static str = "signing_key";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             crate::metadata_name!("Signing Key"),
             "Request-signing secret (HMAC, SigV4, webhook signatures).",
         )
         .with_icon(nebula_metadata::Icon::inline("key"))
     }
+}
+
+impl Credential for SigningKeyCredential {
+    type Scheme = SigningKey;
+    type State = SigningKey;
 
     fn project(state: &SigningKey) -> SigningKey {
         state.clone()

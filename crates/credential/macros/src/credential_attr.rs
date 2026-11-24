@@ -5,8 +5,8 @@
 //! credential actually supports; this macro reads which methods are present
 //! and emits:
 //!
-//! - the base `Credential` impl (`KEY` + `Properties`/`Scheme`/`State` +
-//!   `metadata`/`project`/`resolve`),
+//! - the `Component` impl (`KEY`, `Config`, `metadata`),
+//! - the base `Credential` impl (`Scheme`/`State` + `project`/`resolve`),
 //! - one capability sub-trait impl per capability **method** supplied
 //!   (`refresh` ⇒ `Refreshable`, `revoke` ⇒ `Revocable`, `test` ⇒ `Testable`,
 //!   `continue_resolve` ⇒ `Interactive`, `release` ⇒ `Dynamic`),
@@ -29,7 +29,7 @@
 //!
 //! # Container arguments (`#[credential(...)]`)
 //!
-//! - `key = "..."` — stable credential type key (required; becomes `Credential::KEY`).
+//! - `key = "..."` — stable credential type key (required; becomes `Component::KEY`).
 //! - `name = "..."` — human-readable name (required only when no `metadata`
 //!   method is supplied — used to synthesize one).
 //! - `description = "..."` — catalog description (optional; defaults to `name`).
@@ -40,9 +40,10 @@
 //!
 //! | Item | Routes to |
 //! |------|-----------|
-//! | `type Properties` / `type Scheme` / `type State` | `Credential` (all three required) |
+//! | `type Config` | `Component` (required) |
+//! | `type Scheme` / `type State` | `Credential` (both required) |
 //! | `type Pending` | `Interactive` (required iff `continue_resolve` present) |
-//! | `fn metadata` | `Credential` (optional — synthesized from args if absent) |
+//! | `fn metadata` | `Component` (optional — synthesized from args if absent) |
 //! | `fn project` / `fn resolve` | `Credential` (both required) |
 //! | `fn refresh` (+ `const REFRESH_POLICY` / `REFRESH_EXECUTION_MODE`) | `Refreshable` |
 //! | `fn revoke` | `Revocable` |
@@ -74,7 +75,7 @@ pub(crate) fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
 #[derive(Default)]
 struct Items {
     // Associated types.
-    properties: Option<ImplItem>,
+    config: Option<ImplItem>,
     scheme: Option<ImplItem>,
     state: Option<ImplItem>,
     pending: Option<ImplItem>,
@@ -126,11 +127,8 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
     let items = classify_items(&item)?;
 
     // Required surface.
-    let properties = items.properties.as_ref().ok_or_else(|| {
-        diag::error_spanned(
-            &item.self_ty,
-            "#[credential] requires `type Properties = …;`",
-        )
+    let config = items.config.as_ref().ok_or_else(|| {
+        diag::error_spanned(&item.self_ty, "#[credential] requires `type Config = …;`")
     })?;
     let scheme = items.scheme.as_ref().ok_or_else(|| {
         diag::error_spanned(&item.self_ty, "#[credential] requires `type Scheme = …;`")
@@ -249,11 +247,8 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
         let description = description.as_deref().unwrap_or(name);
         if icon.is_none() && doc_url.is_none() {
             quote! {
-                fn metadata() -> ::nebula_credential::CredentialMetadata
-                where
-                    Self: Sized,
-                {
-                    ::nebula_credential::CredentialMetadata::new(::nebula_credential::metadata_name!(#name),
+                fn metadata() -> ::nebula_credential::Metadata {
+                    ::nebula_credential::Metadata::new(::nebula_credential::metadata_name!(#name),
                         #description,
                     )
                 }
@@ -262,7 +257,7 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
             // Every required field is known at expansion time, so start with
             // the infallible constructor and add optional catalog fields.
             let mut metadata = quote! {
-                ::nebula_credential::CredentialMetadata::new(::nebula_credential::metadata_name!(#name),
+                ::nebula_credential::Metadata::new(::nebula_credential::metadata_name!(#name),
                     #description,
                 )
             };
@@ -275,17 +270,14 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
                 metadata = quote! { #metadata.with_documentation_url(#url) };
             }
             quote! {
-                fn metadata() -> ::nebula_credential::CredentialMetadata
-                where
-                    Self: Sized,
-                {
+                fn metadata() -> ::nebula_credential::Metadata {
                     #metadata
                 }
             }
         }
     };
 
-    let properties_ty = trait_item(properties.clone());
+    let config_ty = trait_item(config.clone());
     let scheme_item = trait_item(scheme.clone());
     let state_item = trait_item(state.clone());
     let project_fn = trait_item(project.clone());
@@ -293,14 +285,20 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
 
     let credential_impl = quote! {
         #fwd
-        impl #impl_generics ::nebula_credential::Credential for #self_ty #where_clause {
-            #properties_ty
-            #scheme_item
-            #state_item
+        impl #impl_generics ::nebula_credential::Component for #self_ty #where_clause {
+            type Kind = ::nebula_credential::kind::Credential;
+            #config_ty
 
             const KEY: &'static str = #key;
 
             #metadata_fn
+        }
+
+        #fwd
+        impl #impl_generics ::nebula_credential::Credential for #self_ty #where_clause {
+            #scheme_item
+            #state_item
+
             #project_fn
             #resolve_fn
         }
@@ -487,7 +485,7 @@ fn classify_items(item: &ItemImpl) -> syn::Result<Items> {
         match it {
             ImplItem::Type(ty) => {
                 let slot = match ty.ident.to_string().as_str() {
-                    "Properties" => &mut out.properties,
+                    "Config" => &mut out.config,
                     "Scheme" => &mut out.scheme,
                     "State" => &mut out.state,
                     "Pending" => &mut out.pending,

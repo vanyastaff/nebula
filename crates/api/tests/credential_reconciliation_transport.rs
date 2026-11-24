@@ -73,7 +73,7 @@ use nebula_core::{CredentialId, UserId};
 use nebula_credential::error::CredentialError;
 use nebula_credential::resolve::StaticResolveResult;
 use nebula_credential::{
-    CredentialContext, CredentialMetadata, CredentialRegistry, DispatchOps, ErasedPendingStore,
+    CredentialContext, CredentialRegistry, DispatchOps, ErasedPendingStore, Metadata,
     RefreshAttempt, RefreshReport, SecretString, StateWireFingerprint, identity_state,
     register_refreshable_ops, register_runtime_ops,
 };
@@ -173,12 +173,12 @@ struct ProbeCredential;
 
 #[nebula_credential::credential(key = "reconcile_probe")]
 impl ProbeCredential {
-    type Properties = ProbeProps;
+    type Config = ProbeProps;
     type Scheme = ProbeScheme;
     type State = ProbeScheme;
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_credential::metadata_name!("Reconcile Transport Probe"),
             "non-interactive refreshable credential for the U3c transport acceptance test",
         )

@@ -6,9 +6,9 @@
 //!
 //! Per Phase 5 of the M6 dependency redesign each credential ships a
 //! `<Name>Properties` companion struct (`#[derive(Schema, Deserialize)]`)
-//! that owns the setup-form schema; `Credential::Properties` points at
+//! that owns the setup-form schema; `Component::Config` points at
 //! it and the engine reads the schema via
-//! `nebula_schema::schema_of::<C::Properties>()` (schema-of properties).
+//! `nebula_schema::schema_of::<C::Config>()` (schema-of properties).
 
 pub mod api_key;
 pub mod basic_auth;
@@ -61,8 +61,8 @@ pub fn register_builtins(
 #[cfg(test)]
 pub(crate) fn resolve_properties<C: crate::Credential>(
     data: serde_json::Value,
-) -> Result<C::Properties, nebula_schema::ValidationReport> {
-    nebula_schema::schema_of::<C::Properties>()?
+) -> Result<C::Config, nebula_schema::ValidationReport> {
+    nebula_schema::schema_of::<C::Config>()?
         .validate(nebula_schema::AuthoredValue::from_data(data)?)?
         .resolve_data()
         .and_then(|resolved| resolved.into_typed_exposing_secrets().map_err(Into::into))

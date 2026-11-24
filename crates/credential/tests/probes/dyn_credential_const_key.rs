@@ -1,33 +1,17 @@
 //! Probe - `dyn Credential` rejected at compile time. See parent
 //! driver `compile_fail_dyn_credential_const_key.rs`.
 //!
-//! Two errors fire here. Both are blockers for `dyn Credential`:
+//! `Credential` has `Component` as a supertrait, and `Component` requires
+//! `Sized` and carries `const KEY`. Either alone makes the trait
+//! dyn-incompatible, so `E0038` fires at every `dyn Credential` site, with or
+//! without the associated types specified.
 //!
-//! - **`E0191`** at the bare `dyn Credential` site - the associated
-//!   types (`Properties`/`Scheme`/`State`) must be specified for the trait
-//!   object to be well-formed as a Rust type.
-//! - **`E0038`** at the fully-qualified site - even with the assoc
-//!   types specified, `const KEY` is not dyn-compatible (no method
-//!   carrier; the dyn-vtable cannot project an associated const). This
-//!   second site demonstrates that the const-KEY block fires
-//!   independently of the assoc-type set.
-//!
-//! Together these capture the structural reason the phantom-shim
-//! pattern (capability macro 1) exists: `dyn Credential` is doubly blocked,
-//! and any `dyn`-position use must route through a phantom trait that
-//! has neither `const KEY` nor unspecified associated types.
+//! This is the structural reason the phantom-shim pattern (capability
+//! macro 1) exists: any `dyn`-position use must route through a phantom trait
+//! that has neither `const KEY` nor a `Sized` bound.
 
 use nebula_credential::Credential;
 
 fn _take_bare(_c: &dyn Credential) {}
-
-fn _take_typed<P, S, St>(
-    _c: &dyn Credential<Properties = P, Scheme = S, State = St>,
-) where
-    P: nebula_schema::HasSchema + Send + Sync + 'static,
-    S: nebula_credential::AuthScheme,
-    St: nebula_credential::CredentialState,
-{
-}
 
 fn main() {}

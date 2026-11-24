@@ -1,7 +1,7 @@
 //! Probe — schema-of properties: `Credential::properties_schema()` is removed.
 //!
 //! The `Properties: HasSchema` associated-type bound is the single source of
-//! truth; schema is reached via `nebula_schema::schema_of::<C::Properties>()`.
+//! truth; schema is reached via `nebula_schema::schema_of::<C::Config>()`.
 //! There is no `properties_schema()` method on the trait, so this
 //! fully-qualified call must fail to compile (`E0576` — not found in trait).
 

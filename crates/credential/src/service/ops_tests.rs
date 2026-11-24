@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::{
-    CredentialError, CredentialMetadata, DisplayData, InteractionRequest, Interactive,
+    Component, CredentialError, DisplayData, InteractionRequest, Interactive, Metadata,
     NoPendingState, PendingState, PendingStoreError, ResolveResult, SecretString, SecretToken,
     StaticResolveResult, UserInput,
 };
@@ -79,18 +79,23 @@ impl HasSchema for NormalizedProperties {
 
 struct NormalizedCredential;
 
-impl Credential for NormalizedCredential {
-    type Properties = NormalizedProperties;
-    type State = SecretToken;
-    type Scheme = SecretToken;
+impl Component for NormalizedCredential {
+    type Kind = crate::kind::Credential;
+    type Config = NormalizedProperties;
+
     const KEY: &'static str = "normalized_test";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             crate::metadata_name!("Normalized"),
             "Normalized credential fixture",
         )
     }
+}
+
+impl Credential for NormalizedCredential {
+    type State = SecretToken;
+    type Scheme = SecretToken;
 
     fn project(state: &Self::State) -> Self::Scheme {
         state.clone()
@@ -108,25 +113,30 @@ impl Credential for NormalizedCredential {
 
 struct HangingCredential;
 
-impl Credential for HangingCredential {
-    type Properties = NormalizedProperties;
-    type State = SecretToken;
-    type Scheme = SecretToken;
+impl Component for HangingCredential {
+    type Kind = crate::kind::Credential;
+    type Config = NormalizedProperties;
+
     const KEY: &'static str = "hanging_provider_test";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             crate::metadata_name!("Hanging provider"),
             "Provider timeout classification fixture",
         )
     }
+}
+
+impl Credential for HangingCredential {
+    type State = SecretToken;
+    type Scheme = SecretToken;
 
     fn project(state: &Self::State) -> Self::Scheme {
         state.clone()
     }
 
     async fn resolve(
-        _: &Self::Properties,
+        _: &Self::Config,
         _: &CredentialContext,
     ) -> Result<StaticResolveResult<Self::State>, CredentialError> {
         std::future::pending().await
@@ -137,7 +147,7 @@ impl Interactive for HangingCredential {
     type Pending = NoPendingState;
 
     async fn begin(
-        _: &Self::Properties,
+        _: &Self::Config,
         _: &CredentialContext,
     ) -> Result<ResolveResult<Self::State, Self::Pending>, CredentialError> {
         std::future::pending().await
@@ -251,25 +261,30 @@ async fn provider_capable_initial_timeouts_are_outcome_unknown_for_all_entry_pat
 
 struct InteractiveEvidenceCredential;
 
-impl Credential for InteractiveEvidenceCredential {
-    type Properties = NormalizedProperties;
-    type State = SecretToken;
-    type Scheme = SecretToken;
+impl Component for InteractiveEvidenceCredential {
+    type Kind = crate::kind::Credential;
+    type Config = NormalizedProperties;
+
     const KEY: &'static str = "interactive_evidence_test";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             crate::metadata_name!("Interactive evidence"),
             "Interactive completion evidence fixture",
         )
     }
+}
+
+impl Credential for InteractiveEvidenceCredential {
+    type State = SecretToken;
+    type Scheme = SecretToken;
 
     fn project(state: &Self::State) -> Self::Scheme {
         state.clone()
     }
 
     async fn resolve(
-        properties: &Self::Properties,
+        properties: &Self::Config,
         _: &CredentialContext,
     ) -> Result<StaticResolveResult<Self::State>, CredentialError> {
         Ok(StaticResolveResult::Complete(SecretToken::new(
@@ -282,7 +297,7 @@ impl Interactive for InteractiveEvidenceCredential {
     type Pending = NoPendingState;
 
     async fn begin(
-        _: &Self::Properties,
+        _: &Self::Config,
         _: &CredentialContext,
     ) -> Result<ResolveResult<Self::State, Self::Pending>, CredentialError> {
         Ok(ResolveResult::Pending {
@@ -601,18 +616,23 @@ crate::identity_state!(UnserializableState, "unserializable_fixture", 1);
 
 struct UnserializableCredential;
 
-impl Credential for UnserializableCredential {
-    type Properties = Value;
-    type State = UnserializableState;
-    type Scheme = ();
+impl Component for UnserializableCredential {
+    type Kind = crate::kind::Credential;
+    type Config = Value;
+
     const KEY: &'static str = "unserializable_fixture";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             crate::metadata_name!("Unserializable"),
             "Failing serializer fixture",
         )
     }
+}
+
+impl Credential for UnserializableCredential {
+    type State = UnserializableState;
+    type Scheme = ();
 
     fn project(_: &Self::State) {}
 

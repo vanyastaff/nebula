@@ -22,7 +22,7 @@ for direct use.
 
 - `prelude` — curated authoring types and traits.
 - Authors write metadata; they never build an admitted definition. The key-free
-  `ActionMetadata`, `CredentialMetadata` and `ResourceMetadata` share
+  `ActionMetadata`, a credential's `Metadata` and `ResourceMetadata` share
   curated author vocabulary (`MetadataName`, `MetadataVersion`, `Icon`, `DeprecationNotice`)
   without exposing any admitted/recorded form. An action's identity is `Action::KEY`, a
   resource's `Provider::KEY` and a credential's `Credential::KEY`, not a metadata field. Runtime factories alone bind schemas and create terminal definitions.
@@ -61,7 +61,7 @@ implementation and opt out of auto-generation with `#[config(schema = external)]
 Only unit and genuinely empty braced configs may use the standalone derive's schema.
 
 `schema_of` remains fallible because authors can supply invalid schema definitions.
-Typed `Action::Input`, `Action::Output`, and `Credential::Properties` are the public
+Typed `Action::Input`, `Action::Output`, and `Credential::Config` are the public
 boundary. SDK test runtime methods accept ordinary JSON and drive the same private
 factory admission path as production without exposing its proof tokens.
 

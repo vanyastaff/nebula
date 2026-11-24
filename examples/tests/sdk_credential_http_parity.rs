@@ -60,7 +60,7 @@ struct SdkInteractiveCredential;
 
 #[nebula_credential::credential(key = "sdk_interactive", name = "SDK Interactive")]
 impl SdkInteractiveCredential {
-    type Properties = Value;
+    type Config = Value;
     type Scheme = SecretToken;
     type State = SecretToken;
     type Pending = SdkPending;

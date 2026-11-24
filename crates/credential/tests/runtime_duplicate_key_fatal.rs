@@ -16,10 +16,11 @@
 //!
 //! [`CredentialRegistry`]: nebula_credential::CredentialRegistry
 
+use nebula_credential::{Component, kind};
 use nebula_credential::{
-    Credential, CredentialContext, CredentialMetadata, CredentialRegistry, RegisterError,
-    SecretString, contract::plugin_capability_report, error::CredentialError,
-    resolve::StaticResolveResult, scheme::SecretToken,
+    Credential, CredentialContext, CredentialRegistry, Metadata, RegisterError, SecretString,
+    contract::plugin_capability_report, error::CredentialError, resolve::StaticResolveResult,
+    scheme::SecretToken,
 };
 
 const SHARED_KEY: &str = "shared.duplicate";
@@ -29,19 +30,23 @@ const SHARED_KEY: &str = "shared.duplicate";
 /// First credential — registered first, expected to win.
 pub struct CredA;
 
-impl Credential for CredA {
-    type Properties = ();
-    type Scheme = SecretToken;
-    type State = SecretToken;
+impl Component for CredA {
+    type Kind = kind::Credential;
+    type Config = ();
 
     const KEY: &'static str = SHARED_KEY;
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_credential::metadata_name!("CredA"),
             "first credential — wins on collision",
         )
     }
+}
+
+impl Credential for CredA {
+    type Scheme = SecretToken;
+    type State = SecretToken;
 
     fn project(state: &SecretToken) -> SecretToken {
         state.clone()
@@ -79,19 +84,23 @@ impl plugin_capability_report::IsDynamic for CredA {
 /// Second credential — registered second, expected to be rejected.
 pub struct CredB;
 
-impl Credential for CredB {
-    type Properties = ();
-    type Scheme = SecretToken;
-    type State = SecretToken;
+impl Component for CredB {
+    type Kind = kind::Credential;
+    type Config = ();
 
     const KEY: &'static str = SHARED_KEY;
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_credential::metadata_name!("CredB"),
             "second credential — rejected on collision",
         )
     }
+}
+
+impl Credential for CredB {
+    type Scheme = SecretToken;
+    type State = SecretToken;
 
     fn project(state: &SecretToken) -> SecretToken {
         state.clone()

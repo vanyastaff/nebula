@@ -52,13 +52,13 @@ mod state_wire_fingerprint;
 ///
 /// #[credential(key = "api_key", name = "API Key", icon = "key")]
 /// impl ApiKeyCredential {
-///     type Properties = ApiKeyProperties;
+///     type Config = ApiKeyProperties;
 ///     type Scheme = SecretToken;
 ///     type State = SecretToken;
 ///
 ///     fn project(state: &SecretToken) -> SecretToken { state.clone() }
 ///
-///     async fn resolve(properties: &ApiKeyProperties, _ctx: &CredentialContext)
+///     async fn resolve(config: &ApiKeyProperties, _ctx: &CredentialContext)
 ///         -> Result<StaticResolveResult<SecretToken>, CredentialError> { /* … */ }
 /// }
 /// ```
@@ -66,7 +66,7 @@ mod state_wire_fingerprint;
 /// # Errors
 ///
 /// Emits a compile error when applied to a trait impl, when a required item
-/// (`type Properties`/`Scheme`/`State`, `fn project`/`resolve`) is missing,
+/// (`type Config`/`Scheme`/`State`, `fn project`/`resolve`) is missing,
 /// when `continue_resolve` and `type Pending` are not supplied as a pair, or
 /// when an unrecognized item appears (a typo cannot silently drop a
 /// capability — move inherent helpers to a separate `impl` block).

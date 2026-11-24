@@ -71,7 +71,7 @@ struct CredentialProperties {
     name = "Renamed contract credential"
 )]
 impl ContractCredential {
-    type Properties = CredentialProperties;
+    type Config = CredentialProperties;
     type Scheme = SecretToken;
     type State = SecretToken;
 
@@ -125,7 +125,7 @@ fn main() {
         Some("{{ literal }}")
     );
     assert!(schema.find_property(&field_key!("name")).is_some());
-    let _: CredentialMetadata = ContractCredential::metadata();
+    let _: Metadata = ContractCredential::metadata();
     let _: ActionMetadata = <ContractAction as Action>::metadata();
     let _ = ContractPlugin.manifest();
     let _ = ContractConfig { enabled: true }.fingerprint();

@@ -87,7 +87,7 @@ pub enum ExecutorError {
 /// [`ExecutorError::ProviderOutcomeUnknown`].
 #[tracing::instrument(name = "credential.execute.resolve", skip_all, fields(credential_key = C::KEY))]
 pub async fn execute_resolve<C>(
-    properties: &C::Properties,
+    properties: &C::Config,
     ctx: &CredentialContext,
 ) -> Result<ResolveResponse<C::State>, ExecutorError>
 where
@@ -114,7 +114,7 @@ where
 /// category. A timeout after entering `Interactive::begin` is outcome-unknown
 /// because the erased contract carries no local-only proof.
 pub async fn execute_begin<C, S>(
-    properties: &C::Properties,
+    properties: &C::Config,
     ctx: &CredentialContext,
     pending_store: &S,
 ) -> Result<ResolveResponse<C::State>, ExecutorError>
@@ -133,7 +133,7 @@ where
 
 #[tracing::instrument(name = "credential.execute.begin", skip_all, fields(credential_key = C::KEY))]
 pub(crate) async fn execute_begin_with_intent<C, S>(
-    properties: &C::Properties,
+    properties: &C::Config,
     ctx: &CredentialContext,
     pending_store: &S,
     intent: AcquisitionIntent,
@@ -339,7 +339,7 @@ mod tests {
         AcquisitionExpectation, AcquisitionIntent, AcquisitionPending,
     };
     use crate::{
-        Credential, CredentialContext, OAuth2Credential, OAuth2Pending, PendingState,
+        Component, CredentialContext, OAuth2Credential, OAuth2Pending, PendingState,
         PendingStateStore, PendingStoreError, PendingToken, SecretString,
         credentials::OAuth2Config, resolve::UserInput, scheme::AuthStyle,
     };

@@ -28,7 +28,7 @@ impl CredentialService {
     /// resolve it to encrypted state, and persist it scoped to `scope`.
     ///
     /// The validation pipeline is the canonical credential pipeline
-    /// consumes literal JSON, prepares it against `Properties`' schema,
+    /// consumes literal JSON, prepares it against the `Config` schema,
     /// completes validation without an expression engine, and checks typed
     /// decoding before handing the same prepared values to the credential.
     ///

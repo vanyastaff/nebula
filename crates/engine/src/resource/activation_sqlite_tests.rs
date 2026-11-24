@@ -16,7 +16,7 @@
 use std::{num::NonZeroU32, str::FromStr, time::Duration};
 
 use nebula_credential::{
-    BearerTokenCredential, Credential, CredentialProjectionRuntime, CredentialRegistry,
+    BearerTokenCredential, Component, CredentialProjectionRuntime, CredentialRegistry,
     CredentialState, DispatchOps, ErasedPendingStore, SecretString, StateSource,
     register_runtime_ops, scheme::SecretToken,
 };

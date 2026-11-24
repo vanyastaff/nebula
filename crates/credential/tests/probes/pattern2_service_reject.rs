@@ -10,9 +10,10 @@
 use std::future::Future;
 
 use nebula_credential::{
-    AuthPattern, AuthScheme, Credential, CredentialContext, CredentialMetadata,
+    AuthPattern, AuthScheme, Credential, CredentialContext, Metadata,
     error::CredentialError, resolve::StaticResolveResult,
 };
+use nebula_credential::{Component, kind};
 use serde::{Deserialize, Serialize};
 
 // Per capability macro 4.1, the crate author declares `mod sealed_caps`
@@ -65,16 +66,20 @@ impl nebula_credential::CredentialState for WrongState {
 
 struct WrongCredential;
 
-impl Credential for WrongCredential {
-    type Properties = serde_json::Value;
-    type Scheme = BasicScheme;
-    type State = WrongState;
+impl Component for WrongCredential {
+    type Kind = kind::Credential;
+    type Config = serde_json::Value;
 
     const KEY: &'static str = "wrong";
 
-    fn metadata() -> CredentialMetadata {
+    fn metadata() -> Metadata {
         unimplemented!()
     }
+}
+
+impl Credential for WrongCredential {
+    type Scheme = BasicScheme;
+    type State = WrongState;
 
     fn project(state: &WrongState) -> BasicScheme {
         BasicScheme {
@@ -84,7 +89,7 @@ impl Credential for WrongCredential {
     }
 
     fn resolve(
-        _properties: &Self::Properties,
+        _properties: &Self::Config,
         _ctx: &CredentialContext,
     ) -> impl Future<Output = Result<StaticResolveResult<WrongState>, CredentialError>> + Send {
         async { unimplemented!() }

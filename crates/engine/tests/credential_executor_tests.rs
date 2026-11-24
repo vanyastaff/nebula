@@ -7,8 +7,8 @@ use nebula_credential::{
 use nebula_schema::{AuthoredValue, schema_of};
 use nebula_storage::credential::InMemoryPendingStore;
 
-fn resolve_properties<C: Credential>(data: serde_json::Value) -> C::Properties {
-    schema_of::<C::Properties>()
+fn resolve_properties<C: Credential>(data: serde_json::Value) -> C::Config {
+    schema_of::<C::Config>()
         .expect("valid credential properties schema")
         .validate(AuthoredValue::from_data(data).expect("bounded credential properties data"))
         .expect("valid credential properties")

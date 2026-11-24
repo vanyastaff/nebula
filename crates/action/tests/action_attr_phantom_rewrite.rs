@@ -40,9 +40,10 @@ use nebula_action::{
     StatelessAction,
 };
 use nebula_credential::{
-    AuthPattern, AuthScheme, Credential, CredentialContext, CredentialMetadata,
-    error::CredentialError, resolve::StaticResolveResult,
+    AuthPattern, AuthScheme, Credential, CredentialContext, Metadata, error::CredentialError,
+    resolve::StaticResolveResult,
 };
+use nebula_credential::{Component, kind};
 use serde::{Deserialize, Serialize};
 
 //.1 - the crate author declares the sealed module manually
@@ -95,19 +96,23 @@ pub trait LocalServiceBearer: LocalService {}
 /// `LocalServiceBearer` (and therefore `LocalServiceBearerPhantom`).
 pub struct LocalCredential;
 
-impl Credential for LocalCredential {
-    type Properties = serde_json::Value;
-    type Scheme = LocalBearerScheme;
-    type State = LocalState;
+impl Component for LocalCredential {
+    type Kind = kind::Credential;
+    type Config = serde_json::Value;
 
     const KEY: &'static str = "local";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_action::metadata_name!("Local credential"),
             "Local bearer capability fixture",
         )
     }
+}
+
+impl Credential for LocalCredential {
+    type Scheme = LocalBearerScheme;
+    type State = LocalState;
 
     fn project(state: &LocalState) -> LocalBearerScheme {
         LocalBearerScheme {

@@ -13,7 +13,7 @@ use std::{
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use nebula_core::CredentialId;
 use nebula_credential::{
-    AuthStyle, Credential, CredentialContext, CredentialHandle, CredentialState, OAuth2Credential,
+    AuthStyle, Component, CredentialContext, CredentialHandle, CredentialState, OAuth2Credential,
     OAuth2State, OAuth2Token, RefreshNotAppliedPhase, SecretString,
     runtime::refresh::{
         OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES, RefreshCoordConfig, RefreshCoordinator,

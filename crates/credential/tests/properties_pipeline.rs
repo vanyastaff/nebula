@@ -2,7 +2,7 @@
 //! Serde consumes the normalized, explicitly exposed resolved data, not the
 //! original request or its redacted diagnostic projection.
 
-use nebula_credential::{Credential, CredentialRegistry, credentials::ApiKeyCredential};
+use nebula_credential::{Component, CredentialRegistry, credentials::ApiKeyCredential};
 use nebula_schema::{
     AuthoredValue, HasSchema, ResolvedValues, SecretValue, ValidationReport, field_key, schema_of,
 };
@@ -32,17 +32,17 @@ fn metadata_schema_is_schema_of_properties() {
         .register(ApiKeyCredential, "properties-pipeline-test")
         .unwrap();
     let metadata = registry.definition(ApiKeyCredential::KEY).unwrap();
-    let schema = schema_of::<<ApiKeyCredential as Credential>::Properties>().unwrap();
+    let schema = schema_of::<<ApiKeyCredential as Component>::Config>().unwrap();
     assert_eq!(metadata.base().schema(), &schema);
     assert_eq!(
         schema,
-        <<ApiKeyCredential as Credential>::Properties as HasSchema>::schema().unwrap()
+        <<ApiKeyCredential as Component>::Config as HasSchema>::schema().unwrap()
     );
 }
 
 #[test]
 fn properties_pipeline_accepts_well_formed_json() {
-    let resolved = prepare::<<ApiKeyCredential as Credential>::Properties>(json!({
+    let resolved = prepare::<<ApiKeyCredential as Component>::Config>(json!({
         "server": "https://api.example.com", "api_key": "sk-test-12345",
     }))
     .unwrap();
@@ -56,7 +56,7 @@ fn properties_pipeline_accepts_well_formed_json() {
         panic!("API key must already be protected before provider resolution");
     };
     assert_eq!(secret.expose(), "sk-test-12345");
-    let typed: <ApiKeyCredential as Credential>::Properties =
+    let typed: <ApiKeyCredential as Component>::Config =
         resolved.into_typed_exposing_secrets().unwrap();
     assert_eq!(typed.server.as_deref(), Some("https://api.example.com"));
     assert_eq!(typed.api_key.expose_secret(), "sk-test-12345");
@@ -64,7 +64,7 @@ fn properties_pipeline_accepts_well_formed_json() {
 
 #[test]
 fn properties_pipeline_rejects_missing_required_api_key() {
-    let report = prepare::<<ApiKeyCredential as Credential>::Properties>(json!({
+    let report = prepare::<<ApiKeyCredential as Component>::Config>(json!({
         "server": "https://api.example.com"
     }))
     .unwrap_err();
@@ -77,9 +77,9 @@ fn expressions_in_properties_fail_schema_and_serde() {
         "server": "https://api.example.com",
         "api_key": {"$expr": "{{ $execution.id }}"},
     });
-    let report = prepare::<<ApiKeyCredential as Credential>::Properties>(raw.clone()).unwrap_err();
+    let report = prepare::<<ApiKeyCredential as Component>::Config>(raw.clone()).unwrap_err();
     assert_issue(&report, "type_mismatch", "/api_key");
-    assert!(serde_json::from_value::<<ApiKeyCredential as Credential>::Properties>(raw).is_err());
+    assert!(serde_json::from_value::<<ApiKeyCredential as Component>::Config>(raw).is_err());
     assert!(!format!("{report:?} {report}").contains("$execution.id"));
 }
 
@@ -88,26 +88,26 @@ fn expressions_in_optional_property_field_also_fail_schema_and_serde() {
     let raw = json!({
         "server": {"$expr": "{{ $workflow.base_url }}"}, "api_key": "sk-real-secret",
     });
-    let report = prepare::<<ApiKeyCredential as Credential>::Properties>(raw.clone()).unwrap_err();
+    let report = prepare::<<ApiKeyCredential as Component>::Config>(raw.clone()).unwrap_err();
     assert_issue(&report, "type_mismatch", "/server");
-    assert!(serde_json::from_value::<<ApiKeyCredential as Credential>::Properties>(raw).is_err());
+    assert!(serde_json::from_value::<<ApiKeyCredential as Component>::Config>(raw).is_err());
     assert!(!format!("{report:?} {report}").contains("sk-real-secret"));
 }
 
 #[test]
 fn template_looking_property_strings_remain_literal_secret_data() {
-    let resolved = prepare::<<ApiKeyCredential as Credential>::Properties>(json!({
+    let resolved = prepare::<<ApiKeyCredential as Component>::Config>(json!({
         "api_key": "{{ $execution.id }}",
     }))
     .unwrap();
-    let typed: <ApiKeyCredential as Credential>::Properties =
+    let typed: <ApiKeyCredential as Component>::Config =
         resolved.into_typed_exposing_secrets().unwrap();
     assert_eq!(typed.api_key.expose_secret(), "{{ $execution.id }}");
 }
 
 #[test]
 fn explicit_authored_programs_cannot_complete_the_data_only_pipeline() {
-    let schema = schema_of::<<ApiKeyCredential as Credential>::Properties>().unwrap();
+    let schema = schema_of::<<ApiKeyCredential as Component>::Config>().unwrap();
     let input = AuthoredValue::from_template_json(json!({
         "server": {"$expr": "{{ $input.url }}"}, "api_key": "private-token",
     }))

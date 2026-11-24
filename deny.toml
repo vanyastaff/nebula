@@ -302,6 +302,7 @@ deny = [
   { crate = "nebula-core", wrappers = [
     "nebula-action",
     "nebula-api",
+    "nebula-component",
     "nebula-credential",
     "nebula-deployment",
     "nebula-engine",
@@ -325,6 +326,10 @@ deny = [
     "nebula-action",  # dev-only
     "nebula-credential",
   ], reason = "Derive crate; consumed by nebula-action, nebula-credential" },
+  { crate = "nebula-component", wrappers = [
+    "nebula-credential",
+    "nebula-sdk",
+  ], reason = "Component contract is Core; the kind crates built on it are listed" },
   { crate = "nebula-crypto", wrappers = [
     "nebula-credential",
     "nebula-server",
@@ -389,6 +394,7 @@ deny = [
   ], reason = "Shared proc-macro helpers; only the derive crates may depend on them" },
   { crate = "nebula-metadata", wrappers = [
     "nebula-action",
+    "nebula-component",
     "nebula-credential",
     "nebula-plugin",
     "nebula-plugin-core",
@@ -430,6 +436,7 @@ deny = [
   { crate = "nebula-schema", wrappers = [
     "nebula-action",
     "nebula-api",
+    "nebula-component",
     "nebula-credential",
     "nebula-engine",
     "nebula-examples",

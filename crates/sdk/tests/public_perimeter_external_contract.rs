@@ -184,7 +184,7 @@ const REMOVED_CATALOG_API: &[(&str, &str, &str)] = &[
         "from_key",
         "nebula_metadata::base::Metadata",
     ),
-    // `CredentialMetadata` is an alias too.
+    // `Metadata` is an alias too.
     (
         "removed_credential_pattern",
         "pattern",
@@ -497,7 +497,7 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
             pub mod credential {
                 pub use nebula_credential::{
                     AuthScheme, Credential, CredentialGuard, CredentialGuardMetadata, CredentialLifecycle,
-                    CredentialMetadata, CredentialPolicy, CredentialState, Dynamic,
+                    Metadata, CredentialPolicy, CredentialState, Dynamic,
                     ErasedCredentialGuard, Interactive, RefreshPolicy, RefreshStrategy,
                     Refreshable, Revocable, RevokeStrategy, Testable,
                     key_of, metadata_name, schema_of,

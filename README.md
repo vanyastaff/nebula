@@ -56,7 +56,7 @@ Private ADR-0117, *Support one Rust SDK surface with lockstep dependency package
 
 Action, Credential, and Resource metadata follows one-way admission in 0.6:
 authors return schema-free metadata (`ResourceMetadata`, `ActionMetadata`,
-`CredentialMetadata`), the owning factory or registry derives the
+a credential's `Metadata`), the owning factory or registry derives the
 associated Rust schema and admits an immutable terminal definition, and stored
 catalog bytes deserialize only into `Recorded*` evidence. Internal
 validated/resolved value proofs, admitted metadata, erased/prepared action

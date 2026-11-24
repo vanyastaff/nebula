@@ -16,8 +16,9 @@
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
+use crate::{Component, kind};
 use crate::{
-    Credential, CredentialContext, CredentialError, CredentialMetadata, CredentialState,
+    Credential, CredentialContext, CredentialError, CredentialState, Metadata,
     StateWireFingerprint, StaticResolveResult,
 };
 
@@ -58,21 +59,25 @@ impl CredentialState for NoCredentialState {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NoCredential;
 
-impl Credential for NoCredential {
-    type Properties = ();
-    /// `()` — already implements `AuthScheme` with `AuthPattern::NoAuth` and
-    /// `PublicScheme` in `nebula_core::auth`.
-    type Scheme = ();
-    type State = NoCredentialState;
+impl Component for NoCredential {
+    type Kind = kind::Credential;
+    type Config = ();
 
     const KEY: &'static str = "no_credential";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             crate::metadata_name!("No credential"),
             "Opt-out marker for resources without an authenticated binding.",
         )
     }
+}
+
+impl Credential for NoCredential {
+    /// `()` — already implements `AuthScheme` with `AuthPattern::NoAuth` and
+    /// `PublicScheme` in `nebula_core::auth`.
+    type Scheme = ();
+    type State = NoCredentialState;
 
     fn project(_state: &Self::State) {}
 

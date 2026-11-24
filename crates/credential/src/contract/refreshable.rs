@@ -57,7 +57,7 @@ pub enum RefreshExecutionMode {
 ///
 /// ```
 /// use nebula_credential::{
-///     Credential, CredentialContext, CredentialMetadata, RefreshAttempt,
+///     Component, Credential, CredentialContext, Metadata, kind, RefreshAttempt,
 ///     RefreshExecutionMode, RefreshReport, Refreshable, SecretString, scheme::SecretToken,
 /// };
 /// use nebula_credential::error::CredentialError;
@@ -66,18 +66,24 @@ pub enum RefreshExecutionMode {
 ///
 /// struct OAuth2Cred;
 ///
-/// # impl Credential for OAuth2Cred {
-/// #     type Properties = serde_json::Value;
-/// #     type Scheme = SecretToken;
-/// #     type State = SecretToken;
+/// # impl Component for OAuth2Cred {
+/// #     type Kind = kind::Credential;
+/// #     type Config = serde_json::Value;
+/// #
 /// #     const KEY: &'static str = "oauth2_cred";
-/// #     fn metadata() -> CredentialMetadata {
-/// #         CredentialMetadata::new(nebula_credential::metadata_name!("OAuth2"), "demo",
+/// #
+/// #     fn metadata() -> Metadata {
+/// #         Metadata::new(nebula_credential::metadata_name!("OAuth2"), "demo",
 /// #         )
 /// #     }
+/// # }
+/// #
+/// # impl Credential for OAuth2Cred {
+/// #     type Scheme = SecretToken;
+/// #     type State = SecretToken;
 /// #     fn project(state: &SecretToken) -> SecretToken { state.clone() }
 /// #     async fn resolve(
-/// #         _properties: &Self::Properties,
+/// #         _properties: &Self::Config,
 /// #         _ctx: &CredentialContext,
 /// #     ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
 /// #         Ok(StaticResolveResult::Complete(SecretToken::new(SecretString::new(""))))

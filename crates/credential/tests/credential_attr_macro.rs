@@ -19,11 +19,11 @@
 use std::time::Duration;
 
 use nebula_credential::{
-    AuthPattern, AuthScheme, Capabilities, Credential, CredentialContext, CredentialLifecycle,
-    CredentialPolicy, CredentialRegistry, EgressShape, InstanceBinding, LeaseRef, PendingState,
-    RefreshAttempt, RefreshExecutionMode, RefreshPolicy, RefreshReport, RefreshStrategy,
-    RefreshStrategyKind, RegisterError, RetryDelay, RevokeStrategy, SchemeFamily, SecretString,
-    compute_capabilities,
+    AuthPattern, AuthScheme, Capabilities, Component, Credential, CredentialContext,
+    CredentialLifecycle, CredentialPolicy, CredentialRegistry, EgressShape, InstanceBinding,
+    LeaseRef, PendingState, RefreshAttempt, RefreshExecutionMode, RefreshPolicy, RefreshReport,
+    RefreshStrategy, RefreshStrategyKind, RegisterError, RetryDelay, RevokeStrategy, SchemeFamily,
+    SecretString, compute_capabilities,
     error::CredentialError,
     resolve::{InteractionRequest, ResolveResult, StaticResolveResult, TestResult, UserInput},
     scheme::{OAuth2Token, SecretToken},
@@ -44,7 +44,7 @@ struct MetadataOnly;
     doc_url = "https://example.test/credentials/metadata-only"
 )]
 impl MetadataOnly {
-    type Properties = serde_json::Value;
+    type Config = serde_json::Value;
     type Scheme = SecretToken;
     type State = SecretToken;
 
@@ -93,7 +93,7 @@ struct RefreshOnly;
     doc_url = "https://example.test/credentials/refresh-only"
 )]
 impl RefreshOnly {
-    type Properties = serde_json::Value;
+    type Config = serde_json::Value;
     type Scheme = SecretToken;
     type State = SecretToken;
 
@@ -139,7 +139,7 @@ fn erased_credential_exposes_exact_computed_capabilities() {
 fn refresh_only_synthesizes_metadata_from_args() {
     assert_eq!(
         RefreshOnly::metadata(),
-        nebula_credential::CredentialMetadata::new(
+        nebula_credential::Metadata::new(
             nebula_credential::metadata_name!("Refresh Only"),
             "fixture",
         )
@@ -160,7 +160,7 @@ struct LeasedThing;
 
 #[nebula_credential::credential(key = "test_leased", name = "Leased Thing")]
 impl LeasedThing {
-    type Properties = serde_json::Value;
+    type Config = serde_json::Value;
     type Scheme = SecretToken;
     type State = SecretToken;
 
@@ -217,7 +217,7 @@ struct RevTest;
 
 #[nebula_credential::credential(key = "test_revtest", name = "Rev Test")]
 impl RevTest {
-    type Properties = serde_json::Value;
+    type Config = serde_json::Value;
     type Scheme = SecretToken;
     type State = SecretToken;
 
@@ -279,7 +279,7 @@ struct InteractiveThing;
 
 #[nebula_credential::credential(key = "test_interactive", name = "Interactive Thing")]
 impl InteractiveThing {
-    type Properties = serde_json::Value;
+    type Config = serde_json::Value;
     type Scheme = SecretToken;
     type State = SecretToken;
     type Pending = MyPending;
@@ -371,7 +371,7 @@ struct ReAcquireOnly;
 
 #[nebula_credential::credential(key = "test_reacquire_only", name = "ReAcquire Only")]
 impl ReAcquireOnly {
-    type Properties = serde_json::Value;
+    type Config = serde_json::Value;
     // `InstanceBindingFamily` declares only `ReAcquire`.
     type Scheme = InstanceBinding;
     type State = SecretToken;
@@ -417,7 +417,7 @@ struct ReMintOnly;
 
 #[nebula_credential::credential(key = "test_remint_only", name = "ReMint Only")]
 impl ReMintOnly {
-    type Properties = serde_json::Value;
+    type Config = serde_json::Value;
     type Scheme = LocalMintAssertion;
     type State = SecretToken;
 
@@ -446,7 +446,7 @@ struct ReMintProviderMode;
 
 #[nebula_credential::credential(key = "test_remint_provider_mode", name = "ReMint Provider Mode")]
 impl ReMintProviderMode {
-    type Properties = serde_json::Value;
+    type Config = serde_json::Value;
     type Scheme = LocalMintAssertion;
     type State = SecretToken;
 
@@ -526,7 +526,7 @@ struct InvalidRetryFloor;
 
 #[nebula_credential::credential(key = "test_invalid_retry_floor", name = "Invalid Retry Floor")]
 impl InvalidRetryFloor {
-    type Properties = serde_json::Value;
+    type Config = serde_json::Value;
     type Scheme = OAuth2Token;
     type State = SecretToken;
 

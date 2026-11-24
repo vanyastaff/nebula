@@ -84,7 +84,7 @@ struct CredentialProperties {
 
 #[credential(key = "contract.credential", name = "Contract credential")]
 impl ContractCredential {
-    type Properties = CredentialProperties;
+    type Config = CredentialProperties;
     type Scheme = SecretToken;
     type State = SecretToken;
 
@@ -165,7 +165,7 @@ fn main() {
         .unwrap();
     assert_eq!(properties.token.expose_secret(), "sdk-property-secret");
     assert!(!format!("{properties:?}").contains("sdk-property-secret"));
-    let _: CredentialMetadata = ContractCredential::metadata();
+    let _: Metadata = ContractCredential::metadata();
     let _: ActionMetadata = <ContractAction as Action>::metadata();
     let _ = ContractPlugin.manifest();
     let _ = ContractConfig { enabled: true }.fingerprint();
