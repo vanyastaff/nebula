@@ -330,20 +330,12 @@ async fn abort_before_terminal_idle_drain_counts_every_stored_owner() {
         })
     });
     entry_observed.await.unwrap();
-    let (coordinator_started, coordinator_observed) = tokio::sync::oneshot::channel();
-    queue
-        .submit_coordinator(move || {
-            Box::pin(async move {
-                coordinator_started.send(()).unwrap();
-                std::future::pending::<Result<(), Error>>().await
-            })
-        })
-        .expect("open queue accepts coordinator blocker")
-        .detach();
-    coordinator_observed.await.unwrap();
-    // Entry and coordinator execution are deliberately isolated. Occupy
-    // both lanes so the terminal owner remains buffered and the test still
-    // exercises abort-before-terminal-drain rather than normal teardown.
+    // Entry and coordinator execution are deliberately isolated, and a
+    // worker runs many jobs at once. Hold every coordinator slot so the
+    // terminal owner remains buffered and the test still exercises
+    // abort-before-terminal-drain rather than normal teardown. Parked
+    // coordinators are not counted as abandoned entries.
+    let _parked = queue.park_coordinator_lane().await;
     queue
         .submit_coordinator(move || Box::pin(async move { managed.close_retained().await }))
         .expect("open queue must accept terminal cleanup")
@@ -371,18 +363,9 @@ async fn abort_before_terminal_idle_drain_counts_every_stored_owner() {
 }
 
 async fn settle_maintenance_cleanup(managed: &ManagedResource<Mock>) {
-    // This fixture has one primary worker. The FIFO receipt runs after
-    // the maintenance batch; publication itself deliberately never waits.
-    assert_eq!(
-        managed
-            .release_queue
-            .submit_release(|| Box::pin(async { Ok(()) }))
-            .expect("open queue must accept cleanup checkpoint")
-            .wait()
-            .await
-            .expect("cleanup checkpoint"),
-        crate::release_queue::SubmissionOutcome::Completed,
-    );
+    // Publication deliberately never waits for the batch it hands to the
+    // queue, so the test waits for the queue itself to run dry.
+    managed.release_queue.settled().await;
 }
 
 /// Maintenance over the framework store evicts both revoke-stale and

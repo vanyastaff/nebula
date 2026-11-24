@@ -112,6 +112,13 @@ pub struct ManagerConfig {
     /// Entry release and framework coordinator lanes each receive this many
     /// workers so a coordinator waiting for leases cannot starve their return.
     ///
+    /// A worker runs many cleanup jobs at once rather than one at a time, so
+    /// a teardown that hangs on its backend does not hold up the releases of
+    /// other resources (see the [`release_queue`](crate::release_queue) module
+    /// docs). The count sets how many tasks share that work, not how many
+    /// teardowns can be in flight; raise it for CPU-heavy hooks, not for slow
+    /// ones. Zero is raised to one.
+    ///
     /// Defaults to 2.
     pub release_queue_workers: usize,
     /// Maximum number of retirement commands waiting for the bounded supervisor.
@@ -241,7 +248,10 @@ impl ManagerConfig {
         self
     }
 
-    /// Override the number of background release-queue workers.
+    /// Override the number of background release-queue workers per lane.
+    ///
+    /// Zero is raised to one: a queue with no worker would accept cleanup
+    /// and never run it.
     #[must_use]
     pub fn with_release_queue_workers(mut self, workers: usize) -> Self {
         self.release_queue_workers = workers;

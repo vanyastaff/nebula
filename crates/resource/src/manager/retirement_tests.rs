@@ -426,17 +426,9 @@ async fn abort_during_maintenance_join_emits_one_failure_and_releases_tracker() 
 async fn buffered_coordinator_abort_emits_one_failure_and_releases_tracker() {
     let (release_queue, workers) = ReleaseQueue::new(1);
     let release_queue = Arc::new(release_queue);
-    let blocker_entered = Arc::new(Notify::new());
-    let entered = Arc::clone(&blocker_entered);
-    let _blocker_submission = release_queue
-        .submit_coordinator(move || {
-            Box::pin(async move {
-                entered.notify_one();
-                std::future::pending::<Result<(), Error>>().await
-            })
-        })
-        .expect("open coordinator lane accepts blocker");
-    blocker_entered.notified().await;
+    // Every coordinator slot is held, so the retirement below is accepted
+    // and stays buffered: the abort reaches it before a worker starts it.
+    let _parked = release_queue.park_coordinator_lane().await;
 
     let managed = Arc::new(DeferredRetirementHandle {
         maintenance_entered: Notify::new(),
