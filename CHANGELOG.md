@@ -11,6 +11,12 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **`nebula_core::CredentialLike` and `nebula_core::ResourceLike` are removed.**
+  Each declared a `KEY_STR` constant that nothing implemented or read; a
+  credential's identity is `Credential::KEY` and a resource's is
+  `Provider::KEY`. Code that named either trait has no replacement to migrate
+  to: the traits carried no behavior.
+
 - **An action declares its key once, as `Action::KEY`; its metadata carries no
   key, and its admitted form is `ActionDefinition`.** An action wrote its key
   inside `ActionMetadataDraft::new(action_key!("x"), name, description)`, the

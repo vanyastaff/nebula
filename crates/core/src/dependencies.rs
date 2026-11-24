@@ -239,18 +239,6 @@ impl CredentialRequirement {
     }
 }
 
-/// Marker trait for credential types used in dependency declarations.
-pub trait CredentialLike {
-    /// The key string for this credential type.
-    const KEY_STR: &'static str;
-}
-
-/// Marker trait for resource types used in dependency declarations.
-pub trait ResourceLike {
-    /// The key string for this resource type.
-    const KEY_STR: &'static str;
-}
-
 /// Errors from dependency validation (registration-time).
 ///
 /// Note: `CoreError::DependencyCycle` / `DependencyMissing` exist for the
