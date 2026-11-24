@@ -1,7 +1,6 @@
 //! Fan-out reconciliation of credential availability: a same-material block
 //! suspends a bound row, a usable credential reopens it, and a material
 //! advance installs (and reopens) through the ordinary projection path.
-use crate::resource::ProviderKey;
 use std::{
     future::Future,
     pin::Pin,
@@ -370,7 +369,7 @@ impl Fixture {
         let _installed = fixture
             .manager
             .install_and_refresh_slot_for_identity(
-                &Bound::key(),
+                &crate::key_of::<Bound>(),
                 ScopeLevel::Global,
                 "db",
                 &identity(),
@@ -381,7 +380,7 @@ impl Fixture {
         fixture.index.bind_with_context(
             fixture.credential.credential_id,
             Bind {
-                resource_key: Bound::key(),
+                resource_key: crate::key_of::<Bound>(),
                 scope: ScopeLevel::Global,
                 slot_name: "db".to_owned(),
                 slot_identity: identity(),
@@ -414,7 +413,7 @@ impl Fixture {
 
     fn suspension(&self) -> Option<crate::CredentialSuspension> {
         self.manager
-            .get_row(&Bound::key(), &ScopeLevel::Global, &identity())
+            .get_row(&crate::key_of::<Bound>(), &ScopeLevel::Global, &identity())
             .expect("row")
             .credential_suspension()
     }
@@ -423,7 +422,7 @@ impl Fixture {
     fn admission_seq(&self) -> u64 {
         self.manager
             .lookup_any_for_slot_identity_structural(
-                &Bound::key(),
+                &crate::key_of::<Bound>(),
                 &ScopeLevel::Global,
                 &identity(),
             )
@@ -450,7 +449,7 @@ impl Fixture {
 
     fn gate_epoch(&self) -> crate::CredentialGateTicket {
         self.manager
-            .credential_gate_ticket(&Bound::key(), &ScopeLevel::Global, &identity())
+            .credential_gate_ticket(&crate::key_of::<Bound>(), &ScopeLevel::Global, &identity())
             .expect("ticket")
     }
 }
@@ -750,7 +749,7 @@ async fn a_reauth_event_triggers_a_targeted_availability_scan() {
         .expect("register legacy row");
     fixture.index.bind(
         fixture.credential.credential_id,
-        Bound::key(),
+        crate::key_of::<Bound>(),
         ScopeLevel::Global,
         "db",
         legacy_identity,

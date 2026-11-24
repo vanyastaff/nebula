@@ -205,7 +205,6 @@ fn macro_and_manual_metadata_preserve_the_exact_full_semver() {
 // -- Resource handle fields -------------------------------------------------
 
 mod resource_handle_fields {
-    use nebula_resource::ProviderKey;
     use std::{any::Any, sync::Arc};
 
     use nebula_action::{FromWorkflowNode, testing::TestContextBuilder};
@@ -429,7 +428,7 @@ mod resource_handle_fields {
         assert!(matches!(
             &db.kind,
             nebula_core::SlotKind::Resource { key, type_id, .. }
-                if *key == Db::key() && *type_id == std::any::TypeId::of::<Db>()
+                if *key == nebula_resource::key_of::<Db>() && *type_id == std::any::TypeId::of::<Db>()
         ));
         let cache = slots
             .iter()
@@ -478,13 +477,13 @@ mod resource_handle_fields {
         let action = RowAction::from_workflow_node(&projected, &context)
             .await
             .expect("provider keys resolve without concrete selectors");
-        assert_eq!(action.db.resource_key(), &Db::key());
+        assert_eq!(action.db.resource_key(), &nebula_resource::key_of::<Db>());
         assert_eq!(
             action
                 .cache
                 .expect("the optional provider row exists")
                 .resource_key(),
-            &Cache::key()
+            &nebula_resource::key_of::<Cache>()
         );
     }
 
@@ -518,7 +517,7 @@ mod resource_handle_fields {
                 .build()
                 .with_resources(Arc::new(RetryingRows {
                     manager: Arc::clone(&manager),
-                    retry_key: Db::key(),
+                    retry_key: nebula_resource::key_of::<Db>(),
                 }));
         let Err(required_error) = RowAction::from_workflow_node(&node(), &required_context).await
         else {
@@ -534,7 +533,7 @@ mod resource_handle_fields {
                 .build()
                 .with_resources(Arc::new(RetryingRows {
                     manager,
-                    retry_key: Cache::key(),
+                    retry_key: nebula_resource::key_of::<Cache>(),
                 }));
         let Err(optional_error) = RowAction::from_workflow_node(&node(), &optional_context).await
         else {

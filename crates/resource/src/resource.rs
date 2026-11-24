@@ -165,7 +165,7 @@ impl ResourceDefinition {
         key: ResourceKey,
         metadata: ResourceMetadata,
         schema: ValidSchema,
-    ) -> Result<Self, MetadataBuildError> {
+    ) -> Result<Self, ResourceAdmissionError> {
         let definition = Self {
             base: metadata.bind(key, schema)?,
         };
@@ -184,12 +184,12 @@ impl ResourceDefinition {
     ///
     /// # Errors
     ///
-    /// Returns [`MetadataCompatibilityError`] when the key changes, the
+    /// Returns [`ResourceCompatibilityError`] when the key changes, the
     /// version moves backward, or a schema change lacks a major-version bump.
     pub fn validate_compatibility(
         &self,
         previous: &Self,
-    ) -> Result<(), MetadataCompatibilityError> {
+    ) -> Result<(), ResourceCompatibilityError> {
         validate_base_compat(&self.base, &previous.base)?;
         Ok(())
     }
@@ -270,34 +270,45 @@ impl RecordedResourceDefinition {
     ///
     /// # Errors
     ///
-    /// Returns [`nebula_metadata::MetadataReadmissionError::DefinitionMismatch`]
-    /// when any recorded field or the canonical schema differs.
+    /// Returns [`ResourceReadmissionError::DefinitionMismatch`] when any
+    /// recorded field or the canonical schema differs.
     #[tracing::instrument(name = "resource.metadata.readmit_recorded", skip_all, err)]
     pub fn readmit_against(
         &self,
         fresh_definition: &ResourceDefinition,
-    ) -> Result<ResourceDefinition, nebula_metadata::MetadataReadmissionError> {
-        self.base.readmit_against(fresh_definition.base())?;
+    ) -> Result<ResourceDefinition, ResourceReadmissionError> {
+        self.base
+            .readmit_against(fresh_definition.base())
+            .map_err(|_| ResourceReadmissionError::DefinitionMismatch)?;
         Ok(fresh_definition.clone())
     }
+}
+
+/// Payload-free recorded-metadata readmission failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum ResourceReadmissionError {
+    /// Recorded evidence differs from the fresh static definition.
+    #[error("recorded resource metadata does not match the fresh definition")]
+    DefinitionMismatch,
 }
 
 /// A resource catalog definition failed factory admission.
 #[derive(Debug, Clone, thiserror::Error)]
 #[non_exhaustive]
-pub enum MetadataBuildError {
+pub enum ResourceAdmissionError {
     /// Shared metadata or canonical schema construction failed.
     #[error(transparent)]
     Definition(#[from] nebula_metadata::MetadataBuildError),
 }
 
-impl From<nebula_schema::ValidationReport> for MetadataBuildError {
+impl From<nebula_schema::ValidationReport> for ResourceAdmissionError {
     fn from(report: nebula_schema::ValidationReport) -> Self {
         Self::Definition(nebula_metadata::MetadataBuildError::from(report))
     }
 }
 
-impl nebula_error::Classify for MetadataBuildError {
+impl nebula_error::Classify for ResourceAdmissionError {
     fn category(&self) -> nebula_error::ErrorCategory {
         match self {
             Self::Definition(source) => nebula_error::Classify::category(source),
@@ -333,7 +344,7 @@ impl nebula_error::Classify for MetadataBuildError {
 /// compatibility.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
-pub enum MetadataCompatibilityError {
+pub enum ResourceCompatibilityError {
     /// A generic catalog-citizen rule fired (key / version / schema).
     #[error(transparent)]
     Base(#[from] BaseCompatError<ResourceKey>),
@@ -422,7 +433,7 @@ impl CheckCost {
 /// Definition-site check of [`Provider::KEY`], behind `#[derive(Resource)]` and
 /// [`no_credential_slots!`](crate::no_credential_slots).
 ///
-/// [`ProviderKey::key`] rejects an invalid literal when it is instantiated,
+/// [`key_of`] rejects an invalid literal when it is instantiated,
 /// which a build does and `cargo check` or an editor does not. A constant that
 /// names the concrete type is evaluated by both, so the mistake is reported
 /// where the resource is declared.
@@ -479,32 +490,21 @@ macro_rules! __assert_provider_key {
     };
 }
 
-/// The typed key of a [`Provider`], derived from [`Provider::KEY`].
+/// The typed key of provider `R`, derived from [`Provider::KEY`].
 ///
-/// Implemented for every provider and not implementable by hand, so
-/// `R::key()` and `R::KEY` cannot disagree.
-pub trait ProviderKey: Provider {
-    /// The resource's key as the typed [`ResourceKey`].
-    ///
-    /// An invalid [`Provider::KEY`] literal fails the build of whatever
-    /// instantiates this function for that provider, which registration
-    /// always does.
-    #[must_use]
-    fn key() -> ResourceKey;
-}
-
-impl<R: Provider> ProviderKey for R {
-    fn key() -> ResourceKey {
-        const {
-            assert!(
-                ResourceKey::is_valid_key_const(R::KEY),
-                "`Provider::KEY` is not a valid resource key"
-            );
-        }
-        // Checked above: a valid key literal is already in canonical form,
-        // so there is nothing left to validate or normalize at run time.
-        ResourceKey::from_static_unchecked(R::KEY)
+/// An invalid [`Provider::KEY`] literal fails the build of whatever
+/// instantiates this function for `R`, which registration always does, so
+/// nothing is left to validate at run time.
+#[must_use]
+pub fn key_of<R: Provider>() -> ResourceKey {
+    const {
+        assert!(
+            ResourceKey::is_valid_key_const(R::KEY),
+            "`Provider::KEY` is not a valid resource key"
+        );
     }
+    // Checked above: a valid key literal is already in canonical form.
+    ResourceKey::from_static_unchecked(R::KEY)
 }
 
 /// Provider trait — 3 associated types + lifecycle methods (slot model).
@@ -582,7 +582,7 @@ pub trait Provider: HasCredentialSlots + Send + Sync + Sized + 'static {
     ///
     /// This is the one place a resource's identity is declared. The typed
     /// [`ResourceKey`] every registry, error and event carries is
-    /// [`ProviderKey::key`], derived from this constant; the admitted
+    /// [`key_of::<Self>()`](key_of), derived from this constant; the admitted
     /// [`ResourceDefinition`] is stamped with it, so the catalog cannot name a
     /// different resource. A literal that is not a valid resource key fails
     /// the build where the provider is first used, not at registration.
@@ -1048,7 +1048,7 @@ mod tests {
     use semver::Version;
 
     use super::{
-        MetadataCompatibilityError, RecordedResourceDefinition, ResourceDefinition,
+        RecordedResourceDefinition, ResourceCompatibilityError, ResourceDefinition,
         ResourceMetadata,
     };
 
@@ -1084,7 +1084,7 @@ mod tests {
             ResourceMetadata::new(crate::metadata_name!("pg"), "d"),
             historical,
         );
-        std::assert_matches!(result, Err(super::MetadataBuildError::Definition(nebula_metadata::MetadataBuildError::Schema(report)))
+        std::assert_matches!(result, Err(super::ResourceAdmissionError::Definition(nebula_metadata::MetadataBuildError::Schema(report)))
             if report.errors().any(|error| error.code() == "schema.unsupported_policy"));
     }
 
@@ -1157,7 +1157,7 @@ mod tests {
         assert!(
             matches!(
                 err,
-                MetadataCompatibilityError::Base(BaseCompatError::VersionRegressed { .. })
+                ResourceCompatibilityError::Base(BaseCompatError::VersionRegressed { .. })
             ),
             "version regression must retain its typed compatibility failure"
         );

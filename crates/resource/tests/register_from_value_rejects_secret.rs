@@ -17,7 +17,6 @@
 //!     schema's declared fields) registers OK, so the rejection is attributable
 //!     to the extra secret-shaped field and the test is not vacuous.
 
-use nebula_resource::ProviderKey;
 use std::sync::Arc;
 
 use nebula_core::{DeclaresDependencies, Dependencies, ScopeLevel};
@@ -204,7 +203,7 @@ async fn register_from_value_rejects_inline_secret_field() {
 
     // The resource must NOT have been registered.
     assert!(
-        !manager.contains(&Db::key()),
+        !manager.contains(&nebula_resource::key_of::<Db>()),
         "a rejected register_from_value must not register the resource"
     );
 }
@@ -230,7 +229,7 @@ async fn register_from_value_accepts_clean_config_same_resource() {
         .expect("clean config with only declared fields must register");
 
     assert!(
-        manager.contains(&Db::key()),
+        manager.contains(&nebula_resource::key_of::<Db>()),
         "resource must be registered after a clean register_from_value"
     );
 }

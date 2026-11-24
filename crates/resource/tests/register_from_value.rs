@@ -9,7 +9,6 @@
 //!      surface diverged from the workflow JSON).
 //!   5. Dispatch into the typed `Manager::register<R>(...)`.
 
-use nebula_resource::ProviderKey;
 use std::{collections::HashMap, sync::Arc};
 
 use nebula_core::{CredentialKey, DeclaresDependencies, Dependencies, ScopeLevel};
@@ -277,7 +276,7 @@ async fn revoke_admission_rejects_unbound_credentialed_custom_topology() {
     let error = register_admission_resource::<true>(&manager, false)
         .expect_err("declared credentials require a revoke policy before binding");
     assert_eq!(error.kind(), &nebula_resource::ErrorKind::Permanent);
-    assert!(!manager.contains(&AdmissionResource::<true>::key()));
+    assert!(!manager.contains(&nebula_resource::key_of::<AdmissionResource<true>>()));
 }
 
 #[tokio::test]
@@ -302,7 +301,7 @@ async fn revoke_admission_rejects_resolved_credentialed_custom_topology() {
     .await
     .expect_err("resolved registration must reject unsupported revoke policy");
     assert_eq!(error.kind(), &nebula_resource::ErrorKind::Permanent);
-    assert!(!manager.contains(&AdmissionResource::<true>::key()));
+    assert!(!manager.contains(&nebula_resource::key_of::<AdmissionResource<true>>()));
 }
 
 #[tokio::test]
@@ -310,14 +309,14 @@ async fn revoke_admission_allows_custom_topology_without_credentials() {
     let manager = Manager::new();
     register_admission_resource::<false>(&manager, false)
         .expect("no credentials need no revoke hook");
-    assert!(manager.contains(&AdmissionResource::<false>::key()));
+    assert!(manager.contains(&nebula_resource::key_of::<AdmissionResource<false>>()));
 }
 
 #[tokio::test]
 async fn revoke_admission_preserves_explicit_custom_revoke_policy() {
     let manager = Manager::new();
     register_admission_resource::<true>(&manager, true).expect("custom revoke policy is supported");
-    assert!(manager.contains(&AdmissionResource::<true>::key()));
+    assert!(manager.contains(&nebula_resource::key_of::<AdmissionResource<true>>()));
 }
 
 #[tokio::test]
@@ -358,7 +357,7 @@ async fn register_from_value_resolves_template_and_registers() {
         .expect("explicitly authored template registration must succeed");
 
     assert!(
-        manager.contains(&Postgres::key()),
+        manager.contains(&nebula_resource::key_of::<Postgres>()),
         "resource must be registered after register_from_value"
     );
 
@@ -410,7 +409,7 @@ async fn register_from_value_validates_schema_failure() {
             .errors()
             .any(|error| error.code() == "type_mismatch" && error.path().as_str() == "/host")
     );
-    assert!(!manager.contains(&Postgres::key()));
+    assert!(!manager.contains(&nebula_resource::key_of::<Postgres>()));
 }
 
 #[tokio::test]
@@ -675,7 +674,7 @@ async fn register_from_value_passthrough_no_templates() {
     .await
     .expect("register_from_value must succeed for plain JSON");
 
-    assert!(manager.contains(&Postgres::key()));
+    assert!(manager.contains(&nebula_resource::key_of::<Postgres>()));
 }
 
 // ── Union (enum) resource config: serde tagged wire → registration ───────────

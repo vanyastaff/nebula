@@ -155,9 +155,9 @@ pub use nebula_plugin::{
 // `ReleaseOutcome`, `Lease`) are deliberately absent from the supported SDK.
 pub use nebula_resource::{
     Bounded, BoundedMode, BoundedProvider, ClassifyError, Error, ErrorKind, HasCredentialSlots,
-    PoolConfig, PoolProvider, Pooled, Provider, ProviderKey, ReloadOutcome, Resident,
-    ResidentConfig, ResidentProvider, Resource, ResourceConfig, ResourceContext, ResourceMetadata,
-    SlotCell, TeardownCx, TeardownReason, TopologyTag, no_credential_slots,
+    PoolConfig, PoolProvider, Pooled, Provider, ReloadOutcome, Resident, ResidentConfig,
+    ResidentProvider, Resource, ResourceConfig, ResourceContext, ResourceMetadata, SlotCell,
+    TeardownCx, TeardownReason, TopologyTag, no_credential_slots,
 };
 // Derive names are re-exported from their respective domain crates. Generated
 // paths prefer a direct (including renamed) leaf dependency, then the SDK's

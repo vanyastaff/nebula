@@ -48,7 +48,7 @@ mod tests;
 pub enum DispatchError {
     /// The credential definition could not be admitted before dispatch setup.
     #[error("credential dispatch catalog admission failed")]
-    Metadata(#[from] crate::CredentialMetadataAdmissionError),
+    Metadata(#[from] crate::CredentialAdmissionError),
     /// Two registrations shared a `Credential::KEY`. First wins; second
     /// rejected; table unchanged.
     #[error("duplicate credential dispatch key '{key}'")]
@@ -646,7 +646,7 @@ where
     }
 
     let metadata = crate::CredentialDefinition::admit_for::<C>(C::metadata())?;
-    let validation_schema = metadata.schema().clone();
+    let validation_schema = metadata.base().schema().clone();
     let resolve_schema = Arc::new(validation_schema.clone());
     let acquire_schema = Arc::new(validation_schema.clone());
 

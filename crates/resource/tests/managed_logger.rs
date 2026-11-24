@@ -10,7 +10,6 @@
 //! flushes the buffer within the teardown deadline. It deliberately uses no
 //! `tracing-appender`: the sink is the resource's own instance.
 
-use nebula_resource::ProviderKey;
 use std::{
     any::Any,
     future::Future,
@@ -538,7 +537,7 @@ async fn a_removed_row_refuses_new_attempts_without_sending() {
     let logger = fixture.managed();
     fixture
         .manager
-        .remove(&Logger::key())
+        .remove(&nebula_resource::key_of::<Logger>())
         .expect("remove the row");
 
     let error = logger

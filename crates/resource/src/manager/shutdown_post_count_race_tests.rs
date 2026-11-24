@@ -121,7 +121,7 @@ async fn registration_after_shutdown_cannot_repopulate_registry() {
         result.expect_err("closed admission").kind(),
         &ErrorKind::Cancelled
     );
-    assert!(!manager.contains(&ShutdownRaceResident::key()));
+    assert!(!manager.contains(&crate::key_of::<ShutdownRaceResident>()));
 }
 
 #[derive(Clone)]
@@ -210,7 +210,7 @@ async fn registration_validation_cannot_commit_after_shutdown_snapshot() {
         result.expect_err("final commit fenced").kind(),
         &ErrorKind::Cancelled
     );
-    assert!(!manager.contains(&ValidatingResident::key()));
+    assert!(!manager.contains(&crate::key_of::<ValidatingResident>()));
 }
 
 #[tokio::test]
@@ -231,10 +231,10 @@ async fn replacement_and_removal_fence_previously_resolved_rows() {
     );
     assert!(!second.store.is_closed());
     manager
-        .remove(&ShutdownRaceResident::key())
+        .remove(&crate::key_of::<ShutdownRaceResident>())
         .expect("remove replacement");
     assert!(second.store.is_closed(), "removal fences a captured row");
-    assert!(!manager.contains(&ShutdownRaceResident::key()));
+    assert!(!manager.contains(&crate::key_of::<ShutdownRaceResident>()));
     manager
         .graceful_shutdown(ShutdownConfig::default())
         .await
@@ -275,7 +275,7 @@ async fn saturated_retirement_queue_leaves_registry_ownership_unchanged() {
     assert_eq!(
         manager
             .remove_for(
-                &ShutdownRaceResident::key(),
+                &crate::key_of::<ShutdownRaceResident>(),
                 &ScopeLevel::Workflow(nebula_core::WorkflowId::new()),
                 &crate::dedup::SlotIdentity::Unbound,
             )
@@ -305,14 +305,14 @@ async fn saturated_retirement_queue_leaves_registry_ownership_unchanged() {
     assert!(Arc::ptr_eq(&original, &after_replacement));
     assert!(!original.store.is_closed());
 
-    let removal = manager.remove(&ShutdownRaceResident::key());
+    let removal = manager.remove(&crate::key_of::<ShutdownRaceResident>());
     assert_eq!(
         removal
             .expect_err("removal must reject before mutation")
             .kind(),
         &ErrorKind::Backpressure
     );
-    assert!(manager.contains(&ShutdownRaceResident::key()));
+    assert!(manager.contains(&crate::key_of::<ShutdownRaceResident>()));
     assert!(!original.store.is_closed());
 
     drop(held_capacity);
@@ -341,9 +341,9 @@ async fn saturated_retirement_queue_leaves_registry_ownership_unchanged() {
         .lookup::<ShutdownRaceResident>(&new_scope)
         .expect("new row remains registered");
     manager
-        .remove(&ShutdownRaceResident::key())
+        .remove(&crate::key_of::<ShutdownRaceResident>())
         .expect("one batch command retires more rows than queue capacity");
-    assert!(!manager.contains(&ShutdownRaceResident::key()));
+    assert!(!manager.contains(&crate::key_of::<ShutdownRaceResident>()));
     for row in [
         &original,
         &new_scope_row,
@@ -379,7 +379,7 @@ async fn cancelled_shutdown_resumes_manager_owned_snapshot_publication() {
             .await
     });
     tokio::time::timeout(Duration::from_secs(1), async {
-        while manager.contains(&ShutdownRaceResident::key()) {
+        while manager.contains(&crate::key_of::<ShutdownRaceResident>()) {
             tokio::task::yield_now().await;
         }
     })

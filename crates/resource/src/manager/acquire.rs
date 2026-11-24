@@ -2,7 +2,6 @@
 //! lookup + taint helpers, the generic topology dispatch, the shared
 //! `run_acquire` pipeline, and pool diagnostics/warmup.
 
-use crate::resource::ProviderKey;
 use std::{any::Any, future::Future, sync::Arc, time::Instant};
 
 use nebula_core::{Context, ResourceKey, ScopeLevel};
@@ -116,9 +115,9 @@ impl Manager {
     pub(super) fn tainted_error<R: Provider>() -> Error {
         Error::revoked(format!(
             "{}: resource tainted by credential revoke — new acquires rejected",
-            R::key()
+            crate::key_of::<R>()
         ))
-        .with_resource_key(R::key())
+        .with_resource_key(crate::key_of::<R>())
     }
 
     /// The error for an acquire whose row admits nothing in its current
@@ -135,9 +134,9 @@ impl Manager {
         }
         match captured.and_then(crate::runtime::admission::AdmissionGeneration::close_cause) {
             Some(crate::runtime::admission::CloseCause::Credential(reason)) => {
-                Self::credential_unavailable_error(&R::key(), reason)
+                Self::credential_unavailable_error(&crate::key_of::<R>(), reason)
             },
-            None => Error::cancelled().with_resource_key(R::key()),
+            None => Error::cancelled().with_resource_key(crate::key_of::<R>()),
         }
     }
 
@@ -727,20 +726,20 @@ impl Manager {
             },
             Ok(n) => n,
             Err(fault) => {
-                fault.observe(&R::key(), "warmup");
+                fault.observe(&crate::key_of::<R>(), "warmup");
                 match fault {
                     HookFault::Panicked => {
                         return Err(Error::permanent(format!(
                             "{}: warmup panicked — the topology's `create_entry` hook unwound \
                              (isolated, caller not crashed)",
-                            R::key()
+                            crate::key_of::<R>()
                         )));
                     },
                     HookFault::TimedOut => {
                         return Err(Error::backpressure(format!(
                             "{}: a warmup create exceeded {DEFAULT_AUTHOR_HOOK_CEILING:?} — the topology's \
                              `create_entry` hook did not complete in time",
-                            R::key()
+                            crate::key_of::<R>()
                         )));
                     },
                 }

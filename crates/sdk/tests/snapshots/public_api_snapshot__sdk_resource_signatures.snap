@@ -304,6 +304,10 @@ impl fmt::Display for TopologyTag
 exported as nebula_sdk::integration::resource::retry_after_from_header
 pub fn retry_after_from_header(value: &str) -> Option<Duration>;
 
+## fn nebula_resource::resource::key_of
+exported as nebula_sdk::integration::resource::key_of
+pub fn key_of<R: Provider>() -> ResourceKey;
+
 ## fn nebula_sdk::integration::resource::http::exchange::send [cfg(feature = "resource-http")]
 exported as nebula_sdk::integration::resource::http::send
 pub async fn send<R, M>(attempt: Attempt<'_, R>, request: &Request<M>) -> Result<Response, OperationError> where R: HttpApi, R::Instance: AsRef<HttpTransport>, M: Method;
@@ -1196,13 +1200,6 @@ pub trait Provider: HasCredentialSlots + Send + Sync + Sized + 'static {
     async fn destroy(&self, instance: Self::Instance, cx: TeardownCx) -> Result<(), crate::Error> { .. }
     fn metadata() -> ResourceMetadata;
     fn resilience() -> crate::rate_limit::ResiliencePolicy { .. }
-}
-
-## trait nebula_resource::resource::ProviderKey
-exported as nebula_sdk::integration::resource::ProviderKey
-exported as nebula_sdk::prelude::ProviderKey
-pub trait ProviderKey: Provider {
-    fn key() -> ResourceKey;
 }
 
 ## trait nebula_resource::topology::bounded::BoundedProvider

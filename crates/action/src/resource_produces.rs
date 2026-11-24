@@ -25,7 +25,6 @@
 //! assert_eq!(produced.topology(), TopologyTag::Resident);
 //! ```
 
-use nebula_resource::ProviderKey;
 use std::{fmt, marker::PhantomData};
 
 use nebula_core::ResourceKey;
@@ -88,7 +87,7 @@ impl<R: Provider> ResourceProduces<R> {
     /// the resource that downstream nodes will bind through their `#[resource]` slots.
     #[must_use]
     pub fn resource_key() -> ResourceKey {
-        R::key()
+        nebula_resource::key_of::<R>()
     }
 }
 

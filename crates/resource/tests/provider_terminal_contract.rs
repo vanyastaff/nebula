@@ -1,6 +1,5 @@
 //! Provider author obligations at the framework-owned terminal boundary.
 
-use nebula_resource::ProviderKey;
 mod common;
 
 use std::sync::{
@@ -149,7 +148,7 @@ async fn cancelled_shutdown_preserves_outcome(outcome: TerminalOutcome) {
             let ShutdownError::ResourceTeardownFailed { key, source } = result.unwrap_err() else {
                 panic!("shutdown must preserve the typed terminal error");
             };
-            assert_eq!(key, TerminalProvider::key());
+            assert_eq!(key, nebula_resource::key_of::<TerminalProvider>());
             let expected = match outcome {
                 TerminalOutcome::Fail => ErrorKind::Permanent,
                 TerminalOutcome::TransientFail => ErrorKind::Transient,

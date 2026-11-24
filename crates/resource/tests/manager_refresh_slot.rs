@@ -30,7 +30,6 @@ use zeroize::Zeroize;
 
 mod counting {
     use super::*;
-    use nebula_resource::ProviderKey;
 
     /// Sentinel stamped on the test `Runtime` so the refresh hook can
     /// prove it received *this* live runtime by reference.
@@ -241,7 +240,7 @@ mod counting {
         register_counting(&mgr, resource, RegisterOptions::default())
             .expect("resident registration must succeed");
 
-        (mgr, CountingResource::key(), ledger)
+        (mgr, nebula_resource::key_of::<CountingResource>(), ledger)
     }
 
     /// Same as [`registered`], but the manager is wired with a real
@@ -268,7 +267,12 @@ mod counting {
         register_counting(&mgr, resource, RegisterOptions::default())
             .expect("resident registration must succeed");
 
-        (mgr, CountingResource::key(), ledger, registry)
+        (
+            mgr,
+            nebula_resource::key_of::<CountingResource>(),
+            ledger,
+            registry,
+        )
     }
 
     /// Resolved `(slot, credential)` bindings for the two-tenant isolation
@@ -322,7 +326,12 @@ mod counting {
         )
         .expect("resident registration (B) must succeed");
 
-        (Arc::new(mgr), CountingResource::key(), ledger_a, ledger_b)
+        (
+            Arc::new(mgr),
+            nebula_resource::key_of::<CountingResource>(),
+            ledger_a,
+            ledger_b,
+        )
     }
 }
 
@@ -1390,7 +1399,6 @@ async fn drain_timeout_still_runs_revoke_hook_single_budget_owner() {
 // ===========================================================================
 
 mod u9_gate {
-    use nebula_resource::ProviderKey;
     use std::assert_matches;
     use std::sync::{
         Arc,
@@ -1563,7 +1571,11 @@ mod u9_gate {
         // (delivers the hook, advances built_epoch to the observed slot
         // epoch).
         let outcome = mgr
-            .refresh_slot(&GateResource::key(), ScopeLevel::Global, "db")
+            .refresh_slot(
+                &nebula_resource::key_of::<GateResource>(),
+                ScopeLevel::Global,
+                "db",
+            )
             .await
             .expect("refresh after a real transition must succeed");
         assert_matches!(
@@ -1594,7 +1606,11 @@ mod u9_gate {
         // counter that the resident cannot "catch up" by storing into would
         // break this.
         let outcome = mgr
-            .refresh_slot(&GateResource::key(), ScopeLevel::Global, "db")
+            .refresh_slot(
+                &nebula_resource::key_of::<GateResource>(),
+                ScopeLevel::Global,
+                "db",
+            )
             .await
             .expect("refresh after no-op takes must succeed");
         assert_matches!(

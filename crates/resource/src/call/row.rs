@@ -54,7 +54,6 @@
 //! repeats every step and may land on another instance; its pin is not
 //! retaken.
 
-use crate::resource::ProviderKey;
 use std::{fmt, sync::Arc};
 
 use nebula_core::ResourceKey;
@@ -160,7 +159,7 @@ impl<R: Provider> ResourceHandle<R> {
             shared: Arc::new(RowShared {
                 managed,
                 link,
-                key: R::key(),
+                key: crate::key_of::<R>(),
                 ctx: ctx.clone_for_acquire(),
                 gate,
             }),
@@ -585,16 +584,16 @@ fn evict_unfit<R: Provider>(
     guard.taint();
     if guard.created() {
         tracing::debug!(
-            resource.key = %R::key(),
+            resource.key = %crate::key_of::<R>(),
             "a fresh instance is newer than the unit's pinned credentials; attempt refused"
         );
         return Err(crate::Manager::credential_unavailable_error(
-            &R::key(),
+            &crate::key_of::<R>(),
             crate::error::CredentialUnavailableReason::Rebinding,
         ));
     }
     tracing::debug!(
-        resource.key = %R::key(),
+        resource.key = %crate::key_of::<R>(),
         "idle instance built on superseded credentials evicted"
     );
     if tokio::time::Instant::now() >= deadline {

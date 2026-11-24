@@ -1,4 +1,3 @@
-use crate::resource::ProviderKey;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -174,7 +173,9 @@ impl Topology<RetainedResource> for RetainedTopology {
             .map_err(crate::topology::HookFault::Failed)?;
         let lease = retained
             .lease(retained_id)
-            .ok_or_else(|| Error::cancelled().with_resource_key(RetainedResource::key()))
+            .ok_or_else(|| {
+                Error::cancelled().with_resource_key(crate::key_of::<RetainedResource>())
+            })
             .map_err(crate::topology::HookFault::Failed)?;
         self.hook_entered.notify_one();
         self.release_hook.notified().await;

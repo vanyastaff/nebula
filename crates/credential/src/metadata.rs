@@ -1,6 +1,5 @@
 use nebula_core::CredentialKey;
 use nebula_metadata::{BaseDefinition, Definition, RecordedBaseDefinition};
-use semver::Version;
 use serde::{Deserialize, Serialize};
 
 use crate::AuthPattern;
@@ -18,7 +17,7 @@ pub type CredentialMetadata = nebula_metadata::Metadata;
 /// Payload-free failure to admit a credential definition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
-pub enum CredentialMetadataAdmissionError {
+pub enum CredentialAdmissionError {
     /// Shared catalog metadata failed its construction contract.
     #[error("credential catalog metadata admission failed")]
     CatalogMetadata,
@@ -29,7 +28,8 @@ pub enum CredentialMetadataAdmissionError {
 
 /// Admitted credential definition bound to the canonical `C::Properties` schema.
 ///
-/// Fields are immutable and available only through getters. Wire data cannot
+/// Fields are immutable. The shared catalog fields are read through the
+/// [`Definition`] trait, as on every other component definition. Wire data cannot
 /// deserialize into this type; deserialize [`RecordedCredentialDefinition`] and
 /// readmit it against a freshly registered definition instead.
 ///
@@ -60,7 +60,7 @@ impl CredentialDefinition {
     #[tracing::instrument(name = "credential.metadata.admit", skip_all, fields(credential_key = C::KEY), err)]
     pub(crate) fn admit_for<C>(
         metadata: CredentialMetadata,
-    ) -> Result<Self, CredentialMetadataAdmissionError>
+    ) -> Result<Self, CredentialAdmissionError>
     where
         C: crate::Credential,
     {
@@ -71,7 +71,7 @@ impl CredentialDefinition {
                 error_code = "CREDENTIAL:PROPERTIES_SCHEMA_INVALID",
                 "credential properties schema admission failed"
             );
-            CredentialMetadataAdmissionError::PropertiesSchema
+            CredentialAdmissionError::PropertiesSchema
         })?;
         Self::admit_with_schema(
             crate::key_of::<C>(),
@@ -86,13 +86,13 @@ impl CredentialDefinition {
         metadata: CredentialMetadata,
         schema: nebula_schema::ValidSchema,
         pattern: AuthPattern,
-    ) -> Result<Self, CredentialMetadataAdmissionError> {
+    ) -> Result<Self, CredentialAdmissionError> {
         let base = metadata.bind(key, schema).map_err(|_| {
             tracing::error!(
                 error_code = "CREDENTIAL:CATALOG_METADATA_INVALID",
                 "credential catalog metadata admission failed"
             );
-            CredentialMetadataAdmissionError::CatalogMetadata
+            CredentialAdmissionError::CatalogMetadata
         })?;
         let definition = Self { base, pattern };
         nebula_metadata::check_json_record(&definition).map_err(|_| {
@@ -100,81 +100,16 @@ impl CredentialDefinition {
                 error_code = "CREDENTIAL:CATALOG_RECORD_INVALID",
                 "credential catalog record admission failed"
             );
-            CredentialMetadataAdmissionError::CatalogMetadata
+            CredentialAdmissionError::CatalogMetadata
         })?;
         Ok(definition)
     }
 
-    /// Typed credential key.
+    /// The shared catalog definition: key, name, description, schema,
+    /// version, icon, links, tags, maturity.
     #[must_use]
-    pub fn key(&self) -> &CredentialKey {
-        self.base.key()
-    }
-
-    /// Human-readable credential name.
-    #[must_use]
-    pub fn name(&self) -> &str {
-        self.base.name()
-    }
-
-    /// Credential description.
-    #[must_use]
-    pub fn description(&self) -> &str {
-        self.base.description()
-    }
-
-    /// Canonical schema derived during registration from `C::Properties`.
-    #[must_use]
-    pub fn schema(&self) -> &nebula_schema::ValidSchema {
-        self.base.schema()
-    }
-
-    /// Interface version.
-    #[must_use]
-    pub fn version(&self) -> &Version {
-        self.base.version()
-    }
-
-    /// Catalog icon.
-    #[must_use]
-    pub fn icon(&self) -> &nebula_metadata::Icon {
-        self.base.icon()
-    }
-
-    /// Documentation URL, when declared.
-    #[must_use]
-    pub fn documentation_url(&self) -> Option<&str> {
-        self.base.documentation_url()
-    }
-
-    /// Catalog tags.
-    #[must_use]
-    pub fn tags(&self) -> &[String] {
-        self.base.tags()
-    }
-
-    /// Canonical catalog categories.
-    #[must_use]
-    pub fn categories(&self) -> &[nebula_metadata::CatalogCategoryKey] {
-        self.base.categories()
-    }
-
-    /// Typed catalog links.
-    #[must_use]
-    pub fn links(&self) -> &[nebula_metadata::CatalogLink] {
-        self.base.links()
-    }
-
-    /// Declared maturity level.
-    #[must_use]
-    pub fn maturity(&self) -> nebula_metadata::MaturityLevel {
-        self.base.maturity()
-    }
-
-    /// Deprecation notice, if any.
-    #[must_use]
-    pub fn deprecation(&self) -> Option<&nebula_metadata::DeprecationNotice> {
-        self.base.deprecation()
+    pub const fn base(&self) -> &BaseDefinition<CredentialKey> {
+        &self.base
     }
 
     /// Authentication pattern used by discovery and compatibility checks.
@@ -192,12 +127,12 @@ impl CredentialDefinition {
     pub fn validate_compatibility(
         &self,
         previous: &Self,
-    ) -> Result<(), MetadataCompatibilityError> {
+    ) -> Result<(), CredentialCompatibilityError> {
         nebula_metadata::validate_base_compat(&self.base, &previous.base)?;
         if self.pattern != previous.pattern
             && self.base.version().major == previous.base.version().major
         {
-            return Err(MetadataCompatibilityError::PatternChangeWithoutMajorBump);
+            return Err(CredentialCompatibilityError::PatternChangeWithoutMajorBump);
         }
         Ok(())
     }
@@ -269,22 +204,22 @@ impl RecordedCredentialDefinition {
     ///
     /// # Errors
     ///
-    /// Returns [`CredentialMetadataReadmissionError`] when shared metadata,
+    /// Returns [`CredentialReadmissionError`] when shared metadata,
     /// schema, or auth pattern differs.
     #[tracing::instrument(name = "credential.metadata.readmit", skip_all, err)]
     pub fn readmit_against(
         &self,
         fresh_definition: &CredentialDefinition,
-    ) -> Result<CredentialDefinition, CredentialMetadataReadmissionError> {
+    ) -> Result<CredentialDefinition, CredentialReadmissionError> {
         self.base
             .readmit_against(&fresh_definition.base)
-            .map_err(|_| CredentialMetadataReadmissionError::DefinitionMismatch)?;
+            .map_err(|_| CredentialReadmissionError::DefinitionMismatch)?;
         if self.pattern != fresh_definition.pattern {
             tracing::warn!(
                 error_code = "CREDENTIAL:RECORDED_METADATA_MISMATCH",
                 "recorded credential metadata rejected"
             );
-            return Err(CredentialMetadataReadmissionError::DefinitionMismatch);
+            return Err(CredentialReadmissionError::DefinitionMismatch);
         }
         Ok(fresh_definition.clone())
     }
@@ -293,7 +228,7 @@ impl RecordedCredentialDefinition {
 /// Payload-free recorded-metadata readmission failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
-pub enum CredentialMetadataReadmissionError {
+pub enum CredentialReadmissionError {
     /// Recorded evidence differs from the fresh static definition.
     #[error("recorded credential metadata does not match the fresh definition")]
     DefinitionMismatch,
@@ -302,7 +237,7 @@ pub enum CredentialMetadataReadmissionError {
 /// Compatibility validation errors for credential metadata evolution.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
-pub enum MetadataCompatibilityError {
+pub enum CredentialCompatibilityError {
     /// A shared catalog rule fired.
     #[error(transparent)]
     Base(#[from] nebula_metadata::BaseCompatError<CredentialKey>),

@@ -16,7 +16,6 @@
 //! `refresh_slot_for_identity` / `revoke_slot_for_identity`
 //! (the ports the engine rotation fan-out drives) are covered directly.
 
-use nebula_resource::ProviderKey;
 use std::{
     assert_matches,
     sync::{
@@ -449,7 +448,7 @@ async fn refresh_slot_for_routes_to_the_resolved_row() {
     let (a_tag, b_tag) = (0xA1, 0xB2);
     let (manager, refresh_saw, _vs, refresh_total) =
         two_tenant_resident(org, (RES_A, a_tag), (RES_B, b_tag)).await;
-    let key = ResRes::key();
+    let key = nebula_resource::key_of::<ResRes>();
     let scope = ScopeLevel::Organization(org);
 
     // Identity-agnostic refresh_slot must fail closed (two rows share
@@ -515,7 +514,7 @@ async fn refresh_slot_for_unknown_identity_is_not_found() {
     let org = OrgId::new();
     let (manager, refresh_saw, _vs, refresh_total) =
         two_tenant_resident(org, (RES_A, 0xA1), (RES_B, 0xB2)).await;
-    let key = ResRes::key();
+    let key = nebula_resource::key_of::<ResRes>();
     let scope = ScopeLevel::Organization(org);
 
     let unknown = SlotIdentity::from_bindings([("db", "cred-never-registered")]);
@@ -548,7 +547,7 @@ async fn revoke_slot_for_revokes_only_the_pinned_row() {
     let (a_tag, b_tag) = (0xCAFE, 0xF00D);
     let (manager, _rs, revoke_saw, _rt) =
         two_tenant_resident(org, (RES_A, a_tag), (RES_B, b_tag)).await;
-    let key = ResRes::key();
+    let key = nebula_resource::key_of::<ResRes>();
     let scope = ScopeLevel::Organization(org);
     let ctx = ctx_for_org(org);
 
@@ -622,7 +621,11 @@ async fn warmup_pool_rejected_after_revoke_taint_creates_no_entries() {
     // Phase-1 synchronous taint — the exact state a racing `revoke_slot`
     // leaves the row in before `warmup_pool` could call `rt.warmup`.
     let _tainted = manager
-        .taint_slot(&PoolRes::key(), ScopeLevel::Global, "db")
+        .taint_slot(
+            &nebula_resource::key_of::<PoolRes>(),
+            ScopeLevel::Global,
+            "db",
+        )
         .expect("taint_slot must resolve the registered pooled row");
 
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
@@ -676,7 +679,7 @@ async fn tainted_pinned_acquire_rejected_after_run_acquire_collapse() {
     // Synchronous taint == the state a racing `revoke_slot` leaves the row
     // in before the acquire's in-flight increment + post-count re-check.
     let _tainted = manager
-        .taint_slot_for_identity(&PoolRes::key(), scope, "db", &slot_id)
+        .taint_slot_for_identity(&nebula_resource::key_of::<PoolRes>(), scope, "db", &slot_id)
         .expect("taint_slot_for_identity must resolve the pinned pooled row");
 
     let ctx = ctx_for_org(org);
@@ -781,7 +784,7 @@ async fn pool_two_tenant_pinned_acquires_route_independently() {
     );
 
     // Revoke only tenant A's pinned row.
-    let key = PoolRes::key();
+    let key = nebula_resource::key_of::<PoolRes>();
     let outcome = manager
         .revoke_slot_for_identity(&key, scope.clone(), "db", &id_a)
         .await

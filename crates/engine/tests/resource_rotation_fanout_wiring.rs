@@ -20,7 +20,6 @@
 //!  ::dispatch_{refresh,revoke} → Manager::{refresh_slot_for,
 //!  taint_slot_for + drain_and_revoke} → resource on_credential_* hook`.
 
-use nebula_resource::ProviderKey;
 use std::future::Future;
 use std::sync::{
     Arc,
@@ -130,7 +129,13 @@ async fn material_replacement_installs_projected_guard_before_refresh_hook() {
     drop(warm);
 
     let index = Arc::new(ResourceFanoutIndex::new());
-    index.bind_test(cid, ReplacementResource::key(), scope, "db", identity);
+    index.bind_test(
+        cid,
+        nebula_resource::key_of::<ReplacementResource>(),
+        scope,
+        "db",
+        identity,
+    );
     let calls = Arc::new(AtomicUsize::new(0));
     let resolver: Arc<dyn nebula_credential::CredentialSlotResolver> =
         Arc::new(ReplacementResolver {
@@ -228,7 +233,7 @@ async fn lost_material_event_is_recovered_on_startup_and_periodic_scan() {
     let index = Arc::new(ResourceFanoutIndex::new());
     index.bind_test(
         cid,
-        ReplacementResource::key(),
+        nebula_resource::key_of::<ReplacementResource>(),
         ScopeLevel::Global,
         "db",
         identity,
@@ -335,7 +340,7 @@ async fn material_replacement_hook_timeout_is_not_counted_as_success() {
     let index = ResourceFanoutIndex::new();
     index.bind_test(
         cid,
-        ReplacementResource::key(),
+        nebula_resource::key_of::<ReplacementResource>(),
         ScopeLevel::Global,
         "db",
         identity.clone(),
@@ -382,7 +387,7 @@ async fn refreshed_events_and_scans_install_once_per_epoch_in_either_order() {
         let index = Arc::new(ResourceFanoutIndex::new());
         index.bind_test(
             cid,
-            ReplacementResource::key(),
+            nebula_resource::key_of::<ReplacementResource>(),
             ScopeLevel::Global,
             "db",
             identity.clone(),
@@ -446,7 +451,7 @@ async fn stalled_refresh_scan_does_not_delay_credential_or_lease_revoke() {
             let index = Arc::new(ResourceFanoutIndex::new());
             index.bind_test(
                 cid,
-                ReplacementResource::key(),
+                nebula_resource::key_of::<ReplacementResource>(),
                 ScopeLevel::Global,
                 "db",
                 identity.clone(),
@@ -670,14 +675,14 @@ async fn durable_tombstone_taints_live_sibling_before_its_projection_returns() {
     let second = register_replacement_with_identity(&manager, cid, "second");
     index.bind_test(
         cid,
-        ReplacementResource::key(),
+        nebula_resource::key_of::<ReplacementResource>(),
         ScopeLevel::Global,
         "db",
         first_identity,
     );
     index.bind_test(
         cid,
-        ReplacementResource::key(),
+        nebula_resource::key_of::<ReplacementResource>(),
         ScopeLevel::Global,
         "db",
         second_identity,
@@ -738,7 +743,7 @@ async fn concurrent_tombstones_fan_out_once_per_credential() {
     for identity in ["first-tombstone", "second-tombstone"] {
         index.bind_test(
             cid,
-            ReplacementResource::key(),
+            nebula_resource::key_of::<ReplacementResource>(),
             ScopeLevel::Global,
             "db",
             SlotIdentity::from_bindings([("db", identity)]),
@@ -783,7 +788,7 @@ async fn durable_tombstone_reconciliation_terminally_revokes_resource() {
     let index = Arc::new(ResourceFanoutIndex::new());
     index.bind_test(
         cid,
-        ReplacementResource::key(),
+        nebula_resource::key_of::<ReplacementResource>(),
         ScopeLevel::Global,
         "db",
         identity.clone(),
@@ -860,7 +865,7 @@ async fn empty_bound_slot_reconciles_a_lost_durable_tombstone() {
     let index = Arc::new(ResourceFanoutIndex::new());
     index.bind_test(
         credential_id,
-        ReplacementResource::key(),
+        nebula_resource::key_of::<ReplacementResource>(),
         ScopeLevel::Global,
         "db",
         identity.clone(),
@@ -922,7 +927,7 @@ async fn authoritative_tombstone_wins_a_concurrent_unqualified_slot_write() {
         let index = Arc::new(ResourceFanoutIndex::new());
         index.bind_test(
             cid,
-            ReplacementResource::key(),
+            nebula_resource::key_of::<ReplacementResource>(),
             ScopeLevel::Global,
             "db",
             identity.clone(),
@@ -1033,7 +1038,7 @@ async fn material_replacement_bounds_projection_concurrency() {
                 register_replacement_with_identity(&manager, cid, &identity_value);
                 index.bind_test(
                     cid,
-                    ReplacementResource::key(),
+                    nebula_resource::key_of::<ReplacementResource>(),
                     ScopeLevel::Global,
                     "db",
                     SlotIdentity::from_bindings([("db", identity_value.as_str())]),
@@ -1183,7 +1188,7 @@ async fn projection_capacity_is_released_before_hook_observation() {
         register_replacement_with_hook_behavior(&manager, cid, &identity_value, true);
         index.bind_test(
             cid,
-            ReplacementResource::key(),
+            nebula_resource::key_of::<ReplacementResource>(),
             ScopeLevel::Global,
             "db",
             SlotIdentity::from_bindings([("db", identity_value.as_str())]),
@@ -1225,7 +1230,7 @@ async fn material_projection_timeout_cancels_resolver_and_is_not_success() {
     let index = ResourceFanoutIndex::new();
     index.bind_test(
         cid,
-        ReplacementResource::key(),
+        nebula_resource::key_of::<ReplacementResource>(),
         ScopeLevel::Global,
         "db",
         SlotIdentity::from_bindings([("db", "oauth")]),
@@ -1278,7 +1283,7 @@ async fn delayed_projection_cannot_install_into_rebound_registration() {
         let index = Arc::new(ResourceFanoutIndex::new());
         index.bind_test(
             cid,
-            ReplacementResource::key(),
+            nebula_resource::key_of::<ReplacementResource>(),
             ScopeLevel::Global,
             "db",
             SlotIdentity::from_bindings([("db", "oauth")]),
@@ -1311,11 +1316,11 @@ async fn delayed_projection_cannot_install_into_rebound_registration() {
             .forget();
         match retirement {
             0 => manager
-                .remove(&ReplacementResource::key())
+                .remove(&nebula_resource::key_of::<ReplacementResource>())
                 .expect("remove original"),
             1 => manager
                 .remove_for(
-                    &ReplacementResource::key(),
+                    &nebula_resource::key_of::<ReplacementResource>(),
                     &ScopeLevel::Global,
                     &SlotIdentity::from_bindings([("db", "oauth")]),
                 )
@@ -1353,7 +1358,7 @@ async fn revoked_slots_are_not_reprojected_on_startup_or_periodic_scans() {
         } else {
             let tainted = manager
                 .taint_slot_for_identity(
-                    &ReplacementResource::key(),
+                    &nebula_resource::key_of::<ReplacementResource>(),
                     ScopeLevel::Global,
                     "db",
                     &SlotIdentity::from_bindings([("db", "oauth")]),
@@ -1397,7 +1402,7 @@ async fn unqualified_writes_fence_in_flight_scans_and_material_events() {
             let index = Arc::new(ResourceFanoutIndex::new());
             index.bind_test(
                 cid,
-                ReplacementResource::key(),
+                nebula_resource::key_of::<ReplacementResource>(),
                 ScopeLevel::Global,
                 "db",
                 SlotIdentity::from_bindings([("db", "oauth")]),
@@ -1499,7 +1504,7 @@ async fn material_event_does_not_restore_a_superseded_projection() {
         let index = ResourceFanoutIndex::new();
         index.bind_test(
             cid,
-            ReplacementResource::key(),
+            nebula_resource::key_of::<ReplacementResource>(),
             ScopeLevel::Global,
             "db",
             SlotIdentity::from_bindings([("db", "oauth")]),
@@ -1776,14 +1781,14 @@ async fn refreshed_event_scans_only_the_observed_credential() {
     let index = Arc::new(ResourceFanoutIndex::new());
     index.bind_test(
         first,
-        ReplacementResource::key(),
+        nebula_resource::key_of::<ReplacementResource>(),
         ScopeLevel::Global,
         "db",
         SlotIdentity::from_bindings([("db", "oauth-first")]),
     );
     index.bind_test(
         second,
-        ReplacementResource::key(),
+        nebula_resource::key_of::<ReplacementResource>(),
         ScopeLevel::Global,
         "db",
         SlotIdentity::from_bindings([("db", "oauth-second")]),
@@ -2004,7 +2009,7 @@ async fn wire(behaviour: Behaviour) -> Wired {
     // wiring: bus event → driver → fan-out → hook.
     index.bind_test(
         cid,
-        Recording::key(),
+        nebula_resource::key_of::<Recording>(),
         scope.clone(),
         "db",
         slot_identity.clone(),
@@ -2252,7 +2257,9 @@ async fn rotation_after_resource_removed_fans_to_zero_rows() {
     .await;
 
     // Remove the resource from the manager.
-    w.mgr.remove(&Recording::key()).expect("resource removed");
+    w.mgr
+        .remove(&nebula_resource::key_of::<Recording>())
+        .expect("resource removed");
     assert!(
         w.index.affected(&w.cid).is_empty(),
         "manager removal must synchronously prune the attached reverse index"
@@ -2533,7 +2540,7 @@ async fn engine_spawn_resource_rotation_fanout_rejects_duplicate_driver() {
     // rotation has a row to fan to.
     engine.resource_fanout_index().bind(
         cid,
-        Recording::key(),
+        nebula_resource::key_of::<Recording>(),
         scope.clone(),
         "db",
         slot_identity.clone(),
@@ -2838,7 +2845,7 @@ async fn reauth_required_denies_until_reauthentication_then_serves() {
     let index = Arc::new(ResourceFanoutIndex::new());
     index.bind_test(
         credential_id,
-        ReplacementResource::key(),
+        nebula_resource::key_of::<ReplacementResource>(),
         ScopeLevel::Global,
         "db",
         identity.clone(),
@@ -2922,7 +2929,7 @@ async fn an_abandoned_revoke_between_scans_readmits_without_closing() {
     let index = Arc::new(ResourceFanoutIndex::new());
     index.bind_test(
         credential_id,
-        ReplacementResource::key(),
+        nebula_resource::key_of::<ReplacementResource>(),
         ScopeLevel::Global,
         "db",
         identity.clone(),
@@ -2963,12 +2970,16 @@ async fn an_abandoned_revoke_between_scans_readmits_without_closing() {
     .await;
 
     let ticket = manager
-        .credential_gate_ticket(&ReplacementResource::key(), &ScopeLevel::Global, &identity)
+        .credential_gate_ticket(
+            &nebula_resource::key_of::<ReplacementResource>(),
+            &ScopeLevel::Global,
+            &identity,
+        )
         .expect("ticket");
     assert_eq!(
         manager
             .reopen_credential_row(
-                &ReplacementResource::key(),
+                &nebula_resource::key_of::<ReplacementResource>(),
                 &ScopeLevel::Global,
                 &identity,
                 "db",

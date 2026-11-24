@@ -829,7 +829,6 @@ async fn dispatch_refresh_empty_is_noop() {
 // slot-identity-pinned ports the fan-out calls.
 // ────────────────────────────────────────────────────────────────────
 mod fanout_dispatch {
-    use crate::resource::ProviderKey;
     use std::collections::HashMap;
     use std::future::Future;
     use std::sync::{
@@ -1120,7 +1119,13 @@ mod fanout_dispatch {
                 .await
                 .expect("warm tenant runtime");
 
-            idx.bind(cid, CtlResource::key(), scope.clone(), "db", id.clone());
+            idx.bind(
+                cid,
+                crate::key_of::<CtlResource>(),
+                scope.clone(),
+                "db",
+                id.clone(),
+            );
         }
 
         (idx, mgr, cid, scope, org, ledger)
@@ -1155,7 +1160,7 @@ mod fanout_dispatch {
     async fn staged_only_material_dispatch_remains_incomplete() {
         let index = ResourceFanoutIndex::new();
         let credential_id = CredentialId::new();
-        let key = CtlResource::key();
+        let key = crate::key_of::<CtlResource>();
         let scope = ScopeLevel::Global;
         let identity = SlotIdentity::from_bindings([("db", "staged-only")]);
         index.stage_bind_with_context(
@@ -1209,13 +1214,17 @@ mod fanout_dispatch {
         ledger.set(identity.clone(), Behaviour::FastOk);
 
         let managed = manager
-            .lookup_any_for_slot_identity_structural(&CtlResource::key(), &scope, &identity)
+            .lookup_any_for_slot_identity_structural(
+                &crate::key_of::<CtlResource>(),
+                &scope,
+                &identity,
+            )
             .expect("registered row");
         let tainted = manager
-            .taint_slot_for_identity(&CtlResource::key(), scope, "db", &identity)
+            .taint_slot_for_identity(&crate::key_of::<CtlResource>(), scope, "db", &identity)
             .expect("taint");
         drop(tainted);
-        index.remember_pending_revoke(credential_id, CtlResource::key(), "db", managed);
+        index.remember_pending_revoke(credential_id, crate::key_of::<CtlResource>(), "db", managed);
 
         let outcome = index.retry_pending_revoke_admissions(&manager).await;
         assert_eq!(outcome.success(), 1);
@@ -1230,13 +1239,17 @@ mod fanout_dispatch {
             setup(std::slice::from_ref(&identity)).await;
         ledger.set(identity.clone(), Behaviour::Block);
         let managed = manager
-            .lookup_any_for_slot_identity_structural(&CtlResource::key(), &scope, &identity)
+            .lookup_any_for_slot_identity_structural(
+                &crate::key_of::<CtlResource>(),
+                &scope,
+                &identity,
+            )
             .expect("registered row");
         let tainted = manager
-            .taint_slot_for_identity(&CtlResource::key(), scope, "db", &identity)
+            .taint_slot_for_identity(&crate::key_of::<CtlResource>(), scope, "db", &identity)
             .expect("taint");
         drop(tainted);
-        index.remember_pending_revoke(credential_id, CtlResource::key(), "db", managed);
+        index.remember_pending_revoke(credential_id, crate::key_of::<CtlResource>(), "db", managed);
 
         let outcome = index
             .reconcile_material(
@@ -1263,13 +1276,27 @@ mod fanout_dispatch {
 
         for identity in [&blocked, &fast] {
             let managed = manager
-                .lookup_any_for_slot_identity_structural(&CtlResource::key(), &scope, identity)
+                .lookup_any_for_slot_identity_structural(
+                    &crate::key_of::<CtlResource>(),
+                    &scope,
+                    identity,
+                )
                 .expect("registered sibling");
             let tainted = manager
-                .taint_slot_for_identity(&CtlResource::key(), scope.clone(), "db", identity)
+                .taint_slot_for_identity(
+                    &crate::key_of::<CtlResource>(),
+                    scope.clone(),
+                    "db",
+                    identity,
+                )
                 .expect("taint sibling");
             drop(tainted);
-            index.remember_pending_revoke(credential_id, CtlResource::key(), "db", managed);
+            index.remember_pending_revoke(
+                credential_id,
+                crate::key_of::<CtlResource>(),
+                "db",
+                managed,
+            );
         }
 
         let retry = tokio::spawn({
@@ -1301,11 +1328,11 @@ mod fanout_dispatch {
             .next()
             .expect("old published binding");
 
-        index.unbind_resource_identity(&CtlResource::key(), &scope, &identity);
+        index.unbind_resource_identity(&crate::key_of::<CtlResource>(), &scope, &identity);
         let successor_credential = CredentialId::new();
         index.bind(
             successor_credential,
-            CtlResource::key(),
+            crate::key_of::<CtlResource>(),
             scope.clone(),
             "db",
             identity.clone(),
@@ -1336,7 +1363,7 @@ mod fanout_dispatch {
                 &index,
                 &successor_credential,
                 &Bind {
-                    resource_key: CtlResource::key(),
+                    resource_key: crate::key_of::<CtlResource>(),
                     scope,
                     slot_name: "db".to_owned(),
                     slot_identity: identity,
@@ -1357,11 +1384,11 @@ mod fanout_dispatch {
             .next()
             .expect("old published binding");
 
-        index.unbind_resource_identity(&CtlResource::key(), &scope, &identity);
+        index.unbind_resource_identity(&crate::key_of::<CtlResource>(), &scope, &identity);
         let successor_credential = CredentialId::new();
         index.bind(
             successor_credential,
-            CtlResource::key(),
+            crate::key_of::<CtlResource>(),
             scope.clone(),
             "db",
             identity.clone(),
@@ -1447,13 +1474,17 @@ mod fanout_dispatch {
         let second = CredentialId::new();
         index.bind(
             second,
-            CtlResource::key(),
+            crate::key_of::<CtlResource>(),
             scope.clone(),
             "secondary",
             identity.clone(),
         );
         let managed = manager
-            .lookup_any_for_slot_identity_structural(&CtlResource::key(), &scope, &identity)
+            .lookup_any_for_slot_identity_structural(
+                &crate::key_of::<CtlResource>(),
+                &scope,
+                &identity,
+            )
             .expect("registered row");
         managed.set_phase(crate::state::ResourcePhase::Initializing);
         let owner = TenantScope::new("org", "workspace");
@@ -1479,7 +1510,11 @@ mod fanout_dispatch {
         let (index, manager, credential_id, scope, org, _ledger) =
             setup(std::slice::from_ref(&identity)).await;
         let managed = manager
-            .lookup_any_for_slot_identity_structural(&CtlResource::key(), &scope, &identity)
+            .lookup_any_for_slot_identity_structural(
+                &crate::key_of::<CtlResource>(),
+                &scope,
+                &identity,
+            )
             .expect("registered row");
         let owner = TenantScope::new("org", "workspace");
         let credential_key: CredentialKey = "oauth".parse().expect("credential key");
@@ -1529,7 +1564,11 @@ mod fanout_dispatch {
 
         assert_eq!(outcome.failed(), 0);
         let managed = manager
-            .lookup_any_for_slot_identity_structural(&CtlResource::key(), &scope, &identity)
+            .lookup_any_for_slot_identity_structural(
+                &crate::key_of::<CtlResource>(),
+                &scope,
+                &identity,
+            )
             .expect("registered row");
         assert!(managed.is_tainted());
     }
@@ -1540,21 +1579,21 @@ mod fanout_dispatch {
         let second_identity = SlotIdentity::from_bindings([("db", "following-revoke")]);
         let (index, manager, initial_credential, scope, _org, ledger) =
             setup(&[first_identity.clone(), second_identity.clone()]).await;
-        index.unbind_resource_identity(&CtlResource::key(), &scope, &first_identity);
-        index.unbind_resource_identity(&CtlResource::key(), &scope, &second_identity);
+        index.unbind_resource_identity(&crate::key_of::<CtlResource>(), &scope, &first_identity);
+        index.unbind_resource_identity(&crate::key_of::<CtlResource>(), &scope, &second_identity);
 
         let first_credential = initial_credential;
         let second_credential = CredentialId::new();
         index.bind(
             first_credential,
-            CtlResource::key(),
+            crate::key_of::<CtlResource>(),
             scope.clone(),
             "db",
             first_identity.clone(),
         );
         index.bind(
             second_credential,
-            CtlResource::key(),
+            crate::key_of::<CtlResource>(),
             scope.clone(),
             "db",
             second_identity.clone(),
@@ -1591,7 +1630,7 @@ mod fanout_dispatch {
             loop {
                 let second = manager
                     .lookup_any_for_slot_identity_structural(
-                        &CtlResource::key(),
+                        &crate::key_of::<CtlResource>(),
                         &scope,
                         &second_identity,
                     )
@@ -1623,25 +1662,38 @@ mod fanout_dispatch {
         let (index, manager, credential_id, scope, _org, _ledger) =
             setup(&[first.clone(), second.clone()]).await;
         let first_managed = manager
-            .lookup_any_for_slot_identity_structural(&CtlResource::key(), &scope, &first)
+            .lookup_any_for_slot_identity_structural(
+                &crate::key_of::<CtlResource>(),
+                &scope,
+                &first,
+            )
             .expect("first row");
         let second_managed = manager
-            .lookup_any_for_slot_identity_structural(&CtlResource::key(), &scope, &second)
+            .lookup_any_for_slot_identity_structural(
+                &crate::key_of::<CtlResource>(),
+                &scope,
+                &second,
+            )
             .expect("second row");
         index.remember_pending_revoke(
             credential_id,
-            CtlResource::key(),
+            crate::key_of::<CtlResource>(),
             "db",
             Arc::clone(&first_managed),
         );
         index.remember_pending_revoke(
             credential_id,
-            CtlResource::key(),
+            crate::key_of::<CtlResource>(),
             "db",
             Arc::clone(&second_managed),
         );
 
-        index.unbind_removed_resource_identity(&CtlResource::key(), &scope, &first, &first_managed);
+        index.unbind_removed_resource_identity(
+            &crate::key_of::<CtlResource>(),
+            &scope,
+            &first,
+            &first_managed,
+        );
 
         let pending = index.pending_revokes();
         assert_eq!(pending.len(), 1);
@@ -1656,13 +1708,17 @@ mod fanout_dispatch {
         ledger.set(identity.clone(), Behaviour::FastOk);
 
         let managed = manager
-            .lookup_any_for_slot_identity_structural(&CtlResource::key(), &scope, &identity)
+            .lookup_any_for_slot_identity_structural(
+                &crate::key_of::<CtlResource>(),
+                &scope,
+                &identity,
+            )
             .expect("registered row");
         let tainted = manager
-            .taint_slot_for_identity(&CtlResource::key(), scope, "db", &identity)
+            .taint_slot_for_identity(&crate::key_of::<CtlResource>(), scope, "db", &identity)
             .expect("taint");
         drop(tainted);
-        index.remember_pending_revoke(credential_id, CtlResource::key(), "db", managed);
+        index.remember_pending_revoke(credential_id, crate::key_of::<CtlResource>(), "db", managed);
 
         let event = index
             .dispatch_revoke(credential_id, &manager, Duration::from_secs(1))
@@ -1694,13 +1750,17 @@ mod fanout_dispatch {
             .await
             .expect("hold row in flight");
         let managed = manager
-            .lookup_any_for_slot_identity_structural(&CtlResource::key(), &scope, &identity)
+            .lookup_any_for_slot_identity_structural(
+                &crate::key_of::<CtlResource>(),
+                &scope,
+                &identity,
+            )
             .expect("registered row");
         let tainted = manager
-            .taint_slot_for_identity(&CtlResource::key(), scope, "db", &identity)
+            .taint_slot_for_identity(&crate::key_of::<CtlResource>(), scope, "db", &identity)
             .expect("taint");
         drop(tainted);
-        index.remember_pending_revoke(credential_id, CtlResource::key(), "db", managed);
+        index.remember_pending_revoke(credential_id, crate::key_of::<CtlResource>(), "db", managed);
 
         let retry = tokio::spawn({
             let index = Arc::clone(&index);
@@ -1731,13 +1791,17 @@ mod fanout_dispatch {
         let index = Arc::new(index);
         ledger.set(identity.clone(), Behaviour::Block);
         let managed = manager
-            .lookup_any_for_slot_identity_structural(&CtlResource::key(), &scope, &identity)
+            .lookup_any_for_slot_identity_structural(
+                &crate::key_of::<CtlResource>(),
+                &scope,
+                &identity,
+            )
             .expect("registered row");
         let tainted = manager
-            .taint_slot_for_identity(&CtlResource::key(), scope, "db", &identity)
+            .taint_slot_for_identity(&crate::key_of::<CtlResource>(), scope, "db", &identity)
             .expect("taint");
         drop(tainted);
-        index.remember_pending_revoke(credential_id, CtlResource::key(), "db", managed);
+        index.remember_pending_revoke(credential_id, crate::key_of::<CtlResource>(), "db", managed);
 
         let retry = tokio::spawn({
             let index = Arc::clone(&index);
@@ -1777,13 +1841,22 @@ mod fanout_dispatch {
             .await
             .expect("hold row in flight");
         let managed = manager
-            .lookup_any_for_slot_identity_structural(&CtlResource::key(), &scope, &identity)
+            .lookup_any_for_slot_identity_structural(
+                &crate::key_of::<CtlResource>(),
+                &scope,
+                &identity,
+            )
             .expect("registered row");
         let tainted = manager
-            .taint_slot_for_identity(&CtlResource::key(), scope.clone(), "db", &identity)
+            .taint_slot_for_identity(
+                &crate::key_of::<CtlResource>(),
+                scope.clone(),
+                "db",
+                &identity,
+            )
             .expect("taint");
         drop(tainted);
-        index.remember_pending_revoke(credential_id, CtlResource::key(), "db", managed);
+        index.remember_pending_revoke(credential_id, crate::key_of::<CtlResource>(), "db", managed);
 
         let retry = tokio::spawn({
             let index = Arc::clone(&index);
@@ -1794,7 +1867,7 @@ mod fanout_dispatch {
             tokio::task::yield_now().await;
         }
         manager
-            .remove_for(&CtlResource::key(), &scope, &identity)
+            .remove_for(&crate::key_of::<CtlResource>(), &scope, &identity)
             .expect("remove pinned row");
         drop(held);
 
@@ -2499,15 +2572,16 @@ mod fanout_dispatch {
         };
 
         // Phase 1: synchronous taint, outside any timeout.
-        let tainted = match mgr.taint_slot_for_identity(&CtlResource::key(), scope, "db", &id) {
-            Ok(t) => t,
-            Err(e) => {
-                // guard-justified: the row was just registered+warmed by
-                // `setup`, so phase-1 resolution cannot fail here; a
-                // failure is a broken-test invariant, not a runtime path.
-                unreachable!("taint_slot_for must resolve the freshly bound row: {e}")
-            },
-        };
+        let tainted =
+            match mgr.taint_slot_for_identity(&crate::key_of::<CtlResource>(), scope, "db", &id) {
+                Ok(t) => t,
+                Err(e) => {
+                    // guard-justified: the row was just registered+warmed by
+                    // `setup`, so phase-1 resolution cannot fail here; a
+                    // failure is a broken-test invariant, not a runtime path.
+                    unreachable!("taint_slot_for must resolve the freshly bound row: {e}")
+                },
+            };
 
         // Phase 2 constructed, polled until it parks in the per-resource
         // drain (the held guard keeps the counter > 0), then explicitly

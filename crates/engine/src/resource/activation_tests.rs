@@ -1,4 +1,3 @@
-use nebula_resource::ProviderKey;
 use std::{
     collections::BTreeMap,
     future::Future,
@@ -1431,7 +1430,9 @@ async fn a_row_of_another_kind_than_the_binding_is_refused() {
     let fixture = Fixture::new();
     let (resource_id, _) = fixture.store_row("activation.plain", "a", &[]).await;
     std::assert_matches!(
-        fixture.activate(resource_id, &Slotted::key()).await,
+        fixture
+            .activate(resource_id, &nebula_resource::key_of::<Slotted>())
+            .await,
         Err(StoredResourceActivationError::KindMismatch { .. })
     );
 }
@@ -1439,7 +1440,7 @@ async fn a_row_of_another_kind_than_the_binding_is_refused() {
 #[tokio::test]
 async fn credential_bindings_are_checked_against_the_declared_slots() {
     let fixture = Fixture::new();
-    let key = Slotted::key();
+    let key = nebula_resource::key_of::<Slotted>();
     let credential = CredentialId::new().to_string();
 
     let (row, _) = fixture

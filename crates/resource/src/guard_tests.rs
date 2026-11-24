@@ -1,5 +1,4 @@
 use super::*;
-use crate::resource::ProviderKey;
 use crate::{
     AcquireOptions, Manager, RegistrationSpec,
     dedup::SlotIdentity,
@@ -136,7 +135,7 @@ async fn manager_guard_borrows_non_clone_entry_and_releases_once() {
     assert_eq!(guard.value, 42);
     assert_eq!(guard.as_inner().value, 42);
     assert_eq!(guard.guard_kind(), "resource");
-    assert_eq!(guard.resource_key(), &DummyResource::key());
+    assert_eq!(guard.resource_key(), &crate::key_of::<DummyResource>());
     assert_eq!(guard.topology_tag(), TopologyTag::Pool);
     assert_eq!(guard.generation(), 0);
     assert!(guard.acquired_at().elapsed() < Duration::from_secs(1));
@@ -278,7 +277,7 @@ async fn hold_watchdog_emits_when_lease_overruns_deadline() {
             workflow_id,
             ..
         } => {
-            assert_eq!(key, DummyResource::key());
+            assert_eq!(key, crate::key_of::<DummyResource>());
             assert_eq!(deadline, Duration::from_secs(1));
             assert_eq!(execution_id, ctx.execution_id());
             assert_eq!(workflow_id, ctx.scope().workflow_id);

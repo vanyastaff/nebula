@@ -43,7 +43,7 @@
 //!    use.
 //! 2. **Removal-funnel** — raw `Manager` mutation is the caller's concern;
 //!    teardown must route through a `PluginHandle` (engine-side).
-//! 3. **Key-coherence** — `factory.key() == <R as ProviderKey>::key()`.
+//! 3. **Key-coherence** — `factory.key() == crate::key_of::<R>()`.
 //! 4. **Factory provenance** — downstream code cannot implement
 //!    `ResourceFactory`; metadata, `TypeId`, and registration identity are
 //!    projections of one crate-issued typed activator.
@@ -65,7 +65,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use crate::resource::{ProviderKey, ResourceDefinition};
+use crate::resource::ResourceDefinition;
 use crate::topology::{ConfigurableTopology, Topology};
 use crate::{Manager, ScopeLevel, SlotIdentity, recovery::RecoveryGate, resource::Provider};
 use nebula_core::{CredentialId, Dependencies, SlotKind};
@@ -485,7 +485,7 @@ pub trait ResourceFactory: private::Sealed + Send + Sync + 'static {
     ///
     /// # Errors
     /// Returns a typed catalog error if the definition or configuration schema is invalid.
-    fn definition(&self) -> Result<&ResourceDefinition, crate::MetadataBuildError>;
+    fn definition(&self) -> Result<&ResourceDefinition, crate::ResourceAdmissionError>;
 
     /// Validate `config_json` against this resource's `R::Config` schema
     /// **without registering anything**.
@@ -599,10 +599,10 @@ pub trait ResourceFactory: private::Sealed + Send + Sync + 'static {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::MetadataBuildError`] if the settings schema is invalid.
+    /// Returns [`crate::ResourceAdmissionError`] if the settings schema is invalid.
     fn topology_schema(
         &self,
-    ) -> Result<Option<nebula_schema::ValidSchema>, crate::MetadataBuildError>;
+    ) -> Result<Option<nebula_schema::ValidSchema>, crate::ResourceAdmissionError>;
 
     /// Construct and register this resource type against `manager` using the
     /// caller-threaded [`RegisterRequest`] plus the per-`R` resource and
@@ -669,7 +669,7 @@ where
     topology_factory: FTopo,
     topology_schema: Option<TopologySchemaFn>,
     dependencies: Dependencies,
-    definition: OnceLock<Result<ResourceDefinition, crate::MetadataBuildError>>,
+    definition: OnceLock<Result<ResourceDefinition, crate::ResourceAdmissionError>>,
     // Zero-sized marker — `R` is not stored but bounds the `impl`.
     _marker: std::marker::PhantomData<fn() -> R>,
 }
@@ -686,7 +686,7 @@ where
         // `Debug` and neither should be invoked just to print it. Identify
         // the activator by the resource key it constructs instead.
         f.debug_struct("KindActivator")
-            .field("key", &<R as ProviderKey>::key())
+            .field("key", &crate::key_of::<R>())
             .finish_non_exhaustive()
     }
 }
@@ -718,9 +718,9 @@ where
         }
     }
 
-    fn admit_definition(&self) -> Result<ResourceDefinition, crate::MetadataBuildError> {
+    fn admit_definition(&self) -> Result<ResourceDefinition, crate::ResourceAdmissionError> {
         let schema = nebula_schema::schema_of::<R::Config>()?;
-        ResourceDefinition::admit(R::key(), R::metadata(), schema)
+        ResourceDefinition::admit(crate::key_of::<R>(), R::metadata(), schema)
     }
 }
 
@@ -781,7 +781,7 @@ where
         Fn(Option<&serde_json::Value>) -> Result<R::Topology, crate::Error> + Send + Sync + 'static,
 {
     fn key(&self) -> nebula_core::ResourceKey {
-        <R as ProviderKey>::key()
+        crate::key_of::<R>()
     }
 
     fn dependencies(&self) -> &Dependencies {
@@ -796,10 +796,10 @@ where
         level = "debug",
         name = "resource.factory.admit_metadata",
         skip_all,
-        fields(resource_key = %R::key()),
+        fields(resource_key = %crate::key_of::<R>()),
         err
     )]
-    fn definition(&self) -> Result<&ResourceDefinition, crate::MetadataBuildError> {
+    fn definition(&self) -> Result<&ResourceDefinition, crate::ResourceAdmissionError> {
         self.definition
             .get_or_init(|| self.admit_definition())
             .as_ref()
@@ -822,7 +822,7 @@ where
     fn validate_topology(&self, settings: Option<&serde_json::Value>) -> Result<(), crate::Error> {
         (self.topology_factory)(settings)
             .map(drop)
-            .map_err(|error| error.with_resource_key(R::key()))
+            .map_err(|error| error.with_resource_key(crate::key_of::<R>()))
     }
 
     fn resilience_policy(&self) -> crate::rate_limit::ResiliencePolicy {
@@ -831,9 +831,9 @@ where
 
     fn topology_schema(
         &self,
-    ) -> Result<Option<nebula_schema::ValidSchema>, crate::MetadataBuildError> {
+    ) -> Result<Option<nebula_schema::ValidSchema>, crate::ResourceAdmissionError> {
         self.topology_schema
-            .map(|schema| schema().map_err(crate::MetadataBuildError::from))
+            .map(|schema| schema().map_err(crate::ResourceAdmissionError::from))
             .transpose()
     }
 
@@ -864,7 +864,7 @@ where
                     .with_source(source)
             })?;
             let topology = (self.topology_factory)(request.topology.as_ref())
-                .map_err(|error| error.with_resource_key(R::key()))?;
+                .map_err(|error| error.with_resource_key(crate::key_of::<R>()))?;
             // The manager bounds the requested rate by `R`'s policy on
             // registration, so a document stored before the policy tightened
             // still fails closed.
@@ -872,7 +872,7 @@ where
                 request.resilience_override.as_ref(),
             )
             .and_then(|document| Ok((document.requested_rate()?, document.requested_keyed()?)))
-            .map_err(|error| error.with_resource_key(R::key()))?;
+            .map_err(|error| error.with_resource_key(crate::key_of::<R>()))?;
             let rate_limit = (rate.is_some() || !keyed.is_empty() || request.limit_key.is_some())
                 .then(|| crate::rate_limit::RowLimit {
                     rate,
@@ -900,14 +900,14 @@ where
                         return Err(crate::Error::permanent(
                             "initial credential slot population was not installed",
                         )
-                        .with_resource_key(R::key()));
+                        .with_resource_key(crate::key_of::<R>()));
                     },
                     Err(source) => {
                         return Err(crate::Error::permanent(
                             "initial credential slot population failed",
                         )
                         .with_source(source)
-                        .with_resource_key(R::key()));
+                        .with_resource_key(crate::key_of::<R>()));
                     },
                 }
             }
@@ -919,13 +919,13 @@ where
                     return Err(crate::Error::permanent(
                         "rotation binding requires owner-qualified credential scope",
                     )
-                    .with_resource_key(R::key()));
+                    .with_resource_key(crate::key_of::<R>()));
                 };
                 if !resource.supports_credential_slot_projection(&binding.slot_name) {
                     return Err(crate::Error::permanent(
                         "rotation binding requires conditional credential projection support",
                     )
-                    .with_resource_key(R::key()));
+                    .with_resource_key(crate::key_of::<R>()));
                 }
                 let Some((generation, installed)) =
                     resource.credential_slot_projection(&binding.slot_name)
@@ -933,13 +933,13 @@ where
                     return Err(crate::Error::permanent(
                         "rotation binding projection snapshot is unavailable",
                     )
-                    .with_resource_key(R::key()));
+                    .with_resource_key(crate::key_of::<R>()));
                 };
                 if installed.is_none() && generation != 0 {
                     return Err(crate::Error::permanent(
                         "rotation-bound credential slot changed without projection metadata",
                     )
-                    .with_resource_key(R::key()));
+                    .with_resource_key(crate::key_of::<R>()));
                 }
                 if let Some(installed) = installed
                     && (installed.credential_id() != credential_id
@@ -949,7 +949,7 @@ where
                     return Err(crate::Error::permanent(
                         "rotation-bound credential install metadata mismatch",
                     )
-                    .with_resource_key(R::key()));
+                    .with_resource_key(crate::key_of::<R>()));
                 }
             }
             manager
@@ -1015,13 +1015,13 @@ impl ResourceActivatorRegistry {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::MetadataBuildError`] when the resource's canonical
+    /// Returns [`crate::ResourceAdmissionError`] when the resource's canonical
     /// configuration schema cannot be derived.
     pub fn insert(
         &mut self,
         kind: impl Into<String>,
         factory: Arc<dyn ResourceFactory>,
-    ) -> Result<Option<Arc<dyn ResourceFactory>>, crate::MetadataBuildError> {
+    ) -> Result<Option<Arc<dyn ResourceFactory>>, crate::ResourceAdmissionError> {
         factory.definition()?;
         Ok(self.factories.insert(kind.into(), factory))
     }

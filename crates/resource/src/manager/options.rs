@@ -7,7 +7,6 @@
 //! - [`ShutdownConfig`] — graceful shutdown tuning
 //! - [`DrainTimeoutPolicy`] — what to do on drain timeout (#302)
 
-use crate::resource::ProviderKey;
 use std::{sync::Arc, time::Duration};
 
 use nebula_core::ScopeLevel;
@@ -441,7 +440,7 @@ impl<R: Provider> std::fmt::Debug for RegistrationSpec<R> {
         // guard behind a slot cell) — identify the spec by its registry
         // coordinates instead of the opaque payload.
         f.debug_struct("RegistrationSpec")
-            .field("key", &R::key())
+            .field("key", &crate::key_of::<R>())
             .field("scope", &self.scope)
             .field("slot_identity", &self.slot_identity)
             .field("recovery_gate", &self.recovery_gate.is_some())

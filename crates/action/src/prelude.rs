@@ -43,8 +43,8 @@ pub use crate::{
     idempotency::IdempotencyKey,
     input::{ActionInput, PreparedActionInput},
     metadata::{
-        ActionDefinition, ActionMetadata, ActionMetadataAdmissionError,
-        ActionMetadataReadmissionError, MetadataCompatibilityError, RecordedActionDefinition,
+        ActionAdmissionError, ActionCompatibilityError, ActionDefinition, ActionMetadata,
+        ActionReadmissionError, RecordedActionDefinition,
     },
     output::{
         ActionOutput, DeferredOutput, ExpectedOutput, Producer, ProducerKind, Progress, Resolution,

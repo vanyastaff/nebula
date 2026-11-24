@@ -7,7 +7,7 @@
 //! - No `#[resource(...)]` container attribute is required.
 
 use nebula_resource::topology::resident::ResidentProvider;
-use nebula_resource::{Error, ProviderKey, Resident, Resource, ResourceContext, resource::Provider};
+use nebula_resource::{Error, Resident, Resource, ResourceContext, resource::Provider};
 
 #[derive(Clone, Resource)]
 struct UnitResource;
@@ -41,7 +41,7 @@ impl Provider for UnitResource {
 impl ResidentProvider for UnitResource {}
 
 fn main() {
-    let _ = <UnitResource as ProviderKey>::key();
+    let _ = nebula_resource::key_of::<UnitResource>();
     // A slot-less resource pins nothing for the managed call facade.
     let (): <UnitResource as nebula_resource::PinSlots>::Pinned =
         nebula_resource::PinSlots::pin_slots(&UnitResource);

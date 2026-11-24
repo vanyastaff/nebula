@@ -18,7 +18,6 @@
 //! its `0` default to prove the separation does **not** rely on the author
 //! overriding it (a discipline-based defence, explicitly rejected).
 
-use nebula_resource::ProviderKey;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -634,7 +633,11 @@ async fn remove_for_removes_one_tenant_row_and_keeps_siblings() {
 
     // Remove ONLY tenant A's resolved row.
     manager
-        .remove_for(&CountingResource::key(), &scope, &id_a)
+        .remove_for(
+            &nebula_resource::key_of::<CountingResource>(),
+            &scope,
+            &id_a,
+        )
         .expect("remove_for must succeed for a row that exists");
 
     // Tenant A's row is gone: acquiring it now fails.
@@ -660,7 +663,11 @@ async fn remove_for_removes_one_tenant_row_and_keeps_siblings() {
     // A second `remove_for` on the now-absent row is a clean NotFound, not
     // a panic or a silent no-op success.
     let repeat_err = manager
-        .remove_for(&CountingResource::key(), &scope, &id_a)
+        .remove_for(
+            &nebula_resource::key_of::<CountingResource>(),
+            &scope,
+            &id_a,
+        )
         .expect_err("remove_for on an already-removed row must report NotFound");
     assert!(!repeat_err.is_retryable());
 }

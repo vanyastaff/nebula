@@ -2,7 +2,6 @@
 //! `register_resolved` entry, the shared config-validation seam, typed
 //! lookup, hot config reload, and removal.
 
-use crate::resource::ProviderKey;
 use std::sync::{Arc, atomic::AtomicU64};
 
 use nebula_core::{ResourceKey, ScopeLevel};
@@ -48,16 +47,16 @@ impl Manager {
         let input = input.unwrap_or_default();
         let rate = policy
             .effective_rate(input.rate)
-            .map_err(|error| error.with_resource_key(R::key()))?;
+            .map_err(|error| error.with_resource_key(crate::key_of::<R>()))?;
         let keyed = policy
             .effective_keyed(&input.keyed)
-            .map_err(|error| error.with_resource_key(R::key()))?;
+            .map_err(|error| error.with_resource_key(crate::key_of::<R>()))?;
         if rate.is_none() && keyed.is_empty() {
             return Ok(Arc::new(ResourceLimiter::new(
                 None,
                 None,
                 policy.penalty_cap(),
-                R::key(),
+                crate::key_of::<R>(),
                 Arc::clone(&self.event_bus),
             )));
         }
@@ -67,7 +66,7 @@ impl Manager {
             (Some(key), scope_kind, shared) => {
                 if scope_kind == LimitScope::Cluster && shared.is_none() {
                     tracing::warn!(
-                        resource.key = %R::key(),
+                        resource.key = %crate::key_of::<R>(),
                         "cluster-wide rate limit enforced per process: no shared limit store configured"
                     );
                 }
@@ -76,18 +75,22 @@ impl Manager {
             (None, scope_kind, shared) => {
                 if scope_kind == LimitScope::Cluster && shared.is_some() {
                     tracing::warn!(
-                        resource.key = %R::key(),
+                        resource.key = %crate::key_of::<R>(),
                         "cluster-wide rate limit enforced per process: the row names no limit key"
                     );
                 }
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
                 scope.hash(&mut hasher);
                 slot_identity.hash(&mut hasher);
-                let key = LimitKey::new(format!("row:{}:{:016x}", R::key(), hasher.finish()))
-                    .map_err(|_| {
-                        Error::permanent("resource key does not form a valid rate-limit key")
-                            .with_resource_key(R::key())
-                    })?;
+                let key = LimitKey::new(format!(
+                    "row:{}:{:016x}",
+                    crate::key_of::<R>(),
+                    hasher.finish()
+                ))
+                .map_err(|_| {
+                    Error::permanent("resource key does not form a valid rate-limit key")
+                        .with_resource_key(crate::key_of::<R>())
+                })?;
                 (local, key)
             },
         };
@@ -98,7 +101,7 @@ impl Manager {
                 Error::permanent(format!(
                     "per-key limit `{dimension}` does not form a valid rate-limit key"
                 ))
-                .with_resource_key(R::key())
+                .with_resource_key(crate::key_of::<R>())
             })?;
         }
         let keyed =
@@ -107,7 +110,7 @@ impl Manager {
             rate.map(|rate| Quota::new(store, key, rate)),
             keyed,
             policy.penalty_cap(),
-            R::key(),
+            crate::key_of::<R>(),
             Arc::clone(&self.event_bus),
         )))
     }
@@ -141,7 +144,7 @@ impl Manager {
     /// before registration.
     ///
     /// The resource is wrapped in a [`ManagedResource`] and stored in the
-    /// registry under `R::key()`. If a resource with the same key, scope,
+    /// registry under `key_of::<R>()`. If a resource with the same key, scope,
     /// and slot identity is already registered, its row is replaced. The old
     /// runtime is fenced and queued for cleanup; existing leases retain their
     /// ownership until release. Registration is rejected once shutdown starts.
@@ -270,7 +273,7 @@ impl Manager {
             && !Topology::<R>::handles_own_revoke(&topology)
         {
             tracing::warn!(
-                resource.key = %R::key(),
+                resource.key = %crate::key_of::<R>(),
                 topology = ?Topology::<R>::tag(&topology),
                 slot_count = credential_slot_names.len(),
                 "registration rejected: credential-bearing non-pooling topology has no revoke policy"
@@ -279,13 +282,13 @@ impl Manager {
                 "credential-bearing non-pooling topology must handle its own revoke; \
                  implement the topology revoke policy before registration",
             )
-            .with_resource_key(R::key()));
+            .with_resource_key(crate::key_of::<R>()));
         }
 
         let credential_reads = self.credential_reads_for::<R>(&resource)?;
         // Validation events (e.g. a field without a stable fingerprint)
         // carry the row's resource key.
-        tracing::info_span!("resource.config.validate", resource.key = %R::key(), op = "register")
+        tracing::info_span!("resource.config.validate", resource.key = %crate::key_of::<R>(), op = "register")
             .in_scope(|| config.validate())?;
         let rate_limiter = self.row_limiter::<R>(rate_limit, &scope, &slot_identity)?;
 
@@ -298,7 +301,7 @@ impl Manager {
         // derive-emitted one, which uses `PoolConfig::default()`) runs with
         // no arguments, so operator JSON configures `R::Config` only.
 
-        let key = R::key();
+        let key = crate::key_of::<R>();
 
         // Wire the manager's event bus into the optional recovery gate so its
         // state transitions emit `ResourceEvent::RecoveryGateChanged`.
@@ -328,7 +331,7 @@ impl Manager {
         // resources.
         if Topology::<R>::tag(&topology) == TopologyTag::Pool && R::declares_credential_slots() {
             tracing::warn!(
-                resource.key = %R::key(),
+                resource.key = %crate::key_of::<R>(),
                 "credentialed pooled resource: `recycle` DISCARDS by default (safe — no cross-lease state bleed), so this pool never reuses instances. Override `PoolProvider::recycle` to wipe per-lease session state (SET/PRAGMA/txn) and return Keep to enable pooling. See ADR-0093."
             );
         }
@@ -554,7 +557,7 @@ impl Manager {
         let weak = Arc::downgrade(managed);
         let cancel = managed.maintenance.cancellation_token();
         let bus = Arc::clone(&self.event_bus);
-        let key = R::key();
+        let key = crate::key_of::<R>();
         // The reaper has no caller-supplied context (it runs on a timer, not
         // behind an acquire) — `minimal` is exactly the "daemon loop" case
         // its doc comment names. It carries the row's registration scope, as
@@ -645,7 +648,7 @@ impl Manager {
     ///   secret-shaped field is rejected here rather than silently ignored
     ///   (product credential boundary). The error names only the offending key,
     ///   never its value.
-    #[tracing::instrument(level = "debug", skip_all, fields(resource_key = %R::key()))]
+    #[tracing::instrument(level = "debug", skip_all, fields(resource_key = %crate::key_of::<R>()))]
     pub(crate) fn validate_config_value_against<R>(
         schema: &nebula_schema::ValidSchema,
         config_json: serde_json::Value,
@@ -721,7 +724,7 @@ impl Manager {
         target = "nebula_resource::register_resolved",
         skip_all,
         fields(
-            resource_key = %R::key(),
+            resource_key = %crate::key_of::<R>(),
             config_ingress = config.kind(),
             slot_count = slot_bindings.len(),
         )
@@ -879,7 +882,7 @@ impl Manager {
             return Err(Error::permanent(
                 "register_resolved: canonical slot identity diverged from the factory request",
             )
-            .with_resource_key(R::key()));
+            .with_resource_key(crate::key_of::<R>()));
         }
 
         // 5. Dispatch into the single typed register funnel via a
@@ -956,7 +959,7 @@ impl Manager {
                 .swap(true, std::sync::atomic::Ordering::AcqRel)
             {
                 tracing::warn!(
-                    resource.key = %R::key(),
+                    resource.key = %crate::key_of::<R>(),
                     profile = crate::CredentialAdmissionProfile::InterimRowGate.as_str(),
                     "credential-bound row registered on a manager without a credential \
                      availability observer: new work is not checked against the credential \
@@ -971,7 +974,7 @@ impl Manager {
             .find(|slot| !resource.supports_credential_slot_projection(slot))
         {
             tracing::warn!(
-                resource.key = %R::key(),
+                resource.key = %crate::key_of::<R>(),
                 slot,
                 "registration rejected: strict credential admission cannot observe a declared slot"
             );
@@ -979,7 +982,7 @@ impl Manager {
                 "strict credential admission cannot observe slot `{slot}`: the resource does \
                  not implement the credential slot projection port"
             ))
-            .with_resource_key(R::key()));
+            .with_resource_key(crate::key_of::<R>()));
         }
         Ok(Some(Arc::clone(reads)))
     }
@@ -1024,7 +1027,7 @@ impl Manager {
                 () = cancel.cancelled() => {},
                 outcome = warmup => {
                     if let Err(fault) = outcome {
-                        fault.observe(&R::key(), "warmup");
+                        fault.observe(&crate::key_of::<R>(), "warmup");
                     }
                 },
             }
@@ -1085,7 +1088,7 @@ impl Manager {
     {
         use crate::resource::ResourceConfig as _;
 
-        tracing::info_span!("resource.config.validate", resource.key = %R::key(), op = "reload")
+        tracing::info_span!("resource.config.validate", resource.key = %crate::key_of::<R>(), op = "reload")
             .in_scope(|| new_config.validate())?;
 
         let managed = self.lookup::<R>(scope)?;
@@ -1133,7 +1136,7 @@ impl Manager {
                 .admission
                 .publish()
                 .map(|generation| generation.seq());
-            tracing::debug!(key = %R::key(), ?admission, "admission generation after reload");
+            tracing::debug!(key = %crate::key_of::<R>(), ?admission, "admission generation after reload");
         }
 
         // #387: return to `Ready` after publishing the new atomic
@@ -1143,7 +1146,9 @@ impl Manager {
         // so `status()` snapshots stay self-consistent.
         managed.set_phase(crate::state::ResourcePhase::Ready);
 
-        self.emit(ResourceEvent::ConfigReloaded { key: R::key() });
+        self.emit(ResourceEvent::ConfigReloaded {
+            key: crate::key_of::<R>(),
+        });
 
         // Reload outcome. The config `ArcSwap` is swapped immediately; the
         // live runtime is rebuilt LAZILY on the next acquire across every
@@ -1155,7 +1160,7 @@ impl Manager {
         // the next acquire without an eager drain-then-rebuild ([#712]).
         let outcome = ReloadOutcome::SwappedImmediately;
 
-        tracing::info!(key = %R::key(), ?outcome, "resource config reloaded");
+        tracing::info!(key = %crate::key_of::<R>(), ?outcome, "resource config reloaded");
         Ok(outcome)
     }
 
@@ -1336,7 +1341,7 @@ fn check_config_fields<E>(
     Ok(())
 }
 
-#[tracing::instrument(level = "debug", skip_all, fields(resource_key = %R::key()), err)]
+#[tracing::instrument(level = "debug", skip_all, fields(resource_key = %crate::key_of::<R>()), err)]
 fn decode_config<R>(resolved: nebula_schema::ResolvedValues) -> Result<R::Config, Error>
 where
     R: Provider,

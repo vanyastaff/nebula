@@ -101,7 +101,7 @@ async fn retiring_maintenance_check_can_await_same_queue_guard_release() {
     async fn acquire(manager: &Arc<crate::Manager>) -> ResourceGuard<Mock> {
         *crate::Manager::acquire_any(
             Arc::clone(manager),
-            &Mock::key(),
+            &crate::key_of::<Mock>(),
             &test_ctx(),
             &AcquireOptions::default(),
             &crate::SlotIdentity::Unbound,
@@ -123,7 +123,7 @@ async fn retiring_maintenance_check_can_await_same_queue_guard_release() {
     resource.park_in_check.store(true, Ordering::SeqCst);
     // The registered pool's owned reaper reaches this explicit hook barrier.
     resource.check_started.notified().await;
-    manager.remove(&Mock::key()).unwrap();
+    manager.remove(&crate::key_of::<Mock>()).unwrap();
     // Retirement was published before the check can submit its dependent release.
     resource.release_check.notify_one();
     tokio::time::timeout(

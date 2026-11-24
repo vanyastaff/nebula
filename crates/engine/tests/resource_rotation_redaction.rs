@@ -48,7 +48,6 @@
 //! `join_all` polls every per-row dispatch future on the calling thread,
 //! so nothing escapes the capture.
 
-use nebula_resource::ProviderKey;
 use std::io::{self, Write};
 use std::sync::{
     Arc, Mutex,
@@ -428,7 +427,13 @@ async fn setup(
             .await
             .expect("warm tenant runtime");
 
-        idx.bind(cid, SecretBearingResource::key(), scope.clone(), "db", id);
+        idx.bind(
+            cid,
+            nebula_resource::key_of::<SecretBearingResource>(),
+            scope.clone(),
+            "db",
+            id,
+        );
     }
 
     (idx, mgr, cid, hook_entered, registry)

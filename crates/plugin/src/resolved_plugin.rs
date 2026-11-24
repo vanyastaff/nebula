@@ -322,13 +322,14 @@ impl ResolvedPlugin {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        projected.sort_by(|left, right| left.metadata.key().cmp(right.metadata.key()));
+        projected
+            .sort_by(|left, right| left.metadata.base().key().cmp(right.metadata.base().key()));
 
         let mut index = HashMap::with_capacity(projected.len());
         for projected in projected {
             // The definition is stamped with `Credential::KEY` at admission, and
             // `AnyCredential` is sealed, so this is the credential's only key.
-            let metadata_key = projected.metadata.key();
+            let metadata_key = projected.metadata.base().key();
             if projected.erased_type_id != projected.downcast_type_id {
                 return Err(PluginError::ComponentTypeMismatch {
                     plugin: plugin_key.clone(),

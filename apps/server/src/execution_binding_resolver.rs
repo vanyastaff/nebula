@@ -10,7 +10,6 @@ use nebula_execution::{
     ExecutionBindingEntryV2, ExecutionBindingManifestV2, ExecutionBindingSiteV2,
     ExecutionBindingTargetV2, ResourceBindingContractV2,
 };
-use nebula_metadata::Definition;
 use nebula_plugin::{
     FrozenPluginRegistry, PlanBindingContract, PlanBindingRequirement,
     PlanBindingSelectorProvenance, PlanBindingSite,

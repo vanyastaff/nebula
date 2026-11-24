@@ -172,7 +172,7 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
    исправлены ранее.
 5. **Двойная поверхность ключа credential — закрыто.** Ключ компонента объявляется один раз
    (`Credential::KEY`, `Provider::KEY`), а допущенное определение получает его при admission,
-   поэтому `credential_key()` и ключ определения не могут разойтись. Сверка в
+   поэтому `AnyCredential::key()` и ключ определения не могут разойтись. Сверка в
    `ResolvedPlugin::from` и ошибки `ComponentKeyMismatch` / `InvalidComponentKey` удалены:
    невалидный литерал ключа теперь ошибка компиляции.
 6. **`lib.rs` и `PluginManifest` — закрыто.** Модульная документация теперь говорит, что тип
@@ -194,11 +194,11 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
   builtin; `credential-runtime`/`builtin`/`testutil`/`vault` удалены). Для plugin это
   меняет **источник** dyn-типа, но не контракт регистрации: `AnyCredential` остаётся
   индексируемым trait-объектом. Если rewrite двинет dyn-поверхность (scheme-enum /
-  Protocol-модель, судьба `credential_key()`), правки локализованы в
+  Protocol-модель, судьба `AnyCredential::key()`), правки локализованы в
   `plugin.rs` / `resolved_plugin.rs` / `registry.rs` (`all_credentials`/`resolve_credential`).
 - **Key-поверхность.** Ключ индекса берётся из допущенного определения
-  (`CredentialDefinition::key()`), которое registry штампует значением `Credential::KEY`.
-  Отдельной сверки с `credential_key()` нет: `AnyCredential` запечатан, и обе поверхности
+  (`CredentialDefinition::base().key()`), которое registry штампует значением `Credential::KEY`.
+  Отдельной сверки с `AnyCredential::key()` нет: `AnyCredential` запечатан, и обе поверхности
   читают одну константу.
 - **Resource seam.** `Plugin::resources()` отдаёт `Vec<Arc<dyn ResourceFactory>>`
   (`src/plugin.rs:61`). Plugin сохраняет factory и её проверенный metadata/dependency/type
@@ -225,7 +225,7 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
 2. **Судьба `plugin_toml` — решено (§6.1).** Парсер остаётся в крейте как маркер для
    pre-compile tooling; документация приведена в соответствие in-process модели.
 3. **Финализировать key-поверхность вслед за credential-rewrite.** Когда
-   `nebula-credential` схлопнёт двойную key-поверхность, убрать сверку `credential_key()` с
+   `nebula-credential` схлопнёт двойную key-поверхность, убрать сверку `AnyCredential::key()` с
    metadata-ключом в `ResolvedPlugin::from` и зафиксировать единственный канонический ключ.
 4. **Обрубленные doc-комментарии — очищены (§6.4).** Не оставлять plan-id в коде.
 5. **Риск каскада dyn-поверхностей.** Поскольку три метода `Plugin` буквально возвращают

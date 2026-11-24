@@ -160,7 +160,10 @@ const FORBIDDEN: &[(&str, &str)] = &[
     ("hidden_resource_register_request", "factory"),
     ("hidden_resource_box_fut", "factory"),
     ("hidden_resource_definition", "ResourceDefinition"),
-    ("hidden_resource_metadata_build_error", "MetadataBuildError"),
+    (
+        "hidden_resource_metadata_build_error",
+        "ResourceAdmissionError",
+    ),
     ("hidden_resource_slot_identity", "SlotIdentity"),
 ];
 
@@ -513,7 +516,7 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
             pub mod resource {
                 pub use nebula_resource::{
                     __assert_provider_key, ConfigFingerprint, Error, HasCredentialSlots, PinSlots,
-                    ResourceConfig, SlotInstallError, SlotUpdate,
+                    ResourceConfig, SlotInstallError, SlotUpdate, key_of,
                 };
                 pub mod contribution {
                     pub use crate::resource_contribution::{
@@ -525,7 +528,7 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
                     reason = "the hidden macro ABI mirrors nebula_resource::resource paths emitted by existing derives"
                 )]
                 pub mod resource {
-                    pub use nebula_resource::resource::{Provider, ProviderKey};
+                    pub use nebula_resource::resource::Provider;
                 }
                 pub mod topology {
                     pub use nebula_resource::topology::{Pooled, Resident, Topology};

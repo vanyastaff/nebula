@@ -22,7 +22,6 @@
 //! `tracing::subscriber::set_global_default` for the test so the
 //! spawned task's spans/events are also captured.
 
-use nebula_resource::ProviderKey;
 use std::io::{self, Write};
 use std::sync::{
     Arc, Mutex,
@@ -301,7 +300,7 @@ async fn wired_rotation_fanout_observability_is_redaction_clean() {
 
     index.bind(
         cid,
-        SecretRes::key(),
+        nebula_resource::key_of::<SecretRes>(),
         scope.clone(),
         "db",
         slot_identity.clone(),

@@ -31,7 +31,6 @@
 //! marks a shared flag. The scenarios drive the precise interleaving that
 //! exposed the defect and assert the fenced outcome.
 
-use nebula_resource::ProviderKey;
 use std::{
     assert_matches,
     future::Future,
@@ -272,7 +271,11 @@ async fn revoked_credential_not_reserved_via_idle_recycle() {
     //    release path), so the pool revoke hook walks nothing — this is the
     //    TOCTOU: the escaped instance is never visited by the hook.
     let outcome = mgr
-        .revoke_slot(&PoolResource::key(), ScopeLevel::Global, "db")
+        .revoke_slot(
+            &nebula_resource::key_of::<PoolResource>(),
+            ScopeLevel::Global,
+            "db",
+        )
         .await
         .expect("revoke_slot must succeed");
     assert_matches!(
@@ -363,7 +366,11 @@ async fn in_flight_create_completing_after_revoke_is_destroyed() {
     //    walk. The taint AND the revoke-counter bump are applied
     //    synchronously here, before the create completes.
     let tainted = mgr
-        .taint_slot(&PoolResource::key(), ScopeLevel::Global, "db")
+        .taint_slot(
+            &nebula_resource::key_of::<PoolResource>(),
+            ScopeLevel::Global,
+            "db",
+        )
         .expect("taint_slot must resolve synchronously");
 
     // 3. Release the parked create so it completes strictly after the
@@ -460,7 +467,11 @@ async fn revoked_pre_existing_idle_instance_not_reserved() {
     //    it revoked — but the entry remains in the idle queue (the hook does
     //    not evict; the revoke counter was bumped synchronously).
     let outcome = mgr
-        .revoke_slot(&PoolResource::key(), ScopeLevel::Global, "db")
+        .revoke_slot(
+            &nebula_resource::key_of::<PoolResource>(),
+            ScopeLevel::Global,
+            "db",
+        )
         .await
         .expect("revoke_slot must succeed");
     assert_matches!(
@@ -563,7 +574,11 @@ async fn warmup_after_revoke_does_not_admit_revoked_instance() {
     //    land first, then the create completes and the counter drops so the
     //    separately-spawned drain can finish.
     let tainted = mgr
-        .taint_slot(&PoolResource::key(), ScopeLevel::Global, "db")
+        .taint_slot(
+            &nebula_resource::key_of::<PoolResource>(),
+            ScopeLevel::Global,
+            "db",
+        )
         .expect("taint_slot must resolve synchronously");
 
     // 3. Release the parked create so the warmed instance completes strictly

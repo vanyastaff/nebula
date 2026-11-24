@@ -4,7 +4,6 @@
 //! caller may stop observing its receipt. Retained cleanup settles separately
 //! so framework cleanup faults cannot overwrite the provider hook outcome.
 
-use crate::resource::ProviderKey;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -311,7 +310,7 @@ where
                         ))
                     },
                     Err(fault) => {
-                        fault.observe(&R::key(), "rotation");
+                        fault.observe(&crate::key_of::<R>(), "rotation");
                         match fault {
                             crate::hook_guard::HookFault::Panicked => {
                                 SlotHookTerminalOutcome::Failed(Error::permanent(
@@ -346,7 +345,7 @@ where
                                 return Ok::<(), Error>(());
                             };
                             tracing::debug!(
-                                resource.key = %R::key(),
+                                resource.key = %crate::key_of::<R>(),
                                 reason = ?blocked.reason(),
                                 "credential rotation waits for retired generations only"
                             );
@@ -356,7 +355,7 @@ where
                                 .await
                                 .map_err(|blocked| {
                                     tracing::error!(
-                                        resource.key = %R::key(),
+                                        resource.key = %crate::key_of::<R>(),
                                         reason = ?blocked.reason(),
                                         "retained lease accounting prevents rotation cleanup"
                                     );
@@ -370,7 +369,7 @@ where
                         Ok(Err(error)) => {
                             tracing::warn!(
                                 error.kind = ?error.kind(),
-                                resource.key = %R::key(),
+                                resource.key = %crate::key_of::<R>(),
                                 cleanup.outcome = "failed",
                                 "retired generation cleanup failed after credential hook settlement"
                             );
@@ -378,7 +377,7 @@ where
                         },
                         Err(_) => {
                             tracing::warn!(
-                                resource.key = %R::key(),
+                                resource.key = %crate::key_of::<R>(),
                                 cleanup.outcome = "timed_out",
                                 "retired generation cleanup exceeded its rotation budget"
                             );

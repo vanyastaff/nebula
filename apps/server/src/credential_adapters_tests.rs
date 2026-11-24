@@ -59,12 +59,13 @@ fn catalog_snapshot_preserves_every_registered_definition() {
     assert_eq!(listed.len(), registry.catalog().count());
     for (metadata, _) in registry.catalog() {
         let descriptor = port
-            .get_type(metadata.key().as_str())
+            .get_type(metadata.base().key().as_str())
             .expect("catalog snapshot contains every admitted definition");
-        assert_eq!(descriptor.name, metadata.name());
+        assert_eq!(descriptor.name, metadata.base().name());
         assert_eq!(
             descriptor.schema_json,
             metadata
+                .base()
                 .schema()
                 .json_schema()
                 .expect("admitted schema exports")

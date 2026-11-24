@@ -53,7 +53,7 @@ use super::{
 pub enum RegisterError {
     /// The type could not produce a valid catalog definition.
     #[error("credential catalog admission failed")]
-    Metadata(#[from] crate::CredentialMetadataAdmissionError),
+    Metadata(#[from] crate::CredentialAdmissionError),
     /// A hand-written refreshable capability report omitted the credential's
     /// actual timing policy. Admission fails instead of substituting defaults
     /// that may shorten the implementation's retry floor.

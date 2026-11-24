@@ -3,7 +3,6 @@
 //! slots implement the projection port and pin their material epochs, a
 //! counting probe, and material installed with owner-qualified metadata.
 
-use crate::resource::ProviderKey;
 use std::sync::{
     Arc, OnceLock,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -586,7 +585,11 @@ pub(crate) fn resident(manager: &Manager) -> StrictResident {
 
 pub(crate) fn row<R: Provider>(manager: &Manager) -> Arc<ManagedResource<R>> {
     manager
-        .lookup_any_for_slot_identity_structural(&R::key(), &ScopeLevel::Global, &tenant())
+        .lookup_any_for_slot_identity_structural(
+            &crate::key_of::<R>(),
+            &ScopeLevel::Global,
+            &tenant(),
+        )
         .expect("row is registered")
         .as_any_arc()
         .downcast::<ManagedResource<R>>()

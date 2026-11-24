@@ -82,7 +82,7 @@ the only resource admission, caches the resulting immutable
 `ResourceDefinition`, and returns it by reference. The author's `ResourceMetadata`
 carries neither a key nor a schema: the factory stamps `Provider::KEY` and derives the schema from
 `Config`, so an admitted definition cannot name another resource. Schema and
-catalog failures propagate as `MetadataBuildError`; registry insertion fails
+catalog failures propagate as `ResourceAdmissionError`; registry insertion fails
 before mutation. Catalog enumeration must not drop a failing entry.
 `ResourceFactory` is sealed: plugins can store and invoke the erased contract but
 cannot implement it. They must use a typed `KindActivator`; derive-emitted
@@ -92,8 +92,8 @@ therefore share one concrete `Provider` type instead of being caller attestation
 Metadata names are checked
 `MetadataName` values (`metadata_name!("HTTP client")` for static definitions),
 and invariant-bearing base fields are read through accessors.
-`Provider::KEY` is the one declaration of a resource's identity; `R::key()`
-(`ProviderKey`, implemented for every provider) is its typed `ResourceKey`, and
+`Provider::KEY` is the one declaration of a resource's identity; `key_of::<R>()`
+is its typed `ResourceKey`, and
 an invalid literal fails the build. `Provider::metadata` is required and returns
 `ResourceMetadata::new(metadata_name!("Display name"), description)` or the checked
 `try_new(name, description)`; names are never inferred from keys. Typed
@@ -896,7 +896,7 @@ is not SDK-exported.
 - `ManagerConfig`, `RegisterOptions` — configuration surface.
 - `Registry`, `LookupOutcome`, `ManagedResourceView` — type-erased storage with read-only diagnostic lookup; lifecycle authority remains inside `Manager`.
 - `ResourceMetadata` — key-free and schema-free author intent returned by `Provider::metadata` (an alias of `nebula_metadata::Metadata`).
-- `ProviderKey` — `R::key()`, the typed `ResourceKey` derived from `Provider::KEY`; implemented for every provider.
+- `key_of::<R>()` — the typed `ResourceKey` derived from `Provider::KEY`; an invalid literal fails the build.
 - `ResourceDefinition` — immutable factory-admitted descriptor with getter-only key, name, description, schema, version, and tags; serializable but not deserializable.
 - `RecordedResourceDefinition` — deserialized catalog evidence requiring explicit readmission against a fresh factory definition.
 - `ResourceConfig` — operational config trait (no secrets); supertype `HasSchema`.
@@ -1157,7 +1157,7 @@ unsupported policy with a permanent error, including declared-but-unbound slots.
 ### Shared resource pattern
 
 When multiple workflows acquire the same `Resource` impl at the same scope,
-the manager deduplicates by `(R::key(), ScopeLevel, SlotIdentity)`. Config
+the manager deduplicates by `(key_of::<R>(), ScopeLevel, SlotIdentity)`. Config
 `fingerprint()` participates in freshness/reload policy, not registry row
 identity. Within one Resident row, concurrent leases share its current retained
 runtime; initial creation is serialized, while recreation may create a successor.
@@ -1218,6 +1218,6 @@ exactly one `create` invocation, all 10 leases share the same `Arc`.
 #### Invalidation triggers
 
 - **Fingerprint change in `ResourceConfig`**. Calling `Manager::reload_config::<R>(new_config, &scope)` validates the new config, swaps it in, bumps the resource's `generation`, and emits `ResourceEvent::ConfigReloaded`. For `Pooled` topologies the pool's fingerprint atomic is updated so idle entries with the stale fingerprint are evicted on next acquire or release. `Resident` topologies rebuild the master with the new config on the next acquire; leases on the old master keep it alive until they are released, and while four masters are still leased the current one keeps serving its old config until leases drain. No-op reloads (same fingerprint) short-circuit to `ReloadOutcome::NoChange` without bumping the generation.
-- **Different `R::key()`**. Two distinct `Resource` impls — even configured identically — register under separate registry rows. `acquire::<TelegramBot>` and `acquire::<AlternateBot>` produce independent runtimes and can be replaced or shut down independently.
+- **Different `key_of::<R>()`**. Two distinct `Resource` impls — even configured identically — register under separate registry rows. `acquire::<TelegramBot>` and `acquire::<AlternateBot>` produce independent runtimes and can be replaced or shut down independently.
 - **Different `ScopeLevel`**. The same `Resource` impl registered at `Organization(A)` and `Organization(B)` produces two independent instances; the registry's scope-aware `find_by_scope` does an exact match first and falls back to `Global` only when no exact match exists. Per-scope reloads / shutdowns affect only the matching scope.
 - **Manager shutdown**. `Manager::shutdown()` cancels the manager token; in-flight acquires drain via `graceful_shutdown` per canon §11.4. Cleanup stays open during handle drain. After shutdown, every acquire returns `ErrorKind::Cancelled`.

@@ -8,7 +8,6 @@
 //! - A resident resource always reports `AdmissionPhase::Ready` and `None` load.
 //! - `Unavailable::into_error` maps each variant to the expected `ErrorKind`.
 
-use nebula_resource::ProviderKey;
 use std::sync::Arc;
 
 use nebula_core::{ExecutionId, resource_key, scope::Scope};
@@ -138,7 +137,7 @@ async fn pool_saturated_phase_and_load() {
 
     // Probe admission surface through the type-erased handle.
     let handle = manager
-        .get_any(&TinyPool::key(), &ScopeLevel::Global)
+        .get_any(&nebula_resource::key_of::<TinyPool>(), &ScopeLevel::Global)
         .expect("registered row exists");
 
     assert_eq!(
@@ -194,7 +193,7 @@ async fn admission_status_reports_saturated_snapshot_and_none_for_unknown() {
         .expect("first acquire succeeds");
 
     let status = manager
-        .admission_status(&TinyPool::key(), &ScopeLevel::Global)
+        .admission_status(&nebula_resource::key_of::<TinyPool>(), &ScopeLevel::Global)
         .expect("registered row yields an admission snapshot");
     assert_eq!(
         status.phase,
@@ -253,7 +252,7 @@ async fn acquire_any_saturated_returns_backpressure() {
     // A second acquire through `acquire_any` must hit the gate.
     let err = Manager::acquire_any(
         Arc::clone(&manager),
-        &TinyPool::key(),
+        &nebula_resource::key_of::<TinyPool>(),
         &ctx(),
         &AcquireOptions::default(),
         &SlotIdentity::Unbound,
@@ -288,7 +287,10 @@ async fn resident_always_ready_no_load() {
         .expect("register succeeds");
 
     let handle = manager
-        .get_any(&SimpleResident::key(), &ScopeLevel::Global)
+        .get_any(
+            &nebula_resource::key_of::<SimpleResident>(),
+            &ScopeLevel::Global,
+        )
         .expect("registered row exists");
 
     assert_eq!(

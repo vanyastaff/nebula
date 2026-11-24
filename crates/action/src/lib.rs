@@ -142,9 +142,8 @@ pub use handle::{
 pub use idempotency::IdempotencyKey;
 pub use input::{ActionInput, PreparedActionInput};
 pub use metadata::{
-    ActionDefinition, ActionKind, ActionMetadata, ActionMetadataAdmissionError,
-    ActionMetadataReadmissionError, IsolationLevel, MetadataCompatibilityError,
-    RecordedActionDefinition,
+    ActionAdmissionError, ActionCompatibilityError, ActionDefinition, ActionKind, ActionMetadata,
+    ActionReadmissionError, IsolationLevel, RecordedActionDefinition,
 };
 pub use nebula_action_macros::{Action, action_phantom};
 pub use nebula_core::{BranchKey, KeyValidationError, KeyValidationErrorKind, PortKey};

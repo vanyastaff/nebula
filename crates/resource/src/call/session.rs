@@ -32,7 +32,6 @@
 //! not fit a session: a unit's deadline is capped at
 //! [`OPERATION_DEADLINE_CAP`](super::OPERATION_DEADLINE_CAP).
 
-use crate::resource::ProviderKey;
 use std::{
     fmt,
     future::Future,
@@ -548,7 +547,7 @@ where
         let mut attempt = cx.attempt_session(spec.cost).await?;
         let ended = match attempt.session_parts() {
             Some((provider, instance, slots, closing)) => {
-                let session_cx = SessionCx::new(deadline, closing, R::key())
+                let session_cx = SessionCx::new(deadline, closing, crate::key_of::<R>())
                     .with_idempotency_key(idempotency_key);
                 drive_session(provider, instance, slots, &session_cx, marker, body).await
             },
@@ -667,7 +666,6 @@ fn settle_session<T>(result: Result<T, OperationError>, closed: SessionClosed) -
 
 #[cfg(test)]
 mod tests {
-    use crate::resource::ProviderKey;
     use std::{sync::Arc, time::Duration};
 
     use super::{
@@ -731,7 +729,7 @@ mod tests {
         SessionCx::new(
             tokio::time::Instant::now() + Duration::from_secs(1),
             LeaseClosing::detached(),
-            StrictPooled::key(),
+            crate::key_of::<StrictPooled>(),
         )
     }
 

@@ -42,7 +42,7 @@ pub enum ResourceWiringError {
         kind: String,
         /// Why admission failed.
         #[source]
-        source: nebula_resource::MetadataBuildError,
+        source: nebula_resource::ResourceAdmissionError,
     },
 }
 

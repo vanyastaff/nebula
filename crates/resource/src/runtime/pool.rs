@@ -14,7 +14,6 @@
 //!
 //! [`Topology<R>`]: crate::topology::Topology
 
-use crate::resource::ProviderKey;
 use std::{
     marker::PhantomData,
     sync::{
@@ -543,12 +542,12 @@ where
                 Ok(Ok(())) => continue,
                 Ok(Err(error)) => error.to_string(),
                 Err(fault) => {
-                    fault.observe(&R::key(), "rotation");
+                    fault.observe(&crate::key_of::<R>(), "rotation");
                     format!("{fault:?}")
                 },
             };
             tracing::warn!(
-                resource = %R::key(),
+                resource = %crate::key_of::<R>(),
                 slot,
                 error = %failed,
                 "credential refresh hook failed for a pool instance behind the live \
@@ -847,7 +846,7 @@ where
             {
                 Ok(result) => result.map_err(crate::topology::HookFault::Failed),
                 Err(fault) => {
-                    fault.observe(&R::key(), "rotation");
+                    fault.observe(&crate::key_of::<R>(), "rotation");
                     Err(match fault {
                         crate::hook_guard::HookFault::Panicked => {
                             crate::topology::HookFault::Failed(Error::permanent(format!(
@@ -877,14 +876,14 @@ where
                 // author's, already redacted (never credential material).
                 match &fault {
                     crate::topology::HookFault::Failed(error) => tracing::warn!(
-                        resource = %R::key(),
+                        resource = %crate::key_of::<R>(),
                         slot,
                         refresh,
                         %error,
                         "credential rotation hook failed for an idle pool instance"
                     ),
                     crate::topology::HookFault::TimedOut => tracing::warn!(
-                        resource = %R::key(),
+                        resource = %crate::key_of::<R>(),
                         slot,
                         refresh,
                         "credential rotation hook timed out for an idle pool instance"

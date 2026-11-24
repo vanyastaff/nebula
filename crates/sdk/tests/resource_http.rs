@@ -9,7 +9,6 @@
 
 #![cfg(feature = "resource-http")]
 
-use nebula_resource::ProviderKey;
 #[path = "support/raw_http.rs"]
 mod raw_http;
 
@@ -908,7 +907,10 @@ async fn a_stream_never_polled_or_refused_before_its_grant_sends_nothing() {
     let managed = harness.managed();
     drop(open_stream(&managed, Request::get("/feed").expect("path")));
 
-    harness.manager.remove(&Api::key()).expect("remove");
+    harness
+        .manager
+        .remove(&nebula_sdk::integration::resource::key_of::<Api>())
+        .expect("remove");
     let error = open_stream(&managed, Request::get("/feed").expect("path"))
         .await
         .expect_err("the lease is closing");
@@ -946,7 +948,10 @@ async fn removing_the_row_mid_body_cancels_the_stream() {
     let mut stream = open_stream(&managed, Request::get("/feed").expect("path"))
         .await
         .expect("head");
-    harness.manager.remove(&Api::key()).expect("remove");
+    harness
+        .manager
+        .remove(&nebula_sdk::integration::resource::key_of::<Api>())
+        .expect("remove");
     let error = loop {
         match stream.next().await.expect("the unit's error") {
             Ok(_) => {},

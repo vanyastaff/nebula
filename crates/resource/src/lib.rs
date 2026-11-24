@@ -16,7 +16,7 @@
 //!
 //! The 90% path: `#[derive(Resource)]` emits slot plumbing (empty here — no
 //! `#[credential]` field), a hand-written [`Provider`] impl supplies the
-//! lifecycle, [`Manager::register`] files it under `R::key()`, and
+//! lifecycle, [`Manager::register`] files it under `key_of::<R>()`, and
 //! `acquire_<topology>` hands back a [`ResourceGuard`] that derefs to
 //! `R::Instance` and releases (recycle or destroy, per topology) on drop:
 //!
@@ -294,8 +294,7 @@ pub use nebula_core::{ExecutionId, ResourceKey, ScopeLevel, WorkflowId, resource
 /// direct `nebula-eventbus` dependency.
 pub use nebula_eventbus::{EventBusStats, Subscriber};
 pub use nebula_metadata::{
-    DeprecationNotice, Icon, MaturityLevel, MetadataError, MetadataName, MetadataReadmissionError,
-    metadata_name,
+    DeprecationNotice, Icon, MaturityLevel, MetadataError, MetadataName, metadata_name,
 };
 // Credential surface re-exported so resource consumers don't need a
 // direct nebula-credential dep for trait shape.
@@ -402,9 +401,9 @@ pub use registry::{LookupOutcome, ManagedResourceView, Registry};
 pub use release_queue::ReleaseQueue;
 pub use reload::ReloadOutcome;
 pub use resource::{
-    CheckCost, HasCredentialSlots, MetadataBuildError, MetadataCompatibilityError, Provider,
-    ProviderKey, RecordedResourceDefinition, ResourceConfig, ResourceDefinition, ResourceMetadata,
-    TeardownCx, TeardownReason,
+    CheckCost, HasCredentialSlots, Provider, RecordedResourceDefinition, ResourceAdmissionError,
+    ResourceCompatibilityError, ResourceConfig, ResourceDefinition, ResourceMetadata,
+    ResourceReadmissionError, TeardownCx, TeardownReason, key_of,
 };
 pub use slot::{CredentialSlot, SlotCell, SlotInstallError, SlotUpdate};
 // Runtime types — the framework topologies needed for `Manager::register()`.
@@ -472,9 +471,8 @@ pub use credential_fanout::{
 pub mod prelude {
     pub use crate::{
         AcquireOptions, Error, ErrorKind, HasCredentialSlots, Manager, PoolConfig, Pooled,
-        Provider, ProviderKey, RegistrationSpec, ReleaseOutcome, Resident, ResidentConfig,
-        ResourceConfig, ResourceContext, ResourceDefinition, ResourceGuard, ResourceKey,
-        ResourceMetadata, ScopeLevel, ShutdownConfig, SlotCell, SlotIdentity, TopologyTag,
-        resource_key,
+        Provider, RegistrationSpec, ReleaseOutcome, Resident, ResidentConfig, ResourceConfig,
+        ResourceContext, ResourceDefinition, ResourceGuard, ResourceKey, ResourceMetadata,
+        ScopeLevel, ShutdownConfig, SlotCell, SlotIdentity, TopologyTag, resource_key,
     };
 }

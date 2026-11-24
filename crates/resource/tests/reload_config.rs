@@ -7,7 +7,6 @@
 //! Split out of the former monolithic `basic_integration.rs` (pure move, no
 //! test-body changes) — shared mocks/helpers live in `tests/common/mod.rs`.
 
-use nebula_resource::ProviderKey;
 mod common;
 
 use std::sync::{
@@ -370,7 +369,7 @@ async fn reload_config_rebuilds_bounded_exclusive_instance_with_new_config() {
         .expect("register");
 
     let ctx = test_ctx();
-    let key = ReloadExclusiveResource::key();
+    let key = nebula_resource::key_of::<ReloadExclusiveResource>();
     let acquire = || async {
         let boxed = Manager::acquire_any(
             Arc::clone(&manager),

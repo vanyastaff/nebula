@@ -7,7 +7,6 @@
 //! The managed call facade's quota waits (`Manager::handle`) are covered in
 //! the crate's `call_tests.rs` and `call_row_tests.rs`.
 
-use nebula_resource::ProviderKey;
 mod common;
 
 use std::{num::NonZeroU32, sync::Arc, time::Duration};
@@ -195,7 +194,7 @@ async fn rows_with_one_key_share_one_quota() {
 
 fn view_profile<R: Provider>(manager: &Manager) -> RateLimitProfile {
     manager
-        .get_any(&R::key(), &ScopeLevel::Global)
+        .get_any(&nebula_resource::key_of::<R>(), &ScopeLevel::Global)
         .expect("row is registered")
         .rate_limit_profile()
 }
@@ -223,7 +222,10 @@ async fn a_handle_latches_the_per_attempt_profile_in_health_and_the_erased_view(
         .expect("row is registered");
     assert_eq!(health.rate_limit_profile, RateLimitProfile::PerAttempt);
     let view = manager
-        .get_any(&ResidentTestResource::key(), &ScopeLevel::Global)
+        .get_any(
+            &nebula_resource::key_of::<ResidentTestResource>(),
+            &ScopeLevel::Global,
+        )
         .expect("row is registered");
     assert_eq!(view.rate_limit_profile(), RateLimitProfile::PerAttempt);
     assert!(

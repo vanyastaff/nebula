@@ -30,15 +30,15 @@ pub enum PluginError {
     /// An action could not produce a checked catalog definition.
     #[classify(category = "validation", code = "PLUGIN:INVALID_METADATA")]
     #[error("plugin component metadata admission failed")]
-    ActionDefinition(#[from] nebula_action::ActionMetadataAdmissionError),
+    ActionDefinition(#[from] nebula_action::ActionAdmissionError),
     /// A resource could not produce an admitted catalog definition.
     #[classify(category = "validation", code = "PLUGIN:INVALID_RESOURCE_METADATA")]
     #[error("plugin resource metadata admission failed")]
-    ResourceMetadata(#[from] nebula_resource::MetadataBuildError),
+    ResourceMetadata(#[from] nebula_resource::ResourceAdmissionError),
     /// A credential could not produce a checked catalog definition.
     #[classify(category = "validation", code = "PLUGIN:INVALID_CREDENTIAL_METADATA")]
     #[error("plugin credential metadata admission failed")]
-    CredentialDefinition(#[from] nebula_credential::CredentialMetadataAdmissionError),
+    CredentialDefinition(#[from] nebula_credential::CredentialAdmissionError),
     /// Static effect metadata disagrees with the retained factory capability.
     #[classify(category = "validation", code = "PLUGIN:INVALID_EFFECT_CONTRACT")]
     #[error("action '{action}' has an incoherent effect contract")]

@@ -292,7 +292,7 @@ impl ResourceFactory for DivergentIdentityFactory {
         self.inner.resource_type_id()
     }
 
-    fn definition(&self) -> Result<&ResourceDefinition, crate::MetadataBuildError> {
+    fn definition(&self) -> Result<&ResourceDefinition, crate::ResourceAdmissionError> {
         self.inner.definition()
     }
 
@@ -310,7 +310,7 @@ impl ResourceFactory for DivergentIdentityFactory {
 
     fn topology_schema(
         &self,
-    ) -> Result<Option<nebula_schema::ValidSchema>, crate::MetadataBuildError> {
+    ) -> Result<Option<nebula_schema::ValidSchema>, crate::ResourceAdmissionError> {
         self.inner.topology_schema()
     }
 
@@ -405,8 +405,8 @@ fn key_coherence_law() {
     let factory = test_factory(create_counter);
     assert_eq!(
         factory.key(),
-        TestRes::key(),
-        "factory.key() must equal <R as ProviderKey>::key() (key-coherence law)"
+        crate::key_of::<TestRes>(),
+        "factory.key() must equal crate::key_of::<R>() (key-coherence law)"
     );
 }
 
@@ -474,7 +474,7 @@ async fn known_kind_registers_against_manager() {
 
     assert!(
         manager
-            .get_any(&TestRes::key(), &ScopeLevel::Global)
+            .get_any(&crate::key_of::<TestRes>(), &ScopeLevel::Global)
             .is_some(),
         "registered resource must be resolvable in the manager"
     );
@@ -511,7 +511,11 @@ async fn stored_rows_of_one_kind_in_one_scope_stay_distinct() {
     assert_ne!(identities[0], identities[1]);
     for identity in &identities {
         assert!(
-            manager.has_registered_for_identity(&TestRes::key(), &ScopeLevel::Global, identity),
+            manager.has_registered_for_identity(
+                &crate::key_of::<TestRes>(),
+                &ScopeLevel::Global,
+                identity
+            ),
             "each stored row keeps its own registry row"
         );
     }
@@ -585,7 +589,7 @@ async fn identity_mismatch_is_typed_and_rolls_back_manager_and_fanout_state() {
             actual: SlotIdentity::Unbound,
         } if kind == "test-divergent-identity" && !expected.is_unbound()
     );
-    assert!(!manager.contains(&BoundTestRes::key()));
+    assert!(!manager.contains(&crate::key_of::<BoundTestRes>()));
     assert!(fanout_index.affected(&credential_id).is_empty());
 }
 
@@ -651,7 +655,7 @@ async fn conflicting_duplicate_slot_bindings_fail_before_manager_publication() {
         .expect_err("one slot cannot resolve to two credential identities");
 
     std::assert_matches!(error, RegistrarError::Register { .. });
-    assert!(!manager.contains(&BoundTestRes::key()));
+    assert!(!manager.contains(&crate::key_of::<BoundTestRes>()));
     assert!(fanout_index.affected(&first_credential_id).is_empty());
     assert!(fanout_index.affected(&second_credential_id).is_empty());
 }
@@ -715,7 +719,7 @@ async fn rotation_binding_without_owner_scope_fails_before_publication() {
         .expect_err("rotation participation requires durable owner scope");
 
     std::assert_matches!(error, RegistrarError::Register { .. });
-    assert!(!manager.contains(&BoundTestRes::key()));
+    assert!(!manager.contains(&crate::key_of::<BoundTestRes>()));
     assert!(fanout_index.affected(&valid_credential_id).is_empty());
     assert!(fanout_index.affected(&invalid_credential_id).is_empty());
     assert!(!fanout_index.has_staged_binding(&valid_credential_id));
@@ -769,7 +773,7 @@ async fn rotation_binding_without_projection_ports_fails_before_publication() {
         .expect_err("rotation participation requires complete projection ports");
 
     std::assert_matches!(error, RegistrarError::Register { .. });
-    assert!(!manager.contains(&BoundTestRes::key()));
+    assert!(!manager.contains(&crate::key_of::<BoundTestRes>()));
     assert!(fanout_index.affected(&credential_id).is_empty());
 }
 
@@ -826,7 +830,7 @@ async fn rotation_binding_rejects_unqualified_prepopulated_slot() {
         .expect_err("a metadata-free slot transition cannot claim rotation ownership");
 
     std::assert_matches!(error, RegistrarError::Register { .. });
-    assert!(!manager.contains(&BoundTestRes::key()));
+    assert!(!manager.contains(&crate::key_of::<BoundTestRes>()));
     assert!(fanout_index.affected(&credential_id).is_empty());
 }
 
@@ -876,7 +880,7 @@ async fn rotation_binding_requires_a_fanout_index() {
         .expect_err("rotation ownership cannot be published without its fan-out index");
 
     std::assert_matches!(error, RegistrarError::Register { .. });
-    assert!(!manager.contains(&BoundTestRes::key()));
+    assert!(!manager.contains(&crate::key_of::<BoundTestRes>()));
 }
 
 #[cfg(feature = "rotation")]
@@ -931,7 +935,7 @@ async fn rotation_authority_is_manager_scoped_and_driver_loss_demotes_ready_rows
         )
         .await
         .expect_err("another manager's driver cannot authorize registration");
-    assert!(!other_manager.contains(&BoundTestRes::key()));
+    assert!(!other_manager.contains(&crate::key_of::<BoundTestRes>()));
 
     let outcome = registry
         .register_and_bind(
@@ -1006,7 +1010,7 @@ async fn terminal_credential_revoke_clears_material_but_lease_revoke_does_not() 
             .expect("resource registers");
         index.bind(
             credential_id,
-            BoundTestRes::key(),
+            crate::key_of::<BoundTestRes>(),
             ScopeLevel::Global,
             "auth",
             identity,
@@ -1071,7 +1075,7 @@ async fn contextual_binding_stays_unavailable_until_authoritative_reread() {
         .await
         .expect_err("contextual registration requires an authoritative resolver");
     std::assert_matches!(error, RegistrarError::Register { .. });
-    assert!(!manager.contains(&BoundTestRes::key()));
+    assert!(!manager.contains(&crate::key_of::<BoundTestRes>()));
 
     let _reconciliation = fanout_index
         .acquire_authoritative_reconciliation_for(&manager)
@@ -1141,14 +1145,14 @@ async fn durable_tombstone_clears_the_live_slot_before_taint() {
         .expect("register row with a live unqualified guard");
     let managed = manager
         .lookup_any_for_slot_identity_structural(
-            &BoundTestRes::key(),
+            &crate::key_of::<BoundTestRes>(),
             &ScopeLevel::Global,
             &identity,
         )
         .expect("registered row");
 
     let _tainted = manager
-        .revoke_resolved_terminal(&BoundTestRes::key(), "auth", managed)
+        .revoke_resolved_terminal(&crate::key_of::<BoundTestRes>(), "auth", managed)
         .expect("authoritative tombstone applies");
 
     assert!(
@@ -1294,7 +1298,7 @@ async fn exact_replacement_publishes_only_successor_staged_binding() {
     assert!(old_fanout_index.affected(&old_credential_id).is_empty());
     assert_eq!(new_fanout_index.affected(&new_credential_id).len(), 1);
     manager
-        .remove(&BoundTestRes::key())
+        .remove(&crate::key_of::<BoundTestRes>())
         .expect("registration attached its supplied fan-out index");
     assert!(
         new_fanout_index.affected(&new_credential_id).is_empty(),
@@ -1325,7 +1329,7 @@ async fn unknown_kind_is_typed_error_not_panic_not_silent() {
 
     assert!(
         manager
-            .get_any(&TestRes::key(), &ScopeLevel::Global)
+            .get_any(&crate::key_of::<TestRes>(), &ScopeLevel::Global)
             .is_none(),
         "an unknown kind must never have touched a resource type"
     );
@@ -1418,7 +1422,7 @@ async fn invalid_topology_settings_fail_before_manager_publication() {
     );
     assert!(
         manager
-            .get_any(&TestRes::key(), &ScopeLevel::Global)
+            .get_any(&crate::key_of::<TestRes>(), &ScopeLevel::Global)
             .is_none(),
         "a rejected registration must not publish a row"
     );
@@ -1523,7 +1527,7 @@ async fn invalid_resilience_overrides_fail_before_manager_publication() {
     }
     assert!(
         manager
-            .get_any(&TestRes::key(), &ScopeLevel::Global)
+            .get_any(&crate::key_of::<TestRes>(), &ScopeLevel::Global)
             .is_none()
     );
 

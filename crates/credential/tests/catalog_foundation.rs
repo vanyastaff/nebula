@@ -9,9 +9,9 @@ use std::{
 
 use nebula_core::credential_key;
 use nebula_credential::{
-    Credential, CredentialContext, CredentialDefinition, CredentialMetadata,
-    CredentialMetadataAdmissionError, CredentialRegistry, RecordedCredentialDefinition,
-    RegisterError, error::CredentialError, resolve::StaticResolveResult, scheme::SecretToken,
+    Credential, CredentialAdmissionError, CredentialContext, CredentialDefinition,
+    CredentialMetadata, CredentialRegistry, RecordedCredentialDefinition, RegisterError,
+    error::CredentialError, resolve::StaticResolveResult, scheme::SecretToken,
 };
 use nebula_metadata::{
     CatalogLink, CatalogLinkRelation, CatalogReference, DeprecationNotice, MetadataDecodeError,
@@ -156,7 +156,7 @@ fn shared_admission_rejects_before_insertion_without_error_or_trace_payloads() {
                     .expect_err("invalid catalog definition");
                 std::assert_matches!(
                     error,
-                    RegisterError::Metadata(CredentialMetadataAdmissionError::CatalogMetadata)
+                    RegisterError::Metadata(CredentialAdmissionError::CatalogMetadata)
                 );
                 assert!(!format!("{error:?} {error}").contains(CANARY));
                 let cause = error.source().expect("typed admission cause");
@@ -175,7 +175,7 @@ fn shared_admission_rejects_before_insertion_without_error_or_trace_payloads() {
             .expect_err("invalid properties schema must not install dispatch");
         std::assert_matches!(
             error,
-            RegisterError::Metadata(CredentialMetadataAdmissionError::PropertiesSchema)
+            RegisterError::Metadata(CredentialAdmissionError::PropertiesSchema)
         );
         let cause = error.source().expect("typed schema admission cause");
         assert!(
@@ -228,7 +228,7 @@ fn same_semver_catalog_changes_and_pattern_require_exact_fresh_evidence() {
         ),
     ] {
         let changed = admit(changed);
-        assert_eq!(original.version(), changed.version());
+        assert_eq!(original.base().version(), changed.base().version());
         assert!(recorded.readmit_against(&changed).is_err());
         let current = RecordedCredentialDefinition::from_slice(
             &serde_json::to_vec(&changed).expect("serializable"),

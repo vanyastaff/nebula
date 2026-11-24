@@ -16,7 +16,6 @@
 //! `CredentialReads`); this link is held by the manager and by every row
 //! facade, strict or not.
 
-use crate::resource::ProviderKey;
 use std::{sync::Arc, time::Duration, time::Instant};
 
 use nebula_core::context::Context as _;
@@ -152,7 +151,7 @@ impl AcquireLink {
             // `strict_admission` and invariant I7.
             if let (Some(reading), Some(reads)) = (reading, managed.credential_reads.as_deref()) {
                 self.admission.apply_strict_reading_under_admission(
-                    &R::key(),
+                    &crate::key_of::<R>(),
                     &*managed,
                     reading,
                     reads,
@@ -163,17 +162,17 @@ impl AcquireLink {
             // the recovery gate (suspension is not backend ill health).
             if let Some(suspension) = managed.admission.suspension() {
                 return Err(Manager::credential_unavailable_error(
-                    &R::key(),
+                    &crate::key_of::<R>(),
                     suspension.reason(),
                 ));
             }
             if !managed.phase().is_accepting() {
                 return Err(Error::backpressure(format!(
                     "{}: resource is {} and cannot accept acquires",
-                    R::key(),
+                    crate::key_of::<R>(),
                     managed.phase()
                 ))
-                .with_resource_key(R::key()));
+                .with_resource_key(crate::key_of::<R>()));
             }
             // Capture the admission generation under the same gate that
             // publishes and retires it: this lease is admitted under exactly
@@ -204,7 +203,7 @@ impl AcquireLink {
         } = &gate_admission
         {
             self.admission.emit(ResourceEvent::RetryAttempt {
-                key: R::key(),
+                key: crate::key_of::<R>(),
                 attempt: *attempt,
                 backoff: *backoff_on_fail,
                 error: last_failure.clone().unwrap_or_default(),
@@ -223,7 +222,7 @@ impl AcquireLink {
                 drop(guard.with_drain_tracker(in_flight.release_to_guard()));
                 let refused = Manager::closed_admission_error::<R>(&managed, Some(&admission));
                 tracing::debug!(
-                    resource.key = %R::key(),
+                    resource.key = %crate::key_of::<R>(),
                     admission = admission.seq(),
                     error.kind = ?refused.kind(),
                     "acquire refused at hand-out: admission generation closed in flight"
@@ -286,17 +285,17 @@ impl AcquireLink {
         {
             Ok(result) => result,
             Err(fault) => {
-                fault.observe(&R::key(), "acquire");
+                fault.observe(&crate::key_of::<R>(), "acquire");
                 match fault {
                     HookFault::Panicked => Err(Error::permanent(format!(
                         "{}: topology acquire pipeline panicked — the resource's \
                          `impl Topology` hook unwound (isolated, caller not crashed)",
-                        R::key()
+                        crate::key_of::<R>()
                     ))),
                     HookFault::TimedOut => Err(Error::backpressure(format!(
                         "{}: acquire exceeded {hook_timeout:?} — the topology's \
                          create/accept/prepare hooks did not complete in time",
-                        R::key()
+                        crate::key_of::<R>()
                     ))),
                 }
             },
@@ -329,7 +328,7 @@ impl AcquireLink {
         options: &AcquireOptions,
     ) {
         // Resolve the resource key once: the error path emits up to two events.
-        let key = R::key();
+        let key = crate::key_of::<R>();
         let elapsed = started.elapsed();
         match result {
             Ok(_) => {

@@ -10,7 +10,6 @@
 //! released. Such live generations are counted and bounded by
 //! [`MAX_LIVE_GENERATIONS`].
 
-use crate::resource::ProviderKey;
 use std::{marker::PhantomData, sync::Arc};
 
 use tokio::sync::RwLock;
@@ -180,7 +179,7 @@ impl<R: Provider> Resident<R> {
             // records its own `built_epoch`). A genuinely never-created,
             // never-bound resident is a legitimate no-op.
             tracing::debug!(
-                resource = %R::key(),
+                resource = %crate::key_of::<R>(),
                 slot,
                 refresh,
                 "resident slot hook: no live runtime — legitimate no-op \
@@ -194,7 +193,7 @@ impl<R: Provider> Resident<R> {
         let stale = built < slot_epoch;
         if stale {
             tracing::warn!(
-                resource = %R::key(),
+                resource = %crate::key_of::<R>(),
                 slot,
                 refresh,
                 built_epoch = built,
@@ -233,7 +232,7 @@ impl<R: Provider> Resident<R> {
         {
             Ok(result) => result.map_err(crate::topology::HookFault::Failed),
             Err(fault) => {
-                fault.observe(&R::key(), "rotation");
+                fault.observe(&crate::key_of::<R>(), "rotation");
                 Err(match fault {
                     crate::hook_guard::HookFault::Panicked => {
                         crate::topology::HookFault::Failed(Error::permanent(format!(
@@ -314,7 +313,7 @@ where
         // holds, and another acquire may have built the master meanwhile.
         let mut state = self.state.write().await;
         if state.closed {
-            return Err(Error::cancelled().with_resource_key(R::key()));
+            return Err(Error::cancelled().with_resource_key(crate::key_of::<R>()));
         }
         if let Some(existing) = state.master.and_then(|id| retained.lease(id)) {
             let config_unchanged = state.built_fingerprint == config_fingerprint;
@@ -330,7 +329,7 @@ where
             if self.live_generations() >= MAX_LIVE_GENERATIONS {
                 if resource.is_alive_sync(&existing) {
                     tracing::warn!(
-                        resource.key = %R::key(),
+                        resource.key = %crate::key_of::<R>(),
                         limit = MAX_LIVE_GENERATIONS,
                         "resident: displaced masters are still leased; serving the current master until they are released"
                     );
@@ -339,7 +338,7 @@ where
                 return Err(Error::backpressure(format!(
                     "resident: {MAX_LIVE_GENERATIONS} masters are still leased; release outstanding leases before a successor is built"
                 ))
-                .with_resource_key(R::key()));
+                .with_resource_key(crate::key_of::<R>()));
             }
         }
         let instance = match tokio::time::timeout(
@@ -360,13 +359,13 @@ where
             .push(Arc::downgrade(&entry));
         if let Some(id) = state.master {
             if retained.replace(id, Arc::clone(&entry)) != crate::ReplaceStatus::Replaced {
-                return Err(Error::cancelled().with_resource_key(R::key()));
+                return Err(Error::cancelled().with_resource_key(crate::key_of::<R>()));
             }
         } else {
             match retained.retain(Arc::clone(&entry)) {
                 crate::RetainStatus::Published(id) => state.master = Some(id),
                 crate::RetainStatus::Retired(_) => {
-                    return Err(Error::cancelled().with_resource_key(R::key()));
+                    return Err(Error::cancelled().with_resource_key(crate::key_of::<R>()));
                 },
             }
         }

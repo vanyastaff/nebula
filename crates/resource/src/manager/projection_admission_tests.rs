@@ -1,6 +1,5 @@
 //! Queue rejection must not consume the installed epoch's hook admission.
 use super::{EpochRefreshOutcome, Manager, ManagerConfig, RegistrationSpec};
-use crate::resource::ProviderKey;
 use crate::resource::{HasCredentialSlots, ResourceMetadata};
 use crate::topology::resident::ResidentProvider;
 use crate::{
@@ -216,7 +215,7 @@ async fn rejected_projection_hook_retries_once_but_accepted_failure_does_not() {
                 CredentialGuardMetadata::new(cid, "oauth".parse().expect("key"), 2, 2),
             )
         };
-        let key = ProjectionResource::key();
+        let key = crate::key_of::<ProjectionResource>();
         assert!(
             manager
                 .install_and_refresh_slot_for_identity(
@@ -361,7 +360,7 @@ async fn unqualified_slot_write_fences_refresh_hook_admission() {
         async move {
             manager
                 .install_and_refresh_slot_for_identity(
-                    &ProjectionResource::key(),
+                    &crate::key_of::<ProjectionResource>(),
                     ScopeLevel::Global,
                     "db",
                     &identity,
@@ -395,7 +394,7 @@ async fn unqualified_slot_write_fences_refresh_hook_admission() {
     assert_eq!(error.kind(), &crate::ErrorKind::Permanent);
     let managed = manager
         .lookup_any_for_slot_identity_structural(
-            &ProjectionResource::key(),
+            &crate::key_of::<ProjectionResource>(),
             &ScopeLevel::Global,
             &SlotIdentity::from_bindings([("db", "oauth")]),
         )
@@ -458,7 +457,7 @@ async fn terminal_revoke_cannot_split_projection_install_and_hook_admission() {
         async move {
             manager
                 .install_and_refresh_slot_for_identity(
-                    &ProjectionResource::key(),
+                    &crate::key_of::<ProjectionResource>(),
                     ScopeLevel::Global,
                     "db",
                     &identity,
@@ -483,7 +482,7 @@ async fn terminal_revoke_cannot_split_projection_install_and_hook_admission() {
             started.send(()).expect("revoke observer");
             manager
                 .revoke_credential_slot_for_identity(
-                    &ProjectionResource::key(),
+                    &crate::key_of::<ProjectionResource>(),
                     ScopeLevel::Global,
                     "db",
                     &identity,
@@ -512,7 +511,7 @@ async fn terminal_revoke_cannot_split_projection_install_and_hook_admission() {
     let calls = resource.calls.load(Ordering::SeqCst);
     let late = manager
         .install_and_refresh_slot_for_identity(
-            &ProjectionResource::key(),
+            &crate::key_of::<ProjectionResource>(),
             ScopeLevel::Global,
             "db",
             &identity,
@@ -529,7 +528,7 @@ async fn terminal_revoke_cannot_split_projection_install_and_hook_admission() {
     assert!(
         manager
             .refresh_slot_for_identity(
-                &ProjectionResource::key(),
+                &crate::key_of::<ProjectionResource>(),
                 ScopeLevel::Global,
                 "db",
                 &identity
@@ -565,7 +564,7 @@ async fn until_accepting_follows_a_row_out_of_initializing() {
             rate_limit: None,
         })
         .expect("register");
-    let key = ProjectionResource::key();
+    let key = crate::key_of::<ProjectionResource>();
     let row = manager
         .lookup_any_for_slot_identity_structural(&key, &ScopeLevel::Global, &identity)
         .expect("registered row");
@@ -575,7 +574,7 @@ async fn until_accepting_follows_a_row_out_of_initializing() {
         tokio::spawn(async move {
             manager
                 .until_accepting(
-                    &ProjectionResource::key(),
+                    &crate::key_of::<ProjectionResource>(),
                     &ScopeLevel::Global,
                     &identity,
                     deadline,

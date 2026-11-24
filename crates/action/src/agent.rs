@@ -340,7 +340,7 @@ impl<A> AgentActionAdapter<A> {
     /// # Errors
     /// Returns a typed catalog error if either associated schema is invalid.
     #[tracing::instrument(name = "action.agent.admit", skip_all, err)]
-    pub fn new(action: A) -> Result<Self, crate::ActionMetadataAdmissionError>
+    pub fn new(action: A) -> Result<Self, crate::ActionAdmissionError>
     where
         A: AgentAction,
     {

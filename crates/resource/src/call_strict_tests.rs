@@ -4,7 +4,6 @@
 //! unit's pin is taken at its first grant and a superseded pin refuses
 //! later attempts `Rebinding`.
 
-use crate::resource::ProviderKey;
 use std::{num::NonZeroU32, sync::Arc, time::Duration};
 
 use nebula_core::ScopeLevel;
@@ -441,7 +440,7 @@ async fn the_admission_lock_is_not_held_across_an_attempt_read() {
     // Completes while the attempt's read is gated.
     manager
         .suspend_credential_row(
-            &StrictResident::key(),
+            &crate::key_of::<StrictResident>(),
             &ScopeLevel::Global,
             &tenant(),
             "db",
@@ -471,7 +470,12 @@ async fn a_taint_during_an_attempt_read_refuses_as_revoked() {
     let unit = tokio::spawn(managed.submit(Once::at(Cost::FREE)));
     observer.until_calls(ATTEMPT_READS + 1).await;
     let _tainted = manager
-        .taint_slot_for_identity(&StrictResident::key(), ScopeLevel::Global, "db", &tenant())
+        .taint_slot_for_identity(
+            &crate::key_of::<StrictResident>(),
+            ScopeLevel::Global,
+            "db",
+            &tenant(),
+        )
         .expect("taint");
     observer.release(1);
 
@@ -492,7 +496,9 @@ async fn a_row_removal_during_an_attempt_read_refuses_as_cancelled() {
 
     let unit = tokio::spawn(managed.submit(Once::at(Cost::FREE)));
     observer.until_calls(ATTEMPT_READS + 1).await;
-    manager.remove(&StrictResident::key()).expect("remove");
+    manager
+        .remove(&crate::key_of::<StrictResident>())
+        .expect("remove");
 
     let error = unit.await.expect("joined").expect_err("refused");
     assert_eq!(*error.kind(), ErrorKind::Cancelled);

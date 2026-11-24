@@ -19,7 +19,6 @@
 //!    shutdown destroys it through framework-owned cleanup. The author writes
 //!    no store, fence, or destroy dispatch code.
 
-use nebula_resource::ProviderKey;
 use std::{
     assert_matches,
     sync::{
@@ -258,7 +257,7 @@ async fn custom_topology_registers_and_acquires_through_manager() {
     register(&manager, ffmpeg);
 
     let ctx = ctx();
-    let key = Ffmpeg::key();
+    let key = nebula_resource::key_of::<Ffmpeg>();
 
     // Acquire through the erased Manager path (the same path the engine resource
     // accessor uses) — proves the custom topology is reachable through the
@@ -302,7 +301,7 @@ async fn custom_topology_store_is_revoke_fenced_by_framework() {
     register(&manager, ffmpeg);
 
     let ctx = ctx();
-    let key = Ffmpeg::key();
+    let key = nebula_resource::key_of::<Ffmpeg>();
 
     // 1. Acquire + release so a clean transcoder sits idle in the FRAMEWORK
     //    store (the author's topology never sees the store).
@@ -422,7 +421,7 @@ async fn custom_topology_panic_in_create_is_isolated() {
 
     let err = Manager::acquire_any(
         Arc::clone(&manager),
-        &Ffmpeg::key(),
+        &nebula_resource::key_of::<Ffmpeg>(),
         &ctx(),
         &AcquireOptions::default(),
         &SlotIdentity::Unbound,
@@ -454,7 +453,7 @@ async fn custom_topology_hang_in_create_is_bounded_by_deadline() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
     let err = Manager::acquire_any(
         Arc::clone(&manager),
-        &Ffmpeg::key(),
+        &nebula_resource::key_of::<Ffmpeg>(),
         &ctx(),
         &AcquireOptions::default().with_deadline(deadline),
         &SlotIdentity::Unbound,

@@ -546,7 +546,7 @@ impl<A> TriggerActionAdapter<A> {
     /// # Errors
     /// Returns a typed catalog error if metadata or an associated schema is invalid.
     #[tracing::instrument(name = "action.metadata.admit", skip_all, err)]
-    pub fn new(action: A) -> Result<Self, crate::ActionMetadataAdmissionError>
+    pub fn new(action: A) -> Result<Self, crate::ActionAdmissionError>
     where
         A: Action,
     {

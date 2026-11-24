@@ -16,18 +16,18 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .definition(ApiKeyCredential::KEY)
         .expect("the successfully registered credential must have metadata");
 
-    println!("Admitted key: {}", admitted.key().as_str());
+    println!("Admitted key: {}", admitted.base().key().as_str());
     println!("Admitted auth pattern: {:?}", admitted.pattern());
-    println!("Admitted name: {}", admitted.name());
+    println!("Admitted name: {}", admitted.base().name());
     println!(
         "Canonical schema fields: {}",
-        admitted.schema().properties().len()
+        admitted.base().schema().properties().len()
     );
 
     let wire = serde_json::to_vec(admitted)?;
     let recorded = RecordedCredentialDefinition::from_slice(&wire, Default::default())?;
     let readmitted = recorded.readmit_against(admitted)?;
-    println!("Readmitted version: {}", readmitted.version());
+    println!("Readmitted version: {}", readmitted.base().version());
 
     Ok(())
 }

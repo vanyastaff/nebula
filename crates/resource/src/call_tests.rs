@@ -2,7 +2,6 @@
 //! booking, the settled outcome of a unit, cancellation, deadlines, the
 //! drain, pinned slots and the unit's observability.
 
-use crate::resource::ProviderKey;
 use std::{
     num::NonZeroU32,
     sync::{
@@ -198,7 +197,7 @@ fn read_only_row<R: Provider + PinSlots>(
 ) -> ResourceHandle<R> {
     manager
         .handle_any_read_only(
-            &R::key(),
+            &crate::key_of::<R>(),
             ctx,
             &AcquireOptions::default(),
             &SlotIdentity::Unbound,
@@ -212,7 +211,7 @@ fn read_only_row<R: Provider + PinSlots>(
 fn row<R: Provider>(manager: &Manager) -> Arc<ManagedResource<R>> {
     manager
         .lookup_any_for_slot_identity_structural(
-            &R::key(),
+            &crate::key_of::<R>(),
             &ScopeLevel::Global,
             &SlotIdentity::Unbound,
         )
@@ -225,7 +224,7 @@ fn row<R: Provider>(manager: &Manager) -> Arc<ManagedResource<R>> {
 fn suspend<R: Provider>(manager: &Manager) {
     manager
         .suspend_credential_row(
-            &R::key(),
+            &crate::key_of::<R>(),
             &ScopeLevel::Global,
             &SlotIdentity::Unbound,
             "db",
@@ -586,7 +585,7 @@ async fn a_cost_above_the_burst_is_refused_permanently_and_not_sent() {
     assert_eq!(*error.kind(), ErrorKind::Permanent);
     assert_eq!(error.sent(), SentState::NotSent);
     assert!(!error.is_retryable());
-    assert_eq!(error.resource_key(), Some(&Api::key()));
+    assert_eq!(error.resource_key(), Some(&crate::key_of::<Api>()));
     let metrics = snapshot(&manager);
     assert_eq!(metrics.call_attempts.refused, 1);
     assert_eq!(metrics.call_attempts.granted, 0);
@@ -634,7 +633,7 @@ async fn refused_after(
 #[tokio::test]
 async fn a_closed_row_refuses_attempts_and_nothing_is_sent() {
     let (removed, metrics) = refused_after(|manager| {
-        manager.remove(&Api::key()).expect("remove");
+        manager.remove(&crate::key_of::<Api>()).expect("remove");
     })
     .await;
     assert_eq!(*removed.kind(), ErrorKind::Cancelled);
@@ -660,7 +659,7 @@ async fn a_closed_row_refuses_attempts_and_nothing_is_sent() {
 
     let (tainted, _) = refused_after(|manager| {
         let _tainted = manager
-            .taint_slot(&Api::key(), ScopeLevel::Global, "db")
+            .taint_slot(&crate::key_of::<Api>(), ScopeLevel::Global, "db")
             .expect("taint");
     })
     .await;
@@ -786,7 +785,7 @@ async fn a_revoke_ends_a_handle_units_per_key_quota_wait() {
 
     let started = Instant::now();
     let outcome = manager
-        .revoke_slot(&Api::key(), ScopeLevel::Global, "db")
+        .revoke_slot(&crate::key_of::<Api>(), ScopeLevel::Global, "db")
         .await
         .expect("revoke");
     assert!(
@@ -1132,7 +1131,8 @@ async fn a_deadline_after_a_grant_is_maybe_sent_and_unknown_for_a_write() {
 
     let mut unknown = 0;
     while let Some(event) = events.try_recv() {
-        if matches!(&event, ResourceEvent::OperationOutcomeUnknown { key } if *key == Api::key()) {
+        if matches!(&event, ResourceEvent::OperationOutcomeUnknown { key } if *key == crate::key_of::<Api>())
+        {
             unknown += 1;
         }
     }

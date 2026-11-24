@@ -2,7 +2,6 @@
 //! ([`Submission`]) and the per-unit runtime: spawn, deadline, attempt
 //! admission and the settled outcome.
 
-use crate::resource::ProviderKey;
 use std::{
     fmt,
     future::Future,
@@ -1393,7 +1392,7 @@ impl<R: Provider + PinSlots> fmt::Debug for Attempt<'_, R> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("Attempt")
-            .field("resource_key", &R::key())
+            .field("resource_key", &crate::key_of::<R>())
             .field("cost", &self.cost)
             .field("settled", &self.settled)
             .finish_non_exhaustive()

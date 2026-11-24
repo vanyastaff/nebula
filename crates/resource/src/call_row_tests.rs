@@ -4,7 +4,6 @@
 //! `Manager.admission` across a read or a create, and settle every refusal
 //! unsent. Streaming units on a row keep the same per-attempt checkout.
 
-use crate::resource::ProviderKey;
 use std::{
     num::{NonZeroU32, NonZeroUsize},
     sync::{
@@ -563,7 +562,7 @@ async fn a_suspension_during_the_create_is_refused_at_hand_out() {
     entered.await;
     manager
         .suspend_credential_row(
-            &StrictPooled::key(),
+            &crate::key_of::<StrictPooled>(),
             &ScopeLevel::Global,
             &tenant(),
             "db",
@@ -1284,8 +1283,14 @@ fn typed_row(
     ctx: &ResourceContext,
     options: &AcquireOptions,
 ) -> ResourceHandle<StrictPooled> {
-    let erased = erased_row(manager, &StrictPooled::key(), ctx, options, &tenant())
-        .expect("erased row facade");
+    let erased = erased_row(
+        manager,
+        &crate::key_of::<StrictPooled>(),
+        ctx,
+        options,
+        &tenant(),
+    )
+    .expect("erased row facade");
     *erased
         .downcast::<ResourceHandle<StrictPooled>>()
         .expect("a ResourceHandle<StrictPooled>")
@@ -1326,13 +1331,13 @@ async fn the_erased_facade_downcasts_to_its_row_and_nothing_else() {
     let options = AcquireOptions::default();
 
     let row = typed_row(&manager, &context(), &options);
-    assert_eq!(row.resource_key(), &StrictPooled::key());
+    assert_eq!(row.resource_key(), &crate::key_of::<StrictPooled>());
     row.submit(Once::at(Cost::FREE)).await.expect("granted");
     assert_eq!(resource.probe.creates(), 1);
 
     let erased = erased_row(
         &manager,
-        &StrictPooled::key(),
+        &crate::key_of::<StrictPooled>(),
         &context(),
         &options,
         &tenant(),
@@ -1341,7 +1346,7 @@ async fn the_erased_facade_downcasts_to_its_row_and_nothing_else() {
     assert!(erased.downcast::<ResourceHandle<PlainPool>>().is_err());
     let erased = erased_row(
         &manager,
-        &StrictPooled::key(),
+        &crate::key_of::<StrictPooled>(),
         &context(),
         &options,
         &tenant(),
@@ -1359,7 +1364,7 @@ async fn the_erased_facade_refuses_a_missing_or_ambiguous_row() {
     let options = AcquireOptions::default();
     let error = erased_row(
         &manager,
-        &StrictPooled::key(),
+        &crate::key_of::<StrictPooled>(),
         &context(),
         &options,
         &tenant(),
@@ -1371,7 +1376,7 @@ async fn the_erased_facade_refuses_a_missing_or_ambiguous_row() {
     pooled_for(&manager, identity("tenant-b"));
     let error = erased_row(
         &manager,
-        &StrictPooled::key(),
+        &crate::key_of::<StrictPooled>(),
         &context(),
         &options,
         &SlotIdentity::Unbound,
@@ -1382,7 +1387,7 @@ async fn the_erased_facade_refuses_a_missing_or_ambiguous_row() {
     assert_eq!(*error.kind(), ErrorKind::NotFound);
     let acquired = Manager::acquire_any(
         Arc::clone(&manager),
-        &StrictPooled::key(),
+        &crate::key_of::<StrictPooled>(),
         &context(),
         &options,
         &SlotIdentity::Unbound,
@@ -1393,7 +1398,7 @@ async fn the_erased_facade_refuses_a_missing_or_ambiguous_row() {
     assert_eq!(acquired, Some(ErrorKind::NotFound));
     let error = erased_row(
         &manager,
-        &StrictPooled::key(),
+        &crate::key_of::<StrictPooled>(),
         &context(),
         &options,
         &identity("tenant-c"),
@@ -1409,7 +1414,7 @@ async fn a_pinned_identity_reaches_its_own_row() {
     let b = pooled_for(&manager, identity("tenant-b"));
     let row = erased_row(
         &manager,
-        &StrictPooled::key(),
+        &crate::key_of::<StrictPooled>(),
         &context(),
         &AcquireOptions::default(),
         &identity("tenant-b"),
@@ -1430,7 +1435,7 @@ async fn the_erased_facade_refuses_a_tainted_row_and_a_shutting_down_manager() {
     runtime::<StrictPooled>(&manager).taint();
     let error = erased_row(
         &manager,
-        &StrictPooled::key(),
+        &crate::key_of::<StrictPooled>(),
         &context(),
         &options,
         &tenant(),
@@ -1446,7 +1451,7 @@ async fn the_erased_facade_refuses_a_tainted_row_and_a_shutting_down_manager() {
         .expect("nothing to drain");
     let error = erased_row(
         &manager,
-        &StrictPooled::key(),
+        &crate::key_of::<StrictPooled>(),
         &context(),
         &options,
         &tenant(),

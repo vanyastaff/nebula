@@ -1,4 +1,3 @@
-use nebula_resource::ProviderKey;
 use std::{any::TypeId, fmt, sync::OnceLock};
 
 use nebula_action::{
@@ -206,7 +205,7 @@ impl Action for ResourceBoundAction {
                 kind: nebula_core::SlotKind::Resource {
                     type_id: TypeId::of::<FixtureResource>(),
                     type_name: "FixtureResource",
-                    key: FixtureResource::key(),
+                    key: nebula_resource::key_of::<FixtureResource>(),
                 },
                 required: true,
                 lazy: false,

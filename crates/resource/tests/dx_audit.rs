@@ -102,11 +102,9 @@ struct HttpClientResource {
     next_id: Arc<AtomicU64>,
 }
 
-// FRICTION NOTE [Resource::key() is STATIC]: The trait method `fn key() ->
-// ResourceKey` has no `&self`. This means you can't use instance data to
-// derive the key, even though the struct has data. This is intentional
-// (type-level identity) but the docs don't explain this constraint. I initially
-// wrote `fn key(&self)` and got a confusing "method not in trait" error.
+// FRICTION NOTE [the key is STATIC]: `Provider::KEY` is an associated
+// constant, read as `key_of::<R>()`. Instance data cannot derive the key,
+// even though the struct has data. This is intentional (type-level identity).
 #[async_trait::async_trait]
 impl Provider for HttpClientResource {
     type Config = HttpClientConfig;

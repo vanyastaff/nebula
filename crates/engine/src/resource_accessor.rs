@@ -228,7 +228,6 @@ pub fn slot_identities_for_key(
 
 #[cfg(test)]
 mod tests {
-    use nebula_resource::ProviderKey;
     use std::{
         fmt,
         sync::{
@@ -371,7 +370,7 @@ mod tests {
     #[tokio::test]
     async fn handles_use_the_recorded_slot_identity_not_unbound() {
         let manager = Arc::new(Manager::new());
-        let key = AccResource::key();
+        let key = nebula_resource::key_of::<AccResource>();
         let bound = SlotIdentity::from_bindings([("slot", "cred-a")]);
 
         manager
@@ -444,7 +443,7 @@ mod tests {
 
     fn row_of(accessor: &EngineResourceAccessor) -> ResourceHandle<AccResource> {
         *accessor
-            .resource_handle_any(&AccResource::key())
+            .resource_handle_any(&nebula_resource::key_of::<AccResource>())
             .expect("managed row")
             .downcast::<ResourceHandle<AccResource>>()
             .expect("ResourceHandle downcast")
@@ -496,7 +495,7 @@ mod tests {
     #[tokio::test]
     async fn resource_handle_any_serves_the_row_of_the_recorded_slot_identity() {
         let manager = Arc::new(Manager::new());
-        let key = AccResource::key();
+        let key = nebula_resource::key_of::<AccResource>();
         let bound = SlotIdentity::from_bindings([("slot", "cred-a")]);
         register_acc(&manager, bound.clone(), None);
 

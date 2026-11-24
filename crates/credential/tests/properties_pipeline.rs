@@ -33,7 +33,7 @@ fn metadata_schema_is_schema_of_properties() {
         .unwrap();
     let metadata = registry.definition(ApiKeyCredential::KEY).unwrap();
     let schema = schema_of::<<ApiKeyCredential as Credential>::Properties>().unwrap();
-    assert_eq!(metadata.schema(), &schema);
+    assert_eq!(metadata.base().schema(), &schema);
     assert_eq!(
         schema,
         <<ApiKeyCredential as Credential>::Properties as HasSchema>::schema().unwrap()

@@ -2,7 +2,6 @@
 //! credentials first, outside the admission lock, and applies what it saw
 //! under it (invariant I7).
 
-use crate::resource::ProviderKey;
 use std::{sync::Arc, time::Duration};
 
 use nebula_core::ScopeLevel;
@@ -494,7 +493,7 @@ async fn newer_material_refuses_until_it_is_installed() {
 
     let _installed = manager
         .install_and_refresh_slot_for_identity(
-            &StrictResident::key(),
+            &crate::key_of::<StrictResident>(),
             ScopeLevel::Global,
             "db",
             &tenant(),
@@ -795,7 +794,7 @@ async fn the_admission_lock_is_not_held_across_the_read() {
     // progresses: a suspension, a reload, a registration.
     manager
         .suspend_credential_row(
-            &StrictResident::key(),
+            &crate::key_of::<StrictResident>(),
             &ScopeLevel::Global,
             &tenant(),
             "db",
@@ -821,12 +820,16 @@ async fn the_admission_lock_is_not_held_across_the_read() {
     assert_eq!(suspended_for::<StrictResident>(&manager), Some(BLOCKED));
     // A fresh ticket reopens as before.
     let ticket = manager
-        .credential_gate_ticket(&StrictResident::key(), &ScopeLevel::Global, &tenant())
+        .credential_gate_ticket(
+            &crate::key_of::<StrictResident>(),
+            &ScopeLevel::Global,
+            &tenant(),
+        )
         .expect("ticket");
     assert_eq!(
         manager
             .reopen_credential_row(
-                &StrictResident::key(),
+                &crate::key_of::<StrictResident>(),
                 &ScopeLevel::Global,
                 &tenant(),
                 "db",
@@ -848,7 +851,12 @@ async fn a_taint_during_the_read_refuses_as_revoked() {
     let pending = spawn_acquire::<StrictResident>(&manager);
     observer.until_calls(1).await;
     let _tainted = manager
-        .taint_slot_for_identity(&StrictResident::key(), ScopeLevel::Global, "db", &tenant())
+        .taint_slot_for_identity(
+            &crate::key_of::<StrictResident>(),
+            ScopeLevel::Global,
+            "db",
+            &tenant(),
+        )
         .expect("taint");
     observer.release(1);
     let error = pending.await.expect("joined").refused();
@@ -986,20 +994,24 @@ async fn an_install_reopens_a_row_a_strict_read_suspended() {
     let (observer, manager, _resource) = setup(reauth(1, 2));
     assert_eq!(refused::<StrictResident>(&manager).await, Some(REAUTH));
     let ticket = manager
-        .credential_gate_ticket(&StrictResident::key(), &ScopeLevel::Global, &tenant())
+        .credential_gate_ticket(
+            &crate::key_of::<StrictResident>(),
+            &ScopeLevel::Global,
+            &tenant(),
+        )
         .expect("ticket");
     // Reauthentication produced new material; the fan-out installs it with
     // the ticket it captured before resolving.
     let managed = manager
         .lookup_any_for_slot_identity_structural(
-            &StrictResident::key(),
+            &crate::key_of::<StrictResident>(),
             &ScopeLevel::Global,
             &tenant(),
         )
         .expect("row");
     let _installed = manager
         .install_and_refresh_resolved(
-            &StrictResident::key(),
+            &crate::key_of::<StrictResident>(),
             "db",
             managed,
             guard(2, 3),

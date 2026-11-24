@@ -1,6 +1,5 @@
 //! Retiring framework roots must release dependencies before global guard drain.
 
-use nebula_resource::ProviderKey;
 use std::{
     any::Any,
     sync::{
@@ -365,7 +364,7 @@ async fn cancelled_drain_preserves_original_deadline_and_rejects_removal() {
     drop(shutdown);
     assert_eq!(
         manager
-            .remove(&ResidentNode::<0>::key())
+            .remove(&nebula_resource::key_of::<ResidentNode<0>>())
             .unwrap_err()
             .kind(),
         &nebula_resource::ErrorKind::Cancelled
@@ -373,7 +372,7 @@ async fn cancelled_drain_preserves_original_deadline_and_rejects_removal() {
     assert_eq!(
         manager
             .remove_for(
-                &ResidentNode::<0>::key(),
+                &nebula_resource::key_of::<ResidentNode<0>>(),
                 &ScopeLevel::Global,
                 &SlotIdentity::Unbound
             )
@@ -408,7 +407,9 @@ async fn removed_old_generation_and_registered_successor_retire_once() {
     let manager = manager();
     let old_destroyed = register::<0>(&manager, vec![]);
     let old_guard = acquire::<0>(&manager).await;
-    manager.remove(&ResidentNode::<0>::key()).unwrap();
+    manager
+        .remove(&nebula_resource::key_of::<ResidentNode<0>>())
+        .unwrap();
     let successor_destroyed = register::<0>(&manager, vec![]);
     let parent_destroyed = register::<1>(&manager, vec![Box::new(old_guard)]);
     assert_eq!(

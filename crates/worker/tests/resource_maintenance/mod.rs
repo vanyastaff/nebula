@@ -1,6 +1,5 @@
 //! Retirement must not depend on optional diagnostic storage.
 
-use nebula_resource::ProviderKey;
 use std::sync::atomic::AtomicBool;
 
 use nebula_core::{DeclaresDependencies, ResourceId, WorkspaceId};
@@ -162,7 +161,7 @@ impl Fixture {
                     workspace_id: scope.workspace_id.clone(),
                     slug: "retirement-probe".into(),
                     display_name: "Retirement probe".into(),
-                    kind: RetiredResource::key().to_string(),
+                    kind: nebula_resource::key_of::<RetiredResource>().to_string(),
                     config: serde_json::Value::Null,
                     credential_bindings: Default::default(),
                     topology: None,
@@ -181,7 +180,7 @@ impl Fixture {
         let mut registrars = ResourceActivatorRegistry::new();
         registrars
             .insert(
-                RetiredResource::key().as_str(),
+                nebula_resource::key_of::<RetiredResource>().as_str(),
                 Arc::new(KindActivator::new(
                     move || provider.clone(),
                     nebula_resource::topology::fixed(|| {
@@ -202,7 +201,7 @@ impl Fixture {
                 },
                 &scope,
                 resource_id,
-                &RetiredResource::key(),
+                &nebula_resource::key_of::<RetiredResource>(),
                 &CancellationToken::new(),
             )
             .await

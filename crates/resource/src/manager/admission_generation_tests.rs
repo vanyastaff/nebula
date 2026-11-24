@@ -1,6 +1,5 @@
 //! Admission generations: which lifecycle changes close a row's generations
 //! and which publish a benign successor.
-use crate::resource::ProviderKey;
 use std::{
     sync::{
         Arc,
@@ -174,7 +173,11 @@ fn register(manager: &Manager, identity: &SlotIdentity, version: u64) -> Tenant 
 
 fn row(manager: &Manager, identity: &SlotIdentity) -> Arc<ManagedResource<Tenant>> {
     manager
-        .lookup_any_for_slot_identity_structural(&Tenant::key(), &ScopeLevel::Global, identity)
+        .lookup_any_for_slot_identity_structural(
+            &crate::key_of::<Tenant>(),
+            &ScopeLevel::Global,
+            identity,
+        )
         .expect("row is registered")
         .as_any_arc()
         .downcast::<ManagedResource<Tenant>>()
@@ -196,7 +199,12 @@ async fn taint_retires_the_row() {
     let row = row(&manager, &tenant);
     let held = row.admission.snapshot();
     let _tainted = manager
-        .taint_slot_for_identity(&Tenant::key(), ScopeLevel::Global, "db", &tenant)
+        .taint_slot_for_identity(
+            &crate::key_of::<Tenant>(),
+            ScopeLevel::Global,
+            "db",
+            &tenant,
+        )
         .expect("taint");
     assert!(row.admission.is_retired());
     assert!(
@@ -215,7 +223,7 @@ async fn remove_and_remove_for_retire_the_row() {
     let (first_row, second_row) = (row(&manager, &first), row(&manager, &second));
 
     manager
-        .remove_for(&Tenant::key(), &ScopeLevel::Global, &first)
+        .remove_for(&crate::key_of::<Tenant>(), &ScopeLevel::Global, &first)
         .expect("remove_for");
     assert!(first_row.admission.is_retired());
     assert!(
@@ -223,7 +231,7 @@ async fn remove_and_remove_for_retire_the_row() {
         "a sibling row keeps admitting"
     );
 
-    manager.remove(&Tenant::key()).expect("remove");
+    manager.remove(&crate::key_of::<Tenant>()).expect("remove");
     assert!(second_row.admission.is_retired());
 }
 
@@ -265,7 +273,12 @@ async fn reload_after_taint_publishes_nothing() {
     register(&manager, &tenant, 1);
     let row = row(&manager, &tenant);
     let _tainted = manager
-        .taint_slot_for_identity(&Tenant::key(), ScopeLevel::Global, "db", &tenant)
+        .taint_slot_for_identity(
+            &crate::key_of::<Tenant>(),
+            ScopeLevel::Global,
+            "db",
+            &tenant,
+        )
         .expect("taint");
     manager
         .reload_config::<Tenant>(Config { version: 2 }, &ScopeLevel::Global)
@@ -299,7 +312,7 @@ async fn credential_install_publishes_a_successor() {
     );
     let outcome = manager
         .install_and_refresh_slot_for_identity(
-            &Tenant::key(),
+            &crate::key_of::<Tenant>(),
             ScopeLevel::Global,
             "db",
             &tenant,
@@ -365,7 +378,12 @@ async fn revoke_closes_a_held_guard_and_wakes_its_waiter() {
         let tenant = tenant.clone();
         async move {
             manager
-                .revoke_slot_for_identity(&Tenant::key(), ScopeLevel::Global, "db", &tenant)
+                .revoke_slot_for_identity(
+                    &crate::key_of::<Tenant>(),
+                    ScopeLevel::Global,
+                    "db",
+                    &tenant,
+                )
                 .await
         }
     });
@@ -483,7 +501,12 @@ async fn terminal_close_after_a_benign_publish_closes_every_generation() {
     let second = acquire(&manager, &tenant).await;
     assert_ne!(first.admission().seq(), second.admission().seq());
     let _tainted = manager
-        .taint_slot_for_identity(&Tenant::key(), ScopeLevel::Global, "db", &tenant)
+        .taint_slot_for_identity(
+            &crate::key_of::<Tenant>(),
+            ScopeLevel::Global,
+            "db",
+            &tenant,
+        )
         .expect("taint");
     assert!(first.is_closing(), "G1 is still held and closes on taint");
     assert!(second.is_closing());
@@ -554,7 +577,12 @@ async fn resident_create_straddling_a_taint_is_refused_as_revoked() {
     let acquire = parked_acquire(&manager, &resource, &tenant).await;
 
     let tainted = manager
-        .taint_slot_for_identity(&Tenant::key(), ScopeLevel::Global, "db", &tenant)
+        .taint_slot_for_identity(
+            &crate::key_of::<Tenant>(),
+            ScopeLevel::Global,
+            "db",
+            &tenant,
+        )
         .expect("taint");
     let tail = tokio::spawn({
         let manager = Arc::clone(&manager);
@@ -624,7 +652,7 @@ async fn resident_create_straddling_a_removal_is_refused_as_cancelled() {
     let acquire = parked_acquire(&manager, &resource, &tenant).await;
 
     manager
-        .remove_for(&Tenant::key(), &ScopeLevel::Global, &tenant)
+        .remove_for(&crate::key_of::<Tenant>(), &ScopeLevel::Global, &tenant)
         .expect("remove_for");
     resource.gate.release.notify_one();
 
