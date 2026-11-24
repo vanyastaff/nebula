@@ -17,8 +17,9 @@ use std::{
 };
 
 use nebula_action::{
-    ActionContext, ActionError, AgentAction,
+    ActionContext, ActionError, AgentAction, Component,
     action::Action,
+    kind,
     output::ActionOutput,
     result::{ActionResult, BreakReason, WaitCondition},
     testing::TestContextBuilder,
@@ -57,18 +58,25 @@ struct TurnCounter {
     turns_completed: u32,
 }
 
-impl Action for TwoTurnAgent {
-    const KEY: &'static str = "test.agent.two_turn";
-    type Input = Value;
-    type Output = Value;
+impl Component for TwoTurnAgent {
+    type Kind = kind::Action;
+    type Config = Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.agent.two_turn";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("TwoTurnAgent"),
             "continues twice then breaks",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
+}
+
+impl Action for TwoTurnAgent {
+    type Output = Value;
+
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -142,18 +150,25 @@ struct StubbornTurn {
     initial_marker: u32,
 }
 
-impl Action for StubbornContinueAgent {
-    const KEY: &'static str = "test.agent.stubborn_continue";
-    type Input = Value;
-    type Output = Value;
+impl Component for StubbornContinueAgent {
+    type Kind = kind::Action;
+    type Config = Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.agent.stubborn_continue";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("StubbornContinueAgent"),
             "continues N times without mutating turn state, then breaks",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
+}
+
+impl Action for StubbornContinueAgent {
+    type Output = Value;
+
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -218,18 +233,25 @@ struct LoopTurn {
     steps: u32,
 }
 
-impl Action for LoopForeverAgent {
-    const KEY: &'static str = "test.agent.loop_forever";
-    type Input = Value;
-    type Output = Value;
+impl Component for LoopForeverAgent {
+    type Kind = kind::Action;
+    type Config = Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.agent.loop_forever";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("LoopForeverAgent"),
             "loops until budget is exceeded",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
+}
+
+impl Action for LoopForeverAgent {
+    type Output = Value;
+
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -287,18 +309,25 @@ struct SlowTurn {
     attempts: u32,
 }
 
-impl Action for SlowTurnAgent {
-    const KEY: &'static str = "test.agent.slow_turn";
-    type Input = Value;
-    type Output = Value;
+impl Component for SlowTurnAgent {
+    type Kind = kind::Action;
+    type Config = Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.agent.slow_turn";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("SlowTurnAgent"),
             "sleeps per turn to exercise the per-turn timeout",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
+}
+
+impl Action for SlowTurnAgent {
+    type Output = Value;
+
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -345,18 +374,25 @@ impl AgentAction for SlowTurnAgent {
 /// Fast variant: step completes well within the turn_timeout.
 struct FastTurnAgent;
 
-impl Action for FastTurnAgent {
-    const KEY: &'static str = "test.agent.fast_turn";
-    type Input = Value;
-    type Output = Value;
+impl Component for FastTurnAgent {
+    type Kind = kind::Action;
+    type Config = Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.agent.fast_turn";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("FastTurnAgent"),
             "completes instantly — per-turn timeout must NOT fire",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
+}
+
+impl Action for FastTurnAgent {
+    type Output = Value;
+
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -408,18 +444,25 @@ struct WaitReturningAgent;
 #[derive(Clone, Serialize, Deserialize)]
 struct WaitTurn;
 
-impl Action for WaitReturningAgent {
-    const KEY: &'static str = "test.agent.wait_returning";
-    type Input = Value;
-    type Output = Value;
+impl Component for WaitReturningAgent {
+    type Kind = kind::Action;
+    type Config = Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.agent.wait_returning";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("WaitReturningAgent"),
             "returns Wait — engine must reject with AgentWaitNotSupported",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
+}
+
+impl Action for WaitReturningAgent {
+    type Output = Value;
+
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();

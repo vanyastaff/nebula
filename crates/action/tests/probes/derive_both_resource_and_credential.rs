@@ -10,7 +10,7 @@ struct FakeCred;
 #[derive(Action)]
 #[action(
     key = "bad.both_slots",
-    input = serde_json::Value,
+    config = serde_json::Value,
     output = serde_json::Value,
 )]
 struct BothSlots {

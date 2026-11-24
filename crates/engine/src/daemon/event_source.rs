@@ -7,7 +7,7 @@
 //!
 //! `EventSource: Provider` and `TriggerAction: Action` sit on different bases.
 //! `EventSourceAdapter<E>` bridges them as a typed action: the source owns its
-//! [`ActionMetadata`], while callers supply `Arc<E::Instance>` and an
+//! [`Metadata`], while callers supply `Arc<E::Instance>` and an
 //! `event_to_payload` closure. Erasure happens only through action's sealed
 //! [`TriggerActionAdapter`].
 //!
@@ -20,8 +20,8 @@ use std::{
 };
 
 use nebula_action::{
-    Action, ActionAdmissionError, ActionError, ActionMetadata, TriggerAction, TriggerActionAdapter,
-    TriggerContext, TriggerEventOutcome, TriggerSource,
+    Action, ActionAdmissionError, ActionError, Component, Metadata, TriggerAction,
+    TriggerActionAdapter, TriggerContext, TriggerEventOutcome, TriggerSource, kind,
 };
 use nebula_core::Dependencies;
 use nebula_resource::{ResourceContext, error::ErrorKind as ResourceErrorKind, resource::Provider};
@@ -38,13 +38,13 @@ pub trait EventSource: Provider {
 
     /// Key of the trigger action this event source is exposed as.
     ///
-    /// The adapter declares it as its [`Action::KEY`]. It is separate from
+    /// The adapter declares it as its [`Component::KEY`]. It is separate from
     /// the provider's resource key: the source is a resource and the
     /// trigger that drives it is an action.
     const ACTION_KEY: &'static str;
 
     /// Author-owned action catalog metadata for this event source, without a key.
-    fn action_metadata() -> ActionMetadata;
+    fn action_metadata() -> Metadata;
 
     /// Action dependencies required while driving this event source.
     fn action_dependencies() -> &'static Dependencies {
@@ -196,18 +196,27 @@ where
     }
 }
 
+impl<E> Component for EventSourceAdapter<E>
+where
+    E: EventSource + Send + Sync + 'static,
+    E::Instance: Send + Sync + 'static,
+{
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
+
+    const KEY: &'static str = E::ACTION_KEY;
+
+    fn metadata() -> Metadata {
+        E::action_metadata()
+    }
+}
+
 impl<E> Action for EventSourceAdapter<E>
 where
     E: EventSource + Send + Sync + 'static,
     E::Instance: Send + Sync + 'static,
 {
-    const KEY: &'static str = E::ACTION_KEY;
-    type Input = serde_json::Value;
     type Output = serde_json::Value;
-
-    fn metadata() -> ActionMetadata {
-        E::action_metadata()
-    }
 
     fn dependencies() -> &'static Dependencies {
         E::action_dependencies()
@@ -501,8 +510,8 @@ mod tests {
         emitted: Arc<AtomicU32>,
     }
 
-    impl nebula_resource::Component for ThreeEventSource {
-        type Kind = nebula_resource::kind::Resource;
+    impl Component for ThreeEventSource {
+        type Kind = kind::Resource;
         type Config = EmptyCfg;
 
         const KEY: &'static str = "event-three";
@@ -533,7 +542,7 @@ mod tests {
         type Event = u32;
         type Subscription = ();
 
-        fn action_metadata() -> ActionMetadata {
+        fn action_metadata() -> Metadata {
             make_metadata()
         }
 
@@ -559,8 +568,8 @@ mod tests {
         }
     }
 
-    fn make_metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn make_metadata() -> Metadata {
+        Metadata::new(
             nebula_action::metadata_name!("EventSourceAdapterTest"),
             "Adapter integration test",
         )
@@ -631,8 +640,8 @@ mod tests {
         }
     }
 
-    impl nebula_resource::Component for PermanentlyBrokenSource {
-        type Kind = nebula_resource::kind::Resource;
+    impl Component for PermanentlyBrokenSource {
+        type Kind = kind::Resource;
         type Config = EmptyCfg;
 
         const KEY: &'static str = "event-permanently-broken";
@@ -666,7 +675,7 @@ mod tests {
         type Event = u32;
         type Subscription = ();
 
-        fn action_metadata() -> ActionMetadata {
+        fn action_metadata() -> Metadata {
             make_metadata()
         }
 

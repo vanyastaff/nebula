@@ -231,19 +231,26 @@ fn apply_flatten(elements: Vec<Value>, depth: usize) -> Vec<Value> {
 #[derive(Debug)]
 pub struct ArrayAction;
 
-impl nebula_action::action::Action for ArrayAction {
-    const KEY: &'static str = "core.array";
-    type Input = ArrayInput;
-    type Output = Value;
+impl nebula_action::action::Component for ArrayAction {
+    type Kind = nebula_action::action::kind::Action;
+    type Config = ArrayInput;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "core.array";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Array"),
             "Shape a JSON array with chunk/flatten/take/skip operations applied left-to-right",
         )
         .with_version(nebula_action::MetadataVersion::new(2, 0, 0))
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
+}
+
+impl nebula_action::action::Action for ArrayAction {
+    type Output = Value;
+
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static nebula_action::Dependencies {
         static DEPS: OnceLock<nebula_action::Dependencies> = OnceLock::new();

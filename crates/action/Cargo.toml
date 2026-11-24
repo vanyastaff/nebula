@@ -17,6 +17,7 @@ default = []
 async-trait = { workspace = true }
 futures = { workspace = true }
 nebula-action-macros = { path = "macros" }
+nebula-component = { path = "../component" }
 nebula-core = { path = "../core" }
 nebula-credential = { path = "../credential" }
 nebula-error = { workspace = true, features = ["serde_json"] }

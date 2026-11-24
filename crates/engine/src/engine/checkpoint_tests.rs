@@ -11,8 +11,9 @@ nebula_action::stateless_entry!(
 nebula_action::stateless_entry!(
     /// The snapshot action under the same key with a drifted effect contract.
     SnapshotEffectDrift(SnapshotHandler) = "exact.run",
-    SnapshotHandler::metadata().with_effect_contract(
-        nebula_action::effect::ActionEffectContract::Journaled(nebula_action::JournalProtocol::V1),
+    SnapshotHandler::metadata(),
+    effect_contract: nebula_action::effect::ActionEffectContract::Journaled(
+        nebula_action::JournalProtocol::V1
     ),
 );
 

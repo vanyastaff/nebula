@@ -193,34 +193,48 @@ macro_rules! assert_cancelled {
 /// Declare another catalog entry that runs an existing stateless action.
 ///
 /// An action's key and metadata belong to its type, so one type is one catalog
-/// entry. To register the same behavior under a second key, or with other
-/// ports or another version, declare a new type for that entry. This macro
-/// writes that type: a newtype over `$inner` with its own `KEY` and metadata,
-/// whose `execute` runs `$inner`'s. `Input`, `Output` and the dependencies are
-/// `$inner`'s.
+/// entry. To register the same behavior under a second key, or with another
+/// name or version, declare a new type for that entry. This macro writes that
+/// type: a newtype over `$inner` with its own `KEY` and metadata, whose
+/// `execute` runs `$inner`'s. `Config`, `Output` and dependencies are always
+/// `$inner`'s. The entry's interface (ports, isolation, effect contract and
+/// concurrency hint) is `$inner`'s too, unless the entry declares its own with
+/// these optional trailing arguments, in this order:
 ///
-/// The metadata is an expression evaluated in the generated `metadata()`, so
-/// it cannot refer to local variables.
+/// - `inputs: Vec<InputPort>`
+/// - `outputs: Vec<OutputPort>`
+/// - `isolation_level: IsolationLevel`
+/// - `effect_contract: ActionEffectContract`
+/// - `max_concurrent: Option<NonZeroU32>`
+///
+/// The metadata and the port lists are expressions evaluated in the generated
+/// functions, so they cannot refer to local variables. The `isolation_level`,
+/// `effect_contract` and `max_concurrent` values must be constant expressions.
 ///
 /// # Examples
 ///
 /// ```rust
 /// use std::sync::OnceLock;
 /// use nebula_action::{
-///     Action, ActionContext, ActionError, ActionMetadata, ActionResult, Dependencies,
-///     StatelessAction, metadata_name, stateless_entry,
+///     Action, ActionContext, ActionError, ActionResult, Component, Dependencies, Metadata,
+///     StatelessAction, kind, metadata_name, stateless_entry,
 /// };
 ///
 /// struct Echo;
 ///
-/// impl Action for Echo {
-///     const KEY: &'static str = "demo.echo";
-///     type Input = serde_json::Value;
-///     type Output = serde_json::Value;
+/// impl Component for Echo {
+///     type Kind = kind::Action;
+///     type Config = serde_json::Value;
 ///
-///     fn metadata() -> ActionMetadata {
-///         ActionMetadata::new(metadata_name!("Echo"), "Echoes its input")
+///     const KEY: &'static str = "demo.echo";
+///
+///     fn metadata() -> Metadata {
+///         Metadata::new(metadata_name!("Echo"), "Echoes its input")
 ///     }
+/// }
+///
+/// impl Action for Echo {
+///     type Output = serde_json::Value;
 ///
 ///     fn dependencies() -> &'static Dependencies {
 ///         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -238,27 +252,68 @@ macro_rules! assert_cancelled {
 ///     }
 /// }
 ///
-/// stateless_entry!(Mirror(Echo) = "demo.mirror", ActionMetadata::new(metadata_name!("Mirror"), ""));
+/// stateless_entry!(Mirror(Echo) = "demo.mirror", Metadata::new(metadata_name!("Mirror"), ""));
+///
+/// // The same behavior, declared read-only under its own key.
+/// stateless_entry!(
+///     ReadOnlyMirror(Echo) = "demo.mirror_read_only",
+///     Metadata::new(metadata_name!("Read-only mirror"), ""),
+///     effect_contract: nebula_action::ActionEffectContract::ReadOnly,
+/// );
 ///
 /// assert_eq!(nebula_action::key_of::<Mirror>().as_str(), "demo.mirror");
+/// assert_eq!(
+///     <ReadOnlyMirror as Action>::EFFECT_CONTRACT,
+///     nebula_action::ActionEffectContract::ReadOnly
+/// );
 /// let _entry = Mirror(Echo);
 /// ```
 #[macro_export]
 macro_rules! stateless_entry {
     (
         $(#[$attr:meta])*
-        $vis:vis $name:ident($inner:ty) = $key:literal, $metadata:expr $(,)?
+        $vis:vis $name:ident($inner:ty) = $key:literal, $metadata:expr
+        $(, inputs: $inputs:expr)?
+        $(, outputs: $outputs:expr)?
+        $(, isolation_level: $isolation_level:expr)?
+        $(, effect_contract: $effect_contract:expr)?
+        $(, max_concurrent: $max_concurrent:expr)?
+        $(,)?
     ) => {
         $(#[$attr])*
         $vis struct $name(pub $inner);
 
-        impl $crate::Action for $name {
+        impl $crate::Component for $name {
+            type Kind = $crate::kind::Action;
+            type Config = <$inner as $crate::Component>::Config;
+
             const KEY: &'static str = $key;
-            type Input = <$inner as $crate::Action>::Input;
+
+            fn metadata() -> $crate::Metadata {
+                $metadata
+            }
+        }
+
+        impl $crate::Action for $name {
             type Output = <$inner as $crate::Action>::Output;
 
-            fn metadata() -> $crate::ActionMetadata {
-                $metadata
+            const ISOLATION_LEVEL: $crate::IsolationLevel = $crate::__entry_or!(
+                $($isolation_level)?; <$inner as $crate::Action>::ISOLATION_LEVEL
+            );
+            const EFFECT_CONTRACT: $crate::ActionEffectContract = $crate::__entry_or!(
+                $($effect_contract)?; <$inner as $crate::Action>::EFFECT_CONTRACT
+            );
+            const MAX_CONCURRENT: ::core::option::Option<::core::num::NonZeroU32> =
+                $crate::__entry_or!(
+                    $($max_concurrent)?; <$inner as $crate::Action>::MAX_CONCURRENT
+                );
+
+            fn inputs() -> ::std::vec::Vec<$crate::InputPort> {
+                $crate::__entry_or!($($inputs)?; <$inner as $crate::Action>::inputs())
+            }
+
+            fn outputs() -> ::std::vec::Vec<$crate::OutputPort> {
+                $crate::__entry_or!($($outputs)?; <$inner as $crate::Action>::outputs())
             }
 
             fn dependencies() -> &'static $crate::Dependencies {
@@ -269,7 +324,7 @@ macro_rules! stateless_entry {
         impl $crate::StatelessAction for $name {
             fn execute(
                 &self,
-                input: <Self as $crate::Action>::Input,
+                input: <Self as $crate::Component>::Config,
                 ctx: &(impl $crate::ActionContext + ?Sized),
             ) -> impl ::core::future::Future<
                 Output = ::core::result::Result<
@@ -280,5 +335,18 @@ macro_rules! stateless_entry {
                 <$inner as $crate::StatelessAction>::execute(&self.0, input, ctx)
             }
         }
+    };
+}
+
+/// The entry's own declaration when [`stateless_entry!`] was given one, else
+/// the inner action's.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __entry_or {
+    (; $inherited:expr) => {
+        $inherited
+    };
+    ($declared:expr; $inherited:expr) => {
+        $declared
     };
 }

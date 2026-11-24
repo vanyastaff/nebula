@@ -257,7 +257,7 @@ pub fn validate_workflow_with_resolver(
 ///   than `"out"` (e.g. `"error"`, `"true"`, a dynamic / support port key), or
 ///   `to_port` is a named port (support / supply input). Only default
 ///   main-flow edges — `from_port: None` (effective `"out"`) **and**
-///   `to_port: None` — carry the typed `A::Output` / `A::Input` payload that
+///   `to_port: None` — carry the typed `A::Output` / `A::Config` payload that
 ///   `output_schema` / `base.schema` describe. Named ports carry different
 ///   payloads and must not be validated against the success-output schema.
 /// - either endpoint's `action_key` is missing from the catalog
@@ -308,7 +308,7 @@ pub fn validate_workflow_with_resolver_mode(
 
         // Port-scope guard: only type-check main-flow edges.
         //
-        // `output_schema` / `base.schema` describe the typed A::Output / A::Input
+        // `output_schema` / `base.schema` describe the typed A::Output / A::Config
         // on the SUCCESS path — the default main-flow edge. Named `from_port` values
         // (e.g. `"error"` for recovery routing, `"true"`/`"false"` for control
         // branches, dynamic port keys) carry a *different* payload shape and must

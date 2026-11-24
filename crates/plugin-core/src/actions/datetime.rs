@@ -343,19 +343,26 @@ fn build_duration(amount: i64, unit: DurationUnit) -> Result<Duration, ActionErr
 #[derive(Debug)]
 pub struct DateTimeAction;
 
-impl nebula_action::action::Action for DateTimeAction {
-    const KEY: &'static str = "core.datetime";
-    type Input = DateTimeInput;
-    type Output = Value;
+impl nebula_action::action::Component for DateTimeAction {
+    type Kind = nebula_action::action::kind::Action;
+    type Config = DateTimeInput;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "core.datetime";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("DateTime"),
             "Offset-aware RFC3339 timestamp formatting, parsing, arithmetic, and diff",
         )
         .with_version(nebula_action::MetadataVersion::new(2, 0, 0))
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
+}
+
+impl nebula_action::action::Action for DateTimeAction {
+    type Output = Value;
+
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static nebula_action::Dependencies {
         static DEPS: OnceLock<nebula_action::Dependencies> = OnceLock::new();

@@ -1,8 +1,8 @@
 use std::sync::OnceLock;
 
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionFactory, ActionMetadata, ActionResult,
-    InstanceFactory, StatelessAction,
+    Action, ActionContext, ActionError, ActionFactory, ActionResult, Component, InstanceFactory,
+    Metadata, StatelessAction, kind,
 };
 use nebula_core::{ActionKey, ArtifactSetDigest, Dependencies, accessor::SystemClock, node_key};
 use nebula_plugin::{Plugin, PluginManifest, PluginRegistry, ResolvedPlugin};
@@ -213,15 +213,22 @@ impl HasSchema for EmptyContract {
 
 struct FixtureAction;
 
-impl Action for FixtureAction {
+impl Component for FixtureAction {
+    type Kind = kind::Action;
+    type Config = EmptyContract;
+
     const KEY: &'static str = "activation.run";
-    type Input = EmptyContract;
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_action::metadata_name!("Run"), "fixture")
+    }
+}
+
+impl Action for FixtureAction {
     type Output = EmptyContract;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(nebula_action::metadata_name!("Run"), "fixture")
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
-    }
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();

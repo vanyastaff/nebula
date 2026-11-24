@@ -729,17 +729,22 @@ struct ChargeAction {
     controls: Arc<Controls>,
 }
 
-impl Action for ChargeAction {
-    const KEY: &'static str = "journal.charge";
-    type Input = Value;
-    type Output = Value;
+impl Component for ChargeAction {
+    type Kind = kind::Action;
+    type Config = Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "journal.charge";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_action::metadata_name!("Charge"),
             "Journaled test action",
         )
     }
+}
+
+impl Action for ChargeAction {
+    type Output = Value;
 
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
@@ -806,7 +811,7 @@ pub(super) struct IterationState {
     key = "journal.charge",
     name = "Charge",
     description = "Journaled stateful test action",
-    input = Value,
+    config = Value,
     output = Value
 )]
 struct StatefulCharge;
@@ -1083,7 +1088,7 @@ async fn agent_turn(
     key = "journal.charge",
     name = "Charge",
     description = "Journaled agent test action",
-    input = Value,
+    config = Value,
     output = Value
 )]
 struct AgentCharge;
@@ -1114,7 +1119,7 @@ impl AgentAction for AgentCharge {
     key = "journal.charge",
     name = "Charge",
     description = "Journaled agent test action with a turn timeout",
-    input = Value,
+    config = Value,
     output = Value
 )]
 struct TimedAgentCharge;
@@ -1150,7 +1155,7 @@ impl AgentAction for TimedAgentCharge {
     key = "journal.charge",
     name = "Charge",
     description = "Default-contract control test action",
-    input = Value,
+    config = Value,
     output = Value
 )]
 struct ControlCharge;
@@ -1175,7 +1180,7 @@ impl ControlAction for ControlCharge {
     key = "journal.charge",
     name = "Charge",
     description = "Read-only control test action",
-    input = Value,
+    config = Value,
     output = Value,
     read_only
 )]

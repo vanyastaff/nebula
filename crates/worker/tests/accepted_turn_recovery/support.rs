@@ -1,12 +1,14 @@
 //! Real owner adapters and pure action fixtures for worker restart tests.
 use nebula_action::{
-    Action, ActionError, ActionFactory, ActionResult, RemoteEffectInstanceFactory, StatelessAction,
+    Action, ActionError, ActionFactory, ActionResult, Component, RemoteEffectInstanceFactory,
+    StatelessAction,
     effect::{
         ActionEffectContract, EffectFailureCode, EffectInvocationContext, EffectInvocationOutcome,
         EffectPreparationContext, EffectPreparationError, PreparedEffectAdapter,
         PreparedRemoteEffect, RemoteDestinationGuarantee, RemoteEffectAction,
         RemoteEffectDeclarationError, RemoteEffectDescriptor, RemoteEffectPolicy,
     },
+    kind,
 };
 use nebula_core::{Dependencies, ExecutionId, OperationId, WorkflowId, action_key, node_key};
 use nebula_engine::{
@@ -61,17 +63,22 @@ struct RecoveryEffectAction {
     observations: Arc<EffectObservations>,
 }
 
-impl Action for RecoveryEffectAction {
-    const KEY: &'static str = "recovery.send";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for RecoveryEffectAction {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "recovery.send";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Send"),
             "durable recovery effect fixture",
         )
     }
+}
+
+impl Action for RecoveryEffectAction {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
@@ -159,17 +166,25 @@ struct Echo {
     calls: Arc<Calls>,
     block_successor: bool,
 }
-impl Action for Echo {
+impl Component for Echo {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
+
     const KEY: &'static str = "recovery.echo";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Echo"),
             "pure recovery fixture",
         )
-        .with_effect_contract(ActionEffectContract::ReadOnly)
     }
+}
+
+impl Action for Echo {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: ActionEffectContract = ActionEffectContract::ReadOnly;
+
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
         DEPENDENCIES.get_or_init(Dependencies::new)

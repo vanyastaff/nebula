@@ -3,8 +3,8 @@
 use std::sync::OnceLock;
 
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionFactory, ActionMetadata, ActionResult,
-    InstanceFactory, StatelessAction,
+    Action, ActionContext, ActionError, ActionFactory, ActionResult, Component, InstanceFactory,
+    Metadata, StatelessAction, kind,
 };
 use nebula_core::{ActionKey, Dependencies};
 use nebula_plugin::ResolvedPlugin;
@@ -22,17 +22,25 @@ struct LegacyInput {
 
 struct LegacySchemaAction;
 
-impl Action for LegacySchemaAction {
-    const KEY: &'static str = "legacy.schema";
-    type Input = LegacyInput;
-    type Output = Value;
+impl Component for LegacySchemaAction {
+    type Kind = kind::Action;
+    type Config = LegacyInput;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    const KEY: &'static str = "legacy.schema";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_action::metadata_name!("Legacy schema"),
             "Legacy schema compatibility fixture",
         )
     }
+}
+
+impl Action for LegacySchemaAction {
+    type Output = Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
@@ -85,12 +93,11 @@ macro_rules! input_contract {
             nebula_action::stateless_entry!(
                 /// The legacy-schema catalog entry this action's schema replaced.
                 LegacyEntry(LegacySchemaAction) = $action,
-                ActionMetadata::new(
+                Metadata::new(
                     nebula_action::metadata_name!("Legacy action"),
                     "Legacy schema compatibility fixture",
                 )
-                .with_version(nebula_action::MetadataVersion::new(1, 0, 0))
-                .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+                .with_version(nebula_action::MetadataVersion::new(1, 0, 0)),
             );
 
             #[test]

@@ -37,8 +37,9 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, ActionMetadata,
+    ActionError, Component, Metadata,
     action::Action,
+    kind,
     result::{ActionResult, WaitCondition},
     stateless::StatelessAction,
 };
@@ -188,14 +189,22 @@ impl LeaseStores {
 /// fixture type is one catalog entry.
 macro_rules! fixture_action_impl {
     ($ty:ty, $key:expr, $metadata:expr $(,)?) => {
-        impl Action for $ty {
-            const KEY: &'static str = $key;
-            type Input = serde_json::Value;
-            type Output = serde_json::Value;
+        impl Component for $ty {
+            type Kind = kind::Action;
+            type Config = serde_json::Value;
 
-            fn metadata() -> ActionMetadata {
+            const KEY: &'static str = $key;
+
+            fn metadata() -> Metadata {
                 $metadata
             }
+        }
+
+        impl Action for $ty {
+            type Output = serde_json::Value;
+
+            const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+                nebula_action::effect::ActionEffectContract::ReadOnly;
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
                 D.get_or_init(Dependencies::new)
@@ -221,7 +230,7 @@ nebula_action::stateless_entry!(
 impl StatelessAction for CountingEchoHandler {
     async fn execute(
         &self,
-        input: <Self as Action>::Input,
+        input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         self.invocations.fetch_add(1, Ordering::SeqCst);
@@ -244,7 +253,7 @@ fixture_action_impl!(ParkHandler, "core.park", meta("core.park"),);
 impl StatelessAction for ParkHandler {
     async fn execute(
         &self,
-        _input: <Self as Action>::Input,
+        _input: Self::Config,
         ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         self.invocations.fetch_add(1, Ordering::SeqCst);
@@ -263,7 +272,7 @@ fixture_action_impl!(FarTimerHandler, "core.far_timer", meta("core.far_timer"),)
 impl StatelessAction for FarTimerHandler {
     async fn execute(
         &self,
-        _input: <Self as Action>::Input,
+        _input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Ok(ActionResult::Wait {
@@ -280,10 +289,8 @@ impl StatelessAction for FarTimerHandler {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn meta(name: &str) -> ActionMetadata {
-    ActionMetadata::try_new(name, "lease-takeover test handler")
-        .expect("fixture display name")
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
+fn meta(name: &str) -> Metadata {
+    Metadata::try_new(name, "lease-takeover test handler").expect("fixture display name")
 }
 
 fn make_workflow(nodes: Vec<NodeDefinition>, connections: Vec<Connection>) -> WorkflowDefinition {

@@ -18,7 +18,8 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, ActionMetadata, action::Action, result::ActionResult, stateless::StatelessAction,
+    ActionError, Component, Metadata, action::Action, kind, result::ActionResult,
+    stateless::StatelessAction,
 };
 use nebula_core::{Dependencies, NodeKey, id::WorkflowId, node_key};
 use nebula_engine::{
@@ -41,14 +42,22 @@ use nebula_workflow::{
 /// Macro to reduce boilerplate for unit-struct fixtures.
 macro_rules! variant_a_action {
     ($ty:ident, $key:expr, $metadata:expr $(,)?) => {
-        impl Action for $ty {
-            const KEY: &'static str = $key;
-            type Input = serde_json::Value;
-            type Output = serde_json::Value;
+        impl Component for $ty {
+            type Kind = kind::Action;
+            type Config = serde_json::Value;
 
-            fn metadata() -> ActionMetadata {
+            const KEY: &'static str = $key;
+
+            fn metadata() -> Metadata {
                 $metadata
             }
+        }
+
+        impl Action for $ty {
+            type Output = serde_json::Value;
+
+            const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+                nebula_action::effect::ActionEffectContract::ReadOnly;
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
                 D.get_or_init(Dependencies::new)
@@ -64,7 +73,7 @@ variant_a_action!(EchoHandler, "echo", meta("echo"),);
 impl StatelessAction for EchoHandler {
     async fn execute(
         &self,
-        input: <Self as Action>::Input,
+        input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Ok(ActionResult::success(input))
@@ -78,7 +87,7 @@ variant_a_action!(DoubleHandler, "double", meta("double"),);
 impl StatelessAction for DoubleHandler {
     async fn execute(
         &self,
-        input: <Self as Action>::Input,
+        input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         let n = input
@@ -95,7 +104,7 @@ variant_a_action!(Add10Handler, "add10", meta("add10"),);
 impl StatelessAction for Add10Handler {
     async fn execute(
         &self,
-        input: <Self as Action>::Input,
+        input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         let n = input
@@ -114,7 +123,7 @@ variant_a_action!(SlowHandler, "slow", meta("slow"),);
 impl StatelessAction for SlowHandler {
     async fn execute(
         &self,
-        input: <Self as Action>::Input,
+        input: Self::Config,
         ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         tokio::select! {
@@ -131,7 +140,7 @@ variant_a_action!(FailHandler, "fail", meta("fail"),);
 impl StatelessAction for FailHandler {
     async fn execute(
         &self,
-        _input: <Self as Action>::Input,
+        _input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Err(ActionError::fatal("intentional failure"))
@@ -147,7 +156,7 @@ variant_a_action!(CounterHandler, "counter", meta("counter"),);
 impl StatelessAction for CounterHandler {
     async fn execute(
         &self,
-        input: <Self as Action>::Input,
+        input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         self.count.fetch_add(1, Ordering::SeqCst);
@@ -167,7 +176,7 @@ variant_a_action!(SkipHandler, "skip", meta("skip"),);
 impl StatelessAction for SkipHandler {
     async fn execute(
         &self,
-        _input: <Self as Action>::Input,
+        _input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Ok(ActionResult::skip("test skip"))
@@ -264,10 +273,8 @@ async fn engine_and_runtime_share_metrics_registry() {
     );
 }
 
-fn meta(name: &str) -> ActionMetadata {
-    ActionMetadata::try_new(name, "integration test handler")
-        .expect("fixture display name")
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
+fn meta(name: &str) -> Metadata {
+    Metadata::try_new(name, "integration test handler").expect("fixture display name")
 }
 
 // ---------------------------------------------------------------------------

@@ -146,14 +146,19 @@ use crate::{
 /// #[derive(Clone, serde::Serialize, serde::Deserialize)]
 /// struct SummariserTurn { attempts: u32 }
 ///
-/// impl Action for Summariser {
-///     const KEY: &'static str = "demo.summariser";
-///     type Input  = String;
-///     type Output = String;
+/// impl Component for Summariser {
+///     type Kind = kind::Action;
+///     type Config  = String;
 ///
-///     fn metadata() -> nebula_action::ActionMetadata {
-///         nebula_action::ActionMetadata::new(nebula_action::metadata_name!("Summariser"), "Summarises input")
+///     const KEY: &'static str = "demo.summariser";
+///
+///     fn metadata() -> nebula_action::Metadata {
+///         nebula_action::Metadata::new(nebula_action::metadata_name!("Summariser"), "Summarises input")
 ///     }
+/// }
+///
+/// impl Action for Summariser {
+///     type Output = String;
 ///     fn dependencies() -> &'static Dependencies {
 ///         static D: OnceLock<Dependencies> = OnceLock::new();
 ///         D.get_or_init(Dependencies::new)
@@ -222,7 +227,7 @@ pub trait AgentAction: Action {
     ///
     /// Called once at the start of the agent loop. Subsequent turns receive the
     /// state as mutated by the previous `step` call.
-    fn init_turn(&self, input: &<Self as Action>::Input) -> Self::Turn;
+    fn init_turn(&self, input: &Self::Config) -> Self::Turn;
 
     /// Advance the agent by one turn.
     ///
@@ -344,7 +349,7 @@ impl<A> AgentActionAdapter<A> {
     where
         A: AgentAction,
     {
-        let meta = <A as Action>::metadata().admit_for::<A>(crate::ActionKind::Agent)?;
+        let meta = ActionDefinition::admit_for::<A>(crate::ActionKind::Agent)?;
         let meta = Arc::new(meta);
         let input_contract = crate::input::ActionInputContract::new(meta.base().schema());
         Ok(Self {
@@ -374,7 +379,7 @@ impl<A> AgentActionAdapter<A> {
 impl<A> AgentHandle for AgentActionAdapter<A>
 where
     A: AgentAction + Send + Sync + 'static,
-    A::Input: DeserializeOwned + Send + Sync,
+    A::Config: DeserializeOwned + Send + Sync,
     A::Output: Serialize + Send + Sync,
     A::Turn: Serialize + DeserializeOwned + Clone + Send + Sync,
 {
@@ -394,11 +399,11 @@ where
         &self,
         input: crate::ActionInput,
     ) -> Result<crate::PreparedActionInput, ActionError> {
-        self.input_contract.prepare::<A::Input>(input)
+        self.input_contract.prepare::<A::Config>(input)
     }
 
     fn init_turn(&self, input: crate::PreparedActionInput) -> Result<Value, ActionError> {
-        let typed_input = input.into_typed::<A::Input>(&self.input_contract)?;
+        let typed_input = input.into_typed::<A::Config>(&self.input_contract)?;
         let turn = self.action.init_turn(&typed_input);
         serde_json::to_value(&turn)
             .map_err(|e| ActionError::fatal(format!("init_turn serialization failed: {e}")))

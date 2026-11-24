@@ -2,8 +2,9 @@
 //!
 //! Emits:
 //!
-//! - `impl Action for Foo` with static `metadata` and `dependencies` functions (no schema
-//!   methods — the `Input`/`Output: HasSchema` bound is the single source of truth).
+//! - `impl Component for Foo` with the key, `Config` and static `metadata`, and `impl Action
+//!   for Foo` with `Output`, `dependencies` and, for `read_only`, `EFFECT_CONTRACT` (no schema
+//!   methods — the `Config`/`Output: HasSchema` bound is the single source of truth).
 //! - `impl FromWorkflowNode for Foo` when the struct has at least one `#[resource]` /
 //!   `#[credential]` field, or when the struct is a unit struct (no-op factory).
 //!
@@ -62,8 +63,9 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let metadata_init = attrs.metadata_init_expr();
     let (key_const, key_check) = attrs.key_items();
 
-    let input_ty = &attrs.input;
+    let config_ty = &attrs.config;
     let output_ty = &attrs.output;
+    let effect_contract = attrs.effect_contract_item();
 
     // Check that when there are non-slot fields, all required field types are
     // resolvable from the slot factory body. We don't fully enforce this here
@@ -76,14 +78,20 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let action_impl = quote! {
         #key_check
 
-        impl #impl_generics ::nebula_action::Action for #struct_name #ty_generics #where_clause {
-            #key_const
-            type Input = #input_ty;
-            type Output = #output_ty;
+        impl #impl_generics ::nebula_action::Component for #struct_name #ty_generics #where_clause {
+            type Kind = ::nebula_action::kind::Action;
+            type Config = #config_ty;
 
-            fn metadata() -> ::nebula_action::ActionMetadata {
+            #key_const
+
+            fn metadata() -> ::nebula_action::Metadata {
                 #metadata_init
             }
+        }
+
+        impl #impl_generics ::nebula_action::Action for #struct_name #ty_generics #where_clause {
+            type Output = #output_ty;
+            #effect_contract
 
             fn dependencies() -> &'static ::nebula_core::Dependencies {
                 static DEPS: ::std::sync::OnceLock<::nebula_core::Dependencies> =

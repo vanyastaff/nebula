@@ -210,19 +210,26 @@ impl HasSchema for SortInput {
 #[derive(Debug)]
 pub struct Sort;
 
-impl nebula_action::action::Action for Sort {
-    const KEY: &'static str = "core.sort";
-    type Input = SortInput;
-    type Output = Value;
+impl nebula_action::action::Component for Sort {
+    type Kind = nebula_action::action::kind::Action;
+    type Config = SortInput;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "core.sort";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Sort"),
             "Sort an array of objects by one or more fields (asc/desc)",
         )
         .with_version(nebula_action::MetadataVersion::new(2, 0, 0))
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
+}
+
+impl nebula_action::action::Action for Sort {
+    type Output = Value;
+
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static nebula_action::Dependencies {
         static DEPS: OnceLock<nebula_action::Dependencies> = OnceLock::new();

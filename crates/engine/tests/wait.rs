@@ -21,8 +21,9 @@ use std::{
 
 use chrono::Utc;
 use nebula_action::{
-    ActionError,
+    ActionError, Component,
     action::Action,
+    kind,
     output::ActionOutput,
     result::{ActionResult, WaitCondition},
     stateless::StatelessAction,
@@ -45,14 +46,22 @@ use nebula_workflow::{
 
 macro_rules! fixture_action_impl {
     ($ty:ty, $key:expr, $metadata:expr $(,)?) => {
-        impl Action for $ty {
-            const KEY: &'static str = $key;
-            type Input = serde_json::Value;
-            type Output = serde_json::Value;
+        impl Component for $ty {
+            type Kind = kind::Action;
+            type Config = serde_json::Value;
 
-            fn metadata() -> nebula_action::ActionMetadata {
+            const KEY: &'static str = $key;
+
+            fn metadata() -> nebula_action::Metadata {
                 $metadata
             }
+        }
+
+        impl Action for $ty {
+            type Output = serde_json::Value;
+
+            const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+                nebula_action::effect::ActionEffectContract::ReadOnly;
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
                 D.get_or_init(Dependencies::new)
@@ -76,32 +85,29 @@ struct WaitingHandler {
 fixture_action_impl!(
     WaitingHandler,
     "waiter",
-    nebula_action::ActionMetadata::new(nebula_action::metadata_name!("Waiter"), "parks for 60ms",)
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+    nebula_action::Metadata::new(nebula_action::metadata_name!("Waiter"), "parks for 60ms",),
 );
 
 nebula_action::stateless_entry!(
     SlowWaiterEntry(WaitingHandler) = "slow_waiter",
-    nebula_action::ActionMetadata::new(
+    nebula_action::Metadata::new(
         nebula_action::metadata_name!("SlowWaiter"),
         "parks for 150ms",
-    )
-    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+    ),
 );
 
 nebula_action::stateless_entry!(
     LongWaiterEntry(WaitingHandler) = "long_waiter",
-    nebula_action::ActionMetadata::new(
+    nebula_action::Metadata::new(
         nebula_action::metadata_name!("LongWaiter"),
         "parks for 1 min",
-    )
-    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+    ),
 );
 
 impl StatelessAction for WaitingHandler {
     async fn execute(
         &self,
-        _input: <Self as Action>::Input,
+        _input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Ok(ActionResult::Wait {
@@ -123,16 +129,13 @@ struct WaitUntilHandler {
 fixture_action_impl!(
     WaitUntilHandler,
     "waiter_until",
-    nebula_action::ActionMetadata::new(nebula_action::metadata_name!("WaiterUntil"),
-        "parks Until",
-    )
-    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+    nebula_action::Metadata::new(nebula_action::metadata_name!("WaiterUntil"), "parks Until",),
 );
 
 impl StatelessAction for WaitUntilHandler {
     async fn execute(
         &self,
-        _input: <Self as Action>::Input,
+        _input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Ok(ActionResult::Wait {
@@ -162,17 +165,16 @@ struct WaitWithTimeoutHandler {
 fixture_action_impl!(
     WaitWithTimeoutHandler,
     "timeout_waiter",
-    nebula_action::ActionMetadata::new(
+    nebula_action::Metadata::new(
         nebula_action::metadata_name!("TimeoutWaiter"),
         "parks with an explicit timeout",
-    )
-    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+    ),
 );
 
 impl StatelessAction for WaitWithTimeoutHandler {
     async fn execute(
         &self,
-        _input: <Self as Action>::Input,
+        _input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Ok(ActionResult::Wait {
@@ -198,17 +200,16 @@ struct WaitWithOversizedOutputHandler {
 fixture_action_impl!(
     WaitWithOversizedOutputHandler,
     "oversized_waiter",
-    nebula_action::ActionMetadata::new(
+    nebula_action::Metadata::new(
         nebula_action::metadata_name!("OversizedWaiter"),
         "parks with an oversized partial output",
-    )
-    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+    ),
 );
 
 impl StatelessAction for WaitWithOversizedOutputHandler {
     async fn execute(
         &self,
-        _input: <Self as Action>::Input,
+        _input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Ok(ActionResult::Wait {
@@ -224,17 +225,16 @@ impl StatelessAction for WaitWithOversizedOutputHandler {
 fixture_action_impl!(
     WebhookWaitHandler,
     "webhook_waiter",
-    nebula_action::ActionMetadata::new(
+    nebula_action::Metadata::new(
         nebula_action::metadata_name!("WebhookWaiter"),
         "parks on webhook callback",
-    )
-    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+    ),
 );
 
 impl StatelessAction for WebhookWaitHandler {
     async fn execute(
         &self,
-        _input: <Self as Action>::Input,
+        _input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Ok(ActionResult::Wait {
@@ -255,49 +255,42 @@ struct EchoHandler {
 fixture_action_impl!(
     EchoHandler,
     "downstream",
-    nebula_action::ActionMetadata::new(nebula_action::metadata_name!("Downstream"), "echo",)
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+    nebula_action::Metadata::new(nebula_action::metadata_name!("Downstream"), "echo",),
 );
 
 nebula_action::stateless_entry!(
     DsUntilEntry(EchoHandler) = "ds_until",
-    nebula_action::ActionMetadata::new(nebula_action::metadata_name!("DsUntil"),
-        "downstream echo",
-    )
-    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+    nebula_action::Metadata::new(nebula_action::metadata_name!("DsUntil"), "downstream echo",),
 );
 
 nebula_action::stateless_entry!(
     SiblingEntry(EchoHandler) = "sibling",
-    nebula_action::ActionMetadata::new(
+    nebula_action::Metadata::new(
         nebula_action::metadata_name!("Sibling"),
         "completes immediately",
-    )
-    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+    ),
 );
 
 nebula_action::stateless_entry!(
     DsWebhookEntry(EchoHandler) = "ds_webhook",
-    nebula_action::ActionMetadata::new(
+    nebula_action::Metadata::new(
         nebula_action::metadata_name!("DsWebhook"),
         "downstream echo",
-    )
-    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+    ),
 );
 
 nebula_action::stateless_entry!(
     DsOversizedEntry(EchoHandler) = "ds_oversized",
-    nebula_action::ActionMetadata::new(
+    nebula_action::Metadata::new(
         nebula_action::metadata_name!("DsOversized"),
         "downstream echo",
-    )
-    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+    ),
 );
 
 impl StatelessAction for EchoHandler {
     async fn execute(
         &self,
-        input: <Self as Action>::Input,
+        input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         self.invocations.fetch_add(1, Ordering::SeqCst);

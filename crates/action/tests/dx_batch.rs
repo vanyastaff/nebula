@@ -43,17 +43,22 @@ struct BatchOutput {
     errors: u64,
 }
 
-impl Action for DoublerBatch {
-    const KEY: &'static str = "test.doubler_batch";
-    type Input = NumberList;
-    type Output = BatchOutput;
+impl nebula_action::Component for DoublerBatch {
+    type Kind = nebula_action::kind::Action;
+    type Config = NumberList;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.doubler_batch";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("DoublerBatch"),
             "Batch doubler",
         )
     }
+}
+
+impl Action for DoublerBatch {
+    type Output = BatchOutput;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();

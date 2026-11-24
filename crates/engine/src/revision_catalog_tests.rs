@@ -1,8 +1,8 @@
 use std::marker::PhantomData;
 
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionFactory, ActionMetadata, ActionResult,
-    InstanceFactory, StatelessAction,
+    Action, ActionContext, ActionError, ActionFactory, ActionResult, Component, InstanceFactory,
+    Metadata, StatelessAction, kind,
 };
 use nebula_core::{
     ArtifactSetDigest, Dependencies, ExecutablePlanRevisionId, WorkerFlavorRevisionId, WorkflowId,
@@ -29,21 +29,31 @@ struct EmptyRecordInput {
 
 struct TestAction<I>(PhantomData<I>);
 
+impl<I> Component for TestAction<I>
+where
+    I: DeserializeOwned + HasSchema + Send + Sync + 'static,
+{
+    type Kind = kind::Action;
+    type Config = I;
+
+    const KEY: &'static str = "demo.run";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
+            nebula_action::metadata_name!("Run"),
+            "exact revision fixture",
+        )
+    }
+}
+
 impl<I> Action for TestAction<I>
 where
     I: DeserializeOwned + HasSchema + Send + Sync + 'static,
 {
-    const KEY: &'static str = "demo.run";
-    type Input = I;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
-            nebula_action::metadata_name!("Run"),
-            "exact revision fixture",
-        )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
-    }
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: std::sync::OnceLock<Dependencies> = std::sync::OnceLock::new();

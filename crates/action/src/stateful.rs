@@ -96,7 +96,7 @@ pub trait StatefulAction: Action {
     #[must_use = "an action does nothing unless its returned future is awaited"]
     fn execute(
         &self,
-        input: &<Self as Action>::Input,
+        input: &Self::Config,
         state: &mut Self::State,
         ctx: &(impl ActionContext + ?Sized),
     ) -> impl Future<Output = Result<ActionResult<<Self as Action>::Output>, ActionError>> + Send;
@@ -131,7 +131,7 @@ pub struct PaginationState<C> {
 ///
 /// ```rust
 /// use std::sync::OnceLock;
-/// use nebula_action::{Action, ActionContext, ActionError, ActionDefinition, StatefulAction};
+/// use nebula_action::{Action, ActionContext, ActionError, ActionDefinition, StatefulAction, Component, kind};
 /// use nebula_action::stateful::{PageResult, PaginatedAction};
 /// use nebula_core::{Dependencies, action_key};
 /// use serde_json::Value;
@@ -139,13 +139,19 @@ pub struct PaginationState<C> {
 /// struct ListItems;
 ///
 /// // Every paginated action is first an `Action` (identity + typed Input/Output).
-/// impl Action for ListItems {
+/// impl Component for ListItems {
+///     type Kind = kind::Action;
+///     type Config = Value;
+///
 ///     const KEY: &'static str = "list.items";
-///     type Input = Value;
-///     type Output = Value;
-///     fn metadata() -> nebula_action::ActionMetadata {
-///         nebula_action::ActionMetadata::new(nebula_action::metadata_name!("List"), "Lists items page by page")
+///
+///     fn metadata() -> nebula_action::Metadata {
+///         nebula_action::Metadata::new(nebula_action::metadata_name!("List"), "Lists items page by page")
 ///     }
+/// }
+///
+/// impl Action for ListItems {
+///     type Output = Value;
 ///     fn dependencies() -> &'static Dependencies {
 ///         static D: OnceLock<Dependencies> = OnceLock::new();
 ///         D.get_or_init(Dependencies::new)
@@ -197,7 +203,7 @@ pub trait PaginatedAction: Action {
     /// [`ActionError::Fatal`] for permanent failures.
     fn fetch_page(
         &self,
-        input: &<Self as Action>::Input,
+        input: &Self::Config,
         cursor: Option<&Self::Cursor>,
         ctx: &(impl ActionContext + ?Sized),
     ) -> impl Future<
@@ -214,20 +220,26 @@ pub trait PaginatedAction: Action {
 ///
 /// ```rust
 /// use std::sync::OnceLock;
-/// use nebula_action::{Action, ActionContext, ActionError, ActionDefinition, StatefulAction};
+/// use nebula_action::{Action, ActionContext, ActionError, ActionDefinition, StatefulAction, Component, kind};
 /// use nebula_action::stateful::{PageResult, PaginatedAction};
 /// use nebula_core::{Dependencies, action_key};
 /// use serde_json::Value;
 ///
 /// struct MyAction;
 ///
-/// impl Action for MyAction {
+/// impl Component for MyAction {
+///     type Kind = kind::Action;
+///     type Config = Value;
+///
 ///     const KEY: &'static str = "my.action";
-///     type Input = Value;
-///     type Output = Value;
-///     fn metadata() -> nebula_action::ActionMetadata {
-///         nebula_action::ActionMetadata::new(nebula_action::metadata_name!("My"), "Paginates a source")
+///
+///     fn metadata() -> nebula_action::Metadata {
+///         nebula_action::Metadata::new(nebula_action::metadata_name!("My"), "Paginates a source")
 ///     }
+/// }
+///
+/// impl Action for MyAction {
+///     type Output = Value;
 ///     fn dependencies() -> &'static Dependencies {
 ///         static D: OnceLock<Dependencies> = OnceLock::new();
 ///         D.get_or_init(Dependencies::new)
@@ -270,7 +282,7 @@ macro_rules! impl_paginated_action {
 
             async fn execute(
                 &self,
-                input: &Self::Input,
+                input: &Self::Config,
                 state: &mut Self::State,
                 ctx: &(impl $crate::context::ActionContext + ?Sized),
             ) -> ::core::result::Result<
@@ -360,7 +372,7 @@ pub trait BatchAction: Action {
     }
 
     /// Extract work items from input. Called once on the first iteration.
-    fn extract_items(&self, input: &<Self as Action>::Input) -> Vec<Self::Item>;
+    fn extract_items(&self, input: &Self::Config) -> Vec<Self::Item>;
 
     /// Process a single item.
     ///
@@ -402,7 +414,7 @@ macro_rules! impl_batch_action {
 
             async fn execute(
                 &self,
-                input: &Self::Input,
+                input: &Self::Config,
                 state: &mut Self::State,
                 ctx: &(impl $crate::context::ActionContext + ?Sized),
             ) -> ::core::result::Result<
@@ -496,7 +508,7 @@ impl<A> StatefulActionAdapter<A> {
     where
         A: Action,
     {
-        let meta = <A as Action>::metadata().admit_for::<A>(crate::ActionKind::Stateful)?;
+        let meta = ActionDefinition::admit_for::<A>(crate::ActionKind::Stateful)?;
         let meta = Arc::new(meta);
         let input_contract = ActionInputContract::new(meta.base().schema());
         Ok(Self {
@@ -526,7 +538,7 @@ impl<A> StatefulActionAdapter<A> {
 impl<A> StatefulHandle for StatefulActionAdapter<A>
 where
     A: StatefulAction + Send + Sync + 'static,
-    A::Input: DeserializeOwned + Send + Sync + 'static,
+    A::Config: DeserializeOwned + Send + Sync + 'static,
     A::Output: Serialize + Send + Sync,
     A::State: Serialize + DeserializeOwned + Clone + Send + Sync,
 {
@@ -548,7 +560,7 @@ where
     }
 
     fn prepare_input(&self, input: ActionInput) -> Result<PreparedActionInput, ActionError> {
-        self.input_contract.prepare::<A::Input>(input)
+        self.input_contract.prepare::<A::Config>(input)
     }
 
     /// Execute one iteration with input prepared once for the complete run.
@@ -581,7 +593,7 @@ where
         ctx: &dyn ActionContext,
     ) -> Result<ActionResult<Value>, ActionError> {
         let typed_input = input
-            .typed_ref::<A::Input>(&self.input_contract)
+            .typed_ref::<A::Config>(&self.input_contract)
             .inspect_err(|error| {
                 tracing::error!(
                     action_key = %self.meta.base().key(),

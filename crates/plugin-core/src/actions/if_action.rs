@@ -159,23 +159,36 @@ impl HasSchema for IfInput {
 #[derive(Debug)]
 pub struct CoreIf;
 
-impl nebula_action::action::Action for CoreIf {
-    const KEY: &'static str = "core.if";
-    type Input = IfInput;
-    type Output = Value;
+impl nebula_action::action::Component for CoreIf {
+    type Kind = nebula_action::action::kind::Action;
+    type Config = IfInput;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "core.if";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("If"),
             "Routes execution to 'true' or 'false' port based on a field condition",
         )
-        .with_inputs(default_input_ports())
-        .with_outputs(vec![
+        .with_version(nebula_action::MetadataVersion::new(2, 0, 0))
+    }
+}
+
+impl nebula_action::action::Action for CoreIf {
+    type Output = Value;
+
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
+
+    fn inputs() -> Vec<nebula_action::InputPort> {
+        default_input_ports()
+    }
+
+    fn outputs() -> Vec<OutputPort> {
+        vec![
             OutputPort::flow(port_key!("true")),
             OutputPort::flow(port_key!("false")),
-        ])
-        .with_version(nebula_action::MetadataVersion::new(2, 0, 0))
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
+        ]
     }
 
     fn dependencies() -> &'static nebula_action::Dependencies {

@@ -1,22 +1,34 @@
-//! Base [`Action`] trait — identity, metadata, type-level Input/Output, slot deps.
+//! Base [`Action`] trait: the action's interface on top of its [`Component`].
 //!
 //! See module docs in `lib.rs` for trait family overview.
 
-use nebula_core::{ActionKey, Dependencies};
-use nebula_schema::HasSchema;
-use serde::{Serialize, de::DeserializeOwned};
+use core::num::NonZeroU32;
 
-use crate::metadata::ActionMetadata;
+/// The component contract [`Action`] is built on, and the catalog metadata it
+/// returns, re-exported next to it.
+pub use nebula_component::{Component, kind};
+use nebula_core::Dependencies;
+pub use nebula_metadata::Metadata;
+use nebula_schema::HasSchema;
+use serde::Serialize;
+
+use crate::{
+    effect::{ActionEffectContract, JournalProtocol},
+    metadata::IsolationLevel,
+    port::{self, InputPort, OutputPort},
+};
 
 /// Base trait for all action types.
 ///
-/// Identity ([`KEY`](Self::KEY)), catalog metadata (`metadata`), type-level
-/// input/output (`Self::Input`, `Self::Output`), and slot-binding declarations
-/// (`dependencies`) — all static per concrete type. The schema is reached via the
-/// `Input`/`Output: HasSchema` bound (`nebula_schema::schema_of::<A::Input>()`);
-/// there is no per-trait schema method. Sub-traits
-/// ([`StatelessAction`](crate::StatelessAction) etc.) define the execution
-/// surface and consume `Self::Input` / `Self::Output`.
+/// An action is a [`Component`] of kind [`kind::Action`]: the `Component`
+/// impl carries its key ([`Component::KEY`]), its form data
+/// ([`Component::Config`], decoded from the node's input per execution) and
+/// its catalog [`Metadata`]. `Action` adds what
+/// only an action has: its output type, its ports, its execution policy and
+/// its slot dependencies. All of it is static per concrete type, so one type
+/// is one catalog entry. Sub-traits ([`StatelessAction`](crate::StatelessAction)
+/// etc.) define the execution surface and consume `Self::Config` /
+/// `Self::Output`.
 ///
 /// # Object safety
 ///
@@ -28,19 +40,25 @@ use crate::metadata::ActionMetadata;
 ///
 /// ```rust
 /// use std::sync::OnceLock;
-/// use nebula_action::{Action, ActionMetadata};
+/// use nebula_action::{Action, Component, Metadata, kind};
 /// use nebula_core::Dependencies;
 ///
 /// struct Echo;
 ///
-/// impl Action for Echo {
+/// impl Component for Echo {
+///     type Kind = kind::Action;
+///     type Config = serde_json::Value;
+///
 ///     const KEY: &'static str = "echo";
-///     type Input = serde_json::Value;
+///
+///     fn metadata() -> Metadata {
+///         Metadata::new(nebula_action::metadata_name!("Echo"), "Echoes input")
+///     }
+/// }
+///
+/// impl Action for Echo {
 ///     type Output = serde_json::Value;
 ///
-///     fn metadata() -> ActionMetadata {
-///         ActionMetadata::new(nebula_action::metadata_name!("Echo"), "Echoes input")
-///     }
 ///     fn dependencies() -> &'static Dependencies {
 ///         static D: OnceLock<Dependencies> = OnceLock::new();
 ///         D.get_or_init(Dependencies::new)
@@ -52,60 +70,49 @@ use crate::metadata::ActionMetadata;
 /// let _metadata = Echo::metadata();
 /// // ...and the schema is reached through the associated type's `HasSchema`
 /// // bound, not a method on the trait itself.
-/// let _input_schema = nebula_schema::schema_of::<<Echo as Action>::Input>().expect("valid schema");
+/// let _input_schema =
+///     nebula_schema::schema_of::<<Echo as Component>::Config>().expect("valid schema");
 /// ```
 ///
-/// The input/output schema is obtained from the associated type, e.g.
-/// `nebula_schema::schema_of::<<Echo as Action>::Input>()`.
-///
-/// `#[derive(Action)]` emits this boilerplate from `#[action(key = "...", ...)]`.
+/// `#[derive(Action)]` emits both impls from `#[action(key = "...", ...)]`.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot be used as an Action",
     label = "this type does not implement the Action trait",
     note = "derive it: #[derive(Action)]"
 )]
-pub trait Action: Sized + Send + Sync + 'static {
-    /// The action's key, its identity in the catalog and in workflow nodes.
-    ///
-    /// Declared once, on the type. The metadata returned by
-    /// [`metadata`](Self::metadata) cannot hold a key: a factory stamps this one
-    /// at admission, so the two can never disagree. Read it as a typed
-    /// [`ActionKey`] with [`key_of`]; an invalid literal fails the build there.
-    const KEY: &'static str;
-
-    /// User-facing form data; deserialized from `node.input_json` per execution.
-    type Input: HasSchema + DeserializeOwned + Send + Sync;
-
+pub trait Action: Component<Kind = kind::Action> {
     /// What this action produces; serialized to JSON for downstream nodes.
     type Output: HasSchema + Serialize + Send + Sync;
 
-    /// Author-owned catalog metadata for this action type, without a key.
+    /// How isolated this action's execution is. Defaults to
+    /// [`IsolationLevel::None`].
+    const ISOLATION_LEVEL: IsolationLevel = IsolationLevel::None;
+
+    /// The action's external-effect authority. Defaults to
+    /// [`ActionEffectContract::Journaled`].
     ///
-    /// Returned by value, symmetric with
-    /// [`Credential::metadata`](nebula_credential) and
-    /// `Resource::metadata`. Authors build it fresh — no `static`/`OnceLock`
-    /// boilerplate. The engine caches the result once per registered factory
-    /// (see `ActionFactory`), so the cold per-call cost is paid only at
-    /// registration, not per dispatch. The receiving factory derives schemas
-    /// from the associated types, stamps the structural kind, and performs the
-    /// only admission pass.
-    fn metadata() -> ActionMetadata;
+    /// Only [`Journaled`](ActionEffectContract::Journaled) and
+    /// [`ReadOnly`](ActionEffectContract::ReadOnly) can be written here: a
+    /// remote contract holds a boxed descriptor, which no constant can
+    /// build. A remote action's contract is its
+    /// [`RemoteEffectAction::descriptor`](crate::RemoteEffectAction::descriptor),
+    /// and such an action keeps this default.
+    const EFFECT_CONTRACT: ActionEffectContract =
+        ActionEffectContract::Journaled(JournalProtocol::V1);
 
-    /// Slot-binding declarations (`#[resource]` / `#[credential]` fields, Phase 3 / S3+).
-    fn dependencies() -> &'static Dependencies;
-}
+    /// Per-action concurrency hint. Defaults to no limit.
+    const MAX_CONCURRENT: Option<NonZeroU32> = None;
 
-/// The typed key of action type `A`, derived from [`Action::KEY`].
-///
-/// The literal is checked in a `const` block, so an invalid `KEY` fails the
-/// build wherever this is instantiated (every factory does), not at run time.
-#[must_use]
-pub fn key_of<A: Action>() -> ActionKey {
-    const {
-        assert!(
-            ActionKey::is_valid_key_const(A::KEY),
-            "`Action::KEY` is not a valid action key"
-        );
+    /// The action's input ports. Defaults to one main input.
+    fn inputs() -> Vec<InputPort> {
+        port::default_input_ports()
     }
-    ActionKey::from_static_unchecked(A::KEY)
+
+    /// The action's output ports. Defaults to one main output.
+    fn outputs() -> Vec<OutputPort> {
+        port::default_output_ports()
+    }
+
+    /// Slot-binding declarations (`#[resource]` / `#[credential]` fields).
+    fn dependencies() -> &'static Dependencies;
 }

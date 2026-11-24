@@ -45,8 +45,9 @@ use std::{
 mod exact_fixture;
 
 use nebula_action::{
-    ActionError,
+    ActionError, Component,
     action::Action,
+    kind,
     result::{ActionResult, WaitCondition},
     stateless::StatelessAction,
 };
@@ -86,14 +87,22 @@ fn control_dispatch(
 
 macro_rules! static_action_impl {
     ($ty:ty, $key:expr, $metadata:expr $(,)?) => {
-        impl Action for $ty {
-            const KEY: &'static str = $key;
-            type Input = serde_json::Value;
-            type Output = serde_json::Value;
+        impl Component for $ty {
+            type Kind = kind::Action;
+            type Config = serde_json::Value;
 
-            fn metadata() -> nebula_action::ActionMetadata {
+            const KEY: &'static str = $key;
+
+            fn metadata() -> nebula_action::Metadata {
                 $metadata
             }
+        }
+
+        impl Action for $ty {
+            type Output = serde_json::Value;
+
+            const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+                nebula_action::effect::ActionEffectContract::ReadOnly;
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
                 D.get_or_init(Dependencies::new)
@@ -112,17 +121,16 @@ struct WebhookWaitWithTimeout {
 static_action_impl!(
     WebhookWaitWithTimeout,
     "test.wt.webhook_timeout",
-    nebula_action::ActionMetadata::new(
+    nebula_action::Metadata::new(
         nebula_action::metadata_name!("WebhookWaitWithTimeout"),
         "wait_timeout stub",
-    )
-    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+    ),
 );
 
 impl StatelessAction for WebhookWaitWithTimeout {
     async fn execute(
         &self,
-        _input: <Self as Action>::Input,
+        _input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Ok(ActionResult::Wait {
@@ -154,17 +162,16 @@ struct CountingEcho {
 static_action_impl!(
     CountingEcho,
     "test.wt.main_echo",
-    nebula_action::ActionMetadata::new(
+    nebula_action::Metadata::new(
         nebula_action::metadata_name!("CountingEcho"),
         "wait_timeout stub",
-    )
-    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+    ),
 );
 
 impl StatelessAction for CountingEcho {
     async fn execute(
         &self,
-        input: <Self as Action>::Input,
+        input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         self.invocations.fetch_add(1, Ordering::SeqCst);
@@ -180,17 +187,16 @@ struct CountingError {
 static_action_impl!(
     CountingError,
     "test.wt.error_echo",
-    nebula_action::ActionMetadata::new(
+    nebula_action::Metadata::new(
         nebula_action::metadata_name!("CountingError"),
         "wait_timeout stub",
-    )
-    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+    ),
 );
 
 impl StatelessAction for CountingError {
     async fn execute(
         &self,
-        input: <Self as Action>::Input,
+        input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         self.invocations.fetch_add(1, Ordering::SeqCst);
@@ -211,17 +217,16 @@ struct DurationWaitBlocker {
 static_action_impl!(
     DurationWaitBlocker,
     "test.wt.duration_blocker",
-    nebula_action::ActionMetadata::new(
+    nebula_action::Metadata::new(
         nebula_action::metadata_name!("DurationWaitBlocker"),
         "wait_timeout stub",
-    )
-    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+    ),
 );
 
 impl StatelessAction for DurationWaitBlocker {
     async fn execute(
         &self,
-        _input: <Self as Action>::Input,
+        _input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Ok(ActionResult::Wait {

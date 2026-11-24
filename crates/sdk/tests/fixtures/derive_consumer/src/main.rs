@@ -29,7 +29,7 @@ struct UnitPayload;
 struct EmptyRecord {}
 
 #[derive(Action)]
-#[action(key = "contract.scalar", name = "Scalar contract", input = u8, output = ())]
+#[action(key = "contract.scalar", name = "Scalar contract", config = u8, output = ())]
 struct ScalarAction;
 
 #[derive(Validator)]
@@ -43,7 +43,7 @@ struct ValidatedPayload {
     key = "contract.action",
     name = "Contract action",
     version = "2.5.0-rc.7+build.009",
-    input = Value,
+    config = Value,
     output = Value
 )]
 struct ContractAction;
@@ -123,7 +123,7 @@ fn main() {
             .validate(nebula::params! { data; () }.unwrap())
             .is_err()
     );
-    let _: ActionMetadata = ScalarAction::metadata();
+    let _: Metadata = ScalarAction::metadata();
 
     let payload = ValidatedPayload {
         name: "valid".to_owned(),
@@ -152,7 +152,11 @@ fn main() {
     let duplicates = schema
         .validate(nebula::params! { data; "name" => "Example", "tags" => ["a", "a"] }.unwrap())
         .unwrap_err();
-    assert!(duplicates.errors().any(|error| error.code() == "items.unique"));
+    assert!(
+        duplicates
+            .errors()
+            .any(|error| error.code() == "items.unique")
+    );
     let properties_schema = schema_of::<CredentialProperties>().unwrap();
     let secret_input = properties_schema
         .validate(nebula::params! { data; "token" => "sdk-property-secret" }.unwrap())
@@ -160,13 +164,11 @@ fn main() {
         .resolve_data()
         .unwrap();
     assert!(!format!("{secret_input:?}").contains("sdk-property-secret"));
-    let properties: CredentialProperties = secret_input
-        .into_typed_exposing_secrets()
-        .unwrap();
+    let properties: CredentialProperties = secret_input.into_typed_exposing_secrets().unwrap();
     assert_eq!(properties.token.expose_secret(), "sdk-property-secret");
     assert!(!format!("{properties:?}").contains("sdk-property-secret"));
     let _: Metadata = ContractCredential::metadata();
-    let _: ActionMetadata = <ContractAction as Action>::metadata();
+    let _: Metadata = <ContractAction as Component>::metadata();
     let _ = ContractPlugin.manifest();
     let _ = ContractConfig { enabled: true }.fingerprint();
     let config = schema_of::<ContractConfig>().expect("named config declares its fields");

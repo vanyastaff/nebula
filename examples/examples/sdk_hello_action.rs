@@ -22,7 +22,7 @@ use nebula_sdk::{prelude::*, simple_action};
 simple_action! {
     name: HelloAction,
     key: "example.hello",
-    input: Value,
+    config: Value,
     output: Value,
     async fn execute(&self, input, _ctx) {
         let name = input.get("name").and_then(Value::as_str).unwrap_or("world");

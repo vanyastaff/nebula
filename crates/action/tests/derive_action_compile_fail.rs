@@ -3,7 +3,7 @@
 //! Each probe under `tests/probes/derive_*.rs` exercises one diagnostic
 //! contract of the macro:
 //!
-//! - missing `input = ...` / `output = ...` arguments,
+//! - missing `config = ...` / `output = ...` arguments, and the renamed `input = ...`,
 //! - duplicate slot keys across `#[resource]` / `#[credential]` fields,
 //! - `#[resource]` on a non-`ResourceHandle` field type,
 //! - `#[credential]` on a non-`CredentialGuard` field type,
@@ -24,7 +24,8 @@
 #[test]
 fn derive_action_compile_fail_probes() {
     let t = trybuild::TestCases::new();
-    t.compile_fail("tests/probes/derive_missing_input.rs");
+    t.compile_fail("tests/probes/derive_missing_config.rs");
+    t.compile_fail("tests/probes/derive_renamed_input.rs");
     t.compile_fail("tests/probes/derive_missing_output.rs");
     t.compile_fail("tests/probes/derive_unknown_attr_key.rs");
     t.compile_fail("tests/probes/derive_read_only_value.rs");

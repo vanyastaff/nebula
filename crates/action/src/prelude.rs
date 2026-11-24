@@ -14,12 +14,14 @@
 //! assert!(err.is_fatal());
 //! ```
 
+pub use nebula_component::{Component, kind};
 pub use nebula_core::{
     Context, Dependencies,
     accessor::{EventEmitter, LogLevel, Logger, MetricsEmitter, ResourceAccessor},
     context::{HasCredentials, HasEventBus, HasLogger, HasMetrics, HasResources},
 };
 pub use nebula_credential::CredentialGuard;
+pub use nebula_metadata::Metadata;
 pub use nebula_schema::{Property, Schema, ValidSchema, field_key};
 
 pub use crate::{
@@ -43,8 +45,8 @@ pub use crate::{
     idempotency::IdempotencyKey,
     input::{ActionInput, PreparedActionInput},
     metadata::{
-        ActionAdmissionError, ActionCompatibilityError, ActionDefinition, ActionMetadata,
-        ActionReadmissionError, RecordedActionDefinition,
+        ActionAdmissionError, ActionCompatibilityError, ActionDefinition, ActionReadmissionError,
+        IsolationLevel, RecordedActionDefinition,
     },
     output::{
         ActionOutput, DeferredOutput, ExpectedOutput, Producer, ProducerKind, Progress, Resolution,

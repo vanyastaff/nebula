@@ -2,12 +2,12 @@
 //!
 //! Exercises the full execution-time pipeline an engine traverses for one action node:
 //!
-//!   1. **Schema** — `Self::Input::schema()` admits the input definition.
+//!   1. **Schema** — `Self::Config::schema()` admits the input definition.
 //!   2. **Validator** — consuming `ValidSchema::validate(AuthoredValue)` proves the `{{ }}` placeholders are
 //!      syntactically valid AND that literal fields satisfy `#[validate(...)]` rules.
 //!   3. **Expression** — `ValidValues::resolve(&dyn ExpressionContext)` replaces every
 //!      retained program with data evaluated against the runtime context.
-//!   4. **Typed deserialize** — the resolved JSON tree is deserialized into the typed `Self::Input`
+//!   4. **Typed deserialize** — the resolved JSON tree is deserialized into the typed `Self::Config`
 //!      via consuming `ResolvedValues::into_typed`.
 //!   5. **Execute** — the action's `StatelessAction::execute` receives the typed input and runs.
 //!
@@ -68,17 +68,22 @@ struct PipelineOutput {
 
 struct PipelineProbe;
 
-impl Action for PipelineProbe {
-    const KEY: &'static str = "test.phase9.pipeline_probe";
-    type Input = PipelineInput;
-    type Output = PipelineOutput;
+impl nebula_action::Component for PipelineProbe {
+    type Kind = nebula_action::kind::Action;
+    type Config = PipelineInput;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.phase9.pipeline_probe";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("PipelineProbe"),
             "Phase 9 / Task 9.1 schema → validator → expression pipeline probe",
         )
     }
+}
+
+impl Action for PipelineProbe {
+    type Output = PipelineOutput;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();

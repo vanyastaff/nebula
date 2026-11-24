@@ -1,7 +1,7 @@
 //! Compile contract for the supported SDK perimeter.
 //!
 //! The fixture has exactly one Nebula dependency. Its positive binary exercises
-//! typed action authoring (`ActionMetadata`, `simple_action!`, and associated
+//! typed action authoring (`Metadata`, `simple_action!`, and associated
 //! `Input`/`Output`), `WorkflowBuilder`, credential `TestResult`, and manual `Provider` authoring
 //! with a consuming terminal hook over a non-Clone instance, using the
 //! general-purpose `async-trait` dependency. This is a compile check, not runtime
@@ -172,22 +172,22 @@ const OPAQUE: &[(&str, &str)] = &[
     ("private_notice_since", "since"),
 ];
 
+// rustc names the shared catalog metadata by one of its public SDK paths.
 const REMOVED_CATALOG_API: &[(&str, &str, &str)] = &[
     (
         "removed_checkpoint_policy_setter",
         "with_checkpoint_policy",
-        "ActionMetadata",
+        "nebula_sdk::action::Metadata",
     ),
-    // rustc names the catalog metadata by the SDK path the probe imports.
     (
         "removed_resource_from_key",
         "from_key",
-        "nebula_sdk::prelude::Metadata",
+        "nebula_sdk::action::Metadata",
     ),
     (
         "removed_credential_pattern",
         "pattern",
-        "nebula_sdk::prelude::Metadata",
+        "nebula_sdk::action::Metadata",
     ),
     ("removed_limited_wrap", "wrap", "ResourceLimiter"),
 ];
@@ -475,8 +475,8 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
             pub mod action {
                 pub use nebula_action::{
                     Action, ActionContext, ActionContextExt, ActionEffectContract, ActionError,
-                    ActionMetadata, ActionResult, FromWorkflowNode, MetadataVersion,
-                    StatelessAction, metadata_name,
+                    ActionResult, Component, FromWorkflowNode, Metadata, MetadataVersion,
+                    StatelessAction, kind, metadata_name,
                 };
             }
             pub mod core {

@@ -16,8 +16,8 @@ pub(crate) struct ActionAttrs {
     pub description: String,
     /// Complete checked SemVer, including prerelease and build metadata.
     pub version: semver::Version,
-    /// Required `Self::Input` type.
-    pub input: Type,
+    /// Required `Component::Config` type: the node's form data.
+    pub config: Type,
     /// Required `Self::Output` type.
     pub output: Type,
     /// The author explicitly attests that the action performs no external
@@ -27,6 +27,9 @@ pub(crate) struct ActionAttrs {
 
 /// The pre-0.22.0 spelling of the `read_only` flag, refused with a hint.
 const RENAMED_READ_ONLY: &str = "no_external_effects";
+
+/// The pre-0.41.0 name of the `config` attribute, refused with a hint.
+const RENAMED_CONFIG: &str = "input";
 
 impl ActionAttrs {
     /// Parse from `#[action(...)]` attribute args.
@@ -44,7 +47,7 @@ impl ActionAttrs {
             "name",
             "description",
             "version",
-            "input",
+            "config",
             "output",
             "read_only",
         ];
@@ -59,6 +62,13 @@ impl ActionAttrs {
                     key,
                     "`no_external_effects` was renamed to `read_only`; \
                      write `#[action(read_only)]`",
+                ));
+            }
+            if key == RENAMED_CONFIG {
+                return Err(syn::Error::new_spanned(
+                    key,
+                    "`input` was renamed to `config`: an action's form data is its \
+                     `Component::Config`; write `#[action(config = SomeType)]`",
                 ));
             }
             if !ALLOWED.iter().any(|allowed| key == allowed) {
@@ -95,11 +105,11 @@ impl ActionAttrs {
             .unwrap_or_else(|| "0.1.0".to_string());
         let version = parse_version(&version_str)?;
 
-        let input = attr_args.get_type("input")?.ok_or_else(|| {
+        let config = attr_args.get_type("config")?.ok_or_else(|| {
             syn::Error::new_spanned(
                 struct_name,
-                "missing required attribute `input = SomeType` \
-                 — Variant A requires Self::Input to be specified",
+                "missing required attribute `config = SomeType` \
+                 — the action's `Component::Config` must be specified",
             )
         })?;
         let output = attr_args.get_type("output")?.ok_or_else(|| {
@@ -116,7 +126,7 @@ impl ActionAttrs {
             name,
             description,
             version,
-            input,
+            config,
             output,
             read_only,
         })
@@ -139,27 +149,28 @@ impl ActionAttrs {
         )
     }
 
-    /// Generate the keyless `ActionMetadata` initialization expression.
+    /// Generate the keyless `Metadata` initialization expression.
     pub(crate) fn metadata_init_expr(&self) -> TokenStream2 {
         let name = &self.name;
         let description = &self.description;
         let version = self.version.to_string();
-        let effect_contract = self.read_only.then(|| {
-            quote! {
-                .with_effect_contract(
-                    ::nebula_action::ActionEffectContract::ReadOnly
-                )
-            }
-        });
-
         quote! {
-            ::nebula_action::ActionMetadata::new(
+            ::nebula_action::Metadata::new(
                 ::nebula_action::metadata_name!(#name),
                 #description,
             )
                 .with_version_literal(#version)
-                #effect_contract
         }
+    }
+
+    /// The `EFFECT_CONTRACT` override `#[action(read_only)]` asks for.
+    pub(crate) fn effect_contract_item(&self) -> Option<TokenStream2> {
+        self.read_only.then(|| {
+            quote! {
+                const EFFECT_CONTRACT: ::nebula_action::ActionEffectContract =
+                    ::nebula_action::ActionEffectContract::ReadOnly;
+            }
+        })
     }
 }
 

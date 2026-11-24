@@ -3,12 +3,12 @@
 use std::sync::{Arc, OnceLock};
 
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionFactory, ActionMetadata, ActionResult,
-    InstanceFactory, StatelessAction,
+    Action, ActionContext, ActionError, ActionFactory, ActionResult, InstanceFactory, Metadata,
+    StatelessAction,
 };
 use nebula_core::{ActionKey, CredentialKey, Dependencies, ResourceKey};
 use nebula_credential::{
-    AnyCredential, Component, Credential, CredentialContext, Metadata, SecretString, SecretToken,
+    AnyCredential, Component, Credential, CredentialContext, SecretString, SecretToken,
     contract::plugin_capability_report, error::CredentialError, kind, resolve::StaticResolveResult,
 };
 use nebula_metadata::PluginManifest;
@@ -111,7 +111,10 @@ fn action_factory(key: &str) -> Arc<dyn ActionFactory> {
 
 struct MetadataAction<const INDEX: usize>;
 
-impl<const INDEX: usize> Action for MetadataAction<INDEX> {
+impl<const INDEX: usize> Component for MetadataAction<INDEX> {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
+
     const KEY: &'static str = match INDEX {
         0 => "api.foo",
         1 => "github.send",
@@ -122,15 +125,17 @@ impl<const INDEX: usize> Action for MetadataAction<INDEX> {
         6 => "slack.send_message",
         _ => panic!("action metadata fixture index is not declared"),
     };
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_action::MetadataName::try_from(Self::KEY).expect("fixture display name"),
             "stub",
         )
     }
+}
+
+impl<const INDEX: usize> Action for MetadataAction<INDEX> {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();

@@ -35,17 +35,22 @@ struct CountingTurn {
     count: u32,
 }
 
-impl Action for CountingAgent {
-    const KEY: &'static str = "test.agent.counting";
-    type Input = Value;
-    type Output = Value;
+impl crate::Component for CountingAgent {
+    type Kind = crate::kind::Action;
+    type Config = Value;
 
-    fn metadata() -> crate::ActionMetadata {
-        crate::ActionMetadata::new(
+    const KEY: &'static str = "test.agent.counting";
+
+    fn metadata() -> crate::Metadata {
+        crate::Metadata::new(
             crate::metadata_name!("CountingAgent"),
             "Counts up to target then breaks",
         )
     }
+}
+
+impl Action for CountingAgent {
+    type Output = Value;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -93,17 +98,22 @@ struct NoMutationTurn {
     external_step: u32,
 }
 
-impl Action for NoMutationAgent {
-    const KEY: &'static str = "test.agent.no_mutation";
-    type Input = Value;
-    type Output = Value;
+impl crate::Component for NoMutationAgent {
+    type Kind = crate::kind::Action;
+    type Config = Value;
 
-    fn metadata() -> crate::ActionMetadata {
-        crate::ActionMetadata::new(
+    const KEY: &'static str = "test.agent.no_mutation";
+
+    fn metadata() -> crate::Metadata {
+        crate::Metadata::new(
             crate::metadata_name!("NoMutationAgent"),
             "Keeps turn state unchanged; breaks after N steps tracked externally",
         )
     }
+}
+
+impl Action for NoMutationAgent {
+    type Output = Value;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();

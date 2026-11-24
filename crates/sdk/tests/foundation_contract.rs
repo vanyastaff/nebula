@@ -127,7 +127,7 @@ fn params_evaluates_inputs_once_and_reports_construction_limits() {
 simple_action! {
     name: GreetAction,
     key: "sdk.greet",
-    input: GreetingInput,
+    config: GreetingInput,
     output: GreetingOutput,
     async fn execute(&self, input, _context) {
         Ok(ActionResult::success(GreetingOutput {
@@ -138,7 +138,7 @@ simple_action! {
 
 #[tokio::test]
 async fn simple_action_uses_typed_input_and_output_through_the_sdk_runtime() {
-    let draft: ActionMetadata = GreetAction::metadata();
+    let draft: Metadata = GreetAction::metadata();
     let _ = draft;
     let context = TestContextBuilder::new().with_input(json!({"name": "Nebula"}));
     let report = TestRuntime::new(context)
@@ -165,7 +165,7 @@ impl HasSchema for InvalidInput {
 simple_action! {
     name: InvalidAction,
     key: "sdk.invalid_input",
-    input: InvalidInput,
+    config: InvalidInput,
     output: Value,
     async fn execute(&self, _input, _context) {
         Ok(ActionResult::success(Value::Null))

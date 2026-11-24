@@ -11,7 +11,7 @@
 //! ## Execution contract (S1)
 //!
 //! 1. The engine calls `StreamHandle::dispatch` once.
-//! 2. The adapter deserializes input → `Self::Input`, calls `open_stream`.
+//! 2. The adapter deserializes input → `Self::Config`, calls `open_stream`.
 //! 3. Every chunk is pulled in-process: `Ok(chunk)` is folded via `init`+`fold`;
 //!    the first `Err(e)` short-circuits and returns the error — no partial output.
 //! 4. The folded `Self::Output` is serialized → `Value` and wrapped in
@@ -61,14 +61,19 @@ use crate::{action::Action, context::ActionContext, error::ActionError};
 ///
 /// struct SumStream;
 ///
-/// impl Action for SumStream {
-///     const KEY: &'static str = "demo.sum_stream";
-///     type Input  = serde_json::Value;
-///     type Output = u64;
+/// impl Component for SumStream {
+///     type Kind = kind::Action;
+///     type Config  = serde_json::Value;
 ///
-///     fn metadata() -> nebula_action::ActionMetadata {
-///         nebula_action::ActionMetadata::new(nebula_action::metadata_name!("SumStream"), "Sums a chunk stream")
+///     const KEY: &'static str = "demo.sum_stream";
+///
+///     fn metadata() -> nebula_action::Metadata {
+///         nebula_action::Metadata::new(nebula_action::metadata_name!("SumStream"), "Sums a chunk stream")
 ///     }
+/// }
+///
+/// impl Action for SumStream {
+///     type Output = u64;
 ///     fn dependencies() -> &'static Dependencies {
 ///         static D: OnceLock<Dependencies> = OnceLock::new();
 ///         D.get_or_init(Dependencies::new)
@@ -115,7 +120,7 @@ pub trait StreamAction: Action {
     #[must_use = "the stream does nothing until it is driven to completion"]
     fn open_stream(
         &self,
-        input: <Self as Action>::Input,
+        input: Self::Config,
         ctx: &(impl ActionContext + ?Sized),
     ) -> impl Stream<Item = Result<Self::Chunk, ActionError>> + Send;
 

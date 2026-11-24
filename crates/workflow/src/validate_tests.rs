@@ -802,7 +802,7 @@ fn fail_open_when_one_endpoint_unresolvable() {
 
 /// Non-main-flow edges are skipped regardless of schema compatibility.
 ///
-/// `output_schema` / `base.schema` describe the typed `A::Output` / `A::Input`
+/// `output_schema` / `base.schema` describe the typed `A::Output` / `A::Config`
 /// on the SUCCESS path only. A named `from_port` (e.g. `"error"` for recovery
 /// routing) carries a *different* payload shape and must not be compared against
 /// the success output schema, or legitimate error/recovery edges would be

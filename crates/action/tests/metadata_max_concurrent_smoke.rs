@@ -3,21 +3,26 @@
 use std::{num::NonZeroU32, sync::OnceLock};
 
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionFactory, ActionMetadata, ActionResult,
-    InstanceFactory, RecordedActionDefinition, StatelessAction,
+    Action, ActionContext, ActionError, ActionFactory, ActionResult, Component, InstanceFactory,
+    Metadata, RecordedActionDefinition, StatelessAction, kind,
 };
 use nebula_core::Dependencies;
 
 struct Probe;
 
-impl Action for Probe {
-    const KEY: &'static str = "test.maxc";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for Probe {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "test.maxc";
+
+    fn metadata() -> Metadata {
         draft()
     }
+}
+
+impl Action for Probe {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
@@ -27,23 +32,52 @@ impl Action for Probe {
 
 const LIMIT: NonZeroU32 = NonZeroU32::new(4).expect("four is non-zero");
 
-nebula_action::stateless_entry!(
-    LimitedProbe(Probe) = "test.maxc",
-    draft().with_max_concurrent(LIMIT),
-);
+/// `Probe` with a concurrency hint, which only the type can declare.
+struct LimitedProbe(Probe);
+
+impl Component for LimitedProbe {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
+
+    const KEY: &'static str = "test.maxc";
+
+    fn metadata() -> Metadata {
+        draft()
+    }
+}
+
+impl Action for LimitedProbe {
+    type Output = serde_json::Value;
+
+    const MAX_CONCURRENT: Option<NonZeroU32> = Some(LIMIT);
+
+    fn dependencies() -> &'static Dependencies {
+        Probe::dependencies()
+    }
+}
+
+impl StatelessAction for LimitedProbe {
+    async fn execute(
+        &self,
+        input: Self::Config,
+        ctx: &(impl ActionContext + ?Sized),
+    ) -> Result<ActionResult<Self::Output>, ActionError> {
+        self.0.execute(input, ctx).await
+    }
+}
 
 impl StatelessAction for Probe {
     async fn execute(
         &self,
-        input: Self::Input,
+        input: Self::Config,
         _: &(impl ActionContext + ?Sized),
     ) -> Result<ActionResult<Self::Output>, ActionError> {
         Ok(ActionResult::success(input))
     }
 }
 
-fn draft() -> ActionMetadata {
-    ActionMetadata::new(
+fn draft() -> Metadata {
+    Metadata::new(
         nebula_action::metadata_name!("test"),
         "max_concurrent smoke",
     )

@@ -1,15 +1,13 @@
 use std::{any::TypeId, fmt, sync::OnceLock};
 
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionFactory, ActionMetadata, ActionResult,
-    InstanceFactory, StatelessAction,
+    Action, ActionContext, ActionError, ActionFactory, ActionResult, InstanceFactory, Metadata,
+    StatelessAction,
 };
 use nebula_core::{ArtifactSetDigest, Dependencies, OrgId, WorkspaceId, node_key};
 use nebula_plugin::{Plugin, PluginManifest, PluginRegistry, ResolvedPlugin};
 use nebula_resource::{Component, kind};
-use nebula_resource::{
-    KindActivator, Metadata, Provider, Resident, ResidentConfig, ResourceFactory,
-};
+use nebula_resource::{KindActivator, Provider, Resident, ResidentConfig, ResourceFactory};
 use nebula_schema::{HasSchema, ValidSchema};
 use nebula_storage::{
     InMemoryControlQueue, InMemoryExecutionStore, InMemoryWorkflowStore,
@@ -156,15 +154,22 @@ impl HasSchema for EmptyContract {
 
 struct FixtureAction;
 
-impl Action for FixtureAction {
+impl Component for FixtureAction {
+    type Kind = kind::Action;
+    type Config = EmptyContract;
+
     const KEY: &'static str = "start.run";
-    type Input = EmptyContract;
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_action::metadata_name!("Run"), "start fixture")
+    }
+}
+
+impl Action for FixtureAction {
     type Output = EmptyContract;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(nebula_action::metadata_name!("Run"), "start fixture")
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
-    }
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
@@ -184,18 +189,25 @@ impl StatelessAction for FixtureAction {
 
 struct ResourceBoundAction;
 
-impl Action for ResourceBoundAction {
-    const KEY: &'static str = "start.resource_bound";
-    type Input = EmptyContract;
-    type Output = EmptyContract;
+impl Component for ResourceBoundAction {
+    type Kind = kind::Action;
+    type Config = EmptyContract;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    const KEY: &'static str = "start.resource_bound";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_action::metadata_name!("Resource Bound"),
             "resource-bound start fixture",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
+}
+
+impl Action for ResourceBoundAction {
+    type Output = EmptyContract;
+
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();

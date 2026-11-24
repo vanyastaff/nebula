@@ -8,9 +8,9 @@
 //! runtime concerns and are intentionally absent from this module.
 
 pub use nebula_action::{
-    Action, ActionEffectContract, ActionMetadata, EffectFailureCode, EffectInvocationContext,
+    Action, ActionEffectContract, EffectFailureCode, EffectInvocationContext,
     EffectInvocationOutcome, EffectPreparationContext, EffectPreparationError, EffectQueryContext,
-    EffectReconciliationOutcome, JournalProtocol, OperationCallId, OperationId,
+    EffectReconciliationOutcome, JournalProtocol, Metadata, OperationCallId, OperationId,
     PreparedEffectAdapter, PreparedRemoteEffect, ReadOnlyEffectQuery, RemoteDestinationGuarantee,
     RemoteEffectAction, RemoteEffectDeclarationError, RemoteEffectDescriptor, RemoteEffectPolicy,
     RemoteEffectPolicyBuilder, RemoteEffectPolicyError, StableKeyGuarantee,

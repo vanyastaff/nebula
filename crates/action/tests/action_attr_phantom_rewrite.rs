@@ -159,7 +159,7 @@ impl<C: ?Sized> Default for CredentialRef<C> {
     key = "local.bearer.fetch",
     name = "Fetch Local Bearer",
     description = "Test fixture exercising #[action_phantom] + #[derive(Action)] coexistence",
-    input = serde_json::Value,
+    config = serde_json::Value,
     output = serde_json::Value
 )]
 pub struct LocalBearerAction {

@@ -10,7 +10,7 @@
 use nebula_action::Action;
 
 #[derive(Action)]
-#[action(key = "probe.p3", input = serde_json::Value, output = serde_json::Value)]
+#[action(key = "probe.p3", config = serde_json::Value, output = serde_json::Value)]
 struct Probe;
 
 fn main() {

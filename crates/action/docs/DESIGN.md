@@ -40,7 +40,7 @@
 
 | Item | Where |
 |------|-------|
-| `Action` (Sized, NOT object-safe; `type Input/Output: HasSchema`; static `metadata()`/`dependencies()`) | `src/action.rs:60` |
+| `Action: Component<Kind = kind::Action>` (NOT object-safe; `Output: HasSchema`; ports, isolation, effect contract, concurrency as trait items with defaults; `dependencies()`) | `src/action.rs` |
 | `StatelessAction` / `StatelessHandler` / `StatelessActionAdapter` | `src/stateless.rs:47,74,97` |
 | `StatefulAction` + DX `PaginatedAction` / `BatchAction`, `StatefulActionAdapter` | `src/stateful.rs` |
 | `TriggerAction`, `TriggerHandler`, `TriggerEvent`, `TriggerSource` | `src/trigger/mod.rs` |
@@ -237,9 +237,12 @@ Dev: `nebula-credential-macros`, `nebula-expression`, `trybuild`, `insta`, `rste
   context emission, must use the checked adapter or an explicit trusted adapter
   enforcing the same gate. The proposal includes trigger compile/admission/runtime
   acceptance and coordinated migration tasks; these are unshipped targets.
-  `ActionMetadata` сохраняет schema-free lifecycle и `with_*` и не содержит ключа: ключ — `Action::KEY`,
-  объявленный один раз на типе; factory ставит его при допуске и выводит обе схемы и kind
+  Action возвращает общий `Metadata` (schema-free lifecycle и `with_*`, без ключа), как
+  credential и resource: ключ — `Component::KEY`, объявленный один раз на типе. Порты,
+  isolation, effect contract и concurrency — элементы трейта `Action` со значениями по
+  умолчанию, а не поля метаданных. Factory ставит ключ при допуске и выводит обе схемы и kind
   (`ActionDefinition`). Так на каждом пути, включая `InstanceFactory::new(action)`: один тип —
   одна запись каталога. Другой ключ или версия той же реализации — новый тип;
-  `stateless_entry!` объявляет такой тип, делегирующий выполнение существующему stateless action.
+  `stateless_entry!` объявляет такой тип, делегирующий выполнение существующему stateless
+  action; он может объявить свои порты, isolation, effect contract или concurrency.
   Constructor/SDK parity issue 1018 описана в [integration model](../../../docs/INTEGRATION_MODEL.md#shared-metadata-authoring-current-foundation-target-parity).

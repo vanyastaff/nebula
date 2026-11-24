@@ -759,8 +759,8 @@ mod tests {
     use std::sync::Arc;
 
     use nebula_action::{
-        Action, ActionMetadata, TriggerContext, TriggerEventOutcome, TriggerHandler, WebhookAction,
-        WebhookConfig, WebhookRequest, WebhookResponse, WebhookTriggerAdapter,
+        Action, Component, Metadata, TriggerContext, TriggerEventOutcome, TriggerHandler,
+        WebhookAction, WebhookConfig, WebhookRequest, WebhookResponse, WebhookTriggerAdapter, kind,
     };
     use nebula_core::{BaseContext, Dependencies, scope::Principal};
     use nebula_storage::inmem::InMemoryWebhookActivationStore;
@@ -777,14 +777,19 @@ mod tests {
 
     struct NoopWebhook;
 
-    impl Action for NoopWebhook {
-        const KEY: &'static str = "test.transport.noop";
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
+    impl Component for NoopWebhook {
+        type Kind = kind::Action;
+        type Config = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
-            ActionMetadata::new(nebula_action::metadata_name!("Noop"), "mint-persist test")
+        const KEY: &'static str = "test.transport.noop";
+
+        fn metadata() -> Metadata {
+            Metadata::new(nebula_action::metadata_name!("Noop"), "mint-persist test")
         }
+    }
+
+    impl Action for NoopWebhook {
+        type Output = serde_json::Value;
 
         fn dependencies() -> &'static Dependencies {
             static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();

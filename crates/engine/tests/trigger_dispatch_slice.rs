@@ -163,17 +163,26 @@ impl nebula_action::TriggerSource for SliceTriggerSource {
     type Event = serde_json::Value;
 }
 
-impl Action for SliceTrigger {
+impl nebula_action::Component for SliceTrigger {
+    type Kind = nebula_action::kind::Action;
+    type Config = serde_json::Value;
+
     const KEY: &'static str = "test.dispatch.plugin.trigger";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Slice trigger"),
             "Explicit test event source",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
+}
+
+impl Action for SliceTrigger {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
+
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
         DEPENDENCIES.get_or_init(Dependencies::new)
@@ -222,15 +231,23 @@ struct EchoHandler {
     count: Arc<AtomicU32>,
 }
 
-impl Action for EchoHandler {
+impl nebula_action::Component for EchoHandler {
+    type Kind = nebula_action::kind::Action;
+    type Config = serde_json::Value;
+
     const KEY: &'static str = "test.dispatch.plugin.echo";
-    type Input = serde_json::Value;
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(nebula_action::metadata_name!("Echo"), "echo")
+    }
+}
+
+impl Action for EchoHandler {
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(nebula_action::metadata_name!("Echo"), "echo")
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
-    }
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
+
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -240,7 +257,7 @@ impl Action for EchoHandler {
 impl StatelessAction for EchoHandler {
     async fn execute(
         &self,
-        input: <Self as Action>::Input,
+        input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         self.count.fetch_add(1, Ordering::SeqCst);

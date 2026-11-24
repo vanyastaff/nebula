@@ -6,9 +6,9 @@ use std::sync::{
 };
 
 use nebula_action::{
-    Action, ActionError, HasTriggerScheduling, TestContextBuilder, TriggerEvent,
+    Action, ActionError, Component, HasTriggerScheduling, TestContextBuilder, TriggerEvent,
     TriggerEventOutcome, TriggerHandler, WebhookAction, WebhookRequest, WebhookResponse,
-    WebhookTriggerAdapter, webhook::webhook_request_for_test,
+    WebhookTriggerAdapter, kind, webhook::webhook_request_for_test,
 };
 use nebula_core::{Dependencies, context::Context};
 use serde::{Deserialize, Serialize};
@@ -26,17 +26,22 @@ struct TestWebhook {
     deactivated: Arc<AtomicBool>,
 }
 
-impl Action for TestWebhook {
-    const KEY: &'static str = "test.webhook";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for TestWebhook {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.webhook";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Test Webhook"),
             "Test webhook action",
         )
     }
+}
+
+impl Action for TestWebhook {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -180,17 +185,22 @@ struct CountingWebhook {
     deactivate_count: Arc<AtomicUsize>,
 }
 
-impl Action for CountingWebhook {
-    const KEY: &'static str = "test.webhook.count";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for CountingWebhook {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.webhook.count";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Counting Webhook"),
             "Counts activate/deactivate",
         )
     }
+}
+
+impl Action for CountingWebhook {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -286,17 +296,22 @@ async fn webhook_adapter_start_stop_start_succeeds() {
 
 struct ErroringWebhook;
 
-impl Action for ErroringWebhook {
-    const KEY: &'static str = "test.webhook.error";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for ErroringWebhook {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.webhook.error";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Erroring Webhook"),
             "handle_request always returns Err",
         )
     }
+}
+
+impl Action for ErroringWebhook {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -358,17 +373,22 @@ struct HangingWebhook {
     entered: Arc<AtomicBool>,
 }
 
-impl Action for HangingWebhook {
-    const KEY: &'static str = "test.webhook.hang";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for HangingWebhook {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.webhook.hang";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Hanging Webhook"),
             "handle_request hangs forever",
         )
     }
+}
+
+impl Action for HangingWebhook {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -494,17 +514,22 @@ struct SlowWebhook {
     finish: Arc<AtomicBool>,
 }
 
-impl Action for SlowWebhook {
-    const KEY: &'static str = "test.webhook.slow";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for SlowWebhook {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.webhook.slow";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Slow Webhook"),
             "handle_request awaits a flag",
         )
     }
+}
+
+impl Action for SlowWebhook {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();

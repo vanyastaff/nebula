@@ -4,15 +4,15 @@ use std::sync::{
 };
 
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionFactory, ActionMetadata, ActionResult,
-    InstanceFactory, StatelessAction,
+    Action, ActionContext, ActionError, ActionFactory, ActionResult, InstanceFactory, Metadata,
+    StatelessAction,
 };
 use nebula_core::{
     ActionKey, ArtifactSetDigest, CredentialKey, Dependencies, PluginKey, ResourceKey, WorkflowId,
     WorkflowVersionId, node_key,
 };
 use nebula_credential::{
-    AnyCredential, Component, Credential, CredentialContext, Metadata, SecretString, SecretToken,
+    AnyCredential, Component, Credential, CredentialContext, SecretString, SecretToken,
     contract::plugin_capability_report, error::CredentialError, kind, resolve::StaticResolveResult,
 };
 use nebula_error::Classify;
@@ -112,7 +112,10 @@ fn action_factory(key: &str) -> Arc<dyn ActionFactory> {
 
 struct MetadataAction<const INDEX: usize>;
 
-impl<const INDEX: usize> Action for MetadataAction<INDEX> {
+impl<const INDEX: usize> Component for MetadataAction<INDEX> {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
+
     const KEY: &'static str = match INDEX {
         0 => "alpha.run",
         1 => "alpha.execute",
@@ -122,16 +125,20 @@ impl<const INDEX: usize> Action for MetadataAction<INDEX> {
         5 => "acme.storage.move",
         _ => panic!("action metadata fixture index is not declared"),
     };
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_action::MetadataName::try_from(Self::KEY).expect("fixture display name"),
             "test action",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
+}
+
+impl<const INDEX: usize> Action for MetadataAction<INDEX> {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
@@ -154,19 +161,26 @@ static OBSERVED_ACTION_DEPENDENCY_READS: AtomicUsize = AtomicUsize::new(0);
 
 struct ObservedAction;
 
-impl Action for ObservedAction {
-    const KEY: &'static str = "alpha.run";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for ObservedAction {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "alpha.run";
+
+    fn metadata() -> Metadata {
         OBSERVED_ACTION_METADATA_READS.fetch_add(1, Ordering::Relaxed);
-        ActionMetadata::new(
+        Metadata::new(
             nebula_action::metadata_name!("Run"),
             "Observed action admission fixture",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
+}
+
+impl Action for ObservedAction {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         OBSERVED_ACTION_DEPENDENCY_READS.fetch_add(1, Ordering::Relaxed);

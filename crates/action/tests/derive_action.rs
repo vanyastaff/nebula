@@ -16,7 +16,7 @@ use nebula_schema::HasSchema;
     key = "test.no_cred",
     name = "No Cred",
     description = "no credentials",
-    input = serde_json::Value,
+    config = serde_json::Value,
     output = serde_json::Value
 )]
 struct NoCredAction;
@@ -55,7 +55,7 @@ fn metadata_key_matches_attribute() {
 #[action(
     key = "test.read_only",
     description = "explicit no-effect contract",
-    input = serde_json::Value,
+    config = serde_json::Value,
     output = serde_json::Value,
     read_only
 )]
@@ -93,7 +93,7 @@ fn input_schema_derives_from_input_via_schema_of() {
     // P3: there is no `Action::input_schema()` method. The action's
     // input schema is reached through the `Input: HasSchema` associated-type
     // bound via `nebula_schema::schema_of` — the single source of truth.
-    let schema = nebula_schema::schema_of::<<NoCredAction as Action>::Input>()
+    let schema = nebula_schema::schema_of::<<NoCredAction as nebula_action::Component>::Config>()
         .expect("valid test catalog definition");
     let direct = <serde_json::Value as HasSchema>::schema().expect("valid test catalog definition");
     assert_eq!(schema, direct);
@@ -104,7 +104,7 @@ fn input_schema_derives_from_input_via_schema_of() {
 #[derive(Action)]
 #[action(
     key = "test.defaults",
-    input = serde_json::Value,
+    config = serde_json::Value,
     output = serde_json::Value
 )]
 /// Default action description.
@@ -136,7 +136,7 @@ fn name_defaults_to_struct_name() {
     key = "test.versioned",
     description = "Versioned action",
     version = "2.5.0",
-    input = serde_json::Value,
+    config = serde_json::Value,
     output = serde_json::Value
 )]
 struct VersionedAction;
@@ -167,7 +167,7 @@ fn explicit_version_is_propagated() {
     name = "Full SemVer",
     description = "Full version fixture",
     version = "2.5.0-rc.7+build.009",
-    input = serde_json::Value,
+    config = serde_json::Value,
     output = serde_json::Value
 )]
 struct FullSemverAction;
@@ -185,7 +185,7 @@ impl StatelessAction for FullSemverAction {
 nebula_action::stateless_entry!(
     /// The same entry as [`FullSemverAction`], with hand-written metadata.
     ManualFullSemverAction(FullSemverAction) = "test.full-semver",
-    nebula_action::ActionMetadata::try_new("Full SemVer", "Full version fixture")
+    nebula_action::Metadata::try_new("Full SemVer", "Full version fixture")
         .expect("valid name")
         .with_version("2.5.0-rc.7+build.009".parse().expect("valid full SemVer")),
 );
@@ -276,7 +276,7 @@ mod resource_handle_fields {
         key = "test.resource_handle_fields",
         name = "Resource handle fields",
         description = "row facade slots",
-        input = serde_json::Value,
+        config = serde_json::Value,
         output = serde_json::Value,
         read_only
     )]

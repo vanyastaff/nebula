@@ -1259,18 +1259,22 @@ pub(crate) mod engine_seam {
         pub(crate) started: Arc<tokio::sync::Notify>,
     }
 
-    impl nebula_action::action::Action for SlowAction {
+    impl nebula_action::action::Component for SlowAction {
+        type Kind = nebula_action::action::kind::Action;
+        type Config = serde_json::Value;
+
         const KEY: &'static str = "core.slow";
-        type Input = serde_json::Value;
+
+        fn metadata() -> nebula_action::Metadata {
+            nebula_action::Metadata::new(nebula_action::metadata_name!("SlowAction"), "static")
+        }
+    }
+
+    impl nebula_action::action::Action for SlowAction {
         type Output = serde_json::Value;
 
-        fn metadata() -> nebula_action::metadata::ActionMetadata {
-            nebula_action::metadata::ActionMetadata::new(
-                nebula_action::metadata_name!("SlowAction"),
-                "static",
-            )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
-        }
+        const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+            nebula_action::effect::ActionEffectContract::ReadOnly;
         fn dependencies() -> &'static nebula_core::Dependencies {
             static D: std::sync::OnceLock<nebula_core::Dependencies> = std::sync::OnceLock::new();
             D.get_or_init(nebula_core::Dependencies::new)
@@ -1279,7 +1283,7 @@ pub(crate) mod engine_seam {
     impl nebula_action::stateless::StatelessAction for SlowAction {
         async fn execute(
             &self,
-            input: <Self as nebula_action::action::Action>::Input,
+            input: Self::Config,
             ctx: &(impl nebula_action::ActionContext + ?Sized),
         ) -> Result<
             nebula_action::result::ActionResult<<Self as nebula_action::action::Action>::Output>,

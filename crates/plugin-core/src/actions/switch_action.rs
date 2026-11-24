@@ -128,25 +128,38 @@ impl HasSchema for SwitchInput {
 #[derive(Debug)]
 pub struct CoreSwitch;
 
-impl nebula_action::action::Action for CoreSwitch {
-    const KEY: &'static str = "core.switch";
-    type Input = SwitchInput;
-    type Output = Value;
+impl nebula_action::action::Component for CoreSwitch {
+    type Kind = nebula_action::action::kind::Action;
+    type Config = SwitchInput;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "core.switch";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Switch"),
             "Routes execution to the first matching case port, or 'default' if none match",
         )
-        .with_inputs(default_input_ports())
-        .with_outputs(vec![OutputPort::Dynamic(DynamicPort {
+        .with_version(nebula_action::MetadataVersion::new(2, 0, 0))
+    }
+}
+
+impl nebula_action::action::Action for CoreSwitch {
+    type Output = Value;
+
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
+
+    fn inputs() -> Vec<nebula_action::InputPort> {
+        default_input_ports()
+    }
+
+    fn outputs() -> Vec<OutputPort> {
+        vec![OutputPort::Dynamic(DynamicPort {
             key: port_key!("case"),
             source_field: "cases".into(),
             label_field: Some("port".into()),
             include_fallback: true,
-        })])
-        .with_version(nebula_action::MetadataVersion::new(2, 0, 0))
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
+        })]
     }
 
     fn dependencies() -> &'static nebula_action::Dependencies {

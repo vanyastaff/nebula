@@ -5,7 +5,7 @@ use nebula_action::Action;
 #[derive(Action)]
 #[action(
     key = "bad.effect-value",
-    input = serde_json::Value,
+    config = serde_json::Value,
     output = serde_json::Value,
     read_only = true
 )]

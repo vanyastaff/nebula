@@ -117,19 +117,26 @@ impl HasSchema for FilterInput {
 #[derive(Debug)]
 pub struct Filter;
 
-impl nebula_action::action::Action for Filter {
-    const KEY: &'static str = "core.filter";
-    type Input = FilterInput;
-    type Output = Value;
+impl nebula_action::action::Component for Filter {
+    type Kind = nebula_action::action::kind::Action;
+    type Config = FilterInput;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "core.filter";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Filter"),
             "Filter an array of JSON objects by a condition",
         )
         .with_version(nebula_action::MetadataVersion::new(2, 0, 0))
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
+}
+
+impl nebula_action::action::Action for Filter {
+    type Output = Value;
+
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static nebula_action::Dependencies {
         static DEPS: OnceLock<nebula_action::Dependencies> = OnceLock::new();

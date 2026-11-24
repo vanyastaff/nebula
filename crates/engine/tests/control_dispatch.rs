@@ -21,7 +21,8 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, ActionMetadata, action::Action, result::ActionResult, stateless::StatelessAction,
+    ActionError, Component, Metadata, action::Action, kind, result::ActionResult,
+    stateless::StatelessAction,
 };
 use nebula_core::{Dependencies, id::ExecutionId, node_key};
 use nebula_engine::{
@@ -121,14 +122,22 @@ struct CountingEchoHandler {
     count: Arc<AtomicU32>,
 }
 
-impl Action for CountingEchoHandler {
-    const KEY: &'static str = "core.echo";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for CountingEchoHandler {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "core.echo";
+
+    fn metadata() -> Metadata {
         meta("core.echo")
     }
+}
+
+impl Action for CountingEchoHandler {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -138,7 +147,7 @@ impl Action for CountingEchoHandler {
 impl StatelessAction for CountingEchoHandler {
     async fn execute(
         &self,
-        input: <Self as Action>::Input,
+        input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         self.count.fetch_add(1, Ordering::SeqCst);
@@ -153,14 +162,22 @@ struct SlowCancellableHandler {
     count: Arc<AtomicU32>,
 }
 
-impl Action for SlowCancellableHandler {
-    const KEY: &'static str = "core.slow";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for SlowCancellableHandler {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "core.slow";
+
+    fn metadata() -> Metadata {
         meta("core.slow")
     }
+}
+
+impl Action for SlowCancellableHandler {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -170,7 +187,7 @@ impl Action for SlowCancellableHandler {
 impl StatelessAction for SlowCancellableHandler {
     async fn execute(
         &self,
-        input: <Self as Action>::Input,
+        input: Self::Config,
         ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         self.count.fetch_add(1, Ordering::SeqCst);
@@ -182,10 +199,8 @@ impl StatelessAction for SlowCancellableHandler {
     }
 }
 
-fn meta(name: &str) -> ActionMetadata {
-    ActionMetadata::try_new(name, "control_dispatch test handler")
-        .expect("fixture display name")
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
+fn meta(name: &str) -> Metadata {
+    Metadata::try_new(name, "control_dispatch test handler").expect("fixture display name")
 }
 
 // ── Harness ───────────────────────────────────────────────────────────────

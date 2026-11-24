@@ -16,13 +16,13 @@
 //! ```rust,no_run
 //! use nebula_sdk::prelude::*;
 //!
-//! let metadata = ActionMetadata::new(metadata_name!("Greet"), "A simple greeting action");
+//! let metadata = Metadata::new(metadata_name!("Greet"), "A simple greeting action");
 //!
 //! let workflow = WorkflowBuilder::new("example_workflow")
 //!.add_node("greet", "core", "example_greet")
 //!.build();
 //!
-//! let _: ActionMetadata = metadata;
+//! let _: Metadata = metadata;
 //! assert!(workflow.is_ok());
 //! # Ok::<(), nebula_sdk::Error>(())
 //! ```
@@ -72,8 +72,8 @@ pub mod __private {
     pub mod action {
         pub use nebula_action::{
             Action, ActionContext, ActionContextExt, ActionEffectContract, ActionError,
-            ActionMetadata, ActionResult, FromWorkflowNode, MetadataVersion, StatelessAction,
-            metadata_name,
+            ActionResult, Component, FromWorkflowNode, Metadata, MetadataVersion, StatelessAction,
+            kind, metadata_name,
         };
     }
 
@@ -414,15 +414,16 @@ macro_rules! workflow {
 
 /// Macro for defining a simple stateless action with a unit struct.
 ///
-/// Generates a unit `struct $name`, implements [`Action`](prelude::Action)
-/// with keyless metadata and slot-binding [`Dependencies`](prelude::Dependencies),
-/// and implements
+/// Generates a unit `struct $name`, implements [`Component`](prelude::Component)
+/// with its key, `config` type and keyless metadata,
+/// [`Action`](prelude::Action) with slot-binding
+/// [`Dependencies`](prelude::Dependencies), and
 /// [`StatelessAction`](prelude::StatelessAction) over the supplied
-/// `input` / `output` types.
+/// `config` / `output` types.
 ///
 /// # Requirements
 ///
-/// `Input` and `Output` must implement [`HasSchema`](prelude::HasSchema).
+/// The `config` and `output` types must implement [`HasSchema`](prelude::HasSchema).
 ///
 /// # Examples
 ///
@@ -435,7 +436,7 @@ macro_rules! workflow {
 /// simple_action! {
 ///     name: GreetAction,
 ///     key: "demo.greet",
-///     input: Value,
+///     config: Value,
 ///     output: Value,
 ///     async fn execute(&self, input, _ctx) {
 ///         let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("world");
@@ -446,14 +447,14 @@ macro_rules! workflow {
 /// }
 ///
 /// // The generated type declares its key and carries keyless metadata; admission is runtime-owned.
-/// let _: ActionMetadata = <GreetAction as Action>::metadata();
+/// let _: Metadata = <GreetAction as Component>::metadata();
 /// ```
 #[macro_export]
 macro_rules! simple_action {
     (
         name: $name:ident,
         key: $key:literal,
-        input: $input:ty,
+        config: $config:ty,
         output: $output:ty,
         async fn execute(&$self:tt, $input_param:ident, $ctx_param:ident) $body:block
     ) => {
@@ -464,17 +465,22 @@ macro_rules! simple_action {
             "invalid action key literal"
         );
 
-        impl $crate::__private::action::Action for $name {
-            const KEY: &'static str = $key;
-            type Input = $input;
-            type Output = $output;
+        impl $crate::__private::action::Component for $name {
+            type Kind = $crate::__private::action::kind::Action;
+            type Config = $config;
 
-            fn metadata() -> $crate::__private::action::ActionMetadata {
-                $crate::__private::action::ActionMetadata::new(
+            const KEY: &'static str = $key;
+
+            fn metadata() -> $crate::__private::action::Metadata {
+                $crate::__private::action::Metadata::new(
                     $crate::__private::action::metadata_name!(stringify!($name)),
                     stringify!($name),
                 )
             }
+        }
+
+        impl $crate::__private::action::Action for $name {
+            type Output = $output;
 
             fn dependencies() -> &'static $crate::__private::core::Dependencies {
                 static DEPS: ::std::sync::OnceLock<$crate::__private::core::Dependencies> =
@@ -486,7 +492,7 @@ macro_rules! simple_action {
         impl $crate::__private::action::StatelessAction for $name {
             async fn execute(
                 &$self,
-                $input_param: <Self as $crate::__private::action::Action>::Input,
+                $input_param: Self::Config,
                 $ctx_param: &(impl $crate::__private::action::ActionContext + ?Sized),
             ) -> ::std::result::Result<
                 $crate::__private::action::ActionResult<<Self as $crate::__private::action::Action>::Output>,

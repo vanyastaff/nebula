@@ -9,8 +9,8 @@ use std::{
 };
 
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionMetadata, ActionResult, ConnectionFilter, InputPort,
-    StatelessAction, SupportPort,
+    Action, ActionContext, ActionError, ActionResult, Component, ConnectionFilter, InputPort,
+    Metadata, StatelessAction, SupportPort, kind,
 };
 use nebula_core::{Dependencies, node_key, port_key};
 use nebula_engine::{ActionRegistry, ExecutionResult};
@@ -27,21 +27,31 @@ pub(super) struct RootEcho<T> {
     marker: PhantomData<fn() -> T>,
 }
 
+impl<T> Component for RootEcho<T>
+where
+    T: HasSchema + DeserializeOwned + Serialize + Send + Sync + 'static,
+{
+    type Kind = kind::Action;
+    type Config = T;
+
+    const KEY: &'static str = "test.root_echo";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
+            nebula_action::metadata_name!("Root echo"),
+            "Preserve root input data",
+        )
+    }
+}
+
 impl<T> Action for RootEcho<T>
 where
     T: HasSchema + DeserializeOwned + Serialize + Send + Sync + 'static,
 {
-    const KEY: &'static str = "test.root_echo";
-    type Input = T;
     type Output = T;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
-            nebula_action::metadata_name!("Root echo"),
-            "Preserve root input data",
-        )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
-    }
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
@@ -87,21 +97,34 @@ thread_local! {
 
 struct SupportEcho;
 
-impl Action for SupportEcho {
-    const KEY: &'static str = "test.support_echo";
-    type Input = ();
-    type Output = Value;
+impl Component for SupportEcho {
+    type Kind = kind::Action;
+    type Config = ();
 
-    fn metadata() -> ActionMetadata {
-        let metadata = ActionMetadata::new(
+    const KEY: &'static str = "test.support_echo";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_action::metadata_name!("Support echo"),
             "Return support input data",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly);
-        match SUPPORT_PORT.with(|port| port.borrow().clone()) {
-            Some(port) => metadata.add_input(InputPort::Support(port)),
-            None => metadata,
-        }
+    }
+}
+
+impl Action for SupportEcho {
+    type Output = Value;
+
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
+
+    fn inputs() -> Vec<InputPort> {
+        let mut inputs = nebula_action::port::default_input_ports();
+        inputs.extend(
+            SUPPORT_PORT
+                .with(|port| port.borrow().clone())
+                .map(InputPort::Support),
+        );
+        inputs
     }
 
     fn dependencies() -> &'static Dependencies {

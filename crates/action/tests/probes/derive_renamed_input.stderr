@@ -1,0 +1,5 @@
+error: `input` was renamed to `config`: an action's form data is its `Component::Config`; write `#[action(config = SomeType)]`
+ --> tests/probes/derive_renamed_input.rs:9:5
+  |
+9 |     input = serde_json::Value,
+  |     ^^^^^

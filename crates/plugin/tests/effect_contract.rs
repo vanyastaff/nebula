@@ -1,14 +1,14 @@
-use std::assert_matches;
 use std::cell::RefCell;
 use std::sync::{Arc, OnceLock};
 
 use nebula_action::{
-    Action, ActionFactory, ActionMetadata, RemoteEffectInstanceFactory,
+    Action, ActionFactory, Component, Metadata, RemoteEffectInstanceFactory,
     effect::{
         ActionEffectContract, EffectPreparationContext, EffectPreparationError,
         PreparedRemoteEffect, RemoteDestinationGuarantee, RemoteEffectAction,
         RemoteEffectDeclarationError, RemoteEffectDescriptor, RemoteEffectPolicy,
     },
+    kind,
 };
 use nebula_core::{ActionKey, ArtifactSetDigest, Dependencies, WorkflowVersionId, node_key};
 use nebula_metadata::PluginManifest;
@@ -47,21 +47,22 @@ fn descriptor(contract_id: &str, invocations: u32) -> RemoteEffectDescriptor {
     .unwrap()
 }
 
-impl Action for RemoteAction {
-    const KEY: &'static str = "demo.remote";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for RemoteAction {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        let metadata = ActionMetadata::new(
+    const KEY: &'static str = "demo.remote";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_action::metadata_name!("Remote"),
             "No-I/O capability fixture",
-        );
-        match METADATA_CONTRACT.with_borrow(Clone::clone) {
-            Some(contract) => metadata.with_effect_contract(contract),
-            None => metadata,
-        }
+        )
     }
+}
+
+impl Action for RemoteAction {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
@@ -91,25 +92,13 @@ thread_local! {
     /// Admission reads the remote contract only from the type; these tests
     /// vary it, so they install it before building a factory.
     static DESCRIPTOR: RefCell<Option<RemoteEffectDescriptor>> = const { RefCell::new(None) };
-    /// An effect contract `RemoteAction::metadata` declares, which admission
-    /// must refuse.
-    static METADATA_CONTRACT: RefCell<Option<ActionEffectContract>> = const { RefCell::new(None) };
-}
-
-fn admit(
-    descriptor: RemoteEffectDescriptor,
-    metadata_contract: Option<ActionEffectContract>,
-) -> Result<RemoteEffectInstanceFactory<RemoteAction>, nebula_action::ActionAdmissionError> {
-    DESCRIPTOR.set(Some(descriptor));
-    METADATA_CONTRACT.set(metadata_contract);
-    let factory = RemoteEffectInstanceFactory::new(RemoteAction);
-    DESCRIPTOR.set(None);
-    METADATA_CONTRACT.set(None);
-    factory
 }
 
 fn remote_factory(contract: RemoteEffectDescriptor) -> RemoteEffectInstanceFactory<RemoteAction> {
-    admit(contract, None).expect("coherent remote fixture admits")
+    DESCRIPTOR.set(Some(contract));
+    let factory = RemoteEffectInstanceFactory::new(RemoteAction);
+    DESCRIPTOR.set(None);
+    factory.expect("coherent remote fixture admits")
 }
 
 struct FixturePlugin(Arc<dyn ActionFactory>);
@@ -142,23 +131,6 @@ fn freeze(factory: Arc<dyn ActionFactory>) -> FrozenPluginRegistry {
             "1.0.0".parse().unwrap(),
         )
         .unwrap()
-}
-
-#[test]
-fn remote_contract_declared_in_metadata_is_rejected_before_instantiation() {
-    let contract = descriptor("demo.contract", 1);
-    assert_matches!(
-        admit(
-            contract.clone(),
-            Some(ActionEffectContract::Remote(Box::new(contract.clone())))
-        )
-        .map(drop),
-        Err(nebula_action::ActionAdmissionError::RemoteEffectContractInMetadata)
-    );
-    assert_matches!(
-        admit(contract, Some(ActionEffectContract::ReadOnly)).map(drop),
-        Err(nebula_action::ActionAdmissionError::EffectContractOnRemoteAction)
-    );
 }
 
 #[test]

@@ -16,7 +16,8 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, ActionMetadata, action::Action, result::ActionResult, stateless::StatelessAction,
+    ActionError, Component, Metadata, action::Action, kind, result::ActionResult,
+    stateless::StatelessAction,
 };
 use nebula_core::{Dependencies, id::WorkflowId, node_key};
 use nebula_core::{OrgId, ResourceKey, ScopeLevel, WorkspaceId};
@@ -29,7 +30,7 @@ use nebula_resource::Resident;
 use nebula_resource::{
     Manager, RegistrationSpec, ResidentConfig, ResourceContext, SlotIdentity,
     error::Error as ResourceError,
-    resource::{Metadata, Provider, ResourceConfig},
+    resource::{Provider, ResourceConfig},
     topology::resident::ResidentProvider,
 };
 use nebula_workflow::{
@@ -49,14 +50,22 @@ mod exact_fixture;
 /// for that).
 struct ResourceConsumerHandler;
 
-impl Action for ResourceConsumerHandler {
-    const KEY: &'static str = "resource-consumer";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for ResourceConsumerHandler {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "resource-consumer";
+
+    fn metadata() -> Metadata {
         meta("resource-consumer")
     }
+}
+
+impl Action for ResourceConsumerHandler {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -66,7 +75,7 @@ impl Action for ResourceConsumerHandler {
 impl StatelessAction for ResourceConsumerHandler {
     async fn execute(
         &self,
-        _input: <Self as Action>::Input,
+        _input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         // Smoke-path action: resolves no resource. The
@@ -88,7 +97,7 @@ impl StatelessAction for ResourceConsumerHandler {
     key = "test.resource_probe.handle",
     name = "ResourceProbe",
     description = "holds a resource handle field",
-    input = serde_json::Value,
+    config = serde_json::Value,
     output = serde_json::Value,
     read_only
 )]
@@ -103,7 +112,7 @@ static PROBE_BODIES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32
 impl StatelessAction for ResourceProbeHandler {
     async fn execute(
         &self,
-        _input: <Self as Action>::Input,
+        _input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         PROBE_BODIES.fetch_add(1, Ordering::SeqCst);
@@ -137,10 +146,8 @@ fn make_workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
     }
 }
 
-fn meta(name: &str) -> ActionMetadata {
-    ActionMetadata::try_new(name, "resource integration test")
-        .expect("fixture display name")
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
+fn meta(name: &str) -> Metadata {
+    Metadata::try_new(name, "resource integration test").expect("fixture display name")
 }
 
 // ---------------------------------------------------------------------------
@@ -297,8 +304,8 @@ impl ResourceConfig for IntegrationProbeConfig {
 #[derive(Clone)]
 struct IntegrationProbeResource;
 
-impl nebula_resource::Component for IntegrationProbeResource {
-    type Kind = nebula_resource::kind::Resource;
+impl Component for IntegrationProbeResource {
+    type Kind = kind::Resource;
     type Config = IntegrationProbeConfig;
 
     const KEY: &'static str = "test.engine_integration.probe";
@@ -336,14 +343,22 @@ impl ResidentProvider for IntegrationProbeResource {
 
 struct IntegrationAcquireHandler;
 
-impl Action for IntegrationAcquireHandler {
-    const KEY: &'static str = "engine-integration-acquire";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for IntegrationAcquireHandler {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "engine-integration-acquire";
+
+    fn metadata() -> Metadata {
         meta("engine-integration-acquire")
     }
+}
+
+impl Action for IntegrationAcquireHandler {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -359,7 +374,7 @@ nebula_action::stateless_entry!(
 impl StatelessAction for IntegrationAcquireHandler {
     async fn execute(
         &self,
-        _input: <Self as Action>::Input,
+        _input: Self::Config,
         ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         // A read-only action reaches the row through a read-only handle.
@@ -1336,8 +1351,8 @@ mod resource_handle {
     #[derive(Clone)]
     struct Svc(Arc<Calls>);
 
-    impl nebula_resource::Component for Svc {
-        type Kind = nebula_resource::kind::Resource;
+    impl Component for Svc {
+        type Kind = kind::Resource;
         type Config = ();
 
         const KEY: &'static str = "test.resource_handle.svc";
@@ -1422,8 +1437,8 @@ mod resource_handle {
         pending: Vec<String>,
     }
 
-    impl nebula_resource::Component for Ledger {
-        type Kind = nebula_resource::kind::Resource;
+    impl Component for Ledger {
+        type Kind = kind::Resource;
         type Config = ();
 
         const KEY: &'static str = "test.resource_handle.ledger";
@@ -1485,7 +1500,7 @@ mod resource_handle {
                                                     key = $key,
                                                     name = $key,
                                                     description = "resource handle integration action",
-                                                    input = serde_json::Value,
+                                                    config = serde_json::Value,
                                                     output = serde_json::Value,
                                                     read_only
                                                 )]
@@ -1502,7 +1517,7 @@ mod resource_handle {
         key = "test.resource_handle.journaled",
         name = "Journaled managed row",
         description = "default-contract integration action",
-        input = serde_json::Value,
+        config = serde_json::Value,
         output = serde_json::Value
     )]
     struct JournaledRow {
@@ -1621,7 +1636,7 @@ mod resource_handle {
         key = "test.resource_handle.journaled_agent",
         name = "Journaled agent",
         description = "default-contract agent integration action",
-        input = serde_json::Value,
+        config = serde_json::Value,
         output = serde_json::Value
     )]
     struct JournaledAgent {
@@ -1699,7 +1714,7 @@ mod resource_handle {
         key = "test.resource_handle.read_only_write",
         name = "Read-only write attempt",
         description = "read-only action attempting a write",
-        input = serde_json::Value,
+        config = serde_json::Value,
         output = serde_json::Value,
         read_only
     )]

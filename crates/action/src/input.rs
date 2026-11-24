@@ -92,7 +92,7 @@ impl ActionInputContract {
 /// Opaque input admitted against one handle's complete Rust contract.
 ///
 /// Schema validation alone is not sufficient evidence that the declared
-/// [`Action::Input`](crate::Action::Input) can be decoded. This token is created
+/// [`Component::Config`](crate::Component::Config) can be decoded. This token is created
 /// only after both schema preparation and typed deserialization succeed. It is
 /// bound to the exact receiving handle, even when another handle uses the same
 /// Rust input type and schema. The schema-bound resolved proof is retained for

@@ -13,7 +13,7 @@ related: [nebula-action, nebula-credential, nebula-resource, nebula-schema, nebu
 
 The product contract is that an integration author should depend on one Nebula crate rather than
 learn the workspace topology. External one-dependency proofs cover typed action authoring,
-`ActionMetadata`, `WorkflowBuilder`, credential `TestResult`, and representative derives for
+the shared `Metadata`, `WorkflowBuilder`, credential `TestResult`, and representative derives for
 every current procedural-macro family. Manual `Provider` authoring with a consuming terminal hook is
 also compile-checked using the SDK plus the general-purpose `async-trait` crate;
 other manual/prelude workflows need their own compile-pass proof before
@@ -26,7 +26,7 @@ as SDK gaps rather than hidden direct-dependency recipes.
 ## Role
 
 *Integration Author SDK (Persona Façade).* Provides curated authoring contracts through
-`prelude`, persona modules such as `integration`, `ActionMetadata`, `WorkflowBuilder`, and a
+`prelude`, persona modules such as `integration`, `Metadata`, `WorkflowBuilder`, and a
 `TestRuntime` / `RunReport` for integration testing. Workspace implementation crates are not
 re-exported: crate-boundary refactors must not become integration migrations.
 
@@ -121,7 +121,7 @@ behind that token.
 ### Typed action and schema authoring
 
 **Checkpoint API migration:** remove `CheckpointPolicy` imports from `action` or
-`prelude` and calls to `ActionMetadata::with_checkpoint_policy`. The SDK no
+`prelude` and calls to `with_checkpoint_policy` on action metadata. The SDK no
 longer offers a checkpoint cadence selector. Runtime control owns the supported
 durable boundaries; the removed choices did not implement additional durability.
 Operator retry continues through workflow/node `retry_policy` and typed retryable
@@ -161,7 +161,7 @@ The curated `ProgramSyntax` is independent of expression permission.
 
 **Breaking migration:** erased `ActionInput` / `PreparedActionInput`, `ValueTree`,
 `ValidValues`, `ResolvedValue`, and `ResolvedValues` are runtime proof types and are no
-longer exported by the SDK. Action authors declare `Action::Input` and `Action::Output`;
+longer exported by the SDK. Action authors declare `Component::Config` and `Action::Output`;
 the runtime validates and decodes input once before calling typed `execute`. Credential
 authors likewise receive `&Self::Properties` in `Credential::resolve`. The authored
 `AuthoredValue` stage remains public because `params!` produces it explicitly.
@@ -194,10 +194,10 @@ SDK persona types.
 ### Catalog construction migration
 
 Use the author types from `integration::{action, credential, resource}` or `prelude`.
-`ActionMetadata` and the `Metadata` a credential or resource returns take no key
+The `Metadata` an action, a credential or a resource returns takes no key
 (`new(MetadataName, description)` / `try_new(name, description)`): the identity is
-`Action::KEY` or `Component::KEY`, declared once on the type, and
-`key_of::<A>()` returns an action's typed key.
+`Component::KEY`, declared once on the type, and `key_of::<C>()` returns the
+typed key its kind selects.
 Credential constructors take no auth
 pattern; the registry derives it from the associated scheme. Resource authors
 implement `Component::metadata` next to `Provider`; `from_key` is removed. Action macros
@@ -370,7 +370,7 @@ Modules provided by this crate:
 
 - `prelude` — one-stop `use nebula_sdk::prelude::*` import for common types and traits.
 - `integration` — curated, persona-scoped contracts for integration authors.
-- `action` — typed action and `ActionMetadata` authoring contracts.
+- `action` — typed action and `Metadata` authoring contracts.
 - `workflow` — `WorkflowBuilder` for programmatic workflow construction.
 - `runtime` — `TestRuntime`, `RunReport` — in-process test execution harness.
 - `testing` (feature `testing`) — test helpers and fixtures.

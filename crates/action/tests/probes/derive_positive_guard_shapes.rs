@@ -11,14 +11,14 @@
 //! integration probe without leaking the macro's internal scheme/Credential
 //! type relationship into a public-API positive probe.
 
-use nebula_action::Action;
+use nebula_action::{Action, Component};
 
 #[derive(Action)]
 #[action(
     key = "positive.unit",
     name = "Unit",
     description = "smoke compile-pass for unit struct",
-    input = serde_json::Value,
+    config = serde_json::Value,
     output = serde_json::Value,
 )]
 struct UnitAction;
@@ -28,7 +28,7 @@ struct UnitAction;
     key = "positive.named",
     name = "Named",
     description = "smoke compile-pass for named-field struct without slots",
-    input = serde_json::Value,
+    config = serde_json::Value,
     output = serde_json::Value,
 )]
 struct NamedAction {
@@ -43,8 +43,8 @@ impl Default for NamedAction {
 }
 
 fn main() {
-    let _meta = <UnitAction as Action>::metadata();
-    let _named_meta = <NamedAction as Action>::metadata();
+    let _meta = <UnitAction as Component>::metadata();
+    let _named_meta = <NamedAction as Component>::metadata();
     assert!(
         <UnitAction as Action>::dependencies()
             .slot_fields()

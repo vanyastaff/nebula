@@ -1,8 +1,8 @@
 use std::sync::OnceLock;
 
 use nebula_action::{
-    ActionRuntimeContext, FromWorkflowNode, InstanceFactory, TriggerRuntimeContext, action::Action,
-    context::CredentialContextExt, error::ActionError, metadata::ActionMetadata,
+    ActionRuntimeContext, Component, FromWorkflowNode, InstanceFactory, Metadata,
+    TriggerRuntimeContext, action::Action, context::CredentialContextExt, error::ActionError, kind,
     stateful::StatefulAction, stateless::StatelessAction,
 };
 use nebula_core::{
@@ -17,12 +17,11 @@ use crate::runtime::runner::InProcessRunner;
 
 use super::*;
 
-fn pure_metadata(name: &str, description: &str) -> ActionMetadata {
-    ActionMetadata::new(
+fn pure_metadata(name: &str, description: &str) -> Metadata {
+    Metadata::new(
         nebula_action::MetadataName::try_from(name).expect("fixture display name"),
         description,
     )
-    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
 }
 
 struct CountingRunner {
@@ -63,14 +62,22 @@ impl ActionRunner for CountingRunner {
 /// register a `stateless_entry!` type wrapping it.
 struct EchoAction;
 
-impl Action for EchoAction {
-    const KEY: &'static str = "test.left";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for EchoAction {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "test.left";
+
+    fn metadata() -> Metadata {
         pure_metadata("Left", "left contract")
     }
+}
+
+impl Action for EchoAction {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -99,8 +106,8 @@ nebula_action::stateless_entry!(
 
 nebula_action::stateless_entry!(
     TestGatedEntry(EchoAction) = "test.gated",
-    pure_metadata("Gated", "capability gated")
-        .with_isolation_level(IsolationLevel::CapabilityGated),
+    pure_metadata("Gated", "capability gated"),
+    isolation_level: IsolationLevel::CapabilityGated,
 );
 
 nebula_action::stateless_entry!(
@@ -121,7 +128,7 @@ nebula_action::stateless_entry!(
 impl StatelessAction for EchoAction {
     async fn execute(
         &self,
-        input: <Self as Action>::Input,
+        input: Self::Config,
         _ctx: &(impl ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Ok(ActionResult::success(input))
@@ -130,14 +137,22 @@ impl StatelessAction for EchoAction {
 
 struct FailAction;
 
-impl Action for FailAction {
-    const KEY: &'static str = "test.fail";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for FailAction {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "test.fail";
+
+    fn metadata() -> Metadata {
         pure_metadata("Fail", "always fails")
     }
+}
+
+impl Action for FailAction {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -147,7 +162,7 @@ impl Action for FailAction {
 impl StatelessAction for FailAction {
     async fn execute(
         &self,
-        _input: <Self as Action>::Input,
+        _input: Self::Config,
         _ctx: &(impl ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Err(ActionError::retryable("transient failure"))
@@ -204,8 +219,8 @@ fn make_runtime_with_metrics(registry: Arc<ActionRegistry>) -> (ActionRuntime, M
     (rt, metrics)
 }
 
-async fn dispatch_counted_contract(
-    contract: nebula_action::effect::ActionEffectContract,
+/// Dispatches a fixture with the default `Journaled` effect contract.
+async fn dispatch_counted_journaled(
     authority: ResourceAuthority,
 ) -> (
     Result<ActionResult<serde_json::Value>, RuntimeError>,
@@ -214,29 +229,21 @@ async fn dispatch_counted_contract(
 ) {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    thread_local! {
-        /// Effect contract the fixture under admission declares.
-        static CONTRACT: std::cell::RefCell<Option<nebula_action::effect::ActionEffectContract>> =
-            const { std::cell::RefCell::new(None) };
-    }
-
     struct CountedAction(Arc<AtomicUsize>);
 
-    impl Action for CountedAction {
-        const KEY: &'static str = "test.owner_required";
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
+    impl Component for CountedAction {
+        type Kind = kind::Action;
+        type Config = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
-            let contract = CONTRACT.with(|contract| {
-                contract
-                    .borrow()
-                    .clone()
-                    .expect("contract is installed during fixture admission")
-            });
-            ActionMetadata::new(nebula_action::metadata_name!("Guard"), "effect gate")
-                .with_effect_contract(contract)
+        const KEY: &'static str = "test.owner_required";
+
+        fn metadata() -> Metadata {
+            Metadata::new(nebula_action::metadata_name!("Guard"), "effect gate")
         }
+    }
+
+    impl Action for CountedAction {
+        type Output = serde_json::Value;
 
         fn dependencies() -> &'static Dependencies {
             static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
@@ -256,12 +263,10 @@ async fn dispatch_counted_contract(
     }
 
     let executions = Arc::new(AtomicUsize::new(0));
-    CONTRACT.with(|installed| *installed.borrow_mut() = Some(contract));
     let factory: Arc<dyn ActionFactory> = Arc::new(
         InstanceFactory::new(CountedAction(Arc::clone(&executions)))
             .expect("typed fixture metadata admits"),
     );
-    CONTRACT.with(|installed| *installed.borrow_mut() = None);
     let (runtime, metrics) = make_runtime_with_metrics(Arc::new(ActionRegistry::new()));
     let node = NodeDefinition::new(node_key!("test"), "Guard", "test", "owner_required").unwrap();
     let result = runtime
@@ -281,11 +286,8 @@ async fn dispatch_counted_contract(
 
 #[tokio::test]
 async fn generic_dispatch_rejects_a_journaled_effect_before_action_code() {
-    let (result, executions, metrics) = dispatch_counted_contract(
-        nebula_action::effect::ActionEffectContract::Journaled(nebula_action::JournalProtocol::V1),
-        ResourceAuthority::CallerSupplied,
-    )
-    .await;
+    let (result, executions, metrics) =
+        dispatch_counted_journaled(ResourceAuthority::CallerSupplied).await;
 
     std::assert_matches!(result, Err(RuntimeError::EffectRequiresOwner));
     assert_eq!(executions, 0, "a caller-supplied accessor is never trusted");
@@ -303,11 +305,8 @@ async fn generic_dispatch_rejects_a_journaled_effect_before_action_code() {
 
 #[tokio::test]
 async fn engine_dispatch_admits_a_journaled_effect_with_read_only_authority() {
-    let (result, executions, metrics) = dispatch_counted_contract(
-        nebula_action::effect::ActionEffectContract::Journaled(nebula_action::JournalProtocol::V1),
-        ResourceAuthority::EngineJournaled,
-    )
-    .await;
+    let (result, executions, metrics) =
+        dispatch_counted_journaled(ResourceAuthority::EngineJournaled).await;
 
     assert!(result.is_ok(), "journaled dispatch must run: {result:?}");
     assert_eq!(executions, 1);
@@ -336,14 +335,19 @@ async fn generic_dispatch_rejects_a_remote_effect_without_capability_before_acti
     /// Remote action whose preparation counts as running action code.
     struct CountedRemote(Arc<AtomicUsize>);
 
-    impl Action for CountedRemote {
-        const KEY: &'static str = "test.owner_required";
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
+    impl Component for CountedRemote {
+        type Kind = kind::Action;
+        type Config = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
-            ActionMetadata::new(nebula_action::metadata_name!("Guard"), "effect gate")
+        const KEY: &'static str = "test.owner_required";
+
+        fn metadata() -> Metadata {
+            Metadata::new(nebula_action::metadata_name!("Guard"), "effect gate")
         }
+    }
+
+    impl Action for CountedRemote {
+        type Output = serde_json::Value;
 
         fn dependencies() -> &'static Dependencies {
             static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
@@ -758,14 +762,22 @@ async fn multi_output_fanout_port_respects_reject_limit() {
     use nebula_action::{PortKey, port_key, result::ActionResult as AR};
 
     struct MultiOutAction;
-    impl Action for MultiOutAction {
-        const KEY: &'static str = "test.multi_out";
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
+    impl Component for MultiOutAction {
+        type Kind = kind::Action;
+        type Config = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
+        const KEY: &'static str = "test.multi_out";
+
+        fn metadata() -> Metadata {
             pure_metadata("MultiOut", "multi-port fan-out")
         }
+    }
+
+    impl Action for MultiOutAction {
+        type Output = serde_json::Value;
+
+        const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+            nebula_action::effect::ActionEffectContract::ReadOnly;
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
             D.get_or_init(Dependencies::new)
@@ -774,7 +786,7 @@ async fn multi_output_fanout_port_respects_reject_limit() {
     impl StatelessAction for MultiOutAction {
         async fn execute(
             &self,
-            _input: <Self as Action>::Input,
+            _input: Self::Config,
             _ctx: &(impl ActionContext + ?Sized),
         ) -> Result<AR<<Self as Action>::Output>, ActionError> {
             // `main_output` is tiny; a fan-out port is huge. Before the
@@ -832,14 +844,22 @@ async fn branch_alternatives_respect_reject_limit() {
     use nebula_action::result::ActionResult as AR;
 
     struct BranchAction;
-    impl Action for BranchAction {
-        const KEY: &'static str = "test.branch";
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
+    impl Component for BranchAction {
+        type Kind = kind::Action;
+        type Config = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
+        const KEY: &'static str = "test.branch";
+
+        fn metadata() -> Metadata {
             pure_metadata("Branch", "branch with alts")
         }
+    }
+
+    impl Action for BranchAction {
+        type Output = serde_json::Value;
+
+        const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+            nebula_action::effect::ActionEffectContract::ReadOnly;
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
             D.get_or_init(Dependencies::new)
@@ -848,7 +868,7 @@ async fn branch_alternatives_respect_reject_limit() {
     impl StatelessAction for BranchAction {
         async fn execute(
             &self,
-            _input: <Self as Action>::Input,
+            _input: Self::Config,
             _ctx: &(impl ActionContext + ?Sized),
         ) -> Result<AR<<Self as Action>::Output>, ActionError> {
             let mut alternatives = HashMap::new();
@@ -899,14 +919,22 @@ async fn collection_children_respect_reject_limit() {
     use nebula_action::result::ActionResult as AR;
 
     struct CollectionAction;
-    impl Action for CollectionAction {
-        const KEY: &'static str = "test.collection";
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
+    impl Component for CollectionAction {
+        type Kind = kind::Action;
+        type Config = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
+        const KEY: &'static str = "test.collection";
+
+        fn metadata() -> Metadata {
             pure_metadata("Collection", "nested values")
         }
+    }
+
+    impl Action for CollectionAction {
+        type Output = serde_json::Value;
+
+        const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+            nebula_action::effect::ActionEffectContract::ReadOnly;
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
             D.get_or_init(Dependencies::new)
@@ -915,7 +943,7 @@ async fn collection_children_respect_reject_limit() {
     impl StatelessAction for CollectionAction {
         async fn execute(
             &self,
-            _input: <Self as Action>::Input,
+            _input: Self::Config,
             _ctx: &(impl ActionContext + ?Sized),
         ) -> Result<AR<<Self as Action>::Output>, ActionError> {
             Ok(AR::Success {
@@ -962,14 +990,22 @@ async fn binary_inline_respects_reject_limit() {
     };
 
     struct BinaryAction;
-    impl Action for BinaryAction {
-        const KEY: &'static str = "test.binary";
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
+    impl Component for BinaryAction {
+        type Kind = kind::Action;
+        type Config = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
+        const KEY: &'static str = "test.binary";
+
+        fn metadata() -> Metadata {
             pure_metadata("Binary", "inline bytes")
         }
+    }
+
+    impl Action for BinaryAction {
+        type Output = serde_json::Value;
+
+        const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+            nebula_action::effect::ActionEffectContract::ReadOnly;
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
             D.get_or_init(Dependencies::new)
@@ -978,7 +1014,7 @@ async fn binary_inline_respects_reject_limit() {
     impl StatelessAction for BinaryAction {
         async fn execute(
             &self,
-            _input: <Self as Action>::Input,
+            _input: Self::Config,
             _ctx: &(impl ActionContext + ?Sized),
         ) -> Result<AR<<Self as Action>::Output>, ActionError> {
             Ok(AR::Success {
@@ -1026,14 +1062,22 @@ async fn reference_metadata_respects_reject_limit() {
     use nebula_action::result::ActionResult as AR;
 
     struct RefAction;
-    impl Action for RefAction {
-        const KEY: &'static str = "test.ref";
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
+    impl Component for RefAction {
+        type Kind = kind::Action;
+        type Config = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
+        const KEY: &'static str = "test.ref";
+
+        fn metadata() -> Metadata {
             pure_metadata("Reference", "large metadata")
         }
+    }
+
+    impl Action for RefAction {
+        type Output = serde_json::Value;
+
+        const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+            nebula_action::effect::ActionEffectContract::ReadOnly;
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
             D.get_or_init(Dependencies::new)
@@ -1042,7 +1086,7 @@ async fn reference_metadata_respects_reject_limit() {
     impl StatelessAction for RefAction {
         async fn execute(
             &self,
-            _input: <Self as Action>::Input,
+            _input: Self::Config,
             _ctx: &(impl ActionContext + ?Sized),
         ) -> Result<AR<<Self as Action>::Output>, ActionError> {
             Ok(AR::Success {
@@ -1102,17 +1146,22 @@ async fn trigger_rejection_does_not_observe_histogram() {
         type Event = ();
     }
 
-    impl Action for FakeTrigger {
-        const KEY: &'static str = "test.trigger_reject";
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
+    impl Component for FakeTrigger {
+        type Kind = kind::Action;
+        type Config = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
-            ActionMetadata::new(
+        const KEY: &'static str = "test.trigger_reject";
+
+        fn metadata() -> Metadata {
+            Metadata::new(
                 nebula_action::metadata_name!("FakeTrigger"),
                 "rejection fixture",
             )
         }
+    }
+
+    impl Action for FakeTrigger {
+        type Output = serde_json::Value;
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
             D.get_or_init(Dependencies::new)
@@ -1222,18 +1271,23 @@ async fn resource_rejection_does_not_increment_execution_metrics() {
     // variant matters for the rejection test.
     struct FakeResource;
 
-    impl Action for FakeResource {
-        const KEY: &'static str = "test.resource_reject";
-        type Input = serde_json::Value;
-        // ResourceAction requires Output = ResourceProduces<Self::Resource>.
-        type Output = ResourceProduces<serde_json::Value>;
+    impl Component for FakeResource {
+        type Kind = kind::Action;
+        type Config = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
-            ActionMetadata::new(
+        const KEY: &'static str = "test.resource_reject";
+
+        fn metadata() -> Metadata {
+            Metadata::new(
                 nebula_action::metadata_name!("FakeResource"),
                 "rejection fixture",
             )
         }
+    }
+
+    impl Action for FakeResource {
+        // ResourceAction requires Output = ResourceProduces<Self::Resource>.
+        type Output = ResourceProduces<serde_json::Value>;
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
             D.get_or_init(Dependencies::new)
@@ -1379,14 +1433,22 @@ async fn stream_action_dispatch_yields_folded_value() {
 
     struct CountingStream;
 
-    impl Action for CountingStream {
-        const KEY: &'static str = "test.stream.counting";
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
+    impl Component for CountingStream {
+        type Kind = kind::Action;
+        type Config = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
+        const KEY: &'static str = "test.stream.counting";
+
+        fn metadata() -> Metadata {
             pure_metadata("CountingStream", "yields 1,2,3 and sums")
         }
+    }
+
+    impl Action for CountingStream {
+        type Output = serde_json::Value;
+
+        const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+            nebula_action::effect::ActionEffectContract::ReadOnly;
 
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -1461,14 +1523,22 @@ async fn stream_output_respects_data_limit() {
 
     struct BigStream;
 
-    impl Action for BigStream {
-        const KEY: &'static str = "test.stream.big";
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
+    impl Component for BigStream {
+        type Kind = kind::Action;
+        type Config = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
+        const KEY: &'static str = "test.stream.big";
+
+        fn metadata() -> Metadata {
             pure_metadata("BigStream", "produces an oversized folded value")
         }
+    }
+
+    impl Action for BigStream {
+        type Output = serde_json::Value;
+
+        const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+            nebula_action::effect::ActionEffectContract::ReadOnly;
 
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -1571,14 +1641,22 @@ fn counting_step(state: &mut JsonValue, target: u32) -> ActionResult<JsonValue> 
 /// Counts `state.count` from 0 to 3; used by checkpoint + resume tests.
 struct CountingTo3;
 
-impl Action for CountingTo3 {
-    const KEY: &'static str = "test.count";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for CountingTo3 {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "test.count";
+
+    fn metadata() -> Metadata {
         pure_metadata("CountTo3", "counts to 3")
     }
+}
+
+impl Action for CountingTo3 {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -1591,7 +1669,7 @@ impl StatefulAction for CountingTo3 {
     }
     async fn execute(
         &self,
-        _input: &Self::Input,
+        _input: &Self::Config,
         state: &mut Self::State,
         _ctx: &(impl ActionContext + ?Sized),
     ) -> Result<ActionResult<Self::Output>, ActionError> {
@@ -1612,14 +1690,22 @@ impl FromWorkflowNode for CountingTo3 {
 
 struct CountingTo5;
 
-impl Action for CountingTo5 {
-    const KEY: &'static str = "test.count5";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for CountingTo5 {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "test.count5";
+
+    fn metadata() -> Metadata {
         pure_metadata("CountTo5", "counts to 5")
     }
+}
+
+impl Action for CountingTo5 {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -1632,7 +1718,7 @@ impl StatefulAction for CountingTo5 {
     }
     async fn execute(
         &self,
-        _input: &Self::Input,
+        _input: &Self::Config,
         state: &mut Self::State,
         _ctx: &(impl ActionContext + ?Sized),
     ) -> Result<ActionResult<Self::Output>, ActionError> {
@@ -1653,14 +1739,22 @@ impl FromWorkflowNode for CountingTo5 {
 
 struct CountingTo2;
 
-impl Action for CountingTo2 {
-    const KEY: &'static str = "test.count2";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for CountingTo2 {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "test.count2";
+
+    fn metadata() -> Metadata {
         pure_metadata("CountTo2", "counts to 2")
     }
+}
+
+impl Action for CountingTo2 {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -1673,7 +1767,7 @@ impl StatefulAction for CountingTo2 {
     }
     async fn execute(
         &self,
-        _input: &Self::Input,
+        _input: &Self::Config,
         state: &mut Self::State,
         _ctx: &(impl ActionContext + ?Sized),
     ) -> Result<ActionResult<Self::Output>, ActionError> {
@@ -1695,14 +1789,22 @@ impl FromWorkflowNode for CountingTo2 {
 /// Awaits a 1-hour sleep inside `execute`; used to prove cancellation aborts it.
 struct SleepyStateful;
 
-impl Action for SleepyStateful {
-    const KEY: &'static str = "test.sleepy";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for SleepyStateful {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "test.sleepy";
+
+    fn metadata() -> Metadata {
         pure_metadata("SleepyStateful", "hangs in execute")
     }
+}
+
+impl Action for SleepyStateful {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -1715,7 +1817,7 @@ impl StatefulAction for SleepyStateful {
     }
     async fn execute(
         &self,
-        _input: &Self::Input,
+        _input: &Self::Config,
         _state: &mut Self::State,
         _ctx: &(impl ActionContext + ?Sized),
     ) -> Result<ActionResult<Self::Output>, ActionError> {
@@ -1953,14 +2055,22 @@ async fn execute_stateful_load_failure_falls_back_to_init_state() {
 /// surface as `RuntimeError::StatefulStuck`).
 struct NoProgressStateful;
 
-impl Action for NoProgressStateful {
-    const KEY: &'static str = "test.stuck";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for NoProgressStateful {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "test.stuck";
+
+    fn metadata() -> Metadata {
         pure_metadata("NoProgress", "never advances state")
     }
+}
+
+impl Action for NoProgressStateful {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -1973,7 +2083,7 @@ impl StatefulAction for NoProgressStateful {
     }
     async fn execute(
         &self,
-        _input: &Self::Input,
+        _input: &Self::Config,
         _state: &mut Self::State,
         _ctx: &(impl ActionContext + ?Sized),
     ) -> Result<ActionResult<Self::Output>, ActionError> {
@@ -2029,14 +2139,22 @@ async fn execute_stateful_stuck_surfaces_typed_variant() {
 /// the iteration cap without tripping the stuck-state guard.
 struct EndlessStateful;
 
-impl Action for EndlessStateful {
-    const KEY: &'static str = "test.endless";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for EndlessStateful {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "test.endless";
+
+    fn metadata() -> Metadata {
         pure_metadata("EndlessStateful", "never breaks")
     }
+}
+
+impl Action for EndlessStateful {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -2049,7 +2167,7 @@ impl StatefulAction for EndlessStateful {
     }
     async fn execute(
         &self,
-        _input: &Self::Input,
+        _input: &Self::Config,
         state: &mut Self::State,
         _ctx: &(impl ActionContext + ?Sized),
     ) -> Result<ActionResult<Self::Output>, ActionError> {
@@ -2276,14 +2394,22 @@ impl crate::effect_driver::IterationGate for ScriptedGate {
 /// Continues after every iteration with a one-hour delay.
 struct DelayedStateful;
 
-impl Action for DelayedStateful {
-    const KEY: &'static str = "test.delayed";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for DelayedStateful {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "test.delayed";
+
+    fn metadata() -> Metadata {
         pure_metadata("DelayedStateful", "continues after a delay")
     }
+}
+
+impl Action for DelayedStateful {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -2296,7 +2422,7 @@ impl StatefulAction for DelayedStateful {
     }
     async fn execute(
         &self,
-        _input: &Self::Input,
+        _input: &Self::Config,
         state: &mut Self::State,
         _ctx: &(impl ActionContext + ?Sized),
     ) -> Result<ActionResult<Self::Output>, ActionError> {
@@ -2325,14 +2451,22 @@ impl FromWorkflowNode for DelayedStateful {
 /// Counts to 4, continuing after each iteration with a one-hour delay.
 struct DelayedCountingTo4;
 
-impl Action for DelayedCountingTo4 {
-    const KEY: &'static str = "test.delayed_count";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for DelayedCountingTo4 {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "test.delayed_count";
+
+    fn metadata() -> Metadata {
         pure_metadata("DelayedCountingTo4", "counts to 4, an hour apart")
     }
+}
+
+impl Action for DelayedCountingTo4 {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -2345,7 +2479,7 @@ impl StatefulAction for DelayedCountingTo4 {
     }
     async fn execute(
         &self,
-        _input: &Self::Input,
+        _input: &Self::Config,
         state: &mut Self::State,
         _ctx: &(impl ActionContext + ?Sized),
     ) -> Result<ActionResult<Self::Output>, ActionError> {
@@ -2616,14 +2750,22 @@ async fn a_cancellation_before_the_first_iteration_closes_admission() {
 /// `FromWorkflowNode` stuck on something it awaits).
 struct NeverBuilt;
 
-impl Action for NeverBuilt {
-    const KEY: &'static str = "test.never_built";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for NeverBuilt {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "test.never_built";
+
+    fn metadata() -> Metadata {
         pure_metadata("NeverBuilt", "never finishes building")
     }
+}
+
+impl Action for NeverBuilt {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -2636,7 +2778,7 @@ impl StatefulAction for NeverBuilt {
     }
     async fn execute(
         &self,
-        _input: &Self::Input,
+        _input: &Self::Config,
         _state: &mut Self::State,
         _ctx: &(impl ActionContext + ?Sized),
     ) -> Result<ActionResult<Self::Output>, ActionError> {
@@ -2968,14 +3110,22 @@ async fn a_refused_checkpoint_stops_the_loop() {
 /// Counts its turns in its turn state and breaks after the third.
 struct CountingAgent;
 
-impl Action for CountingAgent {
-    const KEY: &'static str = "test.agent_count";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for CountingAgent {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "test.agent_count";
+
+    fn metadata() -> Metadata {
         pure_metadata("CountingAgent", "counts its turns")
     }
+}
+
+impl Action for CountingAgent {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -3023,14 +3173,22 @@ static IDLE_STEPS: AtomicU32 = AtomicU32::new(0);
 /// Thinks two turns without changing its turn state, then breaks.
 struct IdleAgent;
 
-impl Action for IdleAgent {
-    const KEY: &'static str = "test.agent_idle";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for IdleAgent {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "test.agent_idle";
+
+    fn metadata() -> Metadata {
         pure_metadata("IdleAgent", "makes no progress twice")
     }
+}
+
+impl Action for IdleAgent {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -3071,14 +3229,22 @@ impl FromWorkflowNode for IdleAgent {
 /// A turn that never finishes, bounded by a one-minute turn timeout.
 struct HungAgent;
 
-impl Action for HungAgent {
-    const KEY: &'static str = "test.agent_hung";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for HungAgent {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "test.agent_hung";
+
+    fn metadata() -> Metadata {
         pure_metadata("HungAgent", "a turn that never ends")
     }
+}
+
+impl Action for HungAgent {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -3116,14 +3282,22 @@ impl FromWorkflowNode for HungAgent {
 /// Declares one turn more than the engine's cap.
 struct BoundlessAgent;
 
-impl Action for BoundlessAgent {
-    const KEY: &'static str = "test.agent_boundless";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for BoundlessAgent {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "test.agent_boundless";
+
+    fn metadata() -> Metadata {
         pure_metadata("BoundlessAgent", "too many turns")
     }
+}
+
+impl Action for BoundlessAgent {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -3162,7 +3336,7 @@ impl FromWorkflowNode for BoundlessAgent {
 fn agent_factory<A>() -> Arc<dyn ActionFactory>
 where
     A: nebula_action::AgentAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
-    A::Input: serde::de::DeserializeOwned + Send + Sync,
+    A::Config: serde::de::DeserializeOwned + Send + Sync,
     A::Output: Serialize + Send + Sync,
 {
     Arc::new(nebula_action::GenericAgentFactory::<A>::new().expect("valid test catalog definition"))

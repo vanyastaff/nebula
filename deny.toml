@@ -327,6 +327,7 @@ deny = [
     "nebula-credential",
   ], reason = "Derive crate; consumed by nebula-action, nebula-credential" },
   { crate = "nebula-component", wrappers = [
+    "nebula-action",
     "nebula-credential",
     "nebula-resource",
     "nebula-sdk",

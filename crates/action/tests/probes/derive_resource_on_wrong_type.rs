@@ -8,7 +8,7 @@ use nebula_action::Action;
 #[derive(Action)]
 #[action(
     key = "bad.resource_wrong_type",
-    input = serde_json::Value,
+    config = serde_json::Value,
     output = serde_json::Value,
 )]
 struct ResourceWrongType {

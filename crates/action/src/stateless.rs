@@ -33,7 +33,7 @@ use crate::{
 /// instances in parallel. Use [`StatefulAction`](crate::stateful::StatefulAction)
 /// for iterative or stateful behavior.
 ///
-/// `Self::Input` and `Self::Output` are inherited from
+/// `Self::Config` and `Self::Output` are inherited from
 /// [`Action`]; concrete implementations declare them on the
 /// base trait.
 ///
@@ -45,7 +45,7 @@ use crate::{
 /// points.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` does not implement StatelessAction",
-    note = "implement the `execute` method (Self::Input/Output declared on the base Action trait)"
+    note = "implement the `execute` method (Self::Config/Output declared on the base Action trait)"
 )]
 pub trait StatelessAction: Action {
     /// Execute the action with the given input and context.
@@ -58,7 +58,7 @@ pub trait StatelessAction: Action {
     #[must_use = "an action does nothing unless its returned future is awaited"]
     fn execute(
         &self,
-        input: <Self as Action>::Input,
+        input: Self::Config,
         ctx: &(impl ActionContext + ?Sized),
     ) -> impl Future<Output = Result<ActionResult<<Self as Action>::Output>, ActionError>> + Send;
 }
@@ -89,8 +89,9 @@ impl<A> StatelessActionAdapter<A> {
     where
         A: Action,
     {
-        let meta =
-            Arc::new(<A as Action>::metadata().admit_for::<A>(crate::ActionKind::Stateless)?);
+        let meta = Arc::new(ActionDefinition::admit_for::<A>(
+            crate::ActionKind::Stateless,
+        )?);
         let input_contract = ActionInputContract::new(meta.base().schema());
         Ok(Self {
             action,
@@ -116,7 +117,7 @@ where
     }
 
     fn prepare_input(&self, input: ActionInput) -> Result<PreparedActionInput, ActionError> {
-        self.input_contract.prepare::<A::Input>(input)
+        self.input_contract.prepare::<A::Config>(input)
     }
 
     async fn dispatch(
@@ -124,7 +125,7 @@ where
         input: PreparedActionInput,
         ctx: &dyn ActionContext,
     ) -> Result<ActionResult<Value>, ActionError> {
-        let typed_input = input.into_typed::<A::Input>(&self.input_contract)?;
+        let typed_input = input.into_typed::<A::Config>(&self.input_contract)?;
 
         let result = self.action.execute(typed_input, ctx).await?;
 
@@ -199,14 +200,19 @@ mod tests {
 
     struct AddAction;
 
-    impl Action for AddAction {
-        const KEY: &'static str = "math.add";
-        type Input = AddInput;
-        type Output = AddOutput;
+    impl crate::Component for AddAction {
+        type Kind = crate::kind::Action;
+        type Config = AddInput;
 
-        fn metadata() -> crate::ActionMetadata {
-            crate::ActionMetadata::new(crate::metadata_name!("Add"), "Adds two numbers")
+        const KEY: &'static str = "math.add";
+
+        fn metadata() -> crate::Metadata {
+            crate::Metadata::new(crate::metadata_name!("Add"), "Adds two numbers")
         }
+    }
+
+    impl Action for AddAction {
+        type Output = AddOutput;
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
             D.get_or_init(Dependencies::new)
@@ -216,7 +222,7 @@ mod tests {
     impl StatelessAction for AddAction {
         async fn execute(
             &self,
-            input: <Self as Action>::Input,
+            input: Self::Config,
             _ctx: &(impl ActionContext + ?Sized),
         ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
             Ok(ActionResult::success(AddOutput {

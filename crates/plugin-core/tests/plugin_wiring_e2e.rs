@@ -27,8 +27,8 @@ use std::{
 };
 
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionFactory, ActionMetadata, ActionResult,
-    InstanceFactory, StatelessAction,
+    Action, ActionContext, ActionError, ActionFactory, ActionResult, Component, InstanceFactory,
+    Metadata, StatelessAction, kind,
 };
 use nebula_core::{Dependencies, port_key};
 use nebula_engine::{
@@ -238,17 +238,22 @@ async fn with_plugin_duplicate_plugin_key_returns_typed_error() {
 
 struct StubAction;
 
-impl Action for StubAction {
-    const KEY: &'static str = "failplugin.noop";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for StubAction {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    const KEY: &'static str = "failplugin.noop";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_action::metadata_name!("Noop"),
             "A stub action that is never dispatched",
         )
     }
+}
+
+impl Action for StubAction {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();

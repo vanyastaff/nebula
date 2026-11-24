@@ -30,9 +30,9 @@ use axum::{
 };
 use hmac::{Hmac, KeyInit, Mac};
 use nebula_action::{
-    Action, ActionError, ActionMetadata, SignaturePolicy, TriggerContext, TriggerEventOutcome,
+    Action, ActionError, Component, Metadata, SignaturePolicy, TriggerContext, TriggerEventOutcome,
     TriggerHandler, TriggerRuntimeContext, WebhookAction, WebhookConfig, WebhookRequest,
-    WebhookResponse, WebhookTriggerAdapter,
+    WebhookResponse, WebhookTriggerAdapter, kind,
 };
 use nebula_api::transport::webhook::{
     PersistParams, WebhookTransport, WebhookTransportConfig, activate_and_persist,
@@ -67,17 +67,22 @@ struct RegistrationState {
     hook_id: u64,
 }
 
-impl Action for GitHubLikeWebhook {
-    const KEY: &'static str = "test.webhook.integration";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for GitHubLikeWebhook {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    const KEY: &'static str = "test.webhook.integration";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_action::metadata_name!("GitHub-like"),
             "Integration test webhook",
         )
     }
+}
+
+impl Action for GitHubLikeWebhook {
+    type Output = serde_json::Value;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -416,17 +421,22 @@ async fn rate_limit_returns_429_with_retry_after() {
 
 struct HangingWebhook;
 
-impl Action for HangingWebhook {
-    const KEY: &'static str = "test.webhook.hang";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for HangingWebhook {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    const KEY: &'static str = "test.webhook.hang";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_action::metadata_name!("Hanging"),
             "Handler that never returns",
         )
     }
+}
+
+impl Action for HangingWebhook {
+    type Output = serde_json::Value;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -628,17 +638,22 @@ async fn post_still_dispatches() {
 /// does NOT accidentally flip this webhook to 401.
 struct UnsignedWebhook;
 
-impl Action for UnsignedWebhook {
-    const KEY: &'static str = "test.webhook.unsigned";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for UnsignedWebhook {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    const KEY: &'static str = "test.webhook.unsigned";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_action::metadata_name!("Unsigned"),
             "OptionalAcceptUnsigned regression guard",
         )
     }
+}
+
+impl Action for UnsignedWebhook {
+    type Output = serde_json::Value;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -675,14 +690,19 @@ struct DefaultConfigWebhook {
     reached_handler: Arc<std::sync::atomic::AtomicBool>,
 }
 
-impl Action for DefaultConfigWebhook {
-    const KEY: &'static str = "test.webhook.default_config.static";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for DefaultConfigWebhook {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(nebula_action::metadata_name!("DefaultConfig"), "static")
+    const KEY: &'static str = "test.webhook.default_config.static";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_action::metadata_name!("DefaultConfig"), "static")
     }
+}
+
+impl Action for DefaultConfigWebhook {
+    type Output = serde_json::Value;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)

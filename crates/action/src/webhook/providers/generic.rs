@@ -100,17 +100,22 @@ impl GenericWebhookAction {
     }
 }
 
-impl Action for GenericWebhookAction {
-    const KEY: &'static str = "nebula.webhook.generic";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl crate::Component for GenericWebhookAction {
+    type Kind = crate::kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> crate::ActionMetadata {
-        crate::ActionMetadata::new(
+    const KEY: &'static str = "nebula.webhook.generic";
+
+    fn metadata() -> crate::Metadata {
+        crate::Metadata::new(
             crate::metadata_name!("Generic Webhook"),
             "Provider-agnostic HMAC-signed webhook trigger.",
         )
     }
+}
+
+impl Action for GenericWebhookAction {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();

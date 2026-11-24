@@ -18,8 +18,8 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, AgentAction, action::Action, from_workflow_node::FromWorkflowNode,
-    output::ActionOutput, result::ActionResult, stateless::StatelessAction,
+    ActionError, AgentAction, Component, action::Action, from_workflow_node::FromWorkflowNode,
+    kind, output::ActionOutput, result::ActionResult, stateless::StatelessAction,
 };
 use nebula_core::{Dependencies, id::WorkflowId, node_key};
 use nebula_engine::{
@@ -45,14 +45,22 @@ mod exact_fixture;
 /// fixture type is one catalog entry.
 macro_rules! fixture_action_impl {
     ($ty:ty, $key:expr, $metadata:expr $(,)?) => {
-        impl Action for $ty {
-            const KEY: &'static str = $key;
-            type Input = serde_json::Value;
-            type Output = serde_json::Value;
+        impl Component for $ty {
+            type Kind = kind::Action;
+            type Config = serde_json::Value;
 
-            fn metadata() -> nebula_action::ActionMetadata {
+            const KEY: &'static str = $key;
+
+            fn metadata() -> nebula_action::Metadata {
                 $metadata
             }
+        }
+
+        impl Action for $ty {
+            type Output = serde_json::Value;
+
+            const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+                nebula_action::effect::ActionEffectContract::ReadOnly;
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
                 D.get_or_init(Dependencies::new)
@@ -72,43 +80,36 @@ struct FlakyHandler {
 fixture_action_impl!(
     FlakyHandler,
     "direct_start",
-    nebula_action::ActionMetadata::new(nebula_action::metadata_name!("DirectStart"),
-        "test action",
-    )
-    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+    nebula_action::Metadata::new(nebula_action::metadata_name!("DirectStart"), "test action",),
 );
 
 nebula_action::stateless_entry!(
     FlakyEntry(FlakyHandler) = "flaky",
-    nebula_action::ActionMetadata::new(nebula_action::metadata_name!("Flaky"), "fails once",)
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+    nebula_action::Metadata::new(nebula_action::metadata_name!("Flaky"), "fails once",),
 );
 
 nebula_action::stateless_entry!(
     CoreFlakyIdemEntry(FlakyHandler) = "core.flaky_idem",
-    nebula_action::ActionMetadata::new(nebula_action::metadata_name!("FlakyIdem"), "fails once",)
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+    nebula_action::Metadata::new(nebula_action::metadata_name!("FlakyIdem"), "fails once",),
 );
 
 nebula_action::stateless_entry!(
     FlakyOEntry(FlakyHandler) = "flaky_o",
-    nebula_action::ActionMetadata::new(
+    nebula_action::Metadata::new(
         nebula_action::metadata_name!("FlakyO"),
         "fails twice then succeeds",
-    )
-    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+    ),
 );
 
 nebula_action::stateless_entry!(
     FlakyDEntry(FlakyHandler) = "flaky_d",
-    nebula_action::ActionMetadata::new(nebula_action::metadata_name!("FlakyD"), "fails once",)
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+    nebula_action::Metadata::new(nebula_action::metadata_name!("FlakyD"), "fails once",),
 );
 
 impl StatelessAction for FlakyHandler {
     async fn execute(
         &self,
-        input: <Self as Action>::Input,
+        input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         let n = self.invocations.fetch_add(1, Ordering::SeqCst) + 1;
@@ -128,40 +129,33 @@ struct AlwaysFailingHandler {
 fixture_action_impl!(
     AlwaysFailingHandler,
     "doomed",
-    nebula_action::ActionMetadata::new(nebula_action::metadata_name!("Doomed"), "always fails",)
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+    nebula_action::Metadata::new(nebula_action::metadata_name!("Doomed"), "always fails",),
 );
 
 nebula_action::stateless_entry!(
     FlakyLongEntry(AlwaysFailingHandler) = "flaky_long",
-    nebula_action::ActionMetadata::new(nebula_action::metadata_name!("FlakyLong"),
-        "fails forever",
-    )
-    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+    nebula_action::Metadata::new(nebula_action::metadata_name!("FlakyLong"), "fails forever",),
 );
 
 nebula_action::stateless_entry!(
     FlakyTEntry(AlwaysFailingHandler) = "flaky_t",
-    nebula_action::ActionMetadata::new(nebula_action::metadata_name!("FlakyT"), "fails forever",)
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+    nebula_action::Metadata::new(nebula_action::metadata_name!("FlakyT"), "fails forever",),
 );
 
 nebula_action::stateless_entry!(
     DoomedGEntry(AlwaysFailingHandler) = "doomed_g",
-    nebula_action::ActionMetadata::new(nebula_action::metadata_name!("DoomedG"), "always fails",)
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+    nebula_action::Metadata::new(nebula_action::metadata_name!("DoomedG"), "always fails",),
 );
 
 nebula_action::stateless_entry!(
     OneshotEntry(AlwaysFailingHandler) = "oneshot",
-    nebula_action::ActionMetadata::new(nebula_action::metadata_name!("OneShot"), "fails",)
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+    nebula_action::Metadata::new(nebula_action::metadata_name!("OneShot"), "fails",),
 );
 
 impl StatelessAction for AlwaysFailingHandler {
     async fn execute(
         &self,
-        _input: <Self as Action>::Input,
+        _input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         self.invocations.fetch_add(1, Ordering::SeqCst);
@@ -176,14 +170,13 @@ struct TerminateHandler;
 fixture_action_impl!(
     TerminateHandler,
     "term",
-    nebula_action::ActionMetadata::new(nebula_action::metadata_name!("Term"), "terminates",)
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+    nebula_action::Metadata::new(nebula_action::metadata_name!("Term"), "terminates",),
 );
 
 impl StatelessAction for TerminateHandler {
     async fn execute(
         &self,
-        _input: <Self as Action>::Input,
+        _input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Ok(ActionResult::terminate_success(Some(
@@ -206,11 +199,10 @@ struct EmptyTurn;
 fixture_action_impl!(
     BudgetExhaustingAgent,
     "placeholder.budget_agent",
-    nebula_action::ActionMetadata::new(
+    nebula_action::Metadata::new(
         nebula_action::metadata_name!("BudgetAgentPlaceholder"),
         "placeholder",
-    )
-    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+    ),
 );
 
 impl FromWorkflowNode for BudgetExhaustingAgent {
@@ -867,17 +859,16 @@ struct HintedHandler {
 fixture_action_impl!(
     HintedHandler,
     "hinted",
-    nebula_action::ActionMetadata::new(
+    nebula_action::Metadata::new(
         nebula_action::metadata_name!("Hinted"),
         "asks for a delay once",
-    )
-    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
+    ),
 );
 
 impl StatelessAction for HintedHandler {
     async fn execute(
         &self,
-        input: <Self as Action>::Input,
+        input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         let attempt = {

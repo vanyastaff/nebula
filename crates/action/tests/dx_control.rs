@@ -19,8 +19,8 @@ use std::sync::{Arc, OnceLock};
 
 use nebula_action::{
     Action, ActionError, ActionInput, ActionKind, ActionOutput, ActionResult, ActionRuntimeContext,
-    BranchKey, ControlAction, ControlActionAdapter, ControlHandle, ControlOutcome, OutputPort,
-    TerminationReason, ValidationReason, port_key, testing::TestContextBuilder,
+    BranchKey, Component, ControlAction, ControlActionAdapter, ControlHandle, ControlOutcome,
+    OutputPort, TerminationReason, ValidationReason, kind, port_key, testing::TestContextBuilder,
 };
 use nebula_core::Dependencies;
 use nebula_schema::{HasSchema, PropertyCollector, Schema, StringBuilder, ValidSchema, field_key};
@@ -105,17 +105,25 @@ struct DemoIfInput {
     value: Option<i64>,
 }
 
-impl Action for DemoIf {
+impl Component for DemoIf {
+    type Kind = kind::Action;
+    type Config = DemoIfInput;
+
     const KEY: &'static str = "demo.if";
-    type Input = DemoIfInput;
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(nebula_action::metadata_name!("If"), "Binary branch")
+    }
+}
+
+impl Action for DemoIf {
     type Output = DemoIfInput;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(nebula_action::metadata_name!("If"), "Binary branch")
-            .with_outputs(vec![
-                OutputPort::flow(port_key!("true")),
-                OutputPort::flow(port_key!("false")),
-            ])
+    fn outputs() -> Vec<OutputPort> {
+        vec![
+            OutputPort::flow(port_key!("true")),
+            OutputPort::flow(port_key!("false")),
+        ]
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -209,22 +217,30 @@ fn demo_if_has_control_kind() {
 
 struct DemoSwitch;
 
-impl Action for DemoSwitch {
-    const KEY: &'static str = "demo.switch";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for DemoSwitch {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "demo.switch";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Switch"),
             "N-way branch by status field",
         )
-        .with_outputs(vec![
+    }
+}
+
+impl Action for DemoSwitch {
+    type Output = serde_json::Value;
+
+    fn outputs() -> Vec<OutputPort> {
+        vec![
             OutputPort::flow(port_key!("active")),
             OutputPort::flow(port_key!("pending")),
             OutputPort::flow(port_key!("archived")),
             OutputPort::flow(port_key!("default")),
-        ])
+        ]
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -305,21 +321,29 @@ impl DemoRouter {
     }
 }
 
-impl Action for DemoRouter {
-    const KEY: &'static str = "demo.router";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for DemoRouter {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "demo.router";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Router"),
             "Multi-rule routing",
         )
-        .with_outputs(vec![
+    }
+}
+
+impl Action for DemoRouter {
+    type Output = serde_json::Value;
+
+    fn outputs() -> Vec<OutputPort> {
+        vec![
             OutputPort::flow(port_key!("high")),
             OutputPort::flow(port_key!("medium")),
             OutputPort::flow(port_key!("low")),
-        ])
+        ]
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -401,17 +425,25 @@ async fn demo_router_all_match_fires_multiple_ports() {
 /// `ControlOutcome::Drop` code path on a router-shaped action.
 struct NeverMatchRouter;
 
-impl Action for NeverMatchRouter {
-    const KEY: &'static str = "demo.never_match_router";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for NeverMatchRouter {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "demo.never_match_router";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("NeverMatchRouter"),
             "Drops every input — used to test Drop code path",
         )
-        .with_outputs(vec![OutputPort::flow(port_key!("out"))])
+    }
+}
+
+impl Action for NeverMatchRouter {
+    type Output = serde_json::Value;
+
+    fn outputs() -> Vec<OutputPort> {
+        vec![OutputPort::flow(port_key!("out"))]
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -447,17 +479,25 @@ async fn demo_router_no_rules_match_drops() {
 
 struct DemoFilter;
 
-impl Action for DemoFilter {
-    const KEY: &'static str = "demo.filter";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for DemoFilter {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "demo.filter";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Filter"),
             "Drop items below threshold",
         )
-        .with_outputs(vec![OutputPort::flow(port_key!("out"))])
+    }
+}
+
+impl Action for DemoFilter {
+    type Output = serde_json::Value;
+
+    fn outputs() -> Vec<OutputPort> {
+        vec![OutputPort::flow(port_key!("out"))]
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -522,17 +562,22 @@ async fn demo_filter_distinguishes_drop_from_skip() {
 
 struct DemoNoOp;
 
-impl Action for DemoNoOp {
-    const KEY: &'static str = "demo.noop";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for DemoNoOp {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "demo.noop";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("NoOp"),
             "Pass-through placeholder",
         )
     }
+}
+
+impl Action for DemoNoOp {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -587,17 +632,25 @@ impl DemoStop {
     }
 }
 
-impl Action for DemoStop {
-    const KEY: &'static str = "demo.stop";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for DemoStop {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "demo.stop";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Stop"),
             "Terminate execution with success",
         )
-        .with_outputs(Vec::new())
+    }
+}
+
+impl Action for DemoStop {
+    type Output = serde_json::Value;
+
+    fn outputs() -> Vec<OutputPort> {
+        Vec::new()
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -664,17 +717,25 @@ impl DemoFail {
     }
 }
 
-impl Action for DemoFail {
-    const KEY: &'static str = "demo.fail";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for DemoFail {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "demo.fail";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Fail"),
             "Terminate execution with failure",
         )
-        .with_outputs(Vec::new())
+    }
+}
+
+impl Action for DemoFail {
+    type Output = serde_json::Value;
+
+    fn outputs() -> Vec<OutputPort> {
+        Vec::new()
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -887,20 +948,28 @@ impl HasSchema for TypedBranchOutput {
 /// `output_schema` is non-empty and the red-on-revert assertion is non-vacuous.
 struct DemoTypedBranch;
 
-impl Action for DemoTypedBranch {
-    const KEY: &'static str = "demo.typed_branch";
-    type Input = serde_json::Value;
-    type Output = TypedBranchOutput;
+impl Component for DemoTypedBranch {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "demo.typed_branch";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("TypedBranch"),
             "Branch with typed output",
         )
-        .with_outputs(vec![
+    }
+}
+
+impl Action for DemoTypedBranch {
+    type Output = TypedBranchOutput;
+
+    fn outputs() -> Vec<OutputPort> {
+        vec![
             OutputPort::flow(port_key!("true")),
             OutputPort::flow(port_key!("false")),
-        ])
+        ]
     }
 
     fn dependencies() -> &'static Dependencies {

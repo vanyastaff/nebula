@@ -114,19 +114,26 @@ impl HasSchema for SetFieldsInput {
 #[derive(Debug)]
 pub struct SetFields;
 
-impl nebula_action::action::Action for SetFields {
-    const KEY: &'static str = "core.set_fields";
-    type Input = SetFieldsInput;
-    type Output = Value;
+impl nebula_action::action::Component for SetFields {
+    type Kind = nebula_action::action::kind::Action;
+    type Config = SetFieldsInput;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "core.set_fields";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Set Fields"),
             "Merges a list of named field assignments onto a JSON object",
         )
         .with_version(nebula_action::MetadataVersion::new(2, 0, 0))
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
+}
+
+impl nebula_action::action::Action for SetFields {
+    type Output = Value;
+
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static nebula_action::Dependencies {
         static DEPS: OnceLock<nebula_action::Dependencies> = OnceLock::new();
