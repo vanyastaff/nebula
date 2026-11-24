@@ -1,7 +1,7 @@
 //! Action authoring contracts.
 //!
-//! Action authors declare the key once as [`Action::KEY`] and return a keyless
-//! [`Metadata`] from [`Action::metadata`]. Runtime factories stamp the
+//! Action authors declare the key once as [`Component::KEY`] and return a keyless
+//! [`Metadata`] from [`Component::metadata`]. Runtime factories stamp the
 //! key, bind the associated [`Component::Config`] and
 //! [`Action::Output`] schemas and admit the terminal metadata; that admitted
 //! state is intentionally outside the supported SDK surface.

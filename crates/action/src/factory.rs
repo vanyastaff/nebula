@@ -244,8 +244,8 @@ impl<A> sealed::Sealed for InstanceFactory<A> {}
 impl<A: Action> InstanceFactory<A> {
     /// Wrap a pre-built action instance.
     ///
-    /// The key is [`A::KEY`](Component::KEY) and the metadata is
-    /// [`A::metadata()`](Component::metadata), as for every other factory: a type
+    /// The key is [`A::KEY`](crate::Component::KEY) and the metadata is
+    /// [`A::metadata()`](crate::Component::metadata), as for every other factory: a type
     /// is one catalog entry. The instance adds only shared state across
     /// dispatches. The factory stamps the kind [`ActionKind::Stateless`] and
     /// derives both schemas from the associated types.
@@ -311,7 +311,7 @@ where
     /// Admit a typed remote-effect action and bind its ingress capability.
     ///
     /// Key, metadata and remote contract are the type's own:
-    /// [`A::KEY`](Action::KEY), [`A::metadata()`](Action::metadata) and
+    /// [`A::KEY`](crate::Component::KEY), [`A::metadata()`](crate::Component::metadata) and
     /// [`A::descriptor()`](RemoteEffectAction::descriptor), which admission
     /// stamps as the definition's [`ActionEffectContract::Remote`](crate::ActionEffectContract::Remote).
     ///

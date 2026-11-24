@@ -38,7 +38,7 @@ pub trait EventSource: Provider {
 
     /// Key of the trigger action this event source is exposed as.
     ///
-    /// The adapter declares it as its [`Action::KEY`]. It is separate from
+    /// The adapter declares it as its [`Component::KEY`]. It is separate from
     /// the provider's resource key: the source is a resource and the
     /// trigger that drives it is an action.
     const ACTION_KEY: &'static str;

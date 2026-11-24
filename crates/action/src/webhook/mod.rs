@@ -1742,7 +1742,7 @@ impl<A: WebhookAction> crate::handle::sealed::Trigger for WebhookTriggerAdapter<
 impl<A: WebhookAction> WebhookTriggerAdapter<A> {
     /// Wrap a typed webhook action.
     ///
-    /// Reads [`WebhookAction::config`] and [`Action::metadata`] once and
+    /// Reads [`WebhookAction::config`] and [`Component::metadata`](crate::Component::metadata) once and
     /// caches both so the dispatch path does not re-enter the action on
     /// every request, and so the runtime / test harness can forward the
     /// policy to the transport without re-downcasting the handler.

@@ -23,7 +23,7 @@ use crate::{
 /// An action is a [`Component`] of kind [`kind::Action`]: the `Component`
 /// impl carries its key ([`Component::KEY`]), its form data
 /// ([`Component::Config`], decoded from the node's input per execution) and
-/// its catalog [`Metadata`](nebula_metadata::Metadata). `Action` adds what
+/// its catalog [`Metadata`]. `Action` adds what
 /// only an action has: its output type, its ports, its execution policy and
 /// its slot dependencies. All of it is static per concrete type, so one type
 /// is one catalog entry. Sub-traits ([`StatelessAction`](crate::StatelessAction)

@@ -22,7 +22,7 @@ pub(crate) mod sealed {
 /// The remote effect contract is the type's own, like its key and metadata:
 /// [`RemoteEffectInstanceFactory`](crate::RemoteEffectInstanceFactory) stamps
 /// [`descriptor()`](Self::descriptor) into the admitted definition, and the
-/// action's [`metadata()`](Action::metadata) declares no effect contract.
+/// action declares no `EFFECT_CONTRACT` of its own (it keeps the default).
 pub trait RemoteEffectAction: Action {
     /// Exact effect protocol declaration implemented by this adapter.
     ///
