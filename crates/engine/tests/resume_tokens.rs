@@ -27,8 +27,7 @@ mod workflow_fixture;
 
 macro_rules! pure_action_metadata {
     ($name:expr, $description:expr $(,)?) => {
-        nebula_action::metadata::ActionMetadata::new($name, $description)
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
+        nebula_action::Metadata::new($name, $description)
     };
 }
 
@@ -40,8 +39,9 @@ use std::{
 
 use chrono::Utc;
 use nebula_action::{
-    ActionError,
+    ActionError, Component,
     action::Action,
+    kind,
     result::{ActionResult, WaitCondition},
     stateless::StatelessAction,
 };
@@ -64,17 +64,25 @@ use nebula_workflow::{
 /// Parks on a `Webhook` signal so the engine mints a resume token for this node.
 struct WebhookParkNode;
 
-impl Action for WebhookParkNode {
-    const KEY: &'static str = "test.w_s3c.webhook_park";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for WebhookParkNode {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
+    const KEY: &'static str = "test.w_s3c.webhook_park";
+
+    fn metadata() -> nebula_action::Metadata {
         pure_action_metadata!(
             nebula_action::metadata_name!("WebhookParkNode"),
             "resume-token mint integration test stub",
         )
     }
+}
+
+impl Action for WebhookParkNode {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         static DEPS: OnceLock<Dependencies> = OnceLock::new();
@@ -85,7 +93,7 @@ impl Action for WebhookParkNode {
 impl StatelessAction for WebhookParkNode {
     async fn execute(
         &self,
-        _input: <Self as Action>::Input,
+        _input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Ok(ActionResult::Wait {

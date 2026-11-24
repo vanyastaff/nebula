@@ -36,8 +36,7 @@ mod workflow_fixture;
 
 macro_rules! pure_action_metadata {
     ($name:expr, $description:expr $(,)?) => {
-        nebula_action::metadata::ActionMetadata::new($name, $description)
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
+        nebula_action::Metadata::new($name, $description)
     };
 }
 
@@ -53,8 +52,9 @@ use std::{
 use async_trait::async_trait;
 use chrono::Utc;
 use nebula_action::{
-    ActionError,
+    ActionError, Component,
     action::Action,
+    kind,
     result::{ActionResult, WaitCondition},
     stateless::StatelessAction,
 };
@@ -312,17 +312,25 @@ impl ExecutionStore for ArmableConflictStore {
 /// Parks on a `Webhook` signal so the engine mints a resume token for this node.
 struct WebhookParkNode;
 
-impl Action for WebhookParkNode {
-    const KEY: &'static str = "test.w_s3e.webhook_park";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for WebhookParkNode {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
+    const KEY: &'static str = "test.w_s3e.webhook_park";
+
+    fn metadata() -> nebula_action::Metadata {
         pure_action_metadata!(
             nebula_action::metadata_name!("WebhookParkNode"),
             "W-S3e revoke-on-terminal integration test stub",
         )
     }
+}
+
+impl Action for WebhookParkNode {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         static DEPS: OnceLock<Dependencies> = OnceLock::new();
@@ -333,7 +341,7 @@ impl Action for WebhookParkNode {
 impl StatelessAction for WebhookParkNode {
     async fn execute(
         &self,
-        _input: <Self as Action>::Input,
+        _input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Ok(ActionResult::Wait {
@@ -361,17 +369,25 @@ fn webhook_target() -> Option<nebula_engine::ResumeTarget> {
 /// wait drives the execution all the way to `Completed`.
 struct EchoNode;
 
-impl Action for EchoNode {
-    const KEY: &'static str = "test.w_s3e.echo";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for EchoNode {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
+    const KEY: &'static str = "test.w_s3e.echo";
+
+    fn metadata() -> nebula_action::Metadata {
         pure_action_metadata!(
             nebula_action::metadata_name!("EchoNode"),
             "W-S3e downstream echo stub",
         )
     }
+}
+
+impl Action for EchoNode {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         static DEPS: OnceLock<Dependencies> = OnceLock::new();
@@ -382,7 +398,7 @@ impl Action for EchoNode {
 impl StatelessAction for EchoNode {
     async fn execute(
         &self,
-        input: <Self as Action>::Input,
+        input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Ok(ActionResult::success(input))

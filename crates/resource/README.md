@@ -753,7 +753,7 @@ An action reaches a row through a derived field — the supported route:
 #[derive(Action)]
 #[action(
     key = "example.audit",
-    input = u64,
+    config = u64,
     output = u64,
     read_only
 )]

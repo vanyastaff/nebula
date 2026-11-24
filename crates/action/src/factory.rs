@@ -40,7 +40,7 @@ use crate::{
         TriggerHandle,
     },
     input::{ActionInput, ActionInputContract, PreparedActionInput},
-    metadata::{ActionAdmissionError, ActionDefinition, ActionKind, ActionMetadata},
+    metadata::{ActionAdmissionError, ActionDefinition, ActionKind},
     resource::ResourceAction,
     result::ActionResult,
     stateful::{StatefulAction, StatefulActionAdapter},
@@ -49,11 +49,10 @@ use crate::{
     trigger::{TriggerAction, TriggerEvent, TriggerEventOutcome},
 };
 
-fn admit_metadata<A: Action>(
-    metadata: ActionMetadata,
+fn admit_definition<A: Action>(
     kind: ActionKind,
 ) -> Result<Arc<ActionDefinition>, ActionAdmissionError> {
-    metadata.admit_for::<A>(kind).map(Arc::new)
+    ActionDefinition::admit_for::<A>(kind).map(Arc::new)
 }
 
 /// Decode prepared input through the admitted contract, execute one stateless
@@ -70,10 +69,10 @@ async fn dispatch_stateless<A>(
 ) -> Result<ActionResult<Value>, ActionError>
 where
     A: StatelessAction,
-    <A as Action>::Input: DeserializeOwned + Send + Sync,
+    <A as crate::Component>::Config: DeserializeOwned + Send + Sync,
     <A as Action>::Output: Serialize + Send + Sync,
 {
-    let typed_input = input.into_typed::<A::Input>(input_contract)?;
+    let typed_input = input.into_typed::<A::Config>(input_contract)?;
     let result = action.execute(typed_input, ctx).await?;
     result.try_map_output(|output| {
         serde_json::to_value(output)
@@ -140,7 +139,7 @@ impl<A: Action> GenericStatelessFactory<A> {
     /// package declarations are invalid.
     pub fn new() -> Result<Self, ActionAdmissionError> {
         Ok(Self {
-            meta: admit_metadata::<A>(A::metadata(), ActionKind::Stateless)?,
+            meta: admit_definition::<A>(ActionKind::Stateless)?,
             _phantom: PhantomData,
         })
     }
@@ -149,7 +148,7 @@ impl<A: Action> GenericStatelessFactory<A> {
 impl<A> ActionFactory for GenericStatelessFactory<A>
 where
     A: StatelessAction + FromWorkflowNode<Error = ActionError>,
-    <A as Action>::Input: DeserializeOwned + Send + Sync,
+    <A as crate::Component>::Config: DeserializeOwned + Send + Sync,
     <A as Action>::Output: Serialize + Send + Sync,
 {
     fn dependencies(&self) -> &Dependencies {
@@ -197,7 +196,7 @@ impl<A> StatelessHandleImpl<A> {
 impl<A> StatelessHandle for StatelessHandleImpl<A>
 where
     A: StatelessAction,
-    <A as Action>::Input: DeserializeOwned + Send + Sync,
+    <A as crate::Component>::Config: DeserializeOwned + Send + Sync,
     <A as Action>::Output: Serialize + Send + Sync,
 {
     fn definition(&self) -> &Arc<ActionDefinition> {
@@ -205,7 +204,7 @@ where
     }
 
     fn prepare_input(&self, input: ActionInput) -> Result<PreparedActionInput, ActionError> {
-        self.input_contract.prepare::<A::Input>(input)
+        self.input_contract.prepare::<A::Config>(input)
     }
 
     async fn dispatch(
@@ -219,26 +218,18 @@ where
 
 // ── InstanceFactory (instance-backed stateless factory) ─────────────────────
 
-/// Stateless [`ActionFactory`] backed by a pre-built action **instance** plus
-/// caller-supplied [`ActionMetadata`], instead of building the action from the
-/// workflow node like [`GenericStatelessFactory`].
+/// Stateless [`ActionFactory`] backed by a pre-built action **instance**,
+/// instead of building the action from the workflow node like
+/// [`GenericStatelessFactory`].
 ///
 /// This is the `useValue` half of the dependency-injection dichotomy
 /// (a pre-instantiated value) to [`GenericStatelessFactory`]'s `useFactory`
-/// half (construct-on-demand): the same action instance is shared across every
-/// dispatch, and the catalog metadata is supplied per registration.
-///
-/// Two properties distinguish it from the generic factory:
-///
-/// - **Caller metadata.** The metadata is supplied per registration, so one
-///   action type can back many distinct catalog keys / port shapes. The generic
-///   factory derives a single static [`Action::metadata`] from the type and so
-///   binds one type to one key.
-/// - **Shared instance.** It holds the action in an `Arc` and hands every
-///   dispatch a handle over the *same* instance, so interior state (counters,
-///   spies, caches) is shared across dispatches — matching a directly
-///   constructed handler. The generic factory rebuilds a fresh action per
-///   dispatch via [`FromWorkflowNode`].
+/// half (construct-on-demand). It holds the action in an `Arc` and hands every
+/// dispatch a handle over the *same* instance, so interior state (counters,
+/// spies, caches) is shared across dispatches — matching a directly
+/// constructed handler. The generic factory rebuilds a fresh action per
+/// dispatch via [`FromWorkflowNode`]. The definition comes from the type, as
+/// for every other factory: one type is one catalog entry.
 ///
 /// The produced [`ActionHandle::Stateless`] dispatches through the same engine
 /// path as any other factory — `InstanceFactory` is a first-class member of the
@@ -253,8 +244,8 @@ impl<A> sealed::Sealed for InstanceFactory<A> {}
 impl<A: Action> InstanceFactory<A> {
     /// Wrap a pre-built action instance.
     ///
-    /// The key is [`A::KEY`](Action::KEY) and the metadata is
-    /// [`A::metadata()`](Action::metadata), as for every other factory: a type
+    /// The key is [`A::KEY`](Component::KEY) and the metadata is
+    /// [`A::metadata()`](Component::metadata), as for every other factory: a type
     /// is one catalog entry. The instance adds only shared state across
     /// dispatches. The factory stamps the kind [`ActionKind::Stateless`] and
     /// derives both schemas from the associated types.
@@ -264,7 +255,7 @@ impl<A: Action> InstanceFactory<A> {
     pub fn new(action: A) -> Result<Self, ActionAdmissionError> {
         Ok(Self {
             action: Arc::new(action),
-            meta: admit_metadata::<A>(A::metadata(), ActionKind::Stateless)?,
+            meta: admit_definition::<A>(ActionKind::Stateless)?,
         })
     }
 }
@@ -272,7 +263,7 @@ impl<A: Action> InstanceFactory<A> {
 impl<A> ActionFactory for InstanceFactory<A>
 where
     A: StatelessAction,
-    <A as Action>::Input: DeserializeOwned + Send + Sync,
+    <A as crate::Component>::Config: DeserializeOwned + Send + Sync,
     <A as Action>::Output: Serialize + Send + Sync,
 {
     fn dependencies(&self) -> &Dependencies {
@@ -330,7 +321,7 @@ where
     /// declares an effect contract of its own, or an invalid descriptor.
     pub fn new(action: A) -> Result<Self, ActionAdmissionError> {
         let descriptor = A::descriptor()?;
-        let meta = Arc::new(A::metadata().admit_remote_for::<A>(descriptor.clone())?);
+        let meta = Arc::new(ActionDefinition::admit_remote_for::<A>(descriptor.clone())?);
         let input_contract = ActionInputContract::new(meta.base().schema());
         Ok(Self {
             action,
@@ -389,7 +380,7 @@ where
     }
 
     fn prepare_input(&self, input: ActionInput) -> Result<PreparedActionInput, ActionError> {
-        self.input_contract.prepare::<A::Input>(input)
+        self.input_contract.prepare::<A::Config>(input)
     }
 
     async fn prepare(
@@ -398,7 +389,7 @@ where
         context: &EffectPreparationContext,
     ) -> Result<PreparedRemoteEffect, EffectPreparationError> {
         let input = input
-            .into_typed::<A::Input>(&self.input_contract)
+            .into_typed::<A::Config>(&self.input_contract)
             .map_err(|_| EffectPreparationError::InvalidRequest)?;
         self.action.prepare(input, context).await
     }
@@ -416,7 +407,7 @@ impl<A> crate::handle::sealed::Stateless for InstanceStatelessHandle<A> {}
 impl<A> StatelessHandle for InstanceStatelessHandle<A>
 where
     A: StatelessAction,
-    <A as Action>::Input: DeserializeOwned + Send + Sync,
+    <A as crate::Component>::Config: DeserializeOwned + Send + Sync,
     <A as Action>::Output: Serialize + Send + Sync,
 {
     fn definition(&self) -> &Arc<ActionDefinition> {
@@ -424,7 +415,7 @@ where
     }
 
     fn prepare_input(&self, input: ActionInput) -> Result<PreparedActionInput, ActionError> {
-        self.input_contract.prepare::<A::Input>(input)
+        self.input_contract.prepare::<A::Config>(input)
     }
 
     async fn dispatch(
@@ -456,7 +447,7 @@ impl<A: Action> GenericStatefulFactory<A> {
     /// package declarations are invalid.
     pub fn new() -> Result<Self, ActionAdmissionError> {
         Ok(Self {
-            meta: admit_metadata::<A>(A::metadata(), ActionKind::Stateful)?,
+            meta: admit_definition::<A>(ActionKind::Stateful)?,
             _phantom: PhantomData,
         })
     }
@@ -465,7 +456,7 @@ impl<A: Action> GenericStatefulFactory<A> {
 impl<A> ActionFactory for GenericStatefulFactory<A>
 where
     A: StatefulAction + FromWorkflowNode<Error = ActionError>,
-    <A as Action>::Input: DeserializeOwned + Send + Sync,
+    <A as crate::Component>::Config: DeserializeOwned + Send + Sync,
     <A as Action>::Output: Serialize + Send + Sync,
     A::State: Serialize + DeserializeOwned + Clone + Send + Sync,
 {
@@ -510,7 +501,7 @@ impl<A: Action> GenericTriggerFactory<A> {
     /// package declarations are invalid.
     pub fn new() -> Result<Self, ActionAdmissionError> {
         Ok(Self {
-            meta: admit_metadata::<A>(A::metadata(), ActionKind::Trigger)?,
+            meta: admit_definition::<A>(ActionKind::Trigger)?,
             _phantom: PhantomData,
         })
     }
@@ -619,7 +610,7 @@ impl<A: Action> GenericResourceFactory<A> {
     /// package declarations are invalid.
     pub fn new() -> Result<Self, ActionAdmissionError> {
         Ok(Self {
-            meta: admit_metadata::<A>(A::metadata(), ActionKind::Resource)?,
+            meta: admit_definition::<A>(ActionKind::Resource)?,
             _phantom: PhantomData,
         })
     }
@@ -717,7 +708,7 @@ impl<A: Action> GenericControlFactory<A> {
     /// package declarations are invalid.
     pub fn new() -> Result<Self, ActionAdmissionError> {
         Ok(Self {
-            meta: admit_metadata::<A>(A::metadata(), ActionKind::Control)?,
+            meta: admit_definition::<A>(ActionKind::Control)?,
             _phantom: PhantomData,
         })
     }
@@ -777,7 +768,7 @@ where
     }
 
     fn prepare_input(&self, input: ActionInput) -> Result<PreparedActionInput, ActionError> {
-        self.input_contract.prepare::<A::Input>(input)
+        self.input_contract.prepare::<A::Config>(input)
     }
 
     async fn dispatch(
@@ -785,7 +776,7 @@ where
         input: PreparedActionInput,
         ctx: &dyn ActionContext,
     ) -> Result<ActionResult<Value>, ActionError> {
-        let input = input.into_typed::<A::Input>(&self.input_contract)?;
+        let input = input.into_typed::<A::Config>(&self.input_contract)?;
         let outcome: ActionResult<A::Output> = self.action.evaluate(input, ctx).await?.into();
         outcome.try_map_output(|output| {
             serde_json::to_value(output)
@@ -819,7 +810,7 @@ impl<A: Action> GenericStreamFactory<A> {
     /// package declarations are invalid.
     pub fn new() -> Result<Self, ActionAdmissionError> {
         Ok(Self {
-            meta: admit_metadata::<A>(A::metadata(), ActionKind::Stream)?,
+            meta: admit_definition::<A>(ActionKind::Stream)?,
             _phantom: PhantomData,
         })
     }
@@ -828,7 +819,7 @@ impl<A: Action> GenericStreamFactory<A> {
 impl<A> ActionFactory for GenericStreamFactory<A>
 where
     A: StreamAction + FromWorkflowNode<Error = ActionError>,
-    <A as Action>::Input: DeserializeOwned + Send + Sync,
+    <A as crate::Component>::Config: DeserializeOwned + Send + Sync,
     <A as Action>::Output: Serialize + Send + Sync,
 {
     fn dependencies(&self) -> &Dependencies {
@@ -875,7 +866,7 @@ impl<A> StreamHandleImpl<A> {
 impl<A> StreamHandle for StreamHandleImpl<A>
 where
     A: StreamAction,
-    <A as Action>::Input: DeserializeOwned + Send + Sync,
+    <A as crate::Component>::Config: DeserializeOwned + Send + Sync,
     <A as Action>::Output: Serialize + Send + Sync,
 {
     fn definition(&self) -> &Arc<ActionDefinition> {
@@ -883,7 +874,7 @@ where
     }
 
     fn prepare_input(&self, input: ActionInput) -> Result<PreparedActionInput, ActionError> {
-        self.input_contract.prepare::<A::Input>(input)
+        self.input_contract.prepare::<A::Config>(input)
     }
 
     #[tracing::instrument(
@@ -899,7 +890,7 @@ where
         input: PreparedActionInput,
         ctx: &dyn ActionContext,
     ) -> Result<ActionResult<Value>, ActionError> {
-        let typed_input = input.into_typed::<A::Input>(&self.input_contract)?;
+        let typed_input = input.into_typed::<A::Config>(&self.input_contract)?;
 
         let chunk_stream = self.action.open_stream(typed_input, ctx);
         tokio::pin!(chunk_stream);
@@ -943,7 +934,7 @@ impl<A: Action> GenericAgentFactory<A> {
     /// package declarations are invalid.
     pub fn new() -> Result<Self, ActionAdmissionError> {
         Ok(Self {
-            meta: admit_metadata::<A>(A::metadata(), ActionKind::Agent)?,
+            meta: admit_definition::<A>(ActionKind::Agent)?,
             _phantom: PhantomData,
         })
     }
@@ -952,7 +943,7 @@ impl<A: Action> GenericAgentFactory<A> {
 impl<A> ActionFactory for GenericAgentFactory<A>
 where
     A: crate::agent::AgentAction + FromWorkflowNode<Error = ActionError>,
-    <A as Action>::Input: DeserializeOwned + Send + Sync,
+    <A as crate::Component>::Config: DeserializeOwned + Send + Sync,
     <A as Action>::Output: Serialize + Send + Sync,
     A::Turn: Serialize + DeserializeOwned + Clone + Send + Sync,
 {

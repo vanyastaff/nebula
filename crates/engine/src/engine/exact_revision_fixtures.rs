@@ -1,4 +1,5 @@
 use super::*;
+use nebula_action::{Component, kind};
 
 pub(super) struct SnapshotHandler {
     output: &'static str,
@@ -21,15 +22,22 @@ impl SnapshotHandler {
     }
 }
 
-impl Action for SnapshotHandler {
+impl Component for SnapshotHandler {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
+
     const KEY: &'static str = "exact.run";
-    type Input = serde_json::Value;
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_action::metadata_name!("Run"), "snapshot fixture")
+    }
+}
+
+impl Action for SnapshotHandler {
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(nebula_action::metadata_name!("Run"), "snapshot fixture")
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
-    }
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         EchoHandler::dependencies()
@@ -39,7 +47,7 @@ impl Action for SnapshotHandler {
 impl StatelessAction for SnapshotHandler {
     async fn execute(
         &self,
-        _: Self::Input,
+        _: Self::Config,
         _: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<Self::Output>, ActionError> {
         if let Some(executions) = &self.executions {

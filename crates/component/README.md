@@ -52,4 +52,4 @@ assert_eq!(definition.key(), &key);
 
 ## Status
 
-`Credential` and the resource `Provider` are built on `Component`. `Action` follows.
+`Action`, `Credential` and the resource `Provider` are built on `Component`.

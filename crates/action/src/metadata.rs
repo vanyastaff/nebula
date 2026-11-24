@@ -1,4 +1,4 @@
-//! Draft, admitted, and recorded action metadata.
+//! Admitted and recorded action definitions.
 
 use core::num::NonZeroU32;
 
@@ -11,6 +11,7 @@ use nebula_schema::ValidSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    Action,
     effect::ActionEffectContract,
     port::{self, InputPort, OutputPort},
     validation::{ActionPackageValidationErrors, validate_action_package},
@@ -89,16 +90,12 @@ pub enum ActionAdmissionError {
     /// Action-specific metadata declarations are structurally invalid.
     #[error(transparent)]
     Package(#[from] ActionPackageValidationErrors),
-    /// Metadata declared a remote effect contract.
+    /// A remote action declared a non-default [`Action::EFFECT_CONTRACT`].
     ///
-    /// A remote contract is the action type's own
+    /// Its contract is its
     /// [`RemoteEffectAction::descriptor`](crate::RemoteEffectAction::descriptor),
-    /// stamped by [`RemoteEffectInstanceFactory`](crate::RemoteEffectInstanceFactory);
-    /// metadata never carries one.
-    #[error("a remote effect contract comes from the action's descriptor, not its metadata")]
-    RemoteEffectContractInMetadata,
-    /// A remote action's metadata declared a non-remote effect contract.
-    #[error("a remote-effect action's metadata must not declare an effect contract")]
+    /// stamped by [`RemoteEffectInstanceFactory`](crate::RemoteEffectInstanceFactory).
+    #[error("a remote-effect action must not declare an effect contract")]
     EffectContractOnRemoteAction,
     /// A remote action's descriptor could not be built.
     #[error(transparent)]
@@ -117,214 +114,48 @@ pub enum ActionReadmissionError {
     DefinitionMismatch,
 }
 
-/// What an action's author says about it for the catalog, before admission.
+/// The action-specific half of an authored action, read from its [`Action`]
+/// impl: ports and execution policy. The shared half is its
+/// [`Component::metadata`](crate::Component::metadata).
 ///
-/// It carries no key: the key is [`Action::KEY`](crate::Action::KEY), declared
-/// once on the type, and the factory stamps it at admission. It has no
-/// input-schema, output-schema, or action-kind setters either: a factory
-/// derives both schemas from [`Action::Input`](crate::Action::Input) and
-/// [`Action::Output`](crate::Action::Output), stamps its structural kind, and
-/// consumes the metadata through the crate-private admission boundary, which
-/// yields an [`ActionDefinition`].
+/// Crate-private: authors declare these on the trait, and tests build one
+/// directly to admit several shapes for one action type.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[must_use = "action metadata must be admitted by a factory"]
-pub struct ActionMetadata {
-    base: Metadata,
-    inputs: Vec<InputPort>,
-    outputs: Vec<OutputPort>,
-    isolation_level: IsolationLevel,
-    effect_contract: Option<ActionEffectContract>,
-    max_concurrent: Option<NonZeroU32>,
+pub(crate) struct ActionInterface {
+    pub(crate) inputs: Vec<InputPort>,
+    pub(crate) outputs: Vec<OutputPort>,
+    pub(crate) isolation_level: IsolationLevel,
+    pub(crate) effect_contract: ActionEffectContract,
+    pub(crate) max_concurrent: Option<NonZeroU32>,
 }
 
-impl ActionMetadata {
-    /// Construct metadata after checking a dynamic display name.
-    ///
-    /// # Errors
-    ///
-    /// Returns a metadata error when the display name is invalid.
-    pub fn try_new(
-        name: impl Into<String>,
-        description: impl Into<String>,
-    ) -> Result<Self, nebula_metadata::MetadataError> {
-        Ok(Self::new(
-            nebula_metadata::MetadataName::try_from(name.into())?,
-            description,
-        ))
-    }
-
-    /// Construct action metadata with default ports and policies.
-    pub fn new(name: nebula_metadata::MetadataName, description: impl Into<String>) -> Self {
+impl ActionInterface {
+    /// The interface `A` declares on its [`Action`] impl.
+    pub(crate) fn of<A: Action>() -> Self {
         Self {
-            base: Metadata::new(name, description),
+            inputs: A::inputs(),
+            outputs: A::outputs(),
+            isolation_level: A::ISOLATION_LEVEL,
+            effect_contract: A::EFFECT_CONTRACT,
+            max_concurrent: A::MAX_CONCURRENT,
+        }
+    }
+}
+
+impl Default for ActionInterface {
+    fn default() -> Self {
+        Self {
             inputs: port::default_input_ports(),
             outputs: port::default_output_ports(),
             isolation_level: IsolationLevel::None,
-            effect_contract: None,
+            effect_contract: ActionEffectContract::default(),
             max_concurrent: None,
         }
     }
+}
 
-    /// Set the complete interface version.
-    pub fn with_version(mut self, version: nebula_metadata::MetadataVersion) -> Self {
-        self.base = self.base.with_version(version);
-        self
-    }
-
-    /// Retain a macro-checked full SemVer literal for fallible factory admission.
-    ///
-    /// Macro expansion validates this literal before emitting it. Admission
-    /// still checks it, so generated library code needs no panic or fallback.
-    #[doc(hidden)]
-    pub fn with_version_literal(mut self, version: &'static str) -> Self {
-        self.base = self.base.with_version_literal(version);
-        self
-    }
-
-    /// Set a catalog icon.
-    pub fn with_icon(mut self, icon: nebula_metadata::Icon) -> Self {
-        self.base = self.base.with_icon(icon);
-        self
-    }
-
-    /// Set an inline icon identifier.
-    pub fn with_inline_icon(mut self, name: impl Into<String>) -> Self {
-        self.base = self.base.with_inline_icon(name);
-        self
-    }
-
-    /// Set a URL-backed icon.
-    pub fn with_url_icon(mut self, url: impl Into<String>) -> Self {
-        self.base = self.base.with_url_icon(url);
-        self
-    }
-
-    /// Replace the description; its byte budget is checked at admission.
-    pub fn with_description(mut self, description: impl Into<String>) -> Self {
-        self.base = self.base.with_description(description);
-        self
-    }
-
-    /// Set the documentation URL.
-    pub fn with_documentation_url(mut self, url: impl Into<String>) -> Self {
-        self.base = self.base.with_documentation_url(url);
-        self
-    }
-
-    /// Replace the catalog categories.
-    pub fn with_categories(
-        mut self,
-        categories: impl IntoIterator<Item = nebula_metadata::CatalogCategoryKey>,
-    ) -> Self {
-        self.base = self.base.with_categories(categories);
-        self
-    }
-
-    /// Replace all typed catalog links.
-    pub fn with_links(
-        mut self,
-        links: impl IntoIterator<Item = nebula_metadata::CatalogLink>,
-    ) -> Self {
-        self.base = self.base.with_links(links);
-        self
-    }
-
-    /// Append a typed catalog link.
-    pub fn add_link(mut self, link: nebula_metadata::CatalogLink) -> Self {
-        self.base = self.base.add_link(link);
-        self
-    }
-
-    /// Replace the catalog tags.
-    pub fn with_tags<I, S>(mut self, tags: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        self.base = self.base.with_tags(tags);
-        self
-    }
-
-    /// Append one catalog tag.
-    pub fn add_tag(mut self, tag: impl Into<String>) -> Self {
-        self.base = self.base.add_tag(tag);
-        self
-    }
-
-    /// Mark the definition experimental.
-    pub fn mark_experimental(mut self) -> Self {
-        self.base = self.base.mark_experimental();
-        self
-    }
-
-    /// Mark the definition beta.
-    pub fn mark_beta(mut self) -> Self {
-        self.base = self.base.mark_beta();
-        self
-    }
-
-    /// Mark the definition stable.
-    pub fn mark_stable(mut self) -> Self {
-        self.base = self.base.mark_stable();
-        self
-    }
-
-    /// Attach a deprecation notice.
-    pub fn with_deprecation(mut self, notice: nebula_metadata::DeprecationNotice) -> Self {
-        self.base = self.base.with_deprecation(notice);
-        self
-    }
-
-    /// Replace the input-port declaration.
-    pub fn with_inputs(mut self, inputs: Vec<InputPort>) -> Self {
-        self.inputs = inputs;
-        self
-    }
-
-    /// Append one input port.
-    pub fn add_input(mut self, input: InputPort) -> Self {
-        self.inputs.push(input);
-        self
-    }
-
-    /// Replace the output-port declaration.
-    pub fn with_outputs(mut self, outputs: Vec<OutputPort>) -> Self {
-        self.outputs = outputs;
-        self
-    }
-
-    /// Append one output port.
-    pub fn add_output(mut self, output: OutputPort) -> Self {
-        self.outputs.push(output);
-        self
-    }
-
-    /// Select the in-process isolation policy.
-    pub fn with_isolation_level(mut self, isolation_level: IsolationLevel) -> Self {
-        self.isolation_level = isolation_level;
-        self
-    }
-
-    /// Declare external-effect authority.
-    ///
-    /// Undeclared, an action is [`ActionEffectContract::Journaled`]. Only
-    /// [`Journaled`](ActionEffectContract::Journaled) and
-    /// [`ReadOnly`](ActionEffectContract::ReadOnly) are declared here: a remote
-    /// contract is the type's
-    /// [`RemoteEffectAction::descriptor`](crate::RemoteEffectAction::descriptor),
-    /// and admission refuses one declared in metadata.
-    pub fn with_effect_contract(mut self, effect_contract: ActionEffectContract) -> Self {
-        self.effect_contract = Some(effect_contract);
-        self
-    }
-
-    /// Set the per-action concurrency hint.
-    pub fn with_max_concurrent(mut self, max_concurrent: NonZeroU32) -> Self {
-        self.max_concurrent = Some(max_concurrent);
-        self
-    }
-
-    /// Stamp [`A::KEY`](crate::Action::KEY), derive both schemas, stamp the
+impl ActionDefinition {
+    /// Admit `A`: stamp [`Component::KEY`](crate::Component::KEY), derive both schemas, stamp the
     /// factory's kind, and validate the package.
     ///
     /// This is the sole transition from authored intent to executable metadata.
@@ -335,66 +166,58 @@ impl ActionMetadata {
     ///
     /// Returns a typed schema-construction or package-validation failure.
     #[tracing::instrument(name = "action.metadata.admit", skip_all, fields(?kind), err)]
-    pub(crate) fn admit_for<A: crate::Action>(
-        mut self,
-        kind: ActionKind,
-    ) -> Result<ActionDefinition, ActionAdmissionError> {
-        let effect_contract = match self.effect_contract.take() {
-            Some(ActionEffectContract::Remote(_)) => {
-                return Err(ActionAdmissionError::RemoteEffectContractInMetadata);
-            },
-            declared => declared.unwrap_or_default(),
-        };
-        self.admit_with::<A>(kind, effect_contract)
+    pub(crate) fn admit_for<A: Action>(kind: ActionKind) -> Result<Self, ActionAdmissionError> {
+        Self::admit_with::<A>(A::metadata(), ActionInterface::of::<A>(), kind)
     }
 
     /// Admit a remote-effect action: stamp the stateless kind and its
     /// [`descriptor`](crate::RemoteEffectAction::descriptor) as the effect
     /// contract.
-    pub(crate) fn admit_remote_for<A: crate::Action>(
-        self,
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionAdmissionError::EffectContractOnRemoteAction`] when
+    /// the action declares a non-default [`Action::EFFECT_CONTRACT`], or a
+    /// schema or package failure.
+    pub(crate) fn admit_remote_for<A: Action>(
         descriptor: crate::RemoteEffectDescriptor,
-    ) -> Result<ActionDefinition, ActionAdmissionError> {
-        match self.effect_contract {
-            Some(ActionEffectContract::Remote(_)) => {
-                return Err(ActionAdmissionError::RemoteEffectContractInMetadata);
-            },
-            Some(_) => return Err(ActionAdmissionError::EffectContractOnRemoteAction),
-            None => {},
+    ) -> Result<Self, ActionAdmissionError> {
+        let mut interface = ActionInterface::of::<A>();
+        if interface.effect_contract != ActionEffectContract::default() {
+            return Err(ActionAdmissionError::EffectContractOnRemoteAction);
         }
-        self.admit_with::<A>(
-            ActionKind::Stateless,
-            ActionEffectContract::Remote(Box::new(descriptor)),
-        )
+        interface.effect_contract = ActionEffectContract::Remote(Box::new(descriptor));
+        Self::admit_with::<A>(A::metadata(), interface, ActionKind::Stateless)
     }
 
-    fn admit_with<A: crate::Action>(
-        self,
+    /// Admit `A`'s schemas and key with explicit metadata and interface.
+    pub(crate) fn admit_with<A: Action>(
+        metadata: Metadata,
+        interface: ActionInterface,
         kind: ActionKind,
-        effect_contract: ActionEffectContract,
-    ) -> Result<ActionDefinition, ActionAdmissionError> {
+    ) -> Result<Self, ActionAdmissionError> {
         let key = crate::key_of::<A>();
         let input_schema =
-            nebula_schema::schema_of::<A::Input>().map_err(MetadataBuildError::from)?;
+            nebula_schema::schema_of::<A::Config>().map_err(MetadataBuildError::from)?;
         let output_schema =
             nebula_schema::schema_of::<A::Output>().map_err(MetadataBuildError::from)?;
         output_schema
             .ensure_current_semantics()
             .map_err(MetadataBuildError::from)?;
-        let metadata = ActionDefinition {
-            base: self.base.bind(key, input_schema)?,
-            inputs: self.inputs.into_boxed_slice(),
-            outputs: self.outputs.into_boxed_slice(),
-            isolation_level: self.isolation_level,
+        let definition = Self {
+            base: metadata.bind(key, input_schema)?,
+            inputs: interface.inputs.into_boxed_slice(),
+            outputs: interface.outputs.into_boxed_slice(),
+            isolation_level: interface.isolation_level,
             kind,
             checkpoint_policy: RecordedCheckpointPolicy::Inherit,
-            effect_contract,
-            max_concurrent: self.max_concurrent,
+            effect_contract: interface.effect_contract,
+            max_concurrent: interface.max_concurrent,
             output_schema,
         };
-        nebula_metadata::check_json_record(&metadata).map_err(MetadataBuildError::from)?;
-        validate_action_package(&metadata)?;
-        Ok(metadata)
+        nebula_metadata::check_json_record(&definition).map_err(MetadataBuildError::from)?;
+        validate_action_package(&definition)?;
+        Ok(definition)
     }
 }
 
@@ -638,7 +461,7 @@ mod tests {
     use nebula_schema::{HasSchema, PropertyCollector, Schema, field_key};
 
     use super::*;
-    use crate::Action;
+    use crate::{Action, Component};
 
     #[derive(Debug, serde::Deserialize)]
     struct ExampleInput {
@@ -668,14 +491,19 @@ mod tests {
 
     struct ExampleAction;
 
-    impl Action for ExampleAction {
-        const KEY: &'static str = "test.example";
-        type Input = ExampleInput;
-        type Output = ExampleOutput;
+    impl Component for ExampleAction {
+        type Kind = crate::kind::Action;
+        type Config = ExampleInput;
 
-        fn metadata() -> ActionMetadata {
-            ActionMetadata::new(crate::metadata_name!("Example"), "Example action")
+        const KEY: &'static str = "test.example";
+
+        fn metadata() -> Metadata {
+            Metadata::new(crate::metadata_name!("Example"), "Example action")
         }
+    }
+
+    impl Action for ExampleAction {
+        type Output = ExampleOutput;
 
         fn dependencies() -> &'static Dependencies {
             static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
@@ -684,9 +512,7 @@ mod tests {
     }
 
     fn admitted() -> ActionDefinition {
-        ExampleAction::metadata()
-            .admit_for::<ExampleAction>(ActionKind::Control)
-            .expect("valid definition")
+        ActionDefinition::admit_for::<ExampleAction>(ActionKind::Control).expect("valid definition")
     }
 
     #[test]
@@ -722,10 +548,12 @@ mod tests {
             serde_json::from_slice(&encoded).expect("decode recorded evidence");
         assert_eq!(recorded.readmit_against(&fresh).unwrap(), fresh);
 
-        let different =
-            ActionMetadata::new(crate::metadata_name!("Example"), "Changed description")
-                .admit_for::<ExampleAction>(ActionKind::Control)
-                .expect("valid changed definition");
+        let different = ActionDefinition::admit_with::<ExampleAction>(
+            Metadata::new(crate::metadata_name!("Example"), "Changed description"),
+            ActionInterface::default(),
+            ActionKind::Control,
+        )
+        .expect("valid changed definition");
         assert!(recorded.readmit_against(&different).is_err());
     }
 

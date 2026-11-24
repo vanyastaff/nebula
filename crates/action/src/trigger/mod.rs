@@ -148,13 +148,16 @@ pub trait TriggerAction: Action {
     /// struct CronTrigger;
     /// # struct CronSource;
     /// # impl TriggerSource for CronSource { type Event = serde_json::Value; }
-    /// # impl Action for CronTrigger {
+    /// # impl nebula_action::Component for CronTrigger {
+    /// #     type Kind = nebula_action::kind::Action;
+    /// #     type Config = serde_json::Value;
     /// const KEY: &'static str = "example.cron";
-    /// #     type Input = serde_json::Value;
-    /// #     type Output = serde_json::Value;
-    /// #     fn metadata() -> nebula_action::ActionMetadata {
-    /// #         nebula_action::ActionMetadata::new(nebula_action::metadata_name!("Cron"), "Schedule-driven")
+    /// #     fn metadata() -> nebula_action::Metadata {
+    /// #         nebula_action::Metadata::new(nebula_action::metadata_name!("Cron"), "Schedule-driven")
     /// #     }
+    /// # }
+    /// # impl Action for CronTrigger {
+    /// #     type Output = serde_json::Value;
     /// #     fn dependencies() -> &'static Dependencies {
     /// #         static D: OnceLock<Dependencies> = OnceLock::new();
     /// #         D.get_or_init(Dependencies::new)
@@ -506,13 +509,16 @@ pub trait TriggerHandler: crate::handle::sealed::Trigger + Send + Sync + 'static
 /// # struct CronTrigger;
 /// # struct CronSource;
 /// # impl TriggerSource for CronSource { type Event = serde_json::Value; }
-/// # impl Action for CronTrigger {
+/// # impl nebula_action::Component for CronTrigger {
+/// #     type Kind = nebula_action::kind::Action;
+/// #     type Config = serde_json::Value;
 /// const KEY: &'static str = "example.cron";
-/// #     type Input = serde_json::Value;
-/// #     type Output = serde_json::Value;
-/// #     fn metadata() -> nebula_action::ActionMetadata {
-/// #         nebula_action::ActionMetadata::new(nebula_action::metadata_name!("Cron"), "Schedule-driven")
+/// #     fn metadata() -> nebula_action::Metadata {
+/// #         nebula_action::Metadata::new(nebula_action::metadata_name!("Cron"), "Schedule-driven")
 /// #     }
+/// # }
+/// # impl Action for CronTrigger {
+/// #     type Output = serde_json::Value;
 /// #     fn dependencies() -> &'static Dependencies {
 /// #         static D: OnceLock<Dependencies> = OnceLock::new();
 /// #         D.get_or_init(Dependencies::new)
@@ -550,7 +556,7 @@ impl<A> TriggerActionAdapter<A> {
     where
         A: Action,
     {
-        let meta = <A as Action>::metadata().admit_for::<A>(crate::ActionKind::Trigger)?;
+        let meta = ActionDefinition::admit_for::<A>(crate::ActionKind::Trigger)?;
         Ok(Self { action, meta })
     }
 
@@ -674,14 +680,19 @@ mod tests {
         }
     }
 
-    impl Action for MockTriggerAction {
-        const KEY: &'static str = "test.trigger_action";
-        type Input = Value;
-        type Output = Value;
+    impl crate::Component for MockTriggerAction {
+        type Kind = crate::kind::Action;
+        type Config = Value;
 
-        fn metadata() -> crate::ActionMetadata {
-            crate::ActionMetadata::new(crate::metadata_name!("MockTrigger"), "Tracks start/stop")
+        const KEY: &'static str = "test.trigger_action";
+
+        fn metadata() -> crate::Metadata {
+            crate::Metadata::new(crate::metadata_name!("MockTrigger"), "Tracks start/stop")
         }
+    }
+
+    impl Action for MockTriggerAction {
+        type Output = Value;
         fn dependencies() -> &'static nebula_core::Dependencies {
             use std::sync::OnceLock;
             static D: OnceLock<nebula_core::Dependencies> = OnceLock::new();

@@ -5,11 +5,11 @@ use std::{assert_matches, error::Error, sync::OnceLock};
 use futures::{Stream, stream};
 use nebula_action::{
     Action, ActionContext, ActionError, ActionFactory, ActionHandle, ActionInput, ActionResult,
-    AgentAction, AgentActionAdapter, AgentHandle, ControlAction, ControlActionAdapter,
+    AgentAction, AgentActionAdapter, AgentHandle, Component, ControlAction, ControlActionAdapter,
     ControlHandle, ControlOutcome, FromWorkflowNode, GenericAgentFactory, GenericControlFactory,
     GenericStatefulFactory, GenericStatelessFactory, GenericStreamFactory, InstanceFactory,
     StatefulAction, StatefulActionAdapter, StatefulHandle, StatelessAction, StatelessActionAdapter,
-    StatelessHandle, StreamAction, TestContextBuilder,
+    StatelessHandle, StreamAction, TestContextBuilder, kind,
 };
 use nebula_core::{Dependencies, node_key};
 use nebula_schema::{
@@ -91,17 +91,22 @@ fn observed(input: &PreparedInput) -> Value {
 
 struct Probe;
 
-impl Action for Probe {
-    const KEY: &'static str = "test.input_probe";
-    type Input = PreparedInput;
-    type Output = Value;
+impl Component for Probe {
+    type Kind = kind::Action;
+    type Config = PreparedInput;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.input_probe";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Input probe"),
             "Observe prepared input at the action boundary",
         )
     }
+}
+
+impl Action for Probe {
+    type Output = Value;
 
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
@@ -111,7 +116,7 @@ impl Action for Probe {
 
 nebula_action::stateless_entry!(
     TestInputProbeOtherEntry(Probe) = "test.input_probe.other",
-    nebula_action::ActionMetadata::new(
+    nebula_action::Metadata::new(
         nebula_action::metadata_name!("Other input probe"),
         "A distinct action contract over the same Rust input type",
     ),

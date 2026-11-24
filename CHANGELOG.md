@@ -11,11 +11,39 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **An action is a `Component`.** `Action` now has
+  `Component<Kind = kind::Action>` as its supertrait, like `Credential` and the
+  resource `Provider`. The key, the form data type and the catalog metadata
+  move to the `Component` impl, and an action returns the same shared
+  `Metadata` as every other kind. What only an action has, its ports,
+  isolation, effect contract and concurrency hint, are now items of the
+  `Action` trait with defaults instead of metadata builders.
+
+  | Before | After |
+  |---|---|
+  | `impl Action for A { type Input = I; type Output = O; const KEY = ..; fn metadata() -> ActionMetadata; fn dependencies() .. }` | `impl Component for A { type Kind = kind::Action; type Config = I; const KEY = ..; fn metadata() -> Metadata }` plus `impl Action for A { type Output = O; fn dependencies() .. }` |
+  | `A::Input`, `<A as Action>::Input`, `StatelessAction<Input = I>` | `A::Config`, `<A as Component>::Config`, `StatelessAction<Config = I>` |
+  | `ActionMetadata` | `nebula_metadata::Metadata` (re-exported as `nebula_action::Metadata`, in `nebula_sdk::action` and the SDK prelude) |
+  | `.with_inputs(ports)` / `.with_outputs(ports)` | `fn inputs() -> Vec<InputPort>` / `fn outputs() -> Vec<OutputPort>` on `Action` |
+  | `.with_isolation_level(level)` | `const ISOLATION_LEVEL: IsolationLevel = level;` |
+  | `.with_effect_contract(contract)` | `const EFFECT_CONTRACT: ActionEffectContract = contract;` |
+  | `.with_max_concurrent(n)` | `const MAX_CONCURRENT: Option<NonZeroU32> = Some(n);` |
+  | `#[derive(Action)] #[action(input = I, ..)]` | `#[action(config = I, ..)]` (the old name is refused with a hint) |
+  | `simple_action! { input: I, .. }` | `simple_action! { config: I, .. }` |
+  | `ActionAdmissionError::RemoteEffectContractInMetadata` | removed: a const cannot build a `Remote` contract; a remote action that overrides `EFFECT_CONTRACT` fails with `EffectContractOnRemoteAction` |
+  | `nebula_action::key_of` (action-only) | `nebula_component::key_of`, re-exported as `nebula_action::key_of` |
+
+  `A::KEY` and `A::metadata()` need `Component` in scope
+  (`nebula_action::{Component, kind}`, also in the action and SDK preludes).
+  `stateless_entry!` inherits the inner action's interface and may declare its
+  own with optional trailing `inputs:`, `outputs:`, `isolation_level:`,
+  `effect_contract:` and `max_concurrent:` arguments.
+
 - **A resource provider is a `Component`.** `Provider` now has
   `Component<Kind = kind::Resource, Config: ResourceConfig>` as its supertrait
   and keeps `Instance`, `Topology`, `create` and the lifecycle hooks. The key,
   the config type and the catalog metadata move to the `Component` impl, the
-  same one a credential has. `Action` moves onto `Component` next.
+  same one a credential has.
 
   | Before | After |
   |---|---|

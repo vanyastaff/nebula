@@ -4,7 +4,7 @@ use nebula_core::sync::Lazy;
 use nebula_credential::{AuthScheme, CredentialGuard};
 
 #[derive(Action)]
-#[action(key = "bad.lazy_credential", input = serde_json::Value, output = serde_json::Value)]
+#[action(key = "bad.lazy_credential", config = serde_json::Value, output = serde_json::Value)]
 struct LazyCredential<S: AuthScheme + zeroize::Zeroize> {
     #[credential]
     auth: Option<Lazy<CredentialGuard<S>>>,

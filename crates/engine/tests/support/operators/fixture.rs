@@ -6,8 +6,8 @@ use std::sync::{
 };
 
 use nebula_action::{
-    Action, ActionOutput, ActionResult, StatelessAction, effect::ActionEffectContract,
-    result::WaitCondition,
+    Action, ActionOutput, ActionResult, Component, StatelessAction, effect::ActionEffectContract,
+    kind, result::WaitCondition,
 };
 use nebula_core::{Dependencies, ExecutionId, WorkflowId, action_key, node_key};
 use nebula_engine::{ActionRegistry, ExecutionStores, PlanFlavorRevisionInstaller};
@@ -29,17 +29,22 @@ use nebula_workflow::{Connection, NodeDefinition, WorkflowDefinition};
 struct Echo(Arc<AtomicU32>);
 struct Park;
 
-impl Action for Echo {
+impl Component for Echo {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
+
     const KEY: &'static str = "operator.echo";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
-            nebula_action::metadata_name!("Echo"),
-            "pure payload echo",
-        )
-        .with_effect_contract(ActionEffectContract::ReadOnly)
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(nebula_action::metadata_name!("Echo"), "pure payload echo")
     }
+}
+
+impl Action for Echo {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: ActionEffectContract = ActionEffectContract::ReadOnly;
+
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
         DEPENDENCIES.get_or_init(Dependencies::new)
@@ -55,17 +60,22 @@ impl StatelessAction for Echo {
         Ok(ActionResult::success(input))
     }
 }
-impl Action for Park {
+impl Component for Park {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
+
     const KEY: &'static str = "operator.park";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
-            nebula_action::metadata_name!("Park"),
-            "durable signal wait",
-        )
-        .with_effect_contract(ActionEffectContract::ReadOnly)
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(nebula_action::metadata_name!("Park"), "durable signal wait")
     }
+}
+
+impl Action for Park {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: ActionEffectContract = ActionEffectContract::ReadOnly;
+
     fn dependencies() -> &'static Dependencies {
         Echo::dependencies()
     }

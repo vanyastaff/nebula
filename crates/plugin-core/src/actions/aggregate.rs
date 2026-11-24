@@ -991,20 +991,27 @@ fn group_and_accumulate<'a>(
 #[derive(Debug)]
 pub struct Aggregate;
 
-impl nebula_action::action::Action for Aggregate {
-    const KEY: &'static str = "core.aggregate";
-    type Input = AggregateInput;
-    type Output = Value;
+impl nebula_action::action::Component for Aggregate {
+    type Kind = nebula_action::action::kind::Action;
+    type Config = AggregateInput;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "core.aggregate";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Aggregate"),
             "Reduce an array of objects to grouped/scalar summaries \
              (sum/count/avg/min/max/collect/join)",
         )
         .with_version(nebula_action::MetadataVersion::new(2, 0, 0))
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
+}
+
+impl nebula_action::action::Action for Aggregate {
+    type Output = Value;
+
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static nebula_action::Dependencies {
         static DEPS: OnceLock<nebula_action::Dependencies> = OnceLock::new();

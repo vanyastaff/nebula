@@ -13,8 +13,8 @@ use nebula_sdk::{
     },
     integration::credential::{TestFailureCode, TestResult},
     prelude::{
-        Action, ActionMetadata, ActionResult, AuthoredValue, Component, Deserialize, Error,
-        Expression, PoolProvider, Pooled, ProgramSyntax, Provider, RemoteDestinationGuarantee,
+        Action, ActionResult, AuthoredValue, Component, Deserialize, Error, Expression, Metadata,
+        PoolProvider, Pooled, ProgramSyntax, Provider, RemoteDestinationGuarantee,
         RemoteEffectPolicy, Resource, ResourceContext, Schema, Serialize, TeardownCx,
         TeardownReason, TriggerHealthSnapshot, Value, WorkflowBuilder, kind, metadata_name,
         no_credential_slots,
@@ -133,7 +133,7 @@ pub struct AuthorOutput {
 simple_action! {
     name: EchoAction,
     key: "example.echo",
-    input: AuthorInput,
+    config: AuthorInput,
     output: AuthorOutput,
     async fn execute(&self, input, _context) {
         Ok(ActionResult::success(AuthorOutput { echoed: input.message }))
@@ -224,7 +224,7 @@ fn invocation_cancellation(context: &dyn EffectInvocationContext) -> &Cancellati
 
 fn assert_typed_action_contract<A>()
 where
-    A: Action<Input = AuthorInput, Output = AuthorOutput>,
+    A: Action<Config = AuthorInput, Output = AuthorOutput>,
 {
 }
 
@@ -273,7 +273,7 @@ fn main() {
     assert_credential_wire_v1_contract();
     catalog_constructor_parity();
     assert_typed_action_contract::<EchoAction>();
-    let metadata: ActionMetadata = EchoAction::metadata();
+    let metadata: Metadata = EchoAction::metadata();
     let authored = nebula_sdk::params! { data; "message" => "hello" }
         .expect("literal authored input is valid");
     assert_eq!(authored.to_json(), nebula_sdk::json!({"message": "hello"}));
@@ -304,7 +304,7 @@ fn main() {
         OrgId,
         WorkspaceId,
     ) -> EffectPreparationContext = EffectPreparationContext::new;
-    let manual_metadata = ActionMetadata::new(
+    let manual_metadata = Metadata::new(
         metadata_name!("Perimeter action"),
         "Uses only the supported SDK authoring surface",
     );
@@ -365,8 +365,8 @@ fn main() {
         .build()
         .expect("a bounded opaque effect policy is valid");
 
-    let _: ActionMetadata = metadata;
-    let _: ActionMetadata = manual_metadata;
+    let _: Metadata = metadata;
+    let _: Metadata = manual_metadata;
     assert_eq!(workflow.nodes.len(), 1);
     assert_eq!(effect_policy.max_invocations(), 1);
     assert_eq!(
@@ -383,7 +383,7 @@ fn catalog_constructor_parity() {
         CatalogValueError, DeprecationNotice, DocumentationOrigin, MetadataError, MetadataField,
         MetadataVersion, RemovalDate, RemovalMilestone, RemovalSchedule, VersionReq,
     };
-    use nebula_sdk::integration::{action::ActionMetadata, credential::Metadata};
+    use nebula_sdk::integration::action::Metadata;
     use nebula_sdk::prelude::action_key;
 
     let category: CatalogCategoryKey = "network.http".parse().expect("valid category");
@@ -426,12 +426,12 @@ fn catalog_constructor_parity() {
     let _: MetadataError = MetadataError::FieldTooLarge(MetadataField::Description);
     let _: Result<CatalogCategoryKey, CatalogValueError> = "INVALID".parse();
 
-    let action = ActionMetadata::new(metadata_name!("Echo"), "HTTP echo")
+    let action = Metadata::new(metadata_name!("Echo"), "HTTP echo")
         .with_version(version.clone())
         .with_categories([category.clone()])
         .add_link(link.clone())
         .with_deprecation(notice.clone());
-    let action_dynamic = ActionMetadata::try_new("Echo", "HTTP echo")
+    let action_dynamic = Metadata::try_new("Echo", "HTTP echo")
         .expect("valid name")
         .with_version(version.clone())
         .with_categories([category.clone()])
@@ -462,9 +462,10 @@ fn catalog_constructor_parity() {
         .add_link(link)
         .with_deprecation(notice);
     assert_eq!(resource, resource_dynamic);
+    // Every kind's facade names the one shared catalog metadata type.
+    let _: nebula_sdk::integration::credential::Metadata = credential;
+    let _: nebula_sdk::integration::resource::Metadata = resource;
     let _: nebula_sdk::prelude::VersionReq = requirement;
     let _: nebula_sdk::prelude::MetadataField = MetadataField::Links;
-    assert!(ActionMetadata::try_new(" ", "").is_err());
-    assert!(Metadata::try_new(" ", "").is_err());
     assert!(Metadata::try_new(" ", "").is_err());
 }

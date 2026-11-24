@@ -1,9 +1,10 @@
 use super::*;
+use nebula_action::{Component, kind};
 
 nebula_action::stateless_entry!(
     /// The echo action without a declared effect contract.
     UndeclaredEffectEcho(EchoHandler) = "echo",
-    ActionMetadata::new(nebula_action::metadata_name!("Echo"), "echoes input"),
+    Metadata::new(nebula_action::metadata_name!("Echo"), "echoes input"),
 );
 
 #[derive(serde::Serialize, serde::Deserialize, nebula_schema::Schema)]
@@ -15,18 +16,25 @@ struct UnionEcho {
     calls: Arc<AtomicU32>,
 }
 
-impl Action for UnionEcho {
-    const KEY: &'static str = "exact.union_echo";
-    type Input = RecordedUnionInput;
-    type Output = RecordedUnionInput;
+impl Component for UnionEcho {
+    type Kind = kind::Action;
+    type Config = RecordedUnionInput;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    const KEY: &'static str = "exact.union_echo";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_action::metadata_name!("Union echo"),
             "Preserve declared union input",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
+}
+
+impl Action for UnionEcho {
+    type Output = RecordedUnionInput;
+
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         EchoHandler::dependencies()
@@ -36,7 +44,7 @@ impl Action for UnionEcho {
 impl StatelessAction for UnionEcho {
     async fn execute(
         &self,
-        input: Self::Input,
+        input: Self::Config,
         _: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<Self::Output>, ActionError> {
         self.calls.fetch_add(1, Ordering::SeqCst);

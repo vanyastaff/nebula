@@ -91,7 +91,7 @@ impl PoolProvider for Ledger {}
 #[action(
     key = "example.audit_lookup",
     name = "Audit lookup",
-    input = u64,
+    config = u64,
     output = u64,
     read_only
 )]

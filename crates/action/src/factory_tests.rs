@@ -34,16 +34,21 @@ use crate::{
 
 struct InvalidMetadataAction;
 
-impl Action for InvalidMetadataAction {
-    const KEY: &'static str = "test.invalid_meta";
-    type Input = Value;
-    type Output = Value;
+impl crate::Component for InvalidMetadataAction {
+    type Kind = crate::kind::Action;
+    type Config = Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "test.invalid_meta";
+
+    fn metadata() -> crate::Metadata {
         // Blank names are rejected at construction; an empty description
         // still exercises the action-package admission guard.
-        ActionMetadata::new(crate::metadata_name!("Invalid metadata"), "")
+        crate::Metadata::new(crate::metadata_name!("Invalid metadata"), "")
     }
+}
+
+impl Action for InvalidMetadataAction {
+    type Output = Value;
 
     fn dependencies() -> &'static Dependencies {
         static DEPS: OnceLock<Dependencies> = OnceLock::new();
@@ -96,24 +101,29 @@ fn invalid_metadata_never_reaches_instantiation() {
 // ── ValidMetadataAction ──────────────────────────────────────────────────
 //
 // A production-shaped stateless action with a non-empty name, description,
-// and the default input+output ports from `crate::ActionMetadata::new`. Proves
+// and the default input+output ports from `crate::Metadata::new`. Proves
 // that `check_metadata_or_fatal` does NOT reject valid metadata — the
 // positive counterpart to the two fatal-path tests above.
 
 struct FactoryDependency;
 struct ValidMetadataAction;
 
-impl Action for ValidMetadataAction {
-    const KEY: &'static str = "test.valid_meta";
-    type Input = Value;
-    type Output = Value;
+impl crate::Component for ValidMetadataAction {
+    type Kind = crate::kind::Action;
+    type Config = Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    const KEY: &'static str = "test.valid_meta";
+
+    fn metadata() -> crate::Metadata {
+        crate::Metadata::new(
             crate::metadata_name!("Valid Metadata Action"),
             "A production-shaped action fixture used to prove the metadata gate passes valid registrations.",
         )
     }
+}
+
+impl Action for ValidMetadataAction {
+    type Output = Value;
 
     fn dependencies() -> &'static Dependencies {
         static DEPS: OnceLock<Dependencies> = OnceLock::new();
@@ -229,14 +239,19 @@ struct RemoteValueProbe {
     preparations: Arc<AtomicUsize>,
 }
 
-impl Action for RemoteValueProbe {
-    const KEY: &'static str = "test.remote.value";
-    type Input = Value;
-    type Output = Value;
+impl crate::Component for RemoteValueProbe {
+    type Kind = crate::kind::Action;
+    type Config = Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "test.remote.value";
+
+    fn metadata() -> crate::Metadata {
         remote_metadata()
     }
+}
+
+impl Action for RemoteValueProbe {
+    type Output = Value;
 
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
@@ -263,14 +278,19 @@ struct RemoteBoolProbe {
     preparations: Arc<AtomicUsize>,
 }
 
-impl Action for RemoteBoolProbe {
-    const KEY: &'static str = "test.remote.bool";
-    type Input = bool;
-    type Output = Value;
+impl crate::Component for RemoteBoolProbe {
+    type Kind = crate::kind::Action;
+    type Config = bool;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "test.remote.bool";
+
+    fn metadata() -> crate::Metadata {
         remote_metadata()
     }
+}
+
+impl Action for RemoteBoolProbe {
+    type Output = Value;
 
     fn dependencies() -> &'static Dependencies {
         RemoteValueProbe::dependencies()
@@ -301,8 +321,8 @@ fn remote_descriptor() -> Result<RemoteEffectDescriptor, RemoteEffectDeclaration
     Ok(RemoteEffectDescriptor::new("test.remote", 1, policy)?)
 }
 
-fn remote_metadata() -> ActionMetadata {
-    ActionMetadata::new(
+fn remote_metadata() -> crate::Metadata {
+    crate::Metadata::new(
         crate::metadata_name!("Remote probe"),
         "Remote input contract probe",
     )
@@ -366,31 +386,35 @@ async fn different_schema_remote_contract_rejects_foreign_factory_token() {
     assert_eq!(right_preparations.load(Ordering::SeqCst), 0);
 }
 
-/// Remote fixture whose metadata declares an effect contract of its own.
-struct RemoteDeclaredInMetadata<const READ_ONLY: bool>;
+/// Remote fixture that declares an effect contract of its own.
+///
+/// Only `Journaled` and `ReadOnly` can be declared: `EFFECT_CONTRACT` is a
+/// constant and a remote contract holds a boxed descriptor, so a remote
+/// contract declared on the type is unrepresentable.
+struct RemoteDeclaringReadOnly;
 
-impl<const READ_ONLY: bool> Action for RemoteDeclaredInMetadata<READ_ONLY> {
+impl crate::Component for RemoteDeclaringReadOnly {
+    type Kind = crate::kind::Action;
+    type Config = Value;
+
     const KEY: &'static str = "test.remote.declared";
-    type Input = Value;
+
+    fn metadata() -> crate::Metadata {
+        remote_metadata()
+    }
+}
+
+impl Action for RemoteDeclaringReadOnly {
     type Output = Value;
 
-    fn metadata() -> ActionMetadata {
-        let contract = if READ_ONLY {
-            ActionEffectContract::ReadOnly
-        } else {
-            ActionEffectContract::Remote(Box::new(
-                remote_descriptor().expect("fixture descriptor is valid"),
-            ))
-        };
-        remote_metadata().with_effect_contract(contract)
-    }
+    const EFFECT_CONTRACT: ActionEffectContract = ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         RemoteValueProbe::dependencies()
     }
 }
 
-impl<const READ_ONLY: bool> RemoteEffectAction for RemoteDeclaredInMetadata<READ_ONLY> {
+impl RemoteEffectAction for RemoteDeclaringReadOnly {
     fn descriptor() -> Result<RemoteEffectDescriptor, RemoteEffectDeclarationError> {
         remote_descriptor()
     }
@@ -407,14 +431,19 @@ impl<const READ_ONLY: bool> RemoteEffectAction for RemoteDeclaredInMetadata<READ
 /// Remote fixture whose descriptor is invalid.
 struct RemoteInvalidDescriptor;
 
-impl Action for RemoteInvalidDescriptor {
-    const KEY: &'static str = "test.remote.invalid";
-    type Input = Value;
-    type Output = Value;
+impl crate::Component for RemoteInvalidDescriptor {
+    type Kind = crate::kind::Action;
+    type Config = Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "test.remote.invalid";
+
+    fn metadata() -> crate::Metadata {
         remote_metadata()
     }
+}
+
+impl Action for RemoteInvalidDescriptor {
+    type Output = Value;
 
     fn dependencies() -> &'static Dependencies {
         RemoteValueProbe::dependencies()
@@ -440,33 +469,6 @@ impl RemoteEffectAction for RemoteInvalidDescriptor {
     }
 }
 
-/// Stateless fixture whose metadata declares a remote contract.
-struct LocalDeclaringRemote;
-
-impl Action for LocalDeclaringRemote {
-    const KEY: &'static str = "test.local.declares_remote";
-    type Input = Value;
-    type Output = Value;
-
-    fn metadata() -> ActionMetadata {
-        RemoteDeclaredInMetadata::<false>::metadata()
-    }
-
-    fn dependencies() -> &'static Dependencies {
-        RemoteValueProbe::dependencies()
-    }
-}
-
-impl StatelessAction for LocalDeclaringRemote {
-    async fn execute(
-        &self,
-        input: Value,
-        _ctx: &(impl ActionContext + ?Sized),
-    ) -> Result<ActionResult<Value>, ActionError> {
-        Ok(ActionResult::success(input))
-    }
-}
-
 #[test]
 fn remote_factory_stamps_the_type_descriptor_as_the_effect_contract() {
     let factory = RemoteEffectInstanceFactory::new(RemoteValueProbe {
@@ -487,13 +489,9 @@ fn remote_factory_stamps_the_type_descriptor_as_the_effect_contract() {
 }
 
 #[test]
-fn remote_factory_refuses_metadata_that_declares_an_effect_contract() {
+fn remote_factory_refuses_an_action_that_declares_an_effect_contract() {
     assert_matches!(
-        RemoteEffectInstanceFactory::new(RemoteDeclaredInMetadata::<false>).map(drop),
-        Err(ActionAdmissionError::RemoteEffectContractInMetadata)
-    );
-    assert_matches!(
-        RemoteEffectInstanceFactory::new(RemoteDeclaredInMetadata::<true>).map(drop),
+        RemoteEffectInstanceFactory::new(RemoteDeclaringReadOnly).map(drop),
         Err(ActionAdmissionError::EffectContractOnRemoteAction)
     );
 }
@@ -505,13 +503,5 @@ fn remote_factory_refuses_an_invalid_descriptor() {
         Err(ActionAdmissionError::RemoteEffectDeclaration(
             RemoteEffectDeclarationError::Contract(EffectContractError::InvalidIdentifier)
         ))
-    );
-}
-
-#[test]
-fn local_factory_refuses_a_remote_contract_in_metadata() {
-    assert_matches!(
-        InstanceFactory::new(LocalDeclaringRemote).map(drop),
-        Err(ActionAdmissionError::RemoteEffectContractInMetadata)
     );
 }

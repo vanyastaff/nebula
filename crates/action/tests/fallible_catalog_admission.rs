@@ -26,7 +26,7 @@ impl HasSchema for RejectedInput {
 }
 
 #[derive(Action)]
-#[action(key = "test.rejected_schema", name = "Rejected schema", description = "Schema admission probe", input = RejectedInput, output = ())]
+#[action(key = "test.rejected_schema", name = "Rejected schema", description = "Schema admission probe", config = RejectedInput, output = ())]
 struct RejectedAction;
 
 impl StatelessAction for RejectedAction {
@@ -84,7 +84,7 @@ impl HasSchema for RejectedOutput {
 type UnitInput = ();
 
 #[derive(Action)]
-#[action(key = "test.rejected_output_schema", name = "Rejected output schema", description = "Output schema admission probe", input = UnitInput, output = RejectedOutput)]
+#[action(key = "test.rejected_output_schema", name = "Rejected output schema", description = "Output schema admission probe", config = UnitInput, output = RejectedOutput)]
 struct OutputRejectedAction;
 
 impl StatelessAction for OutputRejectedAction {
@@ -125,7 +125,7 @@ impl HasSchema for HistoricalOutput {
 }
 
 #[derive(Action)]
-#[action(key = "test.historical_output", name = "Historical output", description = "Policy admission probe", input = UnitInput, output = HistoricalOutput)]
+#[action(key = "test.historical_output", name = "Historical output", description = "Policy admission probe", config = UnitInput, output = HistoricalOutput)]
 struct HistoricalOutputAction;
 
 impl StatelessAction for HistoricalOutputAction {

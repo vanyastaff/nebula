@@ -22,14 +22,19 @@ struct CounterState {
 
 struct CounterAction;
 
-impl Action for CounterAction {
-    const KEY: &'static str = "test.counter";
-    type Input = Value;
-    type Output = Value;
+impl crate::Component for CounterAction {
+    type Kind = crate::kind::Action;
+    type Config = Value;
 
-    fn metadata() -> crate::ActionMetadata {
-        crate::ActionMetadata::new(crate::metadata_name!("Counter"), "Counts up to 3")
+    const KEY: &'static str = "test.counter";
+
+    fn metadata() -> crate::Metadata {
+        crate::Metadata::new(crate::metadata_name!("Counter"), "Counts up to 3")
     }
+}
+
+impl Action for CounterAction {
+    type Output = Value;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -45,7 +50,7 @@ impl StatefulAction for CounterAction {
 
     async fn execute(
         &self,
-        _input: &<Self as Action>::Input,
+        _input: &Self::Config,
         state: &mut Self::State,
         _ctx: &(impl ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
@@ -175,17 +180,22 @@ struct MutateThenFailAction {
     mark: u32,
 }
 
-impl Action for MutateThenFailAction {
-    const KEY: &'static str = "test.mutate_fail";
-    type Input = Value;
-    type Output = Value;
+impl crate::Component for MutateThenFailAction {
+    type Kind = crate::kind::Action;
+    type Config = Value;
 
-    fn metadata() -> crate::ActionMetadata {
-        crate::ActionMetadata::new(
+    const KEY: &'static str = "test.mutate_fail";
+
+    fn metadata() -> crate::Metadata {
+        crate::Metadata::new(
             crate::metadata_name!("MutateFail"),
             "Mutates state then fails",
         )
     }
+}
+
+impl Action for MutateThenFailAction {
+    type Output = Value;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -201,7 +211,7 @@ impl StatefulAction for MutateThenFailAction {
 
     async fn execute(
         &self,
-        _input: &<Self as Action>::Input,
+        _input: &Self::Config,
         state: &mut Self::State,
         _ctx: &(impl ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {

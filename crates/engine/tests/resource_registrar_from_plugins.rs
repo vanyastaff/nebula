@@ -32,7 +32,7 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, action::Action, result::ActionResult, stateless::StatelessAction,
+    ActionError, Component, action::Action, kind, result::ActionResult, stateless::StatelessAction,
 };
 use nebula_core::{Dependencies, node_key};
 use nebula_engine::{
@@ -103,8 +103,8 @@ impl DemoResource {
     }
 }
 
-impl nebula_resource::Component for DemoResource {
-    type Kind = nebula_resource::kind::Resource;
+impl Component for DemoResource {
+    type Kind = kind::Resource;
     type Config = DemoConfig;
 
     const KEY: &'static str = "demo.widget";
@@ -222,15 +222,23 @@ fn a_kind_contributed_twice_fails_composition() {
 
 struct NoopHandler;
 
-impl Action for NoopHandler {
+impl Component for NoopHandler {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
+
     const KEY: &'static str = "test.noop";
-    type Input = serde_json::Value;
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_action::metadata_name!("Noop"), "noop")
+    }
+}
+
+impl Action for NoopHandler {
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(nebula_action::metadata_name!("Noop"), "noop")
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
-    }
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
+
     fn dependencies() -> &'static Dependencies {
         use std::sync::OnceLock;
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -241,7 +249,7 @@ impl Action for NoopHandler {
 impl StatelessAction for NoopHandler {
     async fn execute(
         &self,
-        input: <Self as Action>::Input,
+        input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Ok(ActionResult::success(input))

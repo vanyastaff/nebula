@@ -817,13 +817,16 @@ impl<K: Hash + Eq + Clone, C> DeduplicatingCursor<K, C> {
 ///     feed_url: String,
 /// }
 ///
-/// # impl Action for RssPoll {
+/// # impl nebula_action::Component for RssPoll {
+/// #     type Kind = nebula_action::kind::Action;
+/// #     type Config = serde_json::Value;
 /// const KEY: &'static str = "rss.poll";
-/// #     type Input = serde_json::Value;
-/// #     type Output = serde_json::Value;
-/// #     fn metadata() -> nebula_action::ActionMetadata {
-/// #         nebula_action::ActionMetadata::new(nebula_action::metadata_name!("RSS Poll"), "Poll an RSS feed")
+/// #     fn metadata() -> nebula_action::Metadata {
+/// #         nebula_action::Metadata::new(nebula_action::metadata_name!("RSS Poll"), "Poll an RSS feed")
 /// #     }
+/// # }
+/// # impl Action for RssPoll {
+/// #     type Output = serde_json::Value;
 /// #     fn dependencies() -> &'static Dependencies {
 /// #         static D: OnceLock<Dependencies> = OnceLock::new();
 /// #         D.get_or_init(Dependencies::new)
@@ -1136,7 +1139,7 @@ impl<A: PollAction> PollTriggerAdapter<A> {
     /// Returns a typed catalog error if metadata or an associated schema is invalid.
     #[tracing::instrument(name = "action.metadata.admit", skip_all, err)]
     pub fn new(action: A) -> Result<Self, crate::ActionAdmissionError> {
-        let meta = <A as Action>::metadata().admit_for::<A>(crate::ActionKind::Trigger)?;
+        let meta = ActionDefinition::admit_for::<A>(crate::ActionKind::Trigger)?;
         Ok(Self {
             action,
             meta,

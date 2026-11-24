@@ -21,7 +21,7 @@ use std::time::SystemTime;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use nebula_action::{
-    Action, ActionMetadata, ActionResult, FromWorkflowNode, GenericTriggerFactory, InstanceFactory,
+    Action, ActionResult, FromWorkflowNode, GenericTriggerFactory, InstanceFactory, Metadata,
     RequiredPolicy, SignaturePolicy, SignatureScheme, StatelessAction, TriggerAction,
     TriggerContext, TriggerEventOutcome, TriggerHandler, WebhookAction, WebhookConfig,
     WebhookRequest, WebhookResponse, WebhookSource, WebhookTriggerAdapter, hmac_sha256_compute,
@@ -74,18 +74,25 @@ async fn start_failures_are_payload_free_and_preserve_retryability() {
 
 struct FixtureStatelessAction;
 
-impl Action for FixtureStatelessAction {
-    const KEY: &'static str = "core.echo";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl nebula_action::Component for FixtureStatelessAction {
+    type Kind = nebula_action::kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    const KEY: &'static str = "core.echo";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_action::metadata_name!("Echo fixture"),
             "Admission fixture",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
+}
+
+impl Action for FixtureStatelessAction {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: std::sync::OnceLock<Dependencies> = std::sync::OnceLock::new();
@@ -96,7 +103,7 @@ impl Action for FixtureStatelessAction {
 impl StatelessAction for FixtureStatelessAction {
     async fn execute(
         &self,
-        input: Self::Input,
+        input: Self::Config,
         _context: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<Self::Output>, nebula_action::ActionError> {
         Ok(ActionResult::success(input))
@@ -105,18 +112,25 @@ impl StatelessAction for FixtureStatelessAction {
 
 struct FixtureTriggerAction;
 
-impl Action for FixtureTriggerAction {
-    const KEY: &'static str = "test.webhook";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl nebula_action::Component for FixtureTriggerAction {
+    type Kind = nebula_action::kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    const KEY: &'static str = "test.webhook";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_action::metadata_name!("Webhook fixture"),
             "Admission fixture",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
+}
+
+impl Action for FixtureTriggerAction {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: std::sync::OnceLock<Dependencies> = std::sync::OnceLock::new();
@@ -346,17 +360,22 @@ struct ConfigurableWebhookAction {
     outcome_cell: Arc<Mutex<TriggerEventOutcome>>,
 }
 
-impl Action for ConfigurableWebhookAction {
-    const KEY: &'static str = "test.dispatch.configurable";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl nebula_action::Component for ConfigurableWebhookAction {
+    type Kind = nebula_action::kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    const KEY: &'static str = "test.dispatch.configurable";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_action::metadata_name!("ConfigurableWebhookAction"),
             "Test fixture",
         )
     }
+}
+
+impl Action for ConfigurableWebhookAction {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         static D: std::sync::OnceLock<Dependencies> = std::sync::OnceLock::new();

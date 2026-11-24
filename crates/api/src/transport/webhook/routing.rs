@@ -131,8 +131,8 @@ impl RoutingMap {
 #[cfg(test)]
 mod tests {
     use nebula_action::{
-        Action, ActionMetadata, TriggerContext, TriggerEventOutcome, WebhookAction, WebhookRequest,
-        WebhookResponse, WebhookTriggerAdapter,
+        Action, Component, Metadata, TriggerContext, TriggerEventOutcome, WebhookAction,
+        WebhookRequest, WebhookResponse, WebhookTriggerAdapter, kind,
     };
     use nebula_core::Dependencies;
     use uuid::Uuid;
@@ -141,17 +141,22 @@ mod tests {
 
     struct NoopWebhook;
 
-    impl Action for NoopWebhook {
-        const KEY: &'static str = "test.routing.noop";
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
+    impl Component for NoopWebhook {
+        type Kind = kind::Action;
+        type Config = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
-            ActionMetadata::new(
+        const KEY: &'static str = "test.routing.noop";
+
+        fn metadata() -> Metadata {
+            Metadata::new(
                 nebula_action::metadata_name!("Noop"),
                 "routing map unit test",
             )
         }
+    }
+
+    impl Action for NoopWebhook {
+        type Output = serde_json::Value;
 
         fn dependencies() -> &'static Dependencies {
             static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();

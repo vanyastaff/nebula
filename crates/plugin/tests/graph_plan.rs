@@ -4,8 +4,8 @@ use std::{
 };
 
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionFactory, ActionMetadata, ActionResult,
-    InstanceFactory, OutputPort, StatelessAction,
+    Action, ActionContext, ActionError, ActionFactory, ActionResult, Component, InstanceFactory,
+    Metadata, OutputPort, StatelessAction, kind,
 };
 use nebula_core::{
     ActionKey, ArtifactSetDigest, Dependencies, WorkflowId, WorkflowVersionId, node_key,
@@ -44,23 +44,34 @@ impl ContractAction {
     ) -> Arc<dyn ActionFactory> {
         INPUT_SCHEMA.with(|schema| *schema.borrow_mut() = Some(input_schema));
         OUTPUT_SCHEMA.with(|schema| *schema.borrow_mut() = Some(output_schema));
-        let mut metadata = ActionMetadata::new(
+        let metadata = Metadata::new(
             nebula_action::metadata_name!("Echo"),
             "Graph-v1 contract fixture",
-        )
-        .with_effect_contract(effect_contract);
-        if let Some(outputs) = outputs {
-            metadata = metadata.with_outputs(outputs);
-        }
+        );
         METADATA.with(|installed| *installed.borrow_mut() = Some(metadata));
-        let factory: Arc<dyn ActionFactory> =
-            match CONTRACT_KEYS.iter().position(|known| *known == key) {
-                Some(0) => contract_factory::<0>(),
-                Some(1) => contract_factory::<1>(),
-                Some(2) => contract_factory::<2>(),
-                Some(3) => contract_factory::<3>(),
-                _ => panic!("graph fixture key {key} has no fixture type"),
-            };
+        OUTPUTS.with(|installed| *installed.borrow_mut() = outputs);
+        let read_only = match effect_contract {
+            nebula_action::effect::ActionEffectContract::ReadOnly => true,
+            nebula_action::effect::ActionEffectContract::Journaled(
+                nebula_action::JournalProtocol::V1,
+            ) => false,
+            other => panic!("graph fixture has no type declaring {other:?}"),
+        };
+        let factory: Arc<dyn ActionFactory> = match (
+            CONTRACT_KEYS.iter().position(|known| *known == key),
+            read_only,
+        ) {
+            (Some(0), true) => contract_factory::<0, true>(),
+            (Some(1), true) => contract_factory::<1, true>(),
+            (Some(2), true) => contract_factory::<2, true>(),
+            (Some(3), true) => contract_factory::<3, true>(),
+            (Some(0), false) => contract_factory::<0, false>(),
+            (Some(1), false) => contract_factory::<1, false>(),
+            (Some(2), false) => contract_factory::<2, false>(),
+            (Some(3), false) => contract_factory::<3, false>(),
+            _ => panic!("graph fixture key {key} has no fixture type"),
+        };
+        OUTPUTS.with(|installed| *installed.borrow_mut() = None);
         METADATA.with(|installed| *installed.borrow_mut() = None);
         INPUT_SCHEMA.with(|schema| *schema.borrow_mut() = None);
         OUTPUT_SCHEMA.with(|schema| *schema.borrow_mut() = None);
@@ -68,9 +79,9 @@ impl ContractAction {
     }
 }
 
-fn contract_factory<const INDEX: usize>() -> Arc<dyn ActionFactory> {
+fn contract_factory<const INDEX: usize, const READ_ONLY: bool>() -> Arc<dyn ActionFactory> {
     Arc::new(
-        InstanceFactory::new(ContractImplementation::<INDEX>)
+        InstanceFactory::new(ContractImplementation::<INDEX, READ_ONLY>)
             .expect("graph contract admits through its structural factory"),
     )
 }
@@ -84,9 +95,10 @@ const CONTRACT_KEYS: [&str; 4] = [
 ];
 
 thread_local! {
-    /// Metadata the fixture under admission declares; tests vary the effect
-    /// contract and output ports per fixture.
-    static METADATA: RefCell<Option<ActionMetadata>> = const { RefCell::new(None) };
+    /// Metadata and output ports the fixture under admission declares; tests
+    /// vary the output ports per fixture (and the effect contract by type).
+    static METADATA: RefCell<Option<Metadata>> = const { RefCell::new(None) };
+    static OUTPUTS: RefCell<Option<Vec<OutputPort>>> = const { RefCell::new(None) };
     static INPUT_SCHEMA: RefCell<Option<ValidSchema>> = const { RefCell::new(None) };
     static OUTPUT_SCHEMA: RefCell<Option<ValidSchema>> = const { RefCell::new(None) };
 }
@@ -120,20 +132,45 @@ impl nebula_schema::HasSchema for ContractOutput {
 }
 
 /// Backing stateless action for one graph fixture key: every catalog entry is
-/// its own type, so each fixture key has its own `INDEX`.
-struct ContractImplementation<const INDEX: usize>;
+/// its own type, so each fixture key has its own `INDEX`. The effect contract
+/// is a type-level declaration, so `READ_ONLY` picks it.
+struct ContractImplementation<const INDEX: usize, const READ_ONLY: bool>;
 
-impl<const INDEX: usize> Action for ContractImplementation<INDEX> {
+impl<const INDEX: usize, const READ_ONLY: bool> Component
+    for ContractImplementation<INDEX, READ_ONLY>
+{
+    type Kind = kind::Action;
+    type Config = ContractInput;
+
     const KEY: &'static str = CONTRACT_KEYS[INDEX];
-    type Input = ContractInput;
-    type Output = ContractOutput;
 
-    fn metadata() -> ActionMetadata {
+    fn metadata() -> Metadata {
         METADATA.with(|metadata| {
             metadata
                 .borrow()
                 .clone()
                 .expect("metadata is installed during fixture admission")
+        })
+    }
+}
+
+impl<const INDEX: usize, const READ_ONLY: bool> Action
+    for ContractImplementation<INDEX, READ_ONLY>
+{
+    type Output = ContractOutput;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract = if READ_ONLY {
+        nebula_action::effect::ActionEffectContract::ReadOnly
+    } else {
+        nebula_action::effect::ActionEffectContract::Journaled(nebula_action::JournalProtocol::V1)
+    };
+
+    fn outputs() -> Vec<OutputPort> {
+        OUTPUTS.with(|outputs| {
+            outputs
+                .borrow()
+                .clone()
+                .unwrap_or_else(nebula_action::port::default_output_ports)
         })
     }
 
@@ -143,7 +180,9 @@ impl<const INDEX: usize> Action for ContractImplementation<INDEX> {
     }
 }
 
-impl<const INDEX: usize> StatelessAction for ContractImplementation<INDEX> {
+impl<const INDEX: usize, const READ_ONLY: bool> StatelessAction
+    for ContractImplementation<INDEX, READ_ONLY>
+{
     async fn execute(
         &self,
         input: ContractInput,
@@ -637,17 +676,22 @@ fn the_default_effect_contract_compiles_and_records_journaled_v1() {
 /// journaled turns).
 struct EchoAgent;
 
-impl Action for EchoAgent {
-    const KEY: &'static str = "demo.echo";
-    type Input = Value;
-    type Output = Value;
+impl Component for EchoAgent {
+    type Kind = kind::Action;
+    type Config = Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    const KEY: &'static str = "demo.echo";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_action::metadata_name!("Echo agent"),
             "Graph-v1 agent fixture",
         )
     }
+}
+
+impl Action for EchoAgent {
+    type Output = Value;
 
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();

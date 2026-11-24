@@ -20,7 +20,7 @@
 //!
 //! ## Key metadata and result types
 //!
-//! - `ActionMetadata` — author-owned metadata intent without schemas or kind.
+//! - `Component` (from `nebula-component`) — key, `Config` and the shared `Metadata`; `Action` adds output, ports and policy.
 //! - `ActionDefinition` — immutable factory-admitted metadata with typed schemas and kind.
 //! - `ActionResult` — execution result with flow-control intent.
 //! - `ActionError` — typed error distinguishing retryable from fatal.
@@ -109,7 +109,7 @@ pub mod webhook;
 
 // ── Public re-exports ───────────────────────────────────────────────────────
 
-pub use action::{Action, key_of};
+pub use action::Action;
 pub use agent::{AgentAction, AgentActionAdapter};
 pub use capability::{ExecutionEmitter, TriggerHealth, TriggerHealthSnapshot, TriggerScheduler};
 pub use context::{
@@ -142,10 +142,11 @@ pub use handle::{
 pub use idempotency::IdempotencyKey;
 pub use input::{ActionInput, PreparedActionInput};
 pub use metadata::{
-    ActionAdmissionError, ActionCompatibilityError, ActionDefinition, ActionKind, ActionMetadata,
+    ActionAdmissionError, ActionCompatibilityError, ActionDefinition, ActionKind,
     ActionReadmissionError, IsolationLevel, RecordedActionDefinition,
 };
 pub use nebula_action_macros::{Action, action_phantom};
+pub use nebula_component::{Component, key_of, kind};
 pub use nebula_core::{BranchKey, KeyValidationError, KeyValidationErrorKind, PortKey};
 pub use nebula_core::{
     Context, Dependencies,
@@ -155,7 +156,7 @@ pub use nebula_core::{
 pub use nebula_core::{OperationCallId, OperationId};
 pub use nebula_credential::{CredentialGuard, CredentialRef};
 pub use nebula_metadata::{
-    Icon, MetadataBuildError, MetadataError, MetadataName, MetadataVersion, metadata_name,
+    Icon, Metadata, MetadataBuildError, MetadataError, MetadataName, MetadataVersion, metadata_name,
 };
 pub use nebula_schema::{Property, Schema, ValidSchema, field_key};
 pub use output::{

@@ -3,7 +3,7 @@
 //! associated-type bound, exposed through `nebula_schema::schema_of`. This
 //! locks the convergence: the redundant per-trait schema methods do not
 //! resolve. The runtime side (the converged path equals
-//! `schema_of::<A::Input>()`) is asserted by
+//! `schema_of::<A::Config>()`) is asserted by
 //! `derive_action::input_schema_derives_from_input_via_schema_of`.
 
 #[test]

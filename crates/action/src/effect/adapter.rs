@@ -39,7 +39,7 @@ pub trait RemoteEffectAction: Action {
     #[must_use = "remote preparation does nothing unless its future is awaited"]
     fn prepare(
         &self,
-        input: Self::Input,
+        input: Self::Config,
         context: &EffectPreparationContext,
     ) -> impl Future<Output = Result<PreparedRemoteEffect, EffectPreparationError>> + Send;
 }

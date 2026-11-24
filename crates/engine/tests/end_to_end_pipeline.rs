@@ -32,7 +32,8 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, ActionMetadata, action::Action, result::ActionResult, stateless::StatelessAction,
+    ActionError, Component, Metadata, action::Action, kind, result::ActionResult,
+    stateless::StatelessAction,
 };
 use nebula_core::{Dependencies, ScopeLevel, id::WorkflowId, node_key};
 use nebula_engine::{
@@ -44,7 +45,7 @@ use nebula_resource::Resident;
 use nebula_resource::{
     Manager, RegistrationSpec, ResidentConfig, ResourceContext, SlotIdentity,
     error::Error as ResourceError,
-    resource::{Metadata, Provider, ResourceConfig},
+    resource::{Provider, ResourceConfig},
     topology::resident::ResidentProvider,
 };
 use nebula_workflow::{
@@ -79,14 +80,22 @@ struct PipelineWitness {
     seen_input: Arc<parking_lot::Mutex<Option<serde_json::Value>>>,
 }
 
-impl Action for PipelineWitness {
-    const KEY: &'static str = "phase9.witness";
-    type Input = PipelineInput;
-    type Output = serde_json::Value;
+impl Component for PipelineWitness {
+    type Kind = kind::Action;
+    type Config = PipelineInput;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "phase9.witness";
+
+    fn metadata() -> Metadata {
         meta("phase9.witness")
     }
+}
+
+impl Action for PipelineWitness {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -97,7 +106,7 @@ impl Action for PipelineWitness {
 impl StatelessAction for PipelineWitness {
     async fn execute(
         &self,
-        input: <Self as Action>::Input,
+        input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         // Record the resolved input — the test asserts that every
@@ -169,8 +178,8 @@ impl From<WitnessError> for ResourceError {
     }
 }
 
-impl nebula_resource::Component for WitnessResource {
-    type Kind = nebula_resource::kind::Resource;
+impl Component for WitnessResource {
+    type Kind = kind::Resource;
     type Config = WitnessResourceConfig;
 
     const KEY: &'static str = "phase9-witness-resource";
@@ -241,10 +250,8 @@ fn make_workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
     }
 }
 
-fn meta(name: &str) -> ActionMetadata {
-    ActionMetadata::try_new(name, "phase9 e2e pipeline test handler")
-        .expect("fixture display name")
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
+fn meta(name: &str) -> Metadata {
+    Metadata::try_new(name, "phase9 e2e pipeline test handler").expect("fixture display name")
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────

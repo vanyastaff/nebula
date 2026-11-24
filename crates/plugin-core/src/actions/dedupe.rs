@@ -132,19 +132,26 @@ impl HasSchema for DedupeInput {
 #[derive(Debug)]
 pub struct Dedupe;
 
-impl nebula_action::action::Action for Dedupe {
-    const KEY: &'static str = "core.dedupe";
-    type Input = DedupeInput;
-    type Output = Value;
+impl nebula_action::action::Component for Dedupe {
+    type Kind = nebula_action::action::kind::Action;
+    type Config = DedupeInput;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "core.dedupe";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Dedupe"),
             "Remove duplicate array elements by one or more key fields (first occurrence wins)",
         )
         .with_version(nebula_action::MetadataVersion::new(2, 0, 0))
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
+}
+
+impl nebula_action::action::Action for Dedupe {
+    type Output = Value;
+
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static nebula_action::Dependencies {
         static DEPS: OnceLock<nebula_action::Dependencies> = OnceLock::new();

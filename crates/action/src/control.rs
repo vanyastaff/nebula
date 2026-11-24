@@ -26,20 +26,23 @@
 //! # use std::sync::OnceLock;
 //! # use nebula_action::{
 //! #     Action, ActionContext, ActionError, ActionKind, ActionDefinition,
-//! #     ControlAction, ControlOutcome, branch_key,
+//! #     Component, ControlAction, ControlOutcome, branch_key, kind,
 //! # };
 //! # use nebula_core::{Dependencies, action_key};
 //! use std::sync::Arc;
 //! use nebula_action::{ControlActionAdapter, ControlHandle};
 //! # struct MyIf;
 //! # impl MyIf { fn new() -> Self { Self } }
-//! # impl Action for MyIf {
+//! # impl Component for MyIf {
+//! #     type Kind = kind::Action;
+//! #     type Config = bool;
 //! const KEY: &'static str = "control.if";
-//! #     type Input = bool;
-//! #     type Output = bool;
-//! #     fn metadata() -> nebula_action::ActionMetadata {
-//! #         nebula_action::ActionMetadata::new(nebula_action::metadata_name!("If"), "Binary branch")
+//! #     fn metadata() -> nebula_action::Metadata {
+//! #         nebula_action::Metadata::new(nebula_action::metadata_name!("If"), "Binary branch")
 //! #     }
+//! # }
+//! # impl Action for MyIf {
+//! #     type Output = bool;
 //! #     fn dependencies() -> &'static Dependencies {
 //! #         static D: OnceLock<Dependencies> = OnceLock::new();
 //! #         D.get_or_init(Dependencies::new)
@@ -70,27 +73,35 @@
 //!     Action, ActionContext, ActionError, ActionInput, ActionResult,
 //!     ControlAction, ControlActionAdapter, ControlOutcome,
 //!     ControlHandle, branch_key, port_key,
-//!     port::{OutputPort, default_input_ports},
+//!     Component, kind,
+//!     port::OutputPort,
 //! };
 //! use nebula_action::testing::TestContextBuilder;
 //! use nebula_core::{Dependencies, action_key};
 //!
 //! pub struct MyIf;
 //!
-//! impl Action for MyIf {
+//! impl Component for MyIf {
+//!     type Kind = kind::Action;
+//!     type Config = bool;
+//!
 //!     const KEY: &'static str = "control.if";
-//!     type Input = bool;
-//!     type Output = bool;
 //!
 //!     // The `ControlActionAdapter` stamps `ActionKind::Control` automatically;
 //!     // authors do not classify the node by hand.
-//!     fn metadata() -> nebula_action::ActionMetadata {
-//!         nebula_action::ActionMetadata::new(nebula_action::metadata_name!("If"), "Binary branch")
-//!             .with_inputs(default_input_ports())
-//!             .with_outputs(vec![
-//!                 OutputPort::flow(port_key!("true")),
-//!                 OutputPort::flow(port_key!("false")),
-//!             ])
+//!     fn metadata() -> nebula_action::Metadata {
+//!         nebula_action::Metadata::new(nebula_action::metadata_name!("If"), "Binary branch")
+//!     }
+//! }
+//!
+//! impl Action for MyIf {
+//!     type Output = bool;
+//!
+//!     fn outputs() -> Vec<OutputPort> {
+//!         vec![
+//!             OutputPort::flow(port_key!("true")),
+//!             OutputPort::flow(port_key!("false")),
+//!         ]
 //!     }
 //!
 //!     fn dependencies() -> &'static Dependencies {
@@ -305,13 +316,16 @@ pub trait ControlAction: Action {
     /// # };
     /// # use nebula_core::{Dependencies, action_key};
     /// struct SugarPass;
-    /// # impl Action for SugarPass {
+    /// # impl nebula_action::Component for SugarPass {
+    /// #     type Kind = nebula_action::kind::Action;
+    /// #     type Config = bool;
     /// const KEY: &'static str = "control.pass";
-    /// #     type Input = bool;
-    /// #     type Output = bool;
-    /// #     fn metadata() -> nebula_action::ActionMetadata {
-    /// #         nebula_action::ActionMetadata::new(nebula_action::metadata_name!("Pass"), "Pass through")
+    /// #     fn metadata() -> nebula_action::Metadata {
+    /// #         nebula_action::Metadata::new(nebula_action::metadata_name!("Pass"), "Pass through")
     /// #     }
+    /// # }
+    /// # impl Action for SugarPass {
+    /// #     type Output = bool;
     /// #     fn dependencies() -> &'static Dependencies {
     /// #         static D: OnceLock<Dependencies> = OnceLock::new();
     /// #         D.get_or_init(Dependencies::new)
@@ -349,13 +363,16 @@ pub trait ControlAction: Action {
     /// # };
     /// # use nebula_core::{Dependencies, action_key};
     /// struct ExplicitPass;
-    /// # impl Action for ExplicitPass {
+    /// # impl nebula_action::Component for ExplicitPass {
+    /// #     type Kind = nebula_action::kind::Action;
+    /// #     type Config = bool;
     /// const KEY: &'static str = "control.pass";
-    /// #     type Input = bool;
-    /// #     type Output = bool;
-    /// #     fn metadata() -> nebula_action::ActionMetadata {
-    /// #         nebula_action::ActionMetadata::new(nebula_action::metadata_name!("Pass"), "Pass through")
+    /// #     fn metadata() -> nebula_action::Metadata {
+    /// #         nebula_action::Metadata::new(nebula_action::metadata_name!("Pass"), "Pass through")
     /// #     }
+    /// # }
+    /// # impl Action for ExplicitPass {
+    /// #     type Output = bool;
     /// #     fn dependencies() -> &'static Dependencies {
     /// #         static D: OnceLock<Dependencies> = OnceLock::new();
     /// #         D.get_or_init(Dependencies::new)
@@ -389,7 +406,7 @@ pub trait ControlAction: Action {
     /// adapter instantiation site, which is the right place to notice.
     fn evaluate(
         &self,
-        input: Self::Input,
+        input: Self::Config,
         ctx: &(impl ActionContext + ?Sized),
     ) -> impl Future<Output = Result<ControlOutcome<Self::Output>, ActionError>> + Send;
 }
@@ -419,13 +436,16 @@ pub trait ControlAction: Action {
 /// use nebula_action::{ControlActionAdapter, ControlHandle};
 /// # struct MyIf;
 /// # impl MyIf { fn new() -> Self { Self } }
-/// # impl Action for MyIf {
+/// # impl nebula_action::Component for MyIf {
+/// #     type Kind = nebula_action::kind::Action;
+/// #     type Config = bool;
 /// const KEY: &'static str = "control.if";
-/// #     type Input = bool;
-/// #     type Output = bool;
-/// #     fn metadata() -> nebula_action::ActionMetadata {
-/// #         nebula_action::ActionMetadata::new(nebula_action::metadata_name!("If"), "Binary branch")
+/// #     fn metadata() -> nebula_action::Metadata {
+/// #         nebula_action::Metadata::new(nebula_action::metadata_name!("If"), "Binary branch")
 /// #     }
+/// # }
+/// # impl Action for MyIf {
+/// #     type Output = bool;
 /// #     fn dependencies() -> &'static Dependencies {
 /// #         static D: OnceLock<Dependencies> = OnceLock::new();
 /// #         D.get_or_init(Dependencies::new)
@@ -468,7 +488,7 @@ impl<A: ControlAction> ControlActionAdapter<A> {
     /// Returns a typed catalog error if metadata or an associated schema is invalid.
     #[tracing::instrument(name = "action.metadata.admit", skip_all, err)]
     pub fn new(action: A) -> Result<Self, crate::ActionAdmissionError> {
-        let meta = <A as Action>::metadata().admit_for::<A>(ActionKind::Control)?;
+        let meta = ActionDefinition::admit_for::<A>(ActionKind::Control)?;
         let cached_metadata = Arc::new(meta);
         let input_contract = ActionInputContract::new(cached_metadata.base().schema());
         Ok(Self {
@@ -495,7 +515,7 @@ where
     }
 
     fn prepare_input(&self, input: ActionInput) -> Result<PreparedActionInput, ActionError> {
-        self.input_contract.prepare::<A::Input>(input)
+        self.input_contract.prepare::<A::Config>(input)
     }
 
     async fn dispatch(
@@ -503,7 +523,7 @@ where
         input: PreparedActionInput,
         ctx: &dyn ActionContext,
     ) -> Result<ActionResult<Value>, ActionError> {
-        let input = input.into_typed::<A::Input>(&self.input_contract)?;
+        let input = input.into_typed::<A::Config>(&self.input_contract)?;
         let outcome: ActionResult<A::Output> = self.action.evaluate(input, ctx).await?.into();
         outcome.try_map_output(|output| {
             serde_json::to_value(output)

@@ -10,7 +10,7 @@ use nebula_resource::call::ResourceHandle;
 #[derive(Action)]
 #[action(
     key = "bad.lazy_resource_handle",
-    input = serde_json::Value,
+    config = serde_json::Value,
     output = serde_json::Value,
 )]
 struct LazyRow<R: nebula_resource::resource::Provider> {

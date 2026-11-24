@@ -23,21 +23,32 @@ Pattern inspiration: *Ports & Adapters / Hexagonal Architecture* — action auth
 
 The v4 surface lands per ADR-0042 (binding mechanism), ADR-0043 (dependency declaration DX), ADR-0044 (Resource::Credential supersession), and ADR-0045 (EventTrigger scope deferral). Phase 0–10 of the M6 plan.
 
-### Base `Action` trait — `Sized + type Input/Output + static fns`
+### Base `Action` trait — a `Component` with an output and an interface
 
 ```rust
-pub trait Action: Sized + Send + Sync + 'static {
-    const KEY: &'static str;                      // identity, declared once
-    type Input:  HasSchema + DeserializeOwned + Send + Sync;
-    type Output: HasSchema + Serialize         + Send + Sync;
+pub trait Action: Component<Kind = kind::Action> {
+    type Output: HasSchema + Serialize + Send + Sync;
 
-    fn metadata()       -> ActionMetadata;      // keyless catalog metadata
-    fn dependencies()   -> &'static Dependencies;  // slot-binding metadata
+    const ISOLATION_LEVEL: IsolationLevel = IsolationLevel::None;
+    const EFFECT_CONTRACT: ActionEffectContract =
+        ActionEffectContract::Journaled(JournalProtocol::V1);
+    const MAX_CONCURRENT: Option<NonZeroU32> = None;
+
+    fn inputs() -> Vec<InputPort> { port::default_input_ports() }
+    fn outputs() -> Vec<OutputPort> { port::default_output_ports() }
+    fn dependencies() -> &'static Dependencies;  // slot-binding metadata
 }
-// No schema method — the `Input`/`Output: HasSchema` bound is the single
-// source of truth; read it via `nebula_schema::schema_of::<A::Input>()`
-// (ADR-0052 P3).
+// Identity, form data and catalog metadata come from `Component`:
+// `Component::KEY`, `Component::Config` (the input) and
+// `Component::metadata() -> Metadata`. No schema method: the
+// `Config`/`Output: HasSchema` bounds are the single source of truth; read them
+// via `nebula_schema::schema_of::<A::Config>()` (ADR-0052 P3).
 ```
+
+The interface items have defaults, so an action overrides only what differs
+from a flow-in, flow-out, journaled, unisolated, unbounded node. A remote action
+keeps the default `EFFECT_CONTRACT`: `RemoteEffectInstanceFactory` stamps its
+`RemoteEffectAction::descriptor()` as the `Remote` contract.
 
 `Action` is **not object-safe** — `dyn Action` will not compile. Engine dispatch goes through `ActionFactory` + `ActionHandle` (see below).
 
@@ -66,10 +77,10 @@ Control adapters pass the declared Rust input type to `ControlAction::evaluate` 
 serialize only `ControlOutcome<A::Output>`. Raw JSON handler entrypoints remain literal-only. Public input errors
 contain fixed diagnostics, never schema payloads or serde causes.
 
-An action's key is `Action::KEY`, declared once on the type; `key_of::<A>()`
+An action's key is `Component::KEY`, declared once on the type; `key_of::<A>()`
 returns it as a typed `ActionKey` and fails the build on an invalid literal.
-`ActionMetadata::new(metadata_name!("Echo"), description)` constructs the
-author's keyless metadata; `try_new(name, description)` checks dynamic display
+`Metadata::new(metadata_name!("Echo"), description)` constructs the
+author's keyless metadata, the same type a credential or a resource returns; `try_new(name, description)` checks dynamic display
 names. A factory stamps the key at admission and yields an `ActionDefinition`.
 Action macros retain the complete SemVer, including prerelease and build fields.
 Read identity and lifecycle through `base.key()`, `base.name()`,
@@ -92,11 +103,11 @@ raw ingress; direct serde is structural validation, not a parser-allocation boun
 See [catalog construction and wire migration](../../docs/INTEGRATION_MODEL.md#catalog-construction-and-wire-migration)
 for limits and the separation from durable plugin records.
 
-### Sub-traits — execution shapes inherit `<Self as Action>::Input/Output`
+### Sub-traits — execution shapes inherit `Self::Config` and `Self::Output`
 
 | Trait | Shape | Method |
 |---|---|---|
-| `StatelessAction` | one-shot pure | `async fn execute(&self, input: Self::Input, ctx) -> Result<ActionResult<Self::Output>, ActionError>` |
+| `StatelessAction` | one-shot pure | `async fn execute(&self, input: Self::Config, ctx) -> Result<ActionResult<Self::Output>, ActionError>` |
 | `StatefulAction` | iterative | `async fn execute(&self, input, state: &mut Self::State, ctx) -> Result<ActionResult<Self::Output>, ActionError>` |
 | `TriggerAction` | start/stop trigger | `async fn start(&self, input, scheduler, ctx)` + `async fn stop(&self)` |
 | `ResourceAction` | scoped resource provider | `Output = ResourceProduces<Self::Resource>`; `configure` / `cleanup` |
@@ -106,7 +117,7 @@ for limits and the separation from durable plugin records.
 
 ### Slot-binding fields — `#[resource]` / `#[credential]` per-field attrs
 
-Action structs hold **only slot fields** (resources + credentials). User-facing form data lives on `Self::Input` (a separate `#[derive(Schema, Deserialize)]` companion struct).
+Action structs hold **only slot fields** (resources + credentials). User-facing form data lives on `Self::Config` (a separate `#[derive(Schema, Deserialize)]` companion struct).
 
 ```rust
 use nebula_action::{Action, StatelessAction};
@@ -133,7 +144,7 @@ struct MessageId(i64);
 #[action(
     key = "telegram.send",
     version = "1.0",
-    input  = SendTelegramInput,
+    config = SendTelegramInput,
     output = MessageId,
 )]
 struct SendTelegram {
@@ -223,7 +234,7 @@ Generic factories (`GenericStatelessFactory<A>`, `GenericStatefulFactory<A>`, �
 
 ### Other public API
 
-- `ActionDefinition`, `ActionMetadataBuilder` — static type descriptor (key, version, ports, isolation, category).
+- `ActionDefinition` — the admitted catalog definition (key, version, ports, isolation, effect contract, kind), built by a factory from `Component` and `Action`.
 - `ActionResult` — execution result with flow-control intent (Success, Skip, Branch, Wait, Stop, Fail).
 - `ActionOutput` — first-class output type: inline value, blob ref, stream.
 - `ActionError`, `RetryHintCode` — typed error distinguishing retryable from fatal.
@@ -235,7 +246,7 @@ Generic factories (`GenericStatelessFactory<A>`, `GenericStatefulFactory<A>`, �
 
 ### Macros
 
-- `#[derive(Action)]` — emits `Action` + `FromWorkflowNode` impls; parses `#[action(key, version, input, output, …)]` struct attribute and `#[resource]` / `#[credential]` field attributes.
+- `#[derive(Action)]` — emits `Action` + `FromWorkflowNode` impls; parses `#[action(key, version, config, output, …)]` struct attribute and `#[resource]` / `#[credential]` field attributes.
 - `#[action]` attribute macro — reserved for advanced cases requiring ADR-0035 phantom-shim field rewriting (`CredentialRef<dyn Bearer>` → `CredentialRef<dyn BearerPhantom>`); 95% of plugin authors use the derive form.
 - `validate_action_package`, `ActionPackageValidationError` — package-level validation.
 
@@ -243,10 +254,10 @@ Generic factories (`GenericStatelessFactory<A>`, `GenericStatefulFactory<A>`, �
 
 The v4 surface is a hard break: no compatibility shims preserve the old shapes (see the *Nebula is / is not* table in [`docs/PRODUCT_CANON.md`](../../docs/PRODUCT_CANON.md)). There is no automated codemod; migrate by hand:
 
-1. **Split form data off `Self`.** Move `#[field]`-bearing fields off the action struct into a `<Name>Input: HasSchema + Deserialize` companion struct. Add `type Input = <Name>Input` to the `Action` impl (or `input = <Name>Input` to the derive's struct attribute).
-2. **Drop `metadata()` boilerplate from `Self`.** The derive emits fallible `metadata()` from the `#[action(key, version, …)]` arguments and the associated input/output schemas. Generic factories cache the admission result. Delete the manual `impl Action::metadata` block.
+1. **Split form data off `Self`.** Move `#[field]`-bearing fields off the action struct into a `<Name>Input: HasSchema + Deserialize` companion struct. Add `type Config = <Name>Input` to the `Component` impl (or `config = <Name>Input` to the derive's struct attribute).
+2. **Drop `metadata()` boilerplate from `Self`.** The derive emits fallible `metadata()` from the `#[action(key, version, …)]` arguments and the associated input/output schemas. Generic factories cache the admission result. Delete the manual `Component::metadata` block.
 3. **Replace `dependencies()` macros with field attributes.** Old: a separate `DeclaresDependencies` impl listing `ResourceKey`s and `CredentialKey`s. New: `#[resource(key = "…")]` / `#[credential(key = "…")]` per field on the struct.
-4. **Update sub-trait method signatures** to take `Self::Input` explicitly: `execute(&self, input: SendTelegramInput, ctx)` not `execute(&self, ctx)`.
+4. **Update sub-trait method signatures** to take `Self::Config` explicitly: `execute(&self, input: SendTelegramInput, ctx)` not `execute(&self, ctx)`.
 5. **Replace `dyn Action` with `Arc<dyn ActionFactory>`** anywhere the engine or plugin loader stored a dynamic action handle. Existing transports / SDK harnesses that wrap `Arc<dyn StatelessHandler>` continue to work — four production paths intentionally stay on the legacy handler surface: webhook routing, plugin discovery, SDK runtime, EventSource adapter. The original architectural rationale survives in `git log` (commits up to the retire-AI-Factory pass).
 6. **For `ResourceAction` impls**, set `type Output = ResourceProduces<Self::Resource>`. The marker auto-derives `HasSchema`.
 7. **For `Resource` impls**, drop `type Credential` (per ADR-0044) and declare credential deps via `#[credential(key = "…")]` field attributes — see `crates/resource/README.md` for the resource-side migration.
@@ -308,7 +319,7 @@ The examples deliberately wire slot resolution manually (no `#[derive(Action)]`)
   persisted evidence; oversized or unsupported outputs become `OutputUnavailable`
   without another effect call.
 - **Derived no-effect actions.** `#[action(read_only)]` is an
-  explicit author attestation and emits `ActionEffectContract::ReadOnly`
+  explicit author attestation and sets `Action::EFFECT_CONTRACT` to `ActionEffectContract::ReadOnly`
   (serialized with its frozen `"NoExternalEffects"` tag, so recorded plans stay
   readable). Omitting the flag keeps the `Journaled(JournalProtocol::V1)` default
   (serialized as `{"Journaled":"V1"}`); the old `Undeclared` tag was removed and no
@@ -333,7 +344,7 @@ The examples deliberately wire slot resolution manually (no `#[derive(Action)]`)
 
 ### Checkpoint and retry migration
 
-`CheckpointPolicy`, `ActionMetadata::with_checkpoint_policy`, and
+`CheckpointPolicy`, `ActionMetadata::with_checkpoint_policy` (now `Metadata`), and
 `ActionDefinition::checkpoint_policy` are removed, including SDK re-exports.
 Remove these imports and setter calls. The former `OnePass`, `Stepwise`, and
 `ForcedHandoff` choices had no runtime enforcement; there is no replacement
@@ -370,7 +381,7 @@ remote-effect authority. These layers own different retry boundaries.
 
 See `docs/MATURITY.md` row for `nebula-action`.
 
-- API stability: `frontier` — Variant A trait shape (Sized + type Input/Output + static metadata + slot-binding derive + FromWorkflowNode factory + ActionHandle dispatch) shipped under M6 / §M11 (2026-04-29). The factory spine (`ActionFactory` → `ActionHandle`) is the sole engine dispatch path as of D0 (ADR-0098 PR3); `XxxHandler` dyn traits remain for SDK harnesses and event sources that operate outside the workflow-node dispatch loop.
+- API stability: `frontier` — Variant A trait shape (`Component` + type Output + static metadata + slot-binding derive + FromWorkflowNode factory + ActionHandle dispatch) shipped under M6 / §M11 (2026-04-29). The factory spine (`ActionFactory` → `ActionHandle`) is the sole engine dispatch path as of D0 (ADR-0098 PR3); `XxxHandler` dyn traits remain for SDK harnesses and event sources that operate outside the workflow-node dispatch loop.
 - `#![forbid(unsafe_code)]`, `#![warn(missing_docs)]` enforced.
 - Action-authored checkpoint cadence is absent; historical non-default evidence is readable but cannot readmit or project into an executable graph.
 - DX specializations (`PaginatedAction`, `BatchAction`, `WebhookAction`, `PollAction`) are implemented and tested; cross-action-type integration tests: partial.

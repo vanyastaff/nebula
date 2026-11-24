@@ -39,17 +39,22 @@ impl Drop for ActivationFuture {
 
 struct PendingActivation(Arc<PollObservation>);
 
-impl Action for PendingActivation {
-    const KEY: &'static str = "test.pending_activation";
-    type Input = Value;
-    type Output = Value;
+impl Component for PendingActivation {
+    type Kind = kind::Action;
+    type Config = Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    const KEY: &'static str = "test.pending_activation";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
             metadata_name!("Pending activation"),
             "A cooperative activation that ignores cancellation",
         )
     }
+}
+
+impl Action for PendingActivation {
+    type Output = Value;
 
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
@@ -162,17 +167,22 @@ struct FailingWebhook {
     stops: Arc<AtomicUsize>,
 }
 
-impl Action for FailingWebhook {
-    const KEY: &'static str = "test.failing_webhook";
-    type Input = Value;
-    type Output = Value;
+impl Component for FailingWebhook {
+    type Kind = kind::Action;
+    type Config = Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    const KEY: &'static str = "test.failing_webhook";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
             metadata_name!("Failing webhook"),
             "Lifecycle failure fixture",
         )
     }
+}
+
+impl Action for FailingWebhook {
+    type Output = Value;
 
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();

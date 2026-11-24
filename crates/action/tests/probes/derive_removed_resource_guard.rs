@@ -11,7 +11,7 @@ use nebula_resource::ResourceGuard;
 #[derive(Action)]
 #[action(
     key = "bad.removed_resource_guard",
-    input = serde_json::Value,
+    config = serde_json::Value,
     output = serde_json::Value,
 )]
 struct RequiredLease<R: nebula_resource::resource::Provider> {
@@ -22,7 +22,7 @@ struct RequiredLease<R: nebula_resource::resource::Provider> {
 #[derive(Action)]
 #[action(
     key = "bad.removed_optional_lazy_resource_guard",
-    input = serde_json::Value,
+    config = serde_json::Value,
     output = serde_json::Value,
 )]
 struct OptionalLazyLease<R: nebula_resource::resource::Provider> {

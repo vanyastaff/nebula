@@ -9,7 +9,7 @@ struct ManagedRow<R>(R);
 #[derive(Action)]
 #[action(
     key = "bad.renamed-resource-handle",
-    input = serde_json::Value,
+    config = serde_json::Value,
     output = serde_json::Value,
 )]
 struct OldRow<R: nebula_resource::resource::Provider> {

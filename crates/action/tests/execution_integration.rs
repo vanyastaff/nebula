@@ -7,9 +7,9 @@
 use std::sync::OnceLock;
 
 use nebula_action::{
-    Action, ActionError, ActionInput, ActionOutput, ActionResult, BreakReason, StatefulAction,
-    StatefulActionAdapter, StatefulHandle, StatelessAction, TriggerAction, TriggerSource,
-    testing::TestContextBuilder,
+    Action, ActionError, ActionInput, ActionOutput, ActionResult, BreakReason, Component,
+    StatefulAction, StatefulActionAdapter, StatefulHandle, StatelessAction, TriggerAction,
+    TriggerSource, kind, testing::TestContextBuilder,
 };
 use nebula_core::Dependencies;
 
@@ -30,17 +30,22 @@ fn empty_deps() -> &'static Dependencies {
 
 struct EchoAction;
 
-impl Action for EchoAction {
-    const KEY: &'static str = "test.echo";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for EchoAction {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.echo";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Echo"),
             "Echo input to output",
         )
     }
+}
+
+impl Action for EchoAction {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         empty_deps()
@@ -50,7 +55,7 @@ impl Action for EchoAction {
 impl StatelessAction for EchoAction {
     async fn execute(
         &self,
-        input: <Self as Action>::Input,
+        input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Ok(ActionResult::success(input))
@@ -85,17 +90,19 @@ impl nebula_schema::HasSchema for U32Out {
 
 struct CounterAction;
 
-impl Action for CounterAction {
-    const KEY: &'static str = "test.counter";
-    type Input = ();
-    type Output = U32Out;
+impl Component for CounterAction {
+    type Kind = kind::Action;
+    type Config = ();
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
-            nebula_action::metadata_name!("Counter"),
-            "Count then break",
-        )
+    const KEY: &'static str = "test.counter";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(nebula_action::metadata_name!("Counter"), "Count then break")
     }
+}
+
+impl Action for CounterAction {
+    type Output = U32Out;
 
     fn dependencies() -> &'static Dependencies {
         empty_deps()
@@ -111,7 +118,7 @@ impl StatefulAction for CounterAction {
 
     async fn execute(
         &self,
-        _input: &<Self as Action>::Input,
+        _input: &Self::Config,
         state: &mut Self::State,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
@@ -171,17 +178,22 @@ async fn stateful_action_continue_then_break() {
 
 struct NoOpTrigger;
 
-impl Action for NoOpTrigger {
-    const KEY: &'static str = "test.noop_trigger";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for NoOpTrigger {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.noop_trigger";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("NoOp Trigger"),
             "Start/stop no-op",
         )
     }
+}
+
+impl Action for NoOpTrigger {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         empty_deps()
@@ -235,17 +247,22 @@ struct MigratableState {
 
 struct MigratableAction;
 
-impl Action for MigratableAction {
-    const KEY: &'static str = "test.migratable";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for MigratableAction {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.migratable";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Migratable"),
             "Migrates v1 state",
         )
     }
+}
+
+impl Action for MigratableAction {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         empty_deps()
@@ -273,7 +290,7 @@ impl StatefulAction for MigratableAction {
 
     async fn execute(
         &self,
-        _input: &<Self as Action>::Input,
+        _input: &Self::Config,
         state: &mut Self::State,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {

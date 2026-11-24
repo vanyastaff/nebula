@@ -27,17 +27,22 @@ struct NumberPaginator {
     total_pages: u32,
 }
 
-impl Action for NumberPaginator {
-    const KEY: &'static str = "test.number_paginator";
-    type Input = serde_json::Value;
-    type Output = NumberPage;
+impl nebula_action::Component for NumberPaginator {
+    type Kind = nebula_action::kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.number_paginator";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("NumberPaginator"),
             "Paginate numbers",
         )
     }
+}
+
+impl Action for NumberPaginator {
+    type Output = NumberPage;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -80,17 +85,22 @@ struct LimitedPaginator {
     inner: NumberPaginator,
 }
 
-impl Action for LimitedPaginator {
-    const KEY: &'static str = "test.limited_paginator";
-    type Input = serde_json::Value;
-    type Output = NumberPage;
+impl nebula_action::Component for LimitedPaginator {
+    type Kind = nebula_action::kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.limited_paginator";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("LimitedPaginator"),
             "Paginate with limit",
         )
     }
+}
+
+impl Action for LimitedPaginator {
+    type Output = NumberPage;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();

@@ -11,8 +11,8 @@ use std::sync::{
 };
 
 use nebula_action::{
-    Action, ActionError, ActionRuntimeContext, ResourceAction, ResourceActionAdapter,
-    ResourceHandler, ResourceProduces, TestContextBuilder,
+    Action, ActionError, ActionRuntimeContext, Component, ResourceAction, ResourceActionAdapter,
+    ResourceHandler, ResourceProduces, TestContextBuilder, kind,
 };
 use nebula_core::Dependencies;
 
@@ -35,18 +35,20 @@ struct PoolAction {
     cleanup_ran: Arc<AtomicBool>,
 }
 
-impl Action for PoolAction {
+impl Component for PoolAction {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
+
     const KEY: &'static str = "test.resource.pool";
-    type Input = serde_json::Value;
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(nebula_action::metadata_name!("Pool"), "Typed pool resource")
+    }
+}
+
+impl Action for PoolAction {
     // ResourceAction requires Output = ResourceProduces<Self::Resource>.
     type Output = ResourceProduces<PoolHandle>;
-
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
-            nebula_action::metadata_name!("Pool"),
-            "Typed pool resource",
-        )
-    }
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();

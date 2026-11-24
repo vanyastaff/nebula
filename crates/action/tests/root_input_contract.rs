@@ -11,8 +11,8 @@ use std::{
 };
 
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionFactory, ActionHandle, ActionResult, InstanceFactory,
-    StatelessAction, TestContextBuilder,
+    Action, ActionContext, ActionError, ActionFactory, ActionHandle, ActionResult, Component,
+    InstanceFactory, StatelessAction, TestContextBuilder, kind,
 };
 use nebula_core::{Dependencies, node_key};
 use nebula_schema::{AuthoredValue, HasSchema, ValidSchema, ValidationReport};
@@ -25,20 +25,28 @@ struct RootEcho<T> {
     marker: PhantomData<fn() -> T>,
 }
 
-impl<T> Action for RootEcho<T>
+impl<T> Component for RootEcho<T>
 where
     T: HasSchema + DeserializeOwned + Serialize + Send + Sync + 'static,
 {
-    const KEY: &'static str = "test.root_echo";
-    type Input = T;
-    type Output = T;
+    type Kind = kind::Action;
+    type Config = T;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.root_echo";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Root echo"),
             "Echo the declared root input without coercion",
         )
     }
+}
+
+impl<T> Action for RootEcho<T>
+where
+    T: HasSchema + DeserializeOwned + Serialize + Send + Sync + 'static,
+{
+    type Output = T;
 
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();

@@ -15,7 +15,7 @@ use std::sync::{
 
 use nebula_action::{
     Action, ActionContext, ActionError, ActionFactory, ActionHandle, ActionKind, ActionResult,
-    InstanceFactory, StatelessAction, TestContextBuilder,
+    Component, InstanceFactory, StatelessAction, TestContextBuilder, kind,
 };
 use nebula_core::{Dependencies, action_key, node_key};
 use nebula_workflow::NodeDefinition;
@@ -63,17 +63,22 @@ impl nebula_schema::HasSchema for TypedEchoInput {
 /// `output_schema` is non-empty and the red-on-revert assertion is non-vacuous.
 struct TypedEcho;
 
-impl Action for TypedEcho {
-    const KEY: &'static str = "tenant.typed_echo";
-    type Input = TypedEchoInput;
-    type Output = TypedEchoOutput;
+impl Component for TypedEcho {
+    type Kind = kind::Action;
+    type Config = TypedEchoInput;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "tenant.typed_echo";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Typed Echo"),
             "per-registration metadata",
         )
     }
+}
+
+impl Action for TypedEcho {
+    type Output = TypedEchoOutput;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -84,7 +89,7 @@ impl Action for TypedEcho {
 impl StatelessAction for TypedEcho {
     async fn execute(
         &self,
-        input: <Self as Action>::Input,
+        input: Self::Config,
         _ctx: &(impl ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Ok(ActionResult::success(TypedEchoOutput {
@@ -101,17 +106,22 @@ struct CountingEcho {
     hits: Arc<AtomicUsize>,
 }
 
-impl Action for CountingEcho {
-    const KEY: &'static str = "tenant.custom_echo";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for CountingEcho {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "tenant.custom_echo";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Custom Echo"),
             "per-registration metadata",
         )
     }
+}
+
+impl Action for CountingEcho {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -121,7 +131,7 @@ impl Action for CountingEcho {
 
 nebula_action::stateless_entry!(
     TenantCustomEchoEntry(CountingEcho) = "tenant.custom_echo",
-    nebula_action::ActionMetadata::new(
+    nebula_action::Metadata::new(
         nebula_action::metadata_name!("Custom Echo"),
         "Shared instance fixture",
     ),
@@ -130,7 +140,7 @@ nebula_action::stateless_entry!(
 impl StatelessAction for CountingEcho {
     async fn execute(
         &self,
-        input: <Self as Action>::Input,
+        input: Self::Config,
         _ctx: &(impl ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         self.hits.fetch_add(1, Ordering::SeqCst);

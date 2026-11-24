@@ -59,17 +59,22 @@ impl SlackWebhookAction {
     }
 }
 
-impl Action for SlackWebhookAction {
-    const KEY: &'static str = "nebula.webhook.slack";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl crate::Component for SlackWebhookAction {
+    type Kind = crate::kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> crate::ActionMetadata {
-        crate::ActionMetadata::new(
+    const KEY: &'static str = "nebula.webhook.slack";
+
+    fn metadata() -> crate::Metadata {
+        crate::Metadata::new(
             crate::metadata_name!("Slack Webhook"),
             "Slack-flavoured signed webhook trigger.",
         )
     }
+}
+
+impl Action for SlackWebhookAction {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();

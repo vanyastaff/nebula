@@ -21,14 +21,14 @@ for direct use.
 ## Supported surface
 
 - `prelude` — curated authoring types and traits.
-- Authors write metadata; they never build an admitted definition. The key-free
-  `ActionMetadata` and the `Metadata` a credential or resource returns share
-  curated author vocabulary (`MetadataName`, `MetadataVersion`, `Icon`, `DeprecationNotice`)
-  without exposing any admitted/recorded form. An action's identity is `Action::KEY`, a
-  resource's or credential's `Component::KEY`, not a metadata field. Runtime factories alone bind schemas and create terminal definitions.
+- Authors write metadata; they never build an admitted definition. An action, a
+  credential and a resource return the same key-free `Metadata`, with the curated
+  author vocabulary (`MetadataName`, `MetadataVersion`, `Icon`, `DeprecationNotice`)
+  and without any admitted/recorded form. Every kind's identity is `Component::KEY`,
+  not a metadata field. Runtime factories alone bind schemas and create terminal definitions.
 - `integration` — narrow integration contracts; credential integrations expose
   `ResolveResult`, `StaticResolveResult`, `TestFailureCode`, and `TestResult` here.
-- `action::ActionMetadata` and `workflow::WorkflowBuilder` — programmatic authoring.
+- `action::Metadata` and `workflow::WorkflowBuilder` — programmatic authoring.
 - `runtime::{TestRuntime, RunReport}` and feature-gated `testing` — integration test support.
 - `params!`, `workflow!`, `simple_action!`, and `json!` — SDK-owned macro entry points.
 - `Error` / `Result` plus selected general-purpose ecosystem re-exports.
@@ -61,7 +61,7 @@ implementation and opt out of auto-generation with `#[config(schema = external)]
 Only unit and genuinely empty braced configs may use the standalone derive's schema.
 
 `schema_of` remains fallible because authors can supply invalid schema definitions.
-Typed `Action::Input`, `Action::Output`, and `Credential::Config` are the public
+Typed `Component::Config` (of an action or a credential) and `Action::Output` are the public
 boundary. SDK test runtime methods accept ordinary JSON and drive the same private
 factory admission path as production without exposing its proof tokens.
 
@@ -88,7 +88,7 @@ Missing or invalid mutation acknowledgements have an explicit unknown outcome. T
 
 `tests/public_perimeter_external_contract.rs` builds a real external fixture whose manifest has
 exactly one Nebula dependency: `nebula-sdk`. The positive binary exercises the currently supported
-manual authoring subset: typed `Action::Input`/`Output`, `ActionMetadata`, `simple_action!`,
+manual authoring subset: typed `Component::Config` and `Action::Output`, `Metadata`, `simple_action!`,
 `WorkflowBuilder`, and credential `TestResult`. Independent negative binaries prove that internal
 authority constructors, owner selectors, raw writers, proof values, terminal metadata, action
 adapters, runtime constructors, and unscoped resolvers are not reachable, and assert the intended

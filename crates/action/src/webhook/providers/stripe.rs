@@ -57,17 +57,22 @@ impl StripeWebhookAction {
     }
 }
 
-impl Action for StripeWebhookAction {
-    const KEY: &'static str = "nebula.webhook.stripe";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl crate::Component for StripeWebhookAction {
+    type Kind = crate::kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> crate::ActionMetadata {
-        crate::ActionMetadata::new(
+    const KEY: &'static str = "nebula.webhook.stripe";
+
+    fn metadata() -> crate::Metadata {
+        crate::Metadata::new(
             crate::metadata_name!("Stripe Webhook"),
             "Stripe-flavoured signed webhook trigger.",
         )
     }
+}
+
+impl Action for StripeWebhookAction {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();

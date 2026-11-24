@@ -8,9 +8,9 @@ use nebula_action::effect::{
     RemoteEffectDescriptor, RemoteEffectPolicy,
 };
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionFactory, ActionMetadata, ActionResult,
-    FromWorkflowNode, GenericTriggerFactory, InstanceFactory, RemoteEffectInstanceFactory,
-    StatelessAction, TriggerAction, TriggerContext, TriggerEventOutcome, TriggerSource,
+    Action, ActionContext, ActionError, ActionFactory, ActionResult, Component, FromWorkflowNode,
+    GenericTriggerFactory, InstanceFactory, Metadata, RemoteEffectInstanceFactory, StatelessAction,
+    TriggerAction, TriggerContext, TriggerEventOutcome, TriggerSource, kind,
 };
 use nebula_core::{ArtifactSetDigest, Dependencies};
 use nebula_schema::{HasSchema, Schema, SecretField, ValidSchema, field_key};
@@ -24,15 +24,43 @@ use crate::{FrozenPluginRegistry, Plugin, PluginManifest, PluginRegistry, Resolv
 /// Each fixture is its own type, so its key and metadata are the type's own.
 macro_rules! diagnostic_stateless {
     ($name:ident, $input:ty, $dependencies:expr, $key:literal, $metadata:expr $(,)?) => {
+        diagnostic_stateless!(
+            $name,
+            $input,
+            $dependencies,
+            $key,
+            $metadata,
+            nebula_action::port::default_input_ports(),
+        );
+    };
+    (
+        $name:ident,
+        $input:ty,
+        $dependencies:expr,
+        $key:literal,
+        $metadata:expr,
+        $inputs:expr $(,)?
+    ) => {
         struct $name;
 
-        impl Action for $name {
+        impl Component for $name {
+            type Kind = kind::Action;
+            type Config = $input;
+
             const KEY: &'static str = $key;
-            type Input = $input;
+
+            fn metadata() -> Metadata {
+                $metadata
+            }
+        }
+
+        impl Action for $name {
             type Output = Value;
 
-            fn metadata() -> ActionMetadata {
-                $metadata
+            const EFFECT_CONTRACT: ActionEffectContract = ActionEffectContract::ReadOnly;
+
+            fn inputs() -> Vec<nebula_action::InputPort> {
+                $inputs
             }
 
             fn dependencies() -> &'static Dependencies {
@@ -61,19 +89,20 @@ where
     Arc::new(InstanceFactory::new(action).expect("static diagnostic action contract must admit"))
 }
 
-fn read_only(name: nebula_action::MetadataName, description: &str) -> ActionMetadata {
-    ActionMetadata::new(name, description).with_effect_contract(ActionEffectContract::ReadOnly)
+fn read_only(name: nebula_action::MetadataName, description: &str) -> Metadata {
+    Metadata::new(name, description)
 }
 
-fn port_fixture(name: nebula_action::MetadataName) -> ActionMetadata {
+/// The input ports of the port fixture named `name`.
+fn port_fixture(name: &str) -> Vec<nebula_action::InputPort> {
     let mut port = nebula_action::InputPort::support(
         nebula_action::port_key!("support"),
         "Support",
         "Fixture support",
     );
     if let nebula_action::InputPort::Support(support) = &mut port {
-        support.required = name.as_str() == "support_required";
-        match name.as_str() {
+        support.required = name == "support_required";
+        match name {
             "tag_filter" => support.filter.allowed_tags = Some(vec!["fixture".to_owned()]),
             "node_filter" => {
                 support.filter.allowed_node_types = Some(vec!["core.absent".to_owned()]);
@@ -82,10 +111,10 @@ fn port_fixture(name: nebula_action::MetadataName) -> ActionMetadata {
             _ => {},
         }
     }
-    read_only(name, "Port fixture").with_inputs(vec![
+    vec![
         nebula_action::InputPort::flow(nebula_action::port_key!("in")),
         port,
-    ])
+    ]
 }
 
 diagnostic_stateless!(
@@ -130,28 +159,38 @@ diagnostic_stateless!(
     Value,
     empty_dependencies(),
     "core.tag_filter",
-    port_fixture(nebula_action::metadata_name!("tag_filter")),
+    read_only(nebula_action::metadata_name!("tag_filter"), "Port fixture"),
+    port_fixture("tag_filter"),
 );
 diagnostic_stateless!(
     NodeFilterFixture,
     Value,
     empty_dependencies(),
     "core.node_filter",
-    port_fixture(nebula_action::metadata_name!("node_filter")),
+    read_only(nebula_action::metadata_name!("node_filter"), "Port fixture"),
+    port_fixture("node_filter"),
 );
 diagnostic_stateless!(
     SupportRequiredFixture,
     Value,
     empty_dependencies(),
     "core.support_required",
-    port_fixture(nebula_action::metadata_name!("support_required")),
+    read_only(
+        nebula_action::metadata_name!("support_required"),
+        "Port fixture"
+    ),
+    port_fixture("support_required"),
 );
 diagnostic_stateless!(
     InvalidProjectionFixture,
     Value,
     empty_dependencies(),
     "core.invalid_projection",
-    port_fixture(nebula_action::metadata_name!("invalid_projection")),
+    read_only(
+        nebula_action::metadata_name!("invalid_projection"),
+        "Port fixture"
+    ),
+    port_fixture("invalid_projection"),
 );
 diagnostic_stateless!(
     WrongDependencyTypeFixture,
@@ -290,18 +329,25 @@ macro_rules! diagnostic_trigger {
     ($trigger:ident, $input:ty, $key:literal, $name:literal) => {
         struct $trigger;
 
-        impl Action for $trigger {
-            const KEY: &'static str = $key;
-            type Input = $input;
-            type Output = Value;
+        impl Component for $trigger {
+            type Kind = kind::Action;
+            type Config = $input;
 
-            fn metadata() -> ActionMetadata {
-                ActionMetadata::new(
+            const KEY: &'static str = $key;
+
+            fn metadata() -> Metadata {
+                Metadata::new(
                     nebula_action::metadata_name!($name),
                     "Activation diagnostic trigger fixture",
                 )
-                .with_effect_contract(ActionEffectContract::ReadOnly)
             }
+        }
+
+        impl Action for $trigger {
+            type Output = Value;
+
+            const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+                ActionEffectContract::ReadOnly;
 
             fn dependencies() -> &'static Dependencies {
                 empty_dependencies()
@@ -360,17 +406,22 @@ diagnostic_trigger!(
 
 struct DiagnosticRemoteAction;
 
-impl Action for DiagnosticRemoteAction {
-    const KEY: &'static str = "core.remote_control";
-    type Input = Value;
-    type Output = Value;
+impl Component for DiagnosticRemoteAction {
+    type Kind = kind::Action;
+    type Config = Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    const KEY: &'static str = "core.remote_control";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_action::metadata_name!("remote_control"),
             "Remote effect diagnostic fixture",
         )
     }
+}
+
+impl Action for DiagnosticRemoteAction {
+    type Output = Value;
 
     fn dependencies() -> &'static Dependencies {
         empty_dependencies()
@@ -392,7 +443,7 @@ impl RemoteEffectAction for DiagnosticRemoteAction {
 
     async fn prepare(
         &self,
-        _input: Self::Input,
+        _input: Self::Config,
         _context: &EffectPreparationContext,
     ) -> Result<PreparedRemoteEffect, EffectPreparationError> {
         Err(EffectPreparationError::Unavailable)
@@ -459,14 +510,14 @@ impl nebula_resource::HasCredentialSlots for FixtureResource {
 
 impl nebula_core::DeclaresDependencies for FixtureResource {}
 
-impl nebula_resource::Component for FixtureResource {
-    type Kind = nebula_resource::kind::Resource;
+impl Component for FixtureResource {
+    type Kind = kind::Resource;
     type Config = ();
 
     const KEY: &'static str = "provider.resident";
 
-    fn metadata() -> nebula_resource::Metadata {
-        nebula_resource::Metadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_resource::metadata_name!("Resident"),
             "Admission-only resource",
         )

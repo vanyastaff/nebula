@@ -117,7 +117,7 @@ impl ActionRegistry {
     pub fn register_stateless_factory<A>(&self) -> Result<(), ActionAdmissionError>
     where
         A: StatelessAction + FromWorkflowNode<Error = ActionError>,
-        <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
+        <A as nebula_action::Component>::Config: serde::de::DeserializeOwned + Send + Sync,
         <A as Action>::Output: serde::Serialize + Send + Sync,
     {
         let factory: Arc<dyn ActionFactory> = Arc::new(GenericStatelessFactory::<A>::new()?);
@@ -135,7 +135,7 @@ impl ActionRegistry {
     pub fn register_stateless_instance<A>(&self, action: A) -> Result<(), ActionAdmissionError>
     where
         A: StatelessAction + Send + Sync + 'static,
-        <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
+        <A as nebula_action::Component>::Config: serde::de::DeserializeOwned + Send + Sync,
         <A as Action>::Output: serde::Serialize + Send + Sync,
     {
         let factory: Arc<dyn ActionFactory> = Arc::new(InstanceFactory::new(action)?);
@@ -147,7 +147,7 @@ impl ActionRegistry {
     pub fn register_stateful_factory<A>(&self) -> Result<(), ActionAdmissionError>
     where
         A: StatefulAction + FromWorkflowNode<Error = ActionError>,
-        <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
+        <A as nebula_action::Component>::Config: serde::de::DeserializeOwned + Send + Sync,
         <A as Action>::Output: serde::Serialize + Send + Sync,
         A::State: serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync,
     {
@@ -186,7 +186,7 @@ impl ActionRegistry {
     pub fn register_stream_factory<A>(&self) -> Result<(), ActionAdmissionError>
     where
         A: StreamAction + FromWorkflowNode<Error = ActionError>,
-        <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
+        <A as nebula_action::Component>::Config: serde::de::DeserializeOwned + Send + Sync,
         <A as Action>::Output: serde::Serialize + Send + Sync,
     {
         let factory: Arc<dyn ActionFactory> = Arc::new(GenericStreamFactory::<A>::new()?);
@@ -203,7 +203,7 @@ impl ActionRegistry {
     pub fn register_agent_factory<A>(&self) -> Result<(), ActionAdmissionError>
     where
         A: AgentAction + FromWorkflowNode<Error = ActionError>,
-        <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
+        <A as nebula_action::Component>::Config: serde::de::DeserializeOwned + Send + Sync,
         <A as Action>::Output: serde::Serialize + Send + Sync,
         A::Turn: serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync,
     {
@@ -328,11 +328,8 @@ mod tests {
     use std::sync::OnceLock;
 
     use nebula_action::{
-        action::Action,
-        error::ActionError,
-        metadata::{ActionKind, ActionMetadata},
-        result::ActionResult,
-        stateless::StatelessAction,
+        Component, Metadata, action::Action, error::ActionError, kind, metadata::ActionKind,
+        result::ActionResult, stateless::StatelessAction,
     };
     use nebula_core::{Dependencies, action_key};
     use nebula_workflow::NodeDefinition;
@@ -341,14 +338,19 @@ mod tests {
 
     struct NoopAction;
 
-    impl Action for NoopAction {
-        const KEY: &'static str = "test.noop";
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
+    impl Component for NoopAction {
+        type Kind = kind::Action;
+        type Config = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
+        const KEY: &'static str = "test.noop";
+
+        fn metadata() -> Metadata {
             meta_with(1, 0)
         }
+    }
+
+    impl Action for NoopAction {
+        type Output = serde_json::Value;
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
             D.get_or_init(Dependencies::new)
@@ -359,30 +361,35 @@ mod tests {
 
     nebula_action::stateless_entry!(
         TestNoopEntry2(NoopAction) = "test.noop",
-        meta_with(1, 0).with_outputs(vec![OutputPort::flow(nebula_core::port_key!("out"))]),
+        meta_with(1, 0),
+        outputs: vec![OutputPort::flow(nebula_core::port_key!("out"))],
     );
 
     nebula_action::stateless_entry!(
         TestNoopEntry3(NoopAction) = "test.noop",
-        meta_with(2, 0).with_outputs(vec![
+        meta_with(2, 0),
+        outputs: vec![
             OutputPort::flow(nebula_core::port_key!("out")),
             OutputPort::error(nebula_core::port_key!("error")),
-        ]),
+        ],
     );
 
     nebula_action::stateless_entry!(
         TestNoopEntry4(NoopAction) = "test.noop",
-        meta_with(1, 0).with_outputs(vec![OutputPort::flow(nebula_core::port_key!("legacy"))]),
+        meta_with(1, 0),
+        outputs: vec![OutputPort::flow(nebula_core::port_key!("legacy"))],
     );
 
     nebula_action::stateless_entry!(
         TestNoopEntry5(NoopAction) = "test.noop",
-        meta_with(2, 0).with_outputs(vec![OutputPort::flow(nebula_core::port_key!("out"))]),
+        meta_with(2, 0),
+        outputs: vec![OutputPort::flow(nebula_core::port_key!("out"))],
     );
+
     impl StatelessAction for NoopAction {
         async fn execute(
             &self,
-            input: <Self as Action>::Input,
+            input: Self::Config,
             _ctx: &(impl nebula_action::ActionContext + ?Sized),
         ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
             Ok(ActionResult::success(input))
@@ -397,14 +404,19 @@ mod tests {
 
     struct InvalidSchemaAction;
 
-    impl Action for InvalidSchemaAction {
-        const KEY: &'static str = NoopAction::KEY;
-        type Input = InvalidPatternInput;
-        type Output = serde_json::Value;
+    impl Component for InvalidSchemaAction {
+        type Kind = kind::Action;
+        type Config = InvalidPatternInput;
 
-        fn metadata() -> ActionMetadata {
+        const KEY: &'static str = NoopAction::KEY;
+
+        fn metadata() -> Metadata {
             NoopAction::metadata()
         }
+    }
+
+    impl Action for InvalidSchemaAction {
+        type Output = serde_json::Value;
 
         fn dependencies() -> &'static Dependencies {
             NoopAction::dependencies()
@@ -425,7 +437,7 @@ mod tests {
     impl StatelessAction for InvalidSchemaAction {
         async fn execute(
             &self,
-            input: Self::Input,
+            input: Self::Config,
             _ctx: &(impl nebula_action::ActionContext + ?Sized),
         ) -> Result<ActionResult<Self::Output>, ActionError> {
             Ok(ActionResult::success(serde_json::json!(input.value)))
@@ -458,8 +470,8 @@ mod tests {
         assert_eq!(registry.len(), 1);
     }
 
-    fn meta_with(major: u64, minor: u64) -> ActionMetadata {
-        ActionMetadata::new(nebula_action::metadata_name!("Noop"), "Does nothing")
+    fn meta_with(major: u64, minor: u64) -> Metadata {
+        Metadata::new(nebula_action::metadata_name!("Noop"), "Does nothing")
             .with_version(Version::new(major, minor, 0))
     }
 
@@ -468,17 +480,22 @@ mod tests {
     // default `Stateless` kind; only the factory stamps `Stateful`.
     struct NoopStateful;
 
-    impl Action for NoopStateful {
-        const KEY: &'static str = "test.noop_stateful";
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
+    impl Component for NoopStateful {
+        type Kind = kind::Action;
+        type Config = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
-            ActionMetadata::new(
+        const KEY: &'static str = "test.noop_stateful";
+
+        fn metadata() -> Metadata {
+            Metadata::new(
                 nebula_action::metadata_name!("NoopStateful"),
                 "Does nothing, iteratively",
             )
         }
+    }
+
+    impl Action for NoopStateful {
+        type Output = serde_json::Value;
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
             D.get_or_init(Dependencies::new)
@@ -494,7 +511,7 @@ mod tests {
 
         async fn execute(
             &self,
-            input: &<Self as Action>::Input,
+            input: &Self::Config,
             _state: &mut Self::State,
             _ctx: &(impl nebula_action::ActionContext + ?Sized),
         ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {

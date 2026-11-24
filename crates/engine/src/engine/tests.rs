@@ -7,8 +7,8 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, BranchKey, OutputPort, action::Action, context::CredentialContextExt,
-    metadata::ActionMetadata, result::ActionResult, stateless::StatelessAction,
+    ActionError, BranchKey, Component, Metadata, OutputPort, action::Action,
+    context::CredentialContextExt, kind, result::ActionResult, stateless::StatelessAction,
 };
 use nebula_core::{ActionKey, Dependencies, action_key, port_key, scope::Principal};
 use nebula_storage_port::StorageError;
@@ -31,14 +31,22 @@ use crate::runtime::{DataPassingPolicy, InProcessRunner, registry::ActionRegistr
 
 struct EchoHandler;
 
-impl Action for EchoHandler {
-    const KEY: &'static str = "echo";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for EchoHandler {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "echo";
+
+    fn metadata() -> Metadata {
         pure_metadata(nebula_action::metadata_name!("Echo"), "echoes input")
     }
+}
+
+impl Action for EchoHandler {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -64,30 +72,31 @@ nebula_action::stateless_entry!(
     // counted as resolved regardless of which port activates); "alt"
     // just needs to be a *declared* port to pass the pre-flight, not one
     // `EchoHandler` ever actually produces output on.
-    pure_metadata(nebula_action::metadata_name!("Echo"), "echoes input",).with_outputs(vec![
+    pure_metadata(nebula_action::metadata_name!("Echo"), "echoes input",),
+    outputs: vec![
         OutputPort::flow(port_key!("out")),
         OutputPort::flow(port_key!("alt")),
-    ]),
+    ],
 );
 
 nebula_action::stateless_entry!(
     VersionedPortsEntry(EchoHandler) = "versioned_ports",
     pure_metadata(nebula_action::metadata_name!("V1"), "v1",)
-        .with_version(semver::Version::new(1, 0, 0))
-        .with_outputs(vec![OutputPort::flow(port_key!("legacy"))]),
+        .with_version(semver::Version::new(1, 0, 0)),
+    outputs: vec![OutputPort::flow(port_key!("legacy"))],
 );
 
 nebula_action::stateless_entry!(
     VersionedPortsEntry2(EchoHandler) = "versioned_ports",
     pure_metadata(nebula_action::metadata_name!("V2"), "v2",)
-        .with_version(semver::Version::new(2, 0, 0))
-        .with_outputs(vec![OutputPort::flow(port_key!("out"))]),
+        .with_version(semver::Version::new(2, 0, 0)),
+    outputs: vec![OutputPort::flow(port_key!("out"))],
 );
 
 impl StatelessAction for EchoHandler {
     async fn execute(
         &self,
-        input: <Self as Action>::Input,
+        input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Ok(ActionResult::success(input))
@@ -102,14 +111,22 @@ struct SetupFailureInput {
 
 struct SetupFailureHandler;
 
-impl Action for SetupFailureHandler {
-    const KEY: &'static str = "core.echo";
-    type Input = SetupFailureInput;
-    type Output = serde_json::Value;
+impl Component for SetupFailureHandler {
+    type Kind = kind::Action;
+    type Config = SetupFailureInput;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "core.echo";
+
+    fn metadata() -> Metadata {
         pure_metadata(nebula_action::metadata_name!("Echo"), "echoes input")
     }
+}
+
+impl Action for SetupFailureHandler {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
@@ -125,7 +142,7 @@ nebula_action::stateless_entry!(
 impl StatelessAction for SetupFailureHandler {
     async fn execute(
         &self,
-        input: Self::Input,
+        input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<Self::Output>, ActionError> {
         Ok(ActionResult::success(serde_json::json!({
@@ -137,14 +154,22 @@ impl StatelessAction for SetupFailureHandler {
 
 struct FailHandler;
 
-impl Action for FailHandler {
-    const KEY: &'static str = "fail";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for FailHandler {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "fail";
+
+    fn metadata() -> Metadata {
         pure_metadata(nebula_action::metadata_name!("Fail"), "always fails")
     }
+}
+
+impl Action for FailHandler {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -164,7 +189,7 @@ nebula_action::stateless_entry!(
 impl StatelessAction for FailHandler {
     async fn execute(
         &self,
-        _input: <Self as Action>::Input,
+        _input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Err(ActionError::fatal("intentional failure"))
@@ -175,14 +200,22 @@ struct SlowHandler {
     delay: Duration,
 }
 
-impl Action for SlowHandler {
-    const KEY: &'static str = "slow";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for SlowHandler {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "slow";
+
+    fn metadata() -> Metadata {
         pure_metadata(nebula_action::metadata_name!("Slow"), "sleeps")
     }
+}
+
+impl Action for SlowHandler {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -197,7 +230,7 @@ nebula_action::stateless_entry!(
 impl StatelessAction for SlowHandler {
     async fn execute(
         &self,
-        input: <Self as Action>::Input,
+        input: Self::Config,
         ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         tokio::select! {
@@ -209,12 +242,8 @@ impl StatelessAction for SlowHandler {
 
 // -- Helpers --
 
-fn pure_metadata(
-    name: nebula_action::MetadataName,
-    description: impl Into<String>,
-) -> ActionMetadata {
-    ActionMetadata::new(name, description)
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
+fn pure_metadata(name: nebula_action::MetadataName, description: impl Into<String>) -> Metadata {
+    Metadata::new(name, description)
 }
 
 fn make_workflow(nodes: Vec<NodeDefinition>, connections: Vec<Connection>) -> WorkflowDefinition {
@@ -813,14 +842,22 @@ async fn trigger_context_construction_is_usable_in_engine() {
 
 struct SkipHandler;
 
-impl Action for SkipHandler {
-    const KEY: &'static str = "skip";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for SkipHandler {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "skip";
+
+    fn metadata() -> Metadata {
         pure_metadata(nebula_action::metadata_name!("Skip"), "always skips")
     }
+}
+
+impl Action for SkipHandler {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -830,7 +867,7 @@ impl Action for SkipHandler {
 impl StatelessAction for SkipHandler {
     async fn execute(
         &self,
-        _input: <Self as Action>::Input,
+        _input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Ok(ActionResult::skip("skipped by test"))
@@ -841,20 +878,33 @@ struct BranchHandler {
     selected: BranchKey,
 }
 
-impl Action for BranchHandler {
-    const KEY: &'static str = "branch";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for BranchHandler {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "branch";
+
+    fn metadata() -> Metadata {
         // Declares the "true"/"false" branch ports it actually routes on —
         // required since W0 U2's undeclared-output-port pre-flight now
         // rejects connections wired to a flow-only action's undeclared port.
-        pure_metadata(nebula_action::metadata_name!("Branch"), "branches").with_outputs(vec![
+        pure_metadata(nebula_action::metadata_name!("Branch"), "branches")
+    }
+}
+
+impl Action for BranchHandler {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
+
+    fn outputs() -> Vec<OutputPort> {
+        vec![
             OutputPort::flow(port_key!("true")),
             OutputPort::flow(port_key!("false")),
-        ])
+        ]
     }
+
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -862,30 +912,32 @@ impl Action for BranchHandler {
 }
 
 nebula_action::stateless_entry!(
+    /// The branch behavior with the default `main` output, so a selected
+    /// `out` routes through a plain connection.
     CoreBranchEntry(BranchHandler) = "core.branch",
     pure_metadata(nebula_action::metadata_name!("Branch"), "branches",),
+    outputs: nebula_action::port::default_output_ports(),
 );
 
 nebula_action::stateless_entry!(
     SwitchEntry(BranchHandler) = "switch",
-    pure_metadata(nebula_action::metadata_name!("Switch"), "routes by config",)
-        .with_outputs(vec![OutputPort::dynamic(port_key!("case"), "cases")]),
+    pure_metadata(nebula_action::metadata_name!("Switch"), "routes by config",),
+    outputs: vec![OutputPort::dynamic(port_key!("case"), "cases")],
 );
 
 nebula_action::stateless_entry!(
     IfEntry(BranchHandler) = "if",
-    pure_metadata(nebula_action::metadata_name!("If"), "branches on a boolean",).with_outputs(
-        vec![
-            OutputPort::flow(port_key!("true")),
-            OutputPort::flow(port_key!("false")),
-        ]
-    ),
+    pure_metadata(nebula_action::metadata_name!("If"), "branches on a boolean",),
+    outputs: vec![
+        OutputPort::flow(port_key!("true")),
+        OutputPort::flow(port_key!("false")),
+    ],
 );
 
 impl StatelessAction for BranchHandler {
     async fn execute(
         &self,
-        input: <Self as Action>::Input,
+        input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Ok(ActionResult::Branch {
@@ -2995,14 +3047,22 @@ async fn successful_execution_records_idempotency_mark_and_output() {
         count: Arc<AtomicU32>,
     }
 
-    impl Action for CountingHandler {
-        const KEY: &'static str = "core.counting";
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
+    impl Component for CountingHandler {
+        type Kind = kind::Action;
+        type Config = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
+        const KEY: &'static str = "core.counting";
+
+        fn metadata() -> Metadata {
             pure_metadata(nebula_action::metadata_name!("Counting"), "counts calls")
         }
+    }
+
+    impl Action for CountingHandler {
+        type Output = serde_json::Value;
+
+        const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+            nebula_action::effect::ActionEffectContract::ReadOnly;
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
             D.get_or_init(Dependencies::new)
@@ -3012,7 +3072,7 @@ async fn successful_execution_records_idempotency_mark_and_output() {
     impl StatelessAction for CountingHandler {
         async fn execute(
             &self,
-            input: <Self as Action>::Input,
+            input: Self::Config,
             _ctx: &(impl nebula_action::ActionContext + ?Sized),
         ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
             self.count.fetch_add(1, AOrdering::Relaxed);
@@ -3108,16 +3168,24 @@ async fn version_pinned_node_uses_specified_handler() {
     // V1 handler returns "v1".
     struct V1Handler;
 
-    impl Action for V1Handler {
-        const KEY: &'static str = "versioned";
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
+    impl Component for V1Handler {
+        type Kind = kind::Action;
+        type Config = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
+        const KEY: &'static str = "versioned";
+
+        fn metadata() -> Metadata {
             pure_metadata(nebula_action::metadata_name!("V1"), "v1 handler")
-                .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
                 .with_version(Version::new(1, 0, 0))
         }
+    }
+
+    impl Action for V1Handler {
+        type Output = serde_json::Value;
+
+        const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+            nebula_action::effect::ActionEffectContract::ReadOnly;
+
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
             D.get_or_init(Dependencies::new)
@@ -3127,7 +3195,7 @@ async fn version_pinned_node_uses_specified_handler() {
     impl StatelessAction for V1Handler {
         async fn execute(
             &self,
-            _input: <Self as Action>::Input,
+            _input: Self::Config,
             _ctx: &(impl nebula_action::ActionContext + ?Sized),
         ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
             Ok(ActionResult::success(serde_json::json!("v1")))
@@ -3137,15 +3205,23 @@ async fn version_pinned_node_uses_specified_handler() {
     // V2 handler returns "v2".
     struct V2Handler;
 
-    impl Action for V2Handler {
-        const KEY: &'static str = "versioned";
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
+    impl Component for V2Handler {
+        type Kind = kind::Action;
+        type Config = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
+        const KEY: &'static str = "versioned";
+
+        fn metadata() -> Metadata {
             pure_metadata(nebula_action::metadata_name!("V2"), "v2 handler")
                 .with_version(Version::new(2, 0, 0))
         }
+    }
+
+    impl Action for V2Handler {
+        type Output = serde_json::Value;
+
+        const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+            nebula_action::effect::ActionEffectContract::ReadOnly;
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
             D.get_or_init(Dependencies::new)
@@ -3155,7 +3231,7 @@ async fn version_pinned_node_uses_specified_handler() {
     impl StatelessAction for V2Handler {
         async fn execute(
             &self,
-            _input: <Self as Action>::Input,
+            _input: Self::Config,
             _ctx: &(impl nebula_action::ActionContext + ?Sized),
         ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
             Ok(ActionResult::success(serde_json::json!("v2")))
@@ -3715,14 +3791,22 @@ async fn credential_refresh_failure_surfaces_as_typed_error() {
     struct NeverRunHandler {
         invoked: Arc<AtomicU32>,
     }
-    impl Action for NeverRunHandler {
-        const KEY: &'static str = "never";
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
+    impl Component for NeverRunHandler {
+        type Kind = kind::Action;
+        type Config = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
+        const KEY: &'static str = "never";
+
+        fn metadata() -> Metadata {
             pure_metadata(nebula_action::metadata_name!("Never"), "must not run")
         }
+    }
+
+    impl Action for NeverRunHandler {
+        type Output = serde_json::Value;
+
+        const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+            nebula_action::effect::ActionEffectContract::ReadOnly;
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
             D.get_or_init(Dependencies::new)
@@ -3731,7 +3815,7 @@ async fn credential_refresh_failure_surfaces_as_typed_error() {
     impl StatelessAction for NeverRunHandler {
         async fn execute(
             &self,
-            input: <Self as Action>::Input,
+            input: Self::Config,
             _ctx: &(impl nebula_action::ActionContext + ?Sized),
         ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
             self.invoked.fetch_add(1, AOrdering::Relaxed);
@@ -3878,17 +3962,25 @@ fn error_is_terminal_classification() {
 /// silently succeeding.
 struct CredProbeAction;
 
-impl Action for CredProbeAction {
-    const KEY: &'static str = "probe";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for CredProbeAction {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "probe";
+
+    fn metadata() -> Metadata {
         pure_metadata(
             nebula_action::metadata_name!("Probe"),
             "acquires a credential",
         )
     }
+}
+
+impl Action for CredProbeAction {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -3935,7 +4027,7 @@ nebula_action::stateless_entry!(
 /// Register a credential probe action into the given registry.
 fn register_probe<A>(registry: &ActionRegistry, action: A)
 where
-    A: StatelessAction<Input = serde_json::Value, Output = serde_json::Value>
+    A: StatelessAction<Config = serde_json::Value, Output = serde_json::Value>
         + Send
         + Sync
         + 'static,
@@ -4426,14 +4518,22 @@ fn start_node_attempt_rejects_terminal_state() {
 async fn panicked_task_reports_real_node_id() {
     struct PanicHandler;
 
-    impl Action for PanicHandler {
-        const KEY: &'static str = "core.boom";
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
+    impl Component for PanicHandler {
+        type Kind = kind::Action;
+        type Config = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
+        const KEY: &'static str = "core.boom";
+
+        fn metadata() -> Metadata {
             pure_metadata(nebula_action::metadata_name!("Boom"), "panics")
         }
+    }
+
+    impl Action for PanicHandler {
+        type Output = serde_json::Value;
+
+        const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+            nebula_action::effect::ActionEffectContract::ReadOnly;
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
             D.get_or_init(Dependencies::new)
@@ -4443,7 +4543,7 @@ async fn panicked_task_reports_real_node_id() {
     impl StatelessAction for PanicHandler {
         async fn execute(
             &self,
-            _input: <Self as Action>::Input,
+            _input: Self::Config,
             _ctx: &(impl nebula_action::ActionContext + ?Sized),
         ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
             panic!("intentional panic for test");
@@ -5492,17 +5592,25 @@ async fn execute_workflow_produces_independent_lease_per_execution_id() {
 /// called so the test can assert the factory path was taken.
 struct FactoryEcho;
 
-impl Action for FactoryEcho {
-    const KEY: &'static str = "test.factory.echo";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for FactoryEcho {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = "test.factory.echo";
+
+    fn metadata() -> Metadata {
         pure_metadata(
             nebula_action::metadata_name!("FactoryEcho"),
             "echo via factory dispatch",
         )
     }
+}
+
+impl Action for FactoryEcho {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -5512,7 +5620,7 @@ impl Action for FactoryEcho {
 impl StatelessAction for FactoryEcho {
     async fn execute(
         &self,
-        input: <Self as Action>::Input,
+        input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Ok(ActionResult::success(input))
@@ -6451,15 +6559,20 @@ async fn undeclared_flow_port_rejected_before_execution() {
         count: Arc<AtomicU32>,
     }
 
-    impl Action for CountingHandler {
+    impl Component for CountingHandler {
+        type Kind = kind::Action;
+        type Config = serde_json::Value;
+
         // Only declares the default "out" port.
         const KEY: &'static str = "counting";
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
+        fn metadata() -> Metadata {
             pure_metadata(nebula_action::metadata_name!("Counting"), "counts calls")
         }
+    }
+
+    impl Action for CountingHandler {
+        type Output = serde_json::Value;
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
             D.get_or_init(Dependencies::new)
@@ -6469,7 +6582,7 @@ async fn undeclared_flow_port_rejected_before_execution() {
     impl StatelessAction for CountingHandler {
         async fn execute(
             &self,
-            input: <Self as Action>::Input,
+            input: Self::Config,
             _ctx: &(impl nebula_action::ActionContext + ?Sized),
         ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
             self.count.fetch_add(1, AOrdering::Relaxed);

@@ -36,7 +36,7 @@ mod field_slots;
 /// - `name = "..."` - Human-readable name (required)
 /// - `description = "..."` - Short description (required)
 /// - `version = "..."` - Interface version, e.g., "1.0" (default: "1.0")
-/// - `input = Type` - Action input type (required)
+/// - `config = Type` - the action's `Component::Config`, its node form data (required)
 /// - `output = Type` - Action output type (required)
 /// - `read_only` - Explicit author attestation that the action performs no external business
 ///   effects (`ActionEffectContract::ReadOnly`). Without it the effect contract is the
@@ -57,7 +57,7 @@ mod field_slots;
 ///     name = "Directory lookup",
 ///     description = "Reads one directory entry",
 ///     version = "2.1",
-///     input = LookupRequest,
+///     config = LookupRequest,
 ///     output = LookupResult,
 ///     read_only
 /// )]

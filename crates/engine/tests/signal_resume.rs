@@ -34,8 +34,9 @@ use std::{
 
 use chrono::Utc;
 use nebula_action::{
-    ActionError,
+    ActionError, Component,
     action::Action,
+    kind,
     result::{ActionResult, WaitCondition},
     stateless::StatelessAction,
 };
@@ -75,21 +76,28 @@ fn control_dispatch(
 
 macro_rules! pure_action_metadata {
     ($name:expr, $description:expr $(,)?) => {
-        nebula_action::metadata::ActionMetadata::new($name, $description)
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
+        nebula_action::Metadata::new($name, $description)
     };
 }
 
 macro_rules! static_action_impl {
     ($ty:ty, $key:expr, $metadata:expr $(,)?) => {
-        impl Action for $ty {
-            const KEY: &'static str = $key;
-            type Input = serde_json::Value;
-            type Output = serde_json::Value;
+        impl Component for $ty {
+            type Kind = kind::Action;
+            type Config = serde_json::Value;
 
-            fn metadata() -> nebula_action::ActionMetadata {
+            const KEY: &'static str = $key;
+
+            fn metadata() -> nebula_action::Metadata {
                 $metadata
             }
+        }
+
+        impl Action for $ty {
+            type Output = serde_json::Value;
+
+            const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+                nebula_action::effect::ActionEffectContract::ReadOnly;
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
                 D.get_or_init(Dependencies::new)
@@ -147,7 +155,7 @@ nebula_action::stateless_entry!(
 impl StatelessAction for WebhookWaitNode {
     async fn execute(
         &self,
-        _input: <Self as Action>::Input,
+        _input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Ok(ActionResult::Wait {
@@ -189,7 +197,7 @@ static_action_impl!(
 impl StatelessAction for WebhookWaitNodeB {
     async fn execute(
         &self,
-        _input: <Self as Action>::Input,
+        _input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Ok(ActionResult::Wait {
@@ -244,7 +252,7 @@ nebula_action::stateless_entry!(
 impl StatelessAction for CountingEchoNode {
     async fn execute(
         &self,
-        input: <Self as Action>::Input,
+        input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         self.invocation_count.fetch_add(1, Ordering::SeqCst);
@@ -271,7 +279,7 @@ static_action_impl!(
 impl StatelessAction for CountingErrorNode {
     async fn execute(
         &self,
-        input: <Self as Action>::Input,
+        input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         self.invocation_count.fetch_add(1, Ordering::SeqCst);

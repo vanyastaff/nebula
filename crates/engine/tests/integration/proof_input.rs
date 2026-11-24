@@ -6,7 +6,8 @@ use std::sync::{
 };
 
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionResult, FromWorkflowNode, StatefulAction,
+    Action, ActionContext, ActionError, ActionResult, Component, FromWorkflowNode, StatefulAction,
+    kind,
 };
 use nebula_core::{Dependencies, node_key};
 use nebula_engine::{ActionRegistry, ExecutionResult};
@@ -224,18 +225,25 @@ async fn expression_and_literal_transforms_are_consumed_once() {
 
 struct IterationProbe;
 
-impl Action for IterationProbe {
-    const KEY: &'static str = "test.iteration_probe";
-    type Input = IterationInput;
-    type Output = Value;
+impl Component for IterationProbe {
+    type Kind = kind::Action;
+    type Config = IterationInput;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.iteration_probe";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Iteration probe"),
             "Observe the same prepared input each iteration",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
+}
+
+impl Action for IterationProbe {
+    type Output = Value;
+
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();

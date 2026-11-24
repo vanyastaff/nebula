@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
-use nebula_action::{Action, ActionMetadata, ActionResult, InstanceFactory, StatelessAction};
+use nebula_action::{
+    Action, ActionResult, Component, InstanceFactory, Metadata, StatelessAction, kind,
+};
 use nebula_engine::{
     PlanFlavorRevisionInstaller, PlanFlavorRevisionLoader, WorkflowActivationService,
     WorkflowStartService, WorkflowStores,
@@ -14,15 +16,22 @@ use nebula_storage_port::store::WorkflowVersionStore;
 #[derive(Debug)]
 struct Echo;
 
-impl Action for Echo {
+impl Component for Echo {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
+
     const KEY: &'static str = "core.echo";
-    type Input = serde_json::Value;
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_action::metadata_name!("Echo"), "HTTP fixture echo")
+    }
+}
+
+impl Action for Echo {
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(nebula_action::metadata_name!("Echo"), "HTTP fixture echo")
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
-    }
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static nebula_core::Dependencies {
         static DEPENDENCIES: std::sync::OnceLock<nebula_core::Dependencies> =
@@ -34,7 +43,7 @@ impl Action for Echo {
 impl StatelessAction for Echo {
     async fn execute(
         &self,
-        input: Self::Input,
+        input: Self::Config,
         _context: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<Self::Output>, nebula_action::ActionError> {
         Ok(ActionResult::success(input))

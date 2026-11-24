@@ -5,19 +5,26 @@
 use std::sync::OnceLock;
 
 use nebula_action::context::TriggerContext;
-use nebula_action::{Action, ActionError, TriggerAction, TriggerEventOutcome, TriggerSource};
+use nebula_action::{
+    Action, ActionError, Component, TriggerAction, TriggerEventOutcome, TriggerSource, kind,
+};
 use nebula_core::Dependencies;
 
 struct BadTrigger;
 
-impl Action for BadTrigger {
-    const KEY: &'static str = "bad.trigger";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for BadTrigger {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(nebula_action::metadata_name!("Bad"), "x")
+    const KEY: &'static str = "bad.trigger";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(nebula_action::metadata_name!("Bad"), "x")
     }
+}
+
+impl Action for BadTrigger {
+    type Output = serde_json::Value;
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)

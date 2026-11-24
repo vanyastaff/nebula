@@ -149,20 +149,26 @@ mod tests {
 
     use super::*;
     use crate::{
+        metadata::ActionInterface,
         port::{DynamicPort, SupportPort},
         port_key,
     };
 
     struct ValidationAction;
 
-    impl crate::Action for ValidationAction {
-        const KEY: &'static str = "test.action";
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
+    impl crate::Component for ValidationAction {
+        type Kind = crate::kind::Action;
+        type Config = serde_json::Value;
 
-        fn metadata() -> crate::ActionMetadata {
-            crate::ActionMetadata::new(crate::metadata_name!("Test"), "desc")
+        const KEY: &'static str = "test.action";
+
+        fn metadata() -> crate::Metadata {
+            crate::Metadata::new(crate::metadata_name!("Test"), "desc")
         }
+    }
+
+    impl crate::Action for ValidationAction {
+        type Output = serde_json::Value;
 
         fn dependencies() -> &'static Dependencies {
             static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
@@ -170,17 +176,21 @@ mod tests {
         }
     }
 
-    fn admit(draft: crate::ActionMetadata) -> ActionDefinition {
-        draft
-            .admit_for::<ValidationAction>(crate::ActionKind::Stateless)
-            .expect("test metadata must admit")
+    fn admit_as(
+        interface: ActionInterface,
+        kind: crate::ActionKind,
+    ) -> Result<ActionDefinition, crate::ActionAdmissionError> {
+        use crate::Component as _;
+        ActionDefinition::admit_with::<ValidationAction>(
+            ValidationAction::metadata(),
+            interface,
+            kind,
+        )
     }
 
     fn valid_metadata() -> ActionDefinition {
-        admit(crate::ActionMetadata::new(
-            crate::metadata_name!("Test"),
-            "desc",
-        ))
+        admit_as(ActionInterface::default(), crate::ActionKind::Stateless)
+            .expect("test metadata must admit")
     }
 
     #[test]
@@ -191,19 +201,18 @@ mod tests {
 
     #[test]
     fn only_control_actions_may_terminate_without_output_ports() {
-        let terminal =
-            crate::ActionMetadata::new(crate::metadata_name!("Terminal"), "terminal control")
-                .with_outputs(Vec::new());
+        let terminal = || ActionInterface {
+            outputs: Vec::new(),
+            ..ActionInterface::default()
+        };
 
-        let admitted = terminal
-            .clone()
-            .admit_for::<ValidationAction>(crate::ActionKind::Control)
+        let admitted = admit_as(terminal(), crate::ActionKind::Control)
             .expect("terminal control metadata must admit");
         assert!(admitted.outputs().is_empty());
 
-        let crate::ActionAdmissionError::Package(error) = terminal
-            .admit_for::<ValidationAction>(crate::ActionKind::Stateless)
-            .expect_err("stateless actions must retain an output port")
+        let crate::ActionAdmissionError::Package(error) =
+            admit_as(terminal(), crate::ActionKind::Stateless)
+                .expect_err("stateless actions must retain an output port")
         else {
             panic!("missing stateless outputs must be a package admission failure");
         };
@@ -216,16 +225,16 @@ mod tests {
 
     #[test]
     fn a_capability_gated_agent_is_refused_at_admission() {
-        let draft = |isolation| {
-            crate::ActionMetadata::new(crate::metadata_name!("Agent"), "desc")
-                .with_isolation_level(isolation)
+        let gated = |isolation_level| ActionInterface {
+            isolation_level,
+            ..ActionInterface::default()
         };
 
-        let crate::ActionAdmissionError::Package(error) =
-            draft(crate::IsolationLevel::CapabilityGated)
-                .admit_for::<ValidationAction>(crate::ActionKind::Agent)
-                .expect_err("the runtime never runs a capability-gated agent")
-        else {
+        let crate::ActionAdmissionError::Package(error) = admit_as(
+            gated(crate::IsolationLevel::CapabilityGated),
+            crate::ActionKind::Agent,
+        )
+        .expect_err("the runtime never runs a capability-gated agent") else {
             panic!("a capability-gated agent must be a package admission failure");
         };
         assert_eq!(
@@ -233,29 +242,31 @@ mod tests {
             [ActionPackageValidationError::CapabilityGatedAgent]
         );
 
-        draft(crate::IsolationLevel::None)
-            .admit_for::<ValidationAction>(crate::ActionKind::Agent)
+        admit_as(gated(crate::IsolationLevel::None), crate::ActionKind::Agent)
             .expect("an ungated agent admits");
-        draft(crate::IsolationLevel::CapabilityGated)
-            .admit_for::<ValidationAction>(crate::ActionKind::Stateless)
-            .expect("a capability-gated stateless action admits");
+        admit_as(
+            gated(crate::IsolationLevel::CapabilityGated),
+            crate::ActionKind::Stateless,
+        )
+        .expect("a capability-gated stateless action admits");
     }
 
     #[test]
     fn duplicate_ports_fail_validation() {
-        let draft = crate::ActionMetadata::new(crate::metadata_name!("Test"), "desc")
-            .with_inputs(vec![
+        let interface = ActionInterface {
+            inputs: vec![
                 InputPort::flow(port_key!("in")),
                 InputPort::flow(port_key!("in")),
-            ])
-            .with_outputs(vec![
+            ],
+            outputs: vec![
                 OutputPort::flow(port_key!("out")),
                 OutputPort::error(port_key!("out")),
-            ]);
+            ],
+            ..ActionInterface::default()
+        };
 
-        let crate::ActionAdmissionError::Package(err) = draft
-            .admit_for::<ValidationAction>(crate::ActionKind::Stateless)
-            .unwrap_err()
+        let crate::ActionAdmissionError::Package(err) =
+            admit_as(interface, crate::ActionKind::Stateless).unwrap_err()
         else {
             panic!("duplicate ports must be a package admission failure");
         };
@@ -271,25 +282,26 @@ mod tests {
 
     #[test]
     fn invalid_support_and_dynamic_ports_fail_validation() {
-        let draft = crate::ActionMetadata::new(crate::metadata_name!("Test"), "desc")
-            .with_inputs(vec![InputPort::Support(SupportPort {
+        let interface = ActionInterface {
+            inputs: vec![InputPort::Support(SupportPort {
                 key: port_key!("tools"),
                 name: String::new(),
                 description: String::new(),
                 required: false,
                 multi: true,
                 filter: Default::default(),
-            })])
-            .with_outputs(vec![OutputPort::Dynamic(DynamicPort {
+            })],
+            outputs: vec![OutputPort::Dynamic(DynamicPort {
                 key: port_key!("rule"),
                 source_field: String::new(),
                 label_field: None,
                 include_fallback: false,
-            })]);
+            })],
+            ..ActionInterface::default()
+        };
 
-        let crate::ActionAdmissionError::Package(err) = draft
-            .admit_for::<ValidationAction>(crate::ActionKind::Stateless)
-            .unwrap_err()
+        let crate::ActionAdmissionError::Package(err) =
+            admit_as(interface, crate::ActionKind::Stateless).unwrap_err()
         else {
             panic!("invalid ports must be a package admission failure");
         };

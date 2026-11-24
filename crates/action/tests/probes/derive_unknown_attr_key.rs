@@ -5,7 +5,7 @@ use nebula_action::Action;
 #[derive(Action)]
 #[action(
     key = "bad.unknown",
-    input = serde_json::Value,
+    config = serde_json::Value,
     output = serde_json::Value,
     typo_attribute = "oops"
 )]

@@ -42,18 +42,19 @@ Config: ResourceConfig>` adds `Instance`, `Topology`, `create` and the
 lifecycle hooks. `key_of::<C>()` returns the typed key the kind
 selects (`ActionKey`, `ResourceKey`, `CredentialKey`), and
 `nebula_component::admit::<C>()` is the one shared admission of metadata, key
-and `Config` schema. `Credential` and the resource `Provider` are built on
-`Component` today; `Action` follows, and until it does it keeps
-`Action::Input` and `ActionMetadata`.
+and `Config` schema. `Action: Component<Kind = kind::Action>` adds `Output`,
+the type-level interface (`inputs()`, `outputs()`, `ISOLATION_LEVEL`,
+`EFFECT_CONTRACT`, `MAX_CONCURRENT`) and `dependencies()`. An action's form
+data is its `Component::Config`, like a credential's or a resource's.
 
 Every concept in Nebula's integration layer is described by two things:
 
 
 | Piece | Role |
 |---|---|
-| authored metadata | Author-owned UI/catalog intent: checked display name, version, lifecycle, and concept-specific declarations. `ActionMetadata` and the `Metadata` a credential or resource returns carry no key (identity is `Action::KEY` / `Component::KEY`). None can supply a schema or claim admission. |
-| Associated Rust type | The schema source of truth: `Action::{Input, Output}`, or `Component::Config` for a credential or resource. |
-| admitted definition | `ResourceDefinition`, `CredentialDefinition`, and for now `ActionDefinition`. Immutable catalog definition produced only by the owning factory/registry after deriving schemas and checking identity/package invariants. |
+| authored metadata | Author-owned UI/catalog intent: checked display name, version, lifecycle, and concept-specific declarations. Every kind returns the same `Metadata`, which carries no key (identity is `Component::KEY`). It cannot supply a schema or claim admission. |
+| Associated Rust type | The schema source of truth: `Component::Config` for every kind, plus `Action::Output` for an action. |
+| admitted definition | `ActionDefinition`, `ResourceDefinition`, `CredentialDefinition`. Immutable catalog definition produced only by the owning factory/registry after deriving schemas and checking identity/package invariants. |
 | `Recorded*` | Deserialized evidence (`RecordedResourceDefinition`, `RecordedActionDefinition`, `RecordedCredentialDefinition`). It regains admitted status only by exact comparison with a fresh definition from the currently selected factory/registry. |
 
 This is the canon's `*Metadata + Schema` contract expressed as a one-way
@@ -69,21 +70,23 @@ and uses its own checked builder; it is not a catalog-leaf admission bypass.
 #### Catalog construction and wire migration
 
 An action, a resource and a credential declare their identity once, as
-`Action::KEY` and `Component::KEY`, and their `metadata()` returns key-free
-metadata: `ActionMetadata::new(MetadataName, description)` or
+`Component::KEY`, and their `metadata()` returns the same key-free
 `Metadata::new(MetadataName, description)` (the shared
-`nebula_metadata::Metadata`, which a resource and a credential return
-unchanged; `ActionMetadata` embeds it and adds ports and policies). The factory or registry stamps the key at admission, so a
+`nebula_metadata::Metadata`). What an action adds, its ports, isolation level,
+effect contract and concurrency hint, are items of the `Action` trait with
+defaults, not metadata fields. The factory or registry stamps the key at admission, so a
 catalog entry cannot name another component. This holds on every path,
 including the shared-instance `InstanceFactory::new(action)` and
 `KindActivator::new(..)`: one type is one catalog entry, and its metadata comes
 only from its `metadata()`. To expose an implementation under another key,
 version or metadata, declare a new type for that entry;
 `nebula_action::stateless_entry!` declares one that delegates execution to an
-existing stateless action. A remote action's effect contract is part of its
+existing stateless action and may declare its own ports, isolation, effect
+contract or concurrency hint. A remote action's effect contract is part of its
 type the same way: `RemoteEffectAction::descriptor()` is an associated function,
 `RemoteEffectInstanceFactory` stamps it as the definition's `Remote` contract,
-and metadata declares no remote contract of its own.
+and the action cannot declare another `EFFECT_CONTRACT` (admission refuses a
+remote action that overrides the default).
 Inferred display names are removed. Credential metadata no longer takes or exposes an auth pattern:
 admission derives it from `<C::Scheme as AuthScheme>::pattern()`. Action macros
 preserve the full SemVer, including prerelease and build metadata.
@@ -147,8 +150,8 @@ APIs.
 **Target authoring:** `#[property(display(...), input(...), validate(...),
 options(...))]` describes values only; the blocks are optional according to the
 property's needs. `#[slot(credential, ...)]` and `#[slot(resource, ...)]` declare
-dependencies separately. `Action::Input` and a credential's or
-resource's `Component::Config` remain permanently supported, canonical explicit data types;
+dependencies separately. `Component::Config`, for an action, a credential or a
+resource, remains a permanently supported, canonical explicit data type;
 `Action::Output` remains explicit too. They are not migration-only escape hatches,
 and no derive requires an associated type to be `Self`.
 
@@ -232,17 +235,19 @@ presentation identity or rewrite existing schema or plan bytes.
 entity-specific admission. Property display hints belong to schema authoring,
 not to a new catalog-leaf metadata type. SDK personas curate these contracts.
 
-| Shared concern | `ActionMetadata` | `Metadata` (credential) | `Metadata` (resource) |
+| Shared concern | `Metadata` (action) | `Metadata` (credential) | `Metadata` (resource) |
 |---|---|---|---|
-| Identity and text | `new(MetadataName, description)` / `try_new`; identity is `Action::KEY` | `new(MetadataName, description)` / `try_new`; identity is `Component::KEY` | `new(MetadataName, description)` / `try_new`; identity is `Component::KEY` |
+| Identity and text | `new(MetadataName, description)` / `try_new`; identity is `Component::KEY` | `new(MetadataName, description)` / `try_new`; identity is `Component::KEY` | `new(MetadataName, description)` / `try_new`; identity is `Component::KEY` |
 | Revision | `with_version(MetadataVersion)` | `with_version(MetadataVersion)` | `with_version(MetadataVersion)` |
 | Icon | `with_icon`, `with_inline_icon`, `with_url_icon` | `with_icon`, `with_inline_icon`, `with_url_icon` | `with_icon`, `with_inline_icon`, `with_url_icon` |
 | Documentation and discovery | `with_documentation_url`, `with_categories`, `add_link`, `with_tags`, `add_tag` | `with_documentation_url`, `with_categories`, `add_link`, `with_tags`, `add_tag` | `with_documentation_url`, `with_categories`, `add_link`, `with_tags`, `add_tag` |
 | Lifecycle | `mark_experimental`, `mark_beta`, `mark_stable`, `with_deprecation` | `mark_experimental`, `mark_beta`, `mark_stable`, `with_deprecation` | `mark_experimental`, `mark_beta`, `mark_stable`, `with_deprecation` |
-| Schema ownership | Factory derives input schema from `Action::Input` and output schema from `Action::Output` | Registry derives config schema from `Component::Config` | Factory derives config schema from `Component::Config` |
+| Schema ownership | Factory derives input schema from `Component::Config` and output schema from `Action::Output` | Registry derives config schema from `Component::Config` | Factory derives config schema from `Component::Config` |
 
-Entity-specific extras stay separate: actions add ports, isolation,
-checkpoint/effect policy, concurrency, admitted kind and output schema;
+Entity-specific extras stay separate and live on the kind trait, not in
+metadata: actions add ports, isolation, effect contract and concurrency
+(`Action` items with defaults), and admission adds the action kind and output
+schema;
 credentials add the admitted auth pattern derived from
 `<C::Scheme as AuthScheme>::pattern()` and capability membership derived from
 trait implementations; resources add no catalog fields beyond the shared base,
@@ -290,7 +295,7 @@ The **schema subsystem** (`nebula-schema` crate) is the **fifth concept**, share
 | Authored | `AuthoredValue` | Explicitly data or template authoring; no validation proof. |
 | Valid | `ValidValues` | Aliases/transforms applied once, programs compiled, declared secrets protected, pending checks explicit, schema snapshot retained. |
 | Resolved | `ResolvedValues` | Programs absent and every final rule/policy satisfied; still bound to the exact schema snapshot. |
-| Typed | `Action::Input`, a credential or resource `Component::Config`, or another destination type | Trusted decode at the owning boundary; proof wrappers do not enter author code. |
+| Typed | `Component::Config` of an action, a credential or a resource, or another destination type | Trusted decode at the owning boundary; proof wrappers do not enter author code. |
 
 `ValidSchema::validate` consumes authored input. Only consuming completion
 through `resolve(context)` or data-only `resolve_data()` can produce
@@ -341,7 +346,7 @@ flowchart TB
     DATA["resolve_data()\nreject every program"]
     FULL["Full final validation\nno pending checks"]
     RV["ResolvedValues\nexpression-free, schema-bound"]
-    TYPED["Typed destination\nAction::Input / Component::Config"]
+    TYPED["Typed destination\nComponent::Config"]
   end
 
   subgraph runtime["Runtime / engine"]
@@ -426,7 +431,7 @@ Long-lived managed object: connection pool, SDK client, file handle. Resource li
 
 **Action** — `[ ActionDefinition + Schema ]` — **declares zero or more Resource and/or Credential kinds it needs** (by stable id / type reference in the **integration schema**, not ad hoc runtime lookup).
 
-**What** the step does — with explicit semantics. Authors return `ActionMetadata`; the selected factory derives `Action::{Input, Output}` schemas, stamps the structural kind, checks the package, and retains immutable `ActionDefinition`. The engine dispatches by **which action trait** the type implements (`StatelessAction`, `StatefulAction`, `TriggerAction`, `ResourceAction`, …), not by an author-selected metadata kind. Internal erased input is prepared once and becomes an exact-handle-bound typed proof before dispatch; neither `ActionInput` nor admitted metadata is an SDK author surface. Graph is the flagship execution direction, not a production-readiness claim. Existing Stream / Interactive names or variants are shape-only reservations for future capability-gated profiles; they do not establish current runtime semantics or a supported SDK capability. Agent is experimental (canon §6.2, "journaled turns"): an agent node compiles into a Graph plan and its turns are journaled and checkpointed, but it is no supported SDK capability. Each future profile requires its own persisted state, admission, recovery, and compatibility contract. The runtime applies checkpoint, retry, and cancel rules only for behavior implemented end-to-end — the author does not re-implement those invariants per action (aligned with `nebula-resilience`). **Concrete shape:** see §3.8 (`nebula-action`).
+**What** the step does — with explicit semantics. Authors return the shared `Metadata` and declare the interface on the `Action` trait; the selected factory derives the `Component::Config` and `Action::Output` schemas, stamps the structural kind, checks the package, and retains immutable `ActionDefinition`. The engine dispatches by **which action trait** the type implements (`StatelessAction`, `StatefulAction`, `TriggerAction`, `ResourceAction`, …), not by an author-selected metadata kind. Internal erased input is prepared once and becomes an exact-handle-bound typed proof before dispatch; neither `ActionInput` nor admitted metadata is an SDK author surface. Graph is the flagship execution direction, not a production-readiness claim. Existing Stream / Interactive names or variants are shape-only reservations for future capability-gated profiles; they do not establish current runtime semantics or a supported SDK capability. Agent is experimental (canon §6.2, "journaled turns"): an agent node compiles into a Graph plan and its turns are journaled and checkpointed, but it is no supported SDK capability. Each future profile requires its own persisted state, admission, recovery, and compatibility contract. The runtime applies checkpoint, retry, and cancel rules only for behavior implemented end-to-end — the author does not re-implement those invariants per action (aligned with `nebula-resilience`). **Concrete shape:** see §3.8 (`nebula-action`).
 
 **Wiring rule:** the canonical dependency direction is Credential leaf; Resource → Credential and/or Resource; Action → Credential and/or Resource. Every referenced type must be **provided by this plugin's own `impl Plugin` registry** **or** by a type from **another plugin crate** that is a **declared dependency** in **`Cargo.toml`**. The complete plugin/type closure must be acyclic and activation-validated before execution (engine loads providers before dependents; see §7.1). Referencing a type that is "in the process" but not reachable through that closure is a misconfiguration, even if some unrelated plugin registered it.
 

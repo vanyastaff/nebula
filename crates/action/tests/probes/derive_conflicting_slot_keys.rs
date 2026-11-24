@@ -8,7 +8,7 @@ struct FakeCred;
 #[derive(Action)]
 #[action(
     key = "bad.dup_slot_keys",
-    input = serde_json::Value,
+    config = serde_json::Value,
     output = serde_json::Value,
 )]
 struct ConflictingSlotKeys {

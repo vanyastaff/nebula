@@ -4,9 +4,9 @@ use std::{
 };
 
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionFactory, ActionKind, ActionMetadata, ActionResult,
-    FromWorkflowNode, GenericTriggerFactory, InstanceFactory, StatelessAction, TriggerAction,
-    TriggerContext, TriggerEventOutcome, TriggerSource,
+    Action, ActionContext, ActionError, ActionFactory, ActionKind, ActionResult, Component,
+    FromWorkflowNode, GenericTriggerFactory, InstanceFactory, Metadata, StatelessAction,
+    TriggerAction, TriggerContext, TriggerEventOutcome, TriggerSource, kind,
 };
 use nebula_core::{
     ArtifactSetDigest, Dependencies, PluginKey, WorkflowId, WorkflowVersionId, node_key,
@@ -90,7 +90,6 @@ fn empty_connection_filter_is_refused_not_collapsed_to_unfiltered() {
 thread_local! {
     static INPUT_SCHEMA: RefCell<Option<ValidSchema>> = const { RefCell::new(None) };
     static OUTPUT_SCHEMA: RefCell<Option<ValidSchema>> = const { RefCell::new(None) };
-    static TRIGGER_DRAFT: RefCell<Option<ActionMetadata>> = const { RefCell::new(None) };
 }
 
 #[derive(Deserialize)]
@@ -136,14 +135,22 @@ const CONTRACT_KEYS: [&str; 7] = [
     "demo.target",
 ];
 
-impl<const INDEX: usize> Action for ContractAction<INDEX> {
-    const KEY: &'static str = CONTRACT_KEYS[INDEX];
-    type Input = ContractInput;
-    type Output = ContractOutput;
+impl<const INDEX: usize> Component for ContractAction<INDEX> {
+    type Kind = kind::Action;
+    type Config = ContractInput;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = CONTRACT_KEYS[INDEX];
+
+    fn metadata() -> Metadata {
         contract_metadata(Self::KEY)
     }
+}
+
+impl<const INDEX: usize> Action for ContractAction<INDEX> {
+    type Output = ContractOutput;
+
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         empty_dependencies()
@@ -161,13 +168,12 @@ impl<const INDEX: usize> StatelessAction for ContractAction<INDEX> {
 }
 
 /// The metadata every compiler fixture declares, named after its local key.
-fn contract_metadata(key: &str) -> ActionMetadata {
+fn contract_metadata(key: &str) -> Metadata {
     let local_key = key.strip_prefix("demo.").unwrap_or(key);
-    ActionMetadata::new(
+    Metadata::new(
         nebula_action::MetadataName::try_from(local_key).expect("fixture display name"),
         "compiler contract fixture",
     )
-    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
 }
 
 fn contract_action_factory<const INDEX: usize>() -> Arc<dyn ActionFactory> {
@@ -179,19 +185,22 @@ fn contract_action_factory<const INDEX: usize>() -> Arc<dyn ActionFactory> {
 
 struct ContractTrigger;
 
-impl Action for ContractTrigger {
+impl Component for ContractTrigger {
+    type Kind = kind::Action;
+    type Config = ContractInput;
+
     const KEY: &'static str = "demo.start";
-    type Input = ContractInput;
+
+    fn metadata() -> Metadata {
+        contract_metadata(Self::KEY)
+    }
+}
+
+impl Action for ContractTrigger {
     type Output = ContractOutput;
 
-    fn metadata() -> ActionMetadata {
-        TRIGGER_DRAFT.with(|draft| {
-            draft
-                .borrow()
-                .clone()
-                .expect("trigger draft is installed during fixture admission")
-        })
-    }
+    const EFFECT_CONTRACT: nebula_action::effect::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         empty_dependencies()
@@ -293,13 +302,10 @@ fn action_factory(
                 ContractTrigger::KEY,
                 "a typed trigger fixture has the one key its type declares"
             );
-            TRIGGER_DRAFT.with(|installed| *installed.borrow_mut() = Some(contract_metadata(&key)));
-            let factory = Arc::new(
+            Arc::new(
                 GenericTriggerFactory::<ContractTrigger>::new()
                     .expect("trigger compiler fixture contract must admit"),
-            );
-            TRIGGER_DRAFT.with(|installed| *installed.borrow_mut() = None);
-            factory
+            )
         },
         _ => panic!("compiler contract fixture only supports stateless and trigger actions"),
     };

@@ -6,7 +6,7 @@ use std::{
 };
 
 use nebula_action::{
-    Action, ActionFactory, ActionResult, RemoteEffectInstanceFactory,
+    Action, ActionFactory, ActionResult, Component, RemoteEffectInstanceFactory,
     effect::{
         EffectInvocationContext, EffectInvocationOutcome, EffectPreparationContext,
         EffectPreparationError, EffectQueryContext, EffectReconciliationOutcome,
@@ -14,6 +14,7 @@ use nebula_action::{
         RemoteDestinationGuarantee, RemoteEffectAction, RemoteEffectDeclarationError,
         RemoteEffectDescriptor, RemoteEffectPolicy,
     },
+    kind,
 };
 use nebula_core::{
     ArtifactSetDigest, Dependencies, OperationId, OrgId, WorkspaceId, accessor::SystemClock,
@@ -118,20 +119,28 @@ struct ProviderAction<I> {
     _input: PhantomData<fn() -> I>,
 }
 
-impl<I> Action for ProviderAction<I>
+impl<I> Component for ProviderAction<I>
 where
     I: nebula_schema::HasSchema + DeserializeOwned + Send + Sync + 'static,
 {
-    const KEY: &'static str = "provider.send";
-    type Input = I;
-    type Output = Value;
+    type Kind = kind::Action;
+    type Config = I;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "provider.send";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Send"),
             "Trusted test provider",
         )
     }
+}
+
+impl<I> Action for ProviderAction<I>
+where
+    I: nebula_schema::HasSchema + DeserializeOwned + Send + Sync + 'static,
+{
+    type Output = Value;
 
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();

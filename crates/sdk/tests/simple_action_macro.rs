@@ -10,7 +10,7 @@ use nebula_sdk::{prelude::*, simple_action};
 simple_action! {
     name: EchoAction,
     key: "test.echo",
-    input: Value,
+    config: Value,
     output: Value,
     async fn execute(&self, input, _ctx) {
         Ok(ActionResult::success(input))

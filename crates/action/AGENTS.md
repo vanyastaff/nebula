@@ -21,7 +21,7 @@
 ## Key files
 
 - `src/lib.rs` — public re-export surface + module map (`#![forbid(unsafe_code)]`, `#![warn(missing_docs)]`)
-- `src/action.rs` — base `Action` trait (`Sized`, `type Input/Output: HasSchema`, static `metadata()`/`dependencies()`); NOT object-safe
+- `src/action.rs` — base `Action: Component<Kind = kind::Action>` trait (`Output: HasSchema`, type-level ports/isolation/effect contract/concurrency with defaults, `dependencies()`); key, `Config` and `metadata()` come from `Component`; NOT object-safe
 - `src/handle.rs` + `src/factory.rs` — `ActionHandle` enum + per-variant `XxxHandle` trait objects + `ActionFactory`/`Generic*Factory` engine-side dispatch
 - `src/from_workflow_node.rs` — `FromWorkflowNode` async slot-binding factory (derive emits the body)
 - `src/error.rs` — `ActionError` + `RetryHintCode` (retryable vs fatal)

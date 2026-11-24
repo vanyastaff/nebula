@@ -48,17 +48,22 @@ struct SumOutput {
     total: u64,
 }
 
-impl Action for SumStream {
-    const KEY: &'static str = "test.stream.sum";
-    type Input = SumInput;
-    type Output = SumOutput;
+impl crate::Component for SumStream {
+    type Kind = crate::kind::Action;
+    type Config = SumInput;
 
-    fn metadata() -> crate::ActionMetadata {
-        crate::ActionMetadata::new(
+    const KEY: &'static str = "test.stream.sum";
+
+    fn metadata() -> crate::Metadata {
+        crate::Metadata::new(
             crate::metadata_name!("SumStream"),
             "Yields three chunks and sums them",
         )
     }
+}
+
+impl Action for SumStream {
+    type Output = SumOutput;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -109,17 +114,22 @@ impl FromWorkflowNode for SumStream {
 /// Emits one chunk then an error — proves D-4 short-circuit with no partial output.
 struct ErrorStream;
 
-impl Action for ErrorStream {
-    const KEY: &'static str = "test.stream.error";
-    type Input = Value;
-    type Output = Value;
+impl crate::Component for ErrorStream {
+    type Kind = crate::kind::Action;
+    type Config = Value;
 
-    fn metadata() -> crate::ActionMetadata {
-        crate::ActionMetadata::new(
+    const KEY: &'static str = "test.stream.error";
+
+    fn metadata() -> crate::Metadata {
+        crate::Metadata::new(
             crate::metadata_name!("ErrorStream"),
             "Emits one chunk then fails",
         )
     }
+}
+
+impl Action for ErrorStream {
+    type Output = Value;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();

@@ -314,19 +314,26 @@ fn flatten_object(source: Map<String, Value>, separator: &str) -> Map<String, Va
 #[derive(Debug)]
 pub struct JsonTransform;
 
-impl nebula_action::action::Action for JsonTransform {
-    const KEY: &'static str = "core.json_transform";
-    type Input = JsonTransformInput;
-    type Output = Value;
+impl nebula_action::action::Component for JsonTransform {
+    type Kind = nebula_action::action::kind::Action;
+    type Config = JsonTransformInput;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "core.json_transform";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("JSON Transform"),
             "Applies a sequence of pick/omit/rename/flatten operations to a JSON object",
         )
         .with_version(nebula_action::MetadataVersion::new(2, 0, 0))
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
+}
+
+impl nebula_action::action::Action for JsonTransform {
+    type Output = Value;
+
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static nebula_action::Dependencies {
         static DEPS: OnceLock<nebula_action::Dependencies> = OnceLock::new();

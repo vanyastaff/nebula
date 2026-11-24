@@ -6,7 +6,7 @@ use nebula_action::Action;
 #[derive(Action)]
 #[action(
     key = "bad.renamed-effect-flag",
-    input = serde_json::Value,
+    config = serde_json::Value,
     output = serde_json::Value,
     no_external_effects
 )]

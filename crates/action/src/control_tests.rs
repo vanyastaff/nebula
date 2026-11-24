@@ -152,18 +152,29 @@ impl TestIf {
     }
 }
 
-impl Action for TestIf {
+impl crate::Component for TestIf {
+    type Kind = crate::kind::Action;
+    type Config = TestIfInput;
+
     const KEY: &'static str = "test.if";
-    type Input = TestIfInput;
+
+    fn metadata() -> crate::Metadata {
+        crate::Metadata::new(crate::metadata_name!("TestIf"), "Binary branch")
+    }
+}
+
+impl Action for TestIf {
     type Output = TestIfInput;
 
-    fn metadata() -> crate::ActionMetadata {
-        crate::ActionMetadata::new(crate::metadata_name!("TestIf"), "Binary branch")
-            .with_inputs(default_input_ports())
-            .with_outputs(vec![
-                OutputPort::flow(port_key!("true")),
-                OutputPort::flow(port_key!("false")),
-            ])
+    fn inputs() -> Vec<crate::InputPort> {
+        default_input_ports()
+    }
+
+    fn outputs() -> Vec<OutputPort> {
+        vec![
+            OutputPort::flow(port_key!("true")),
+            OutputPort::flow(port_key!("false")),
+        ]
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -198,14 +209,22 @@ impl TestStop {
     }
 }
 
-impl Action for TestStop {
+impl crate::Component for TestStop {
+    type Kind = crate::kind::Action;
+    type Config = Value;
+
     const KEY: &'static str = "test.stop";
-    type Input = Value;
+
+    fn metadata() -> crate::Metadata {
+        crate::Metadata::new(crate::metadata_name!("TestStop"), "Terminate")
+    }
+}
+
+impl Action for TestStop {
     type Output = Value;
 
-    fn metadata() -> crate::ActionMetadata {
-        crate::ActionMetadata::new(crate::metadata_name!("TestStop"), "Terminate")
-            .with_outputs(Vec::new())
+    fn outputs() -> Vec<OutputPort> {
+        Vec::new()
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();

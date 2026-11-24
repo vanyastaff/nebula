@@ -3,9 +3,9 @@
 use std::{cell::RefCell, sync::OnceLock};
 
 use nebula_action::{
-    Action, ActionAdmissionError, ActionContext, ActionError, ActionFactory, ActionMetadata,
-    ActionResult, InstanceFactory, MetadataVersion, RecordedActionDefinition, StatelessAction,
-    metadata_name,
+    Action, ActionAdmissionError, ActionContext, ActionError, ActionFactory, ActionResult,
+    Component, InstanceFactory, Metadata, MetadataVersion, RecordedActionDefinition,
+    StatelessAction, kind, metadata_name,
 };
 use nebula_core::{Dependencies, action_key};
 use nebula_metadata::{
@@ -17,17 +17,22 @@ use serde_json::Value;
 
 struct CatalogAction;
 
-impl Action for CatalogAction {
-    const KEY: &'static str = "catalog.action";
-    type Input = Value;
-    type Output = Value;
+impl Component for CatalogAction {
+    type Kind = kind::Action;
+    type Config = Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    const KEY: &'static str = "catalog.action";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
             metadata_name!("Catalog action"),
             "Catalog admission fixture",
         )
     }
+}
+
+impl Action for CatalogAction {
+    type Output = Value;
 
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
@@ -46,7 +51,7 @@ impl StatelessAction for CatalogAction {
 }
 
 thread_local! {
-    static METADATA: RefCell<Option<ActionMetadata>> = const { RefCell::new(None) };
+    static METADATA: RefCell<Option<Metadata>> = const { RefCell::new(None) };
 }
 
 /// `A` admitted with metadata a test installs.
@@ -56,26 +61,65 @@ thread_local! {
 /// `metadata()` returns what [`admit`] installed; the key stays `A::KEY`.
 struct WithMetadata<A>(A);
 
-impl<A: Action> Action for WithMetadata<A> {
-    const KEY: &'static str = A::KEY;
-    type Input = A::Input;
-    type Output = A::Output;
+impl<A: Action> Component for WithMetadata<A> {
+    type Kind = kind::Action;
+    type Config = A::Config;
 
-    fn metadata() -> ActionMetadata {
+    const KEY: &'static str = A::KEY;
+
+    fn metadata() -> Metadata {
         METADATA
             .with_borrow(Clone::clone)
             .expect("a test installs metadata before admission")
     }
+}
+
+impl<A: Action> Action for WithMetadata<A> {
+    type Output = A::Output;
 
     fn dependencies() -> &'static Dependencies {
         A::dependencies()
     }
 }
 
+/// `A` with a concurrency hint, which only the type can declare.
+struct Limited<A>(A);
+
+impl<A: Action> Component for Limited<A> {
+    type Kind = kind::Action;
+    type Config = A::Config;
+
+    const KEY: &'static str = A::KEY;
+
+    fn metadata() -> Metadata {
+        A::metadata()
+    }
+}
+
+impl<A: Action> Action for Limited<A> {
+    type Output = A::Output;
+
+    const MAX_CONCURRENT: Option<std::num::NonZeroU32> = std::num::NonZeroU32::new(3);
+
+    fn dependencies() -> &'static Dependencies {
+        A::dependencies()
+    }
+}
+
+impl<A: StatelessAction> StatelessAction for Limited<A> {
+    fn execute(
+        &self,
+        input: A::Config,
+        ctx: &(impl ActionContext + ?Sized),
+    ) -> impl Future<Output = Result<ActionResult<A::Output>, ActionError>> + Send {
+        self.0.execute(input, ctx)
+    }
+}
+
 impl<A: StatelessAction> StatelessAction for WithMetadata<A> {
     fn execute(
         &self,
-        input: A::Input,
+        input: A::Config,
         ctx: &(impl ActionContext + ?Sized),
     ) -> impl Future<Output = Result<ActionResult<A::Output>, ActionError>> + Send {
         self.0.execute(input, ctx)
@@ -84,7 +128,7 @@ impl<A: StatelessAction> StatelessAction for WithMetadata<A> {
 
 fn admit<A: StatelessAction>(
     action: A,
-    metadata: ActionMetadata,
+    metadata: Metadata,
 ) -> Result<InstanceFactory<WithMetadata<A>>, ActionAdmissionError> {
     METADATA.set(Some(metadata));
     let factory = InstanceFactory::new(WithMetadata(action));
@@ -162,7 +206,7 @@ fn invalid_shared_catalog_fields_never_produce_a_factory() {
             MetadataError::BlankTag,
         ),
         (
-            ActionMetadata::new(metadata_name!("Catalog action"), "x".repeat(8193)),
+            Metadata::new(metadata_name!("Catalog action"), "x".repeat(8193)),
             MetadataError::FieldTooLarge(MetadataField::Description),
         ),
         (
@@ -171,7 +215,7 @@ fn invalid_shared_catalog_fields_never_produce_a_factory() {
             MetadataError::FutureDeprecation,
         ),
         (
-            ActionMetadata::try_new("\"".repeat(20_000), "").expect("nonblank authored name"),
+            Metadata::try_new("\"".repeat(20_000), "").expect("nonblank authored name"),
             MetadataError::SharedBudgetExceeded,
         ),
     ];
@@ -199,32 +243,36 @@ fn same_semver_catalog_changes_and_leaf_extras_require_fresh_evidence() {
         .with_removal(RemovalSchedule::AtVersion(MetadataVersion::new(2, 0, 0)))
         .with_replacement(CatalogReference::action(action_key!("catalog.replacement")))
         .with_reason("Use the replacement action");
-    for draft in [
+    for changed in [
         CatalogAction::metadata().with_categories(["automation.events".parse().expect("category")]),
         CatalogAction::metadata().add_link(CatalogLink::new(
             CatalogLinkRelation::Setup,
             "/setup".parse().expect("link"),
         )),
         CatalogAction::metadata().with_deprecation(notice),
-        CatalogAction::metadata()
-            .with_max_concurrent(std::num::NonZeroU32::new(3).expect("positive")),
-    ] {
-        let changed = admit(CatalogAction, draft).expect("valid changed definition");
+    ]
+    .into_iter()
+    .map(|draft| admit(CatalogAction, draft).expect("valid changed definition"))
+    .map(|factory| factory.definition().clone())
+    .chain([InstanceFactory::new(Limited(CatalogAction))
+        .expect("valid limited definition")
+        .definition()
+        .clone()])
+    {
+        let changed = &changed;
         assert_eq!(
             original.definition().base().version(),
-            changed.definition().base().version()
+            changed.base().version()
         );
-        assert!(recorded.readmit_against(changed.definition()).is_err());
+        assert!(recorded.readmit_against(changed).is_err());
         let current = RecordedActionDefinition::from_slice(
-            &serde_json::to_vec(changed.definition()).expect("serializable"),
+            &serde_json::to_vec(changed).expect("serializable"),
             MetadataDecodeLimits::default(),
         )
         .expect("default decoder accepts changed admitted wire");
         assert_eq!(
-            current
-                .readmit_against(changed.definition())
-                .expect("exact evidence"),
-            **changed.definition()
+            current.readmit_against(changed).expect("exact evidence"),
+            **changed
         );
     }
 }
@@ -356,7 +404,7 @@ fn draft_shared_authoring_surface_survives_factory_admission() {
             .parse()
             .expect("valid documentation link"),
     );
-    let draft = ActionMetadata::try_new("Catalog action", "Catalog admission fixture")
+    let draft = Metadata::try_new("Catalog action", "Catalog admission fixture")
         .expect("dynamic name is valid")
         .with_version(version.clone())
         .with_icon(Icon::None)
@@ -407,13 +455,19 @@ impl nebula_schema::HasSchema for LargeRecord {
 
 struct LargeCatalogAction;
 
-impl Action for LargeCatalogAction {
+impl Component for LargeCatalogAction {
+    type Kind = kind::Action;
+    type Config = LargeRecord;
+
     const KEY: &'static str = "catalog.action";
-    type Input = LargeRecord;
-    type Output = LargeRecord;
-    fn metadata() -> ActionMetadata {
+
+    fn metadata() -> Metadata {
         CatalogAction::metadata().with_inline_icon("")
     }
+}
+
+impl Action for LargeCatalogAction {
+    type Output = LargeRecord;
     fn dependencies() -> &'static Dependencies {
         CatalogAction::dependencies()
     }

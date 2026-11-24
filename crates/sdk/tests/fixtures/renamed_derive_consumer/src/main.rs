@@ -22,7 +22,7 @@ struct UnitPayload;
 struct EmptyRecord {}
 
 #[derive(action_leaf::Action)]
-#[action(key = "contract.scalar", name = "Scalar contract", input = u8, output = ())]
+#[action(key = "contract.scalar", name = "Scalar contract", config = u8, output = ())]
 struct ScalarAction;
 
 #[derive(validator_leaf::Validator)]
@@ -36,7 +36,7 @@ struct ValidatedPayload {
     key = "contract.renamed_action",
     name = "Renamed contract action",
     version = "2.5.0-rc.7+build.009",
-    input = Value,
+    config = Value,
     output = Value
 )]
 struct ContractAction;
@@ -111,7 +111,7 @@ fn main() {
             .validate(nebula_sdk::params! { data; () }.unwrap())
             .is_err()
     );
-    let _: ActionMetadata = ScalarAction::metadata();
+    let _: Metadata = ScalarAction::metadata();
 
     ValidatedPayload {
         name: "valid".to_owned(),
@@ -126,7 +126,7 @@ fn main() {
     );
     assert!(schema.find_property(&field_key!("name")).is_some());
     let _: Metadata = ContractCredential::metadata();
-    let _: ActionMetadata = <ContractAction as Action>::metadata();
+    let _: Metadata = <ContractAction as Component>::metadata();
     let _ = ContractPlugin.manifest();
     let _ = ContractConfig { enabled: true }.fingerprint();
     let config = schema_of::<ContractConfig>().expect("named config declares its fields");

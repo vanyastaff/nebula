@@ -16,7 +16,7 @@
 //! # use nebula_sdk::{serde, serde_json::json};
 //! # async fn demo<A>(action: A) -> Result<(), ActionError>
 //! # where A: StatefulAction + Send + Sync + 'static,
-//! #       A::Input: serde::de::DeserializeOwned + Send + Sync,
+//! #       A::Config: serde::de::DeserializeOwned + Send + Sync,
 //! #       A::Output: serde::Serialize + Send + Sync,
 //! #       A::State: serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync,
 //! # {
@@ -136,7 +136,7 @@ impl TestRuntime {
     pub async fn run_stateless<A>(self, action: A) -> Result<RunReport, ActionError>
     where
         A: StatelessAction + Send + Sync + 'static,
-        A::Input: DeserializeOwned + Send + Sync,
+        A::Config: DeserializeOwned + Send + Sync,
         A::Output: Serialize + Send + Sync,
     {
         let input = self.ctx.input().cloned().unwrap_or(Value::Null);
@@ -164,7 +164,7 @@ impl TestRuntime {
     pub async fn run_stateful<A>(self, action: A) -> Result<RunReport, ActionError>
     where
         A: StatefulAction + Send + Sync + 'static,
-        A::Input: DeserializeOwned + Send + Sync,
+        A::Config: DeserializeOwned + Send + Sync,
         A::Output: Serialize + Send + Sync,
         A::State: Serialize + DeserializeOwned + Clone + Send + Sync,
     {

@@ -539,7 +539,7 @@ pub struct StatefulTestHarness<A: StatefulAction> {
 impl<A> StatefulTestHarness<A>
 where
     A: StatefulAction + Send + Sync + 'static,
-    A::Input: Send + Sync,
+    A::Config: Send + Sync,
     A::Output: Send + Sync,
     A::State: serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync,
 {
@@ -554,7 +554,7 @@ where
         })
     }
 
-    pub async fn step(&mut self, input: A::Input) -> Result<ActionResult<A::Output>, ActionError> {
+    pub async fn step(&mut self, input: A::Config) -> Result<ActionResult<A::Output>, ActionError> {
         self.iterations = self.iterations.saturating_add(1);
         let mut typed_state: A::State = serde_json::from_value(self.state.clone())
             .map_err(|e| ActionError::fatal(format!("state deserialize: {e}")))?;

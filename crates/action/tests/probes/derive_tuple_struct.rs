@@ -5,7 +5,7 @@ use nebula_action::Action;
 #[derive(Action)]
 #[action(
     key = "bad.tuple",
-    input = serde_json::Value,
+    config = serde_json::Value,
     output = serde_json::Value,
 )]
 struct TupleAction(u32, u32);

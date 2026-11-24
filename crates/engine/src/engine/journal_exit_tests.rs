@@ -4,6 +4,7 @@
 //! The ledger seeding writes an earlier dispatch's crash residue directly:
 //! a slot of the node with a granted call that was never explained.
 
+use nebula_action::{Component, kind};
 use std::sync::Mutex;
 
 use serde_json::json;
@@ -41,17 +42,22 @@ struct ProbeInput {
 /// counts its dispatches.
 struct JournaledProbe(Arc<AtomicU32>);
 
-impl Action for JournaledProbe {
-    const KEY: &'static str = "test.journaled_probe";
-    type Input = ProbeInput;
-    type Output = serde_json::Value;
+impl Component for JournaledProbe {
+    type Kind = kind::Action;
+    type Config = ProbeInput;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    const KEY: &'static str = "test.journaled_probe";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_action::metadata_name!("Journaled probe"),
             "Counts the dispatches of a journaled node",
         )
     }
+}
+
+impl Action for JournaledProbe {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         EchoHandler::dependencies()

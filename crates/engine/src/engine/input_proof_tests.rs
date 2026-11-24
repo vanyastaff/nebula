@@ -3,6 +3,7 @@ use std::sync::Mutex;
 use serde_json::json;
 
 use nebula_action::capability::default_resource_accessor;
+use nebula_action::{Component, kind};
 use nebula_credential::default_credential_accessor;
 
 use crate::resolver::NodeInputRequest;
@@ -19,18 +20,25 @@ struct CancelInput {
 
 struct CancelProbe(Arc<AtomicU32>);
 
-impl Action for CancelProbe {
-    const KEY: &'static str = "test.cancel_input";
-    type Input = CancelInput;
-    type Output = serde_json::Value;
+impl Component for CancelProbe {
+    type Kind = kind::Action;
+    type Config = CancelInput;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    const KEY: &'static str = "test.cancel_input";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_action::metadata_name!("Cancel input"),
             "Observe input cancellation before execution",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
+}
+
+impl Action for CancelProbe {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         EchoHandler::dependencies()

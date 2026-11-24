@@ -228,18 +228,25 @@ fn parse_until_utc(s: &str) -> Result<chrono::DateTime<chrono::Utc>, ActionError
 #[derive(Debug, Clone, Default)]
 pub struct CoreDelay;
 
-impl nebula_action::action::Action for CoreDelay {
-    const KEY: &'static str = "core.delay";
-    type Input = DelayInput;
-    type Output = Value;
+impl nebula_action::action::Component for CoreDelay {
+    type Kind = nebula_action::action::kind::Action;
+    type Config = DelayInput;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "core.delay";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Delay"),
             "Parks the execution for a fixed duration or until a timestamp, then resumes",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
+}
+
+impl nebula_action::action::Action for CoreDelay {
+    type Output = Value;
+
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static nebula_action::Dependencies {
         static DEPS: OnceLock<nebula_action::Dependencies> = OnceLock::new();

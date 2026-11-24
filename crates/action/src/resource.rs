@@ -117,15 +117,20 @@ pub trait ResourceHandler: crate::handle::sealed::Resource + Send + Sync + 'stat
 ///
 /// struct StringPool;
 ///
-/// impl Action for StringPool {
+/// impl Component for StringPool {
+///     type Kind = kind::Action;
+///     type Config = serde_json::Value;
+///
 ///     const KEY: &'static str = "demo.string_pool";
-///     type Input = serde_json::Value;
+///
+///     fn metadata() -> nebula_action::Metadata {
+///         nebula_action::Metadata::new(nebula_action::metadata_name!("StringPool"), "A pooled String")
+///     }
+/// }
+///
+/// impl Action for StringPool {
 ///     // ResourceAction constrains `Output` to `ResourceProduces<Self::Resource>`.
 ///     type Output = ResourceProduces<String>;
-///
-///     fn metadata() -> nebula_action::ActionMetadata {
-///         nebula_action::ActionMetadata::new(nebula_action::metadata_name!("StringPool"), "A pooled String")
-///     }
 ///     fn dependencies() -> &'static Dependencies {
 ///         static D: OnceLock<Dependencies> = OnceLock::new();
 ///         D.get_or_init(Dependencies::new)
@@ -172,7 +177,7 @@ impl<A> ResourceActionAdapter<A> {
     where
         A: Action,
     {
-        let meta = <A as Action>::metadata().admit_for::<A>(crate::ActionKind::Resource)?;
+        let meta = ActionDefinition::admit_for::<A>(crate::ActionKind::Resource)?;
         Ok(Self { action, meta })
     }
 
@@ -263,19 +268,24 @@ mod tests {
         }
     }
 
-    impl Action for MockResourceAction {
-        const KEY: &'static str = "test.resource_action";
-        type Input = Value;
-        // ResourceAction requires Output = ResourceProduces<Self::Resource>.
-        // MockResourceAction::Resource = String, so Output = ResourceProduces<String>.
-        type Output = ResourceProduces<String>;
+    impl crate::Component for MockResourceAction {
+        type Kind = crate::kind::Action;
+        type Config = Value;
 
-        fn metadata() -> crate::ActionMetadata {
-            crate::ActionMetadata::new(
+        const KEY: &'static str = "test.resource_action";
+
+        fn metadata() -> crate::Metadata {
+            crate::Metadata::new(
                 crate::metadata_name!("MockResource"),
                 "Creates a string pool",
             )
         }
+    }
+
+    impl Action for MockResourceAction {
+        // ResourceAction requires Output = ResourceProduces<Self::Resource>.
+        // MockResourceAction::Resource = String, so Output = ResourceProduces<String>.
+        type Output = ResourceProduces<String>;
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
             D.get_or_init(Dependencies::new)

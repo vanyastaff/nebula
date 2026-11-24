@@ -615,13 +615,16 @@ impl WebhookResponse {
 /// struct Registration { hook_id: String }
 ///
 /// struct GitHubWebhook { secret: Vec<u8> }
-/// # impl Action for GitHubWebhook {
+/// # impl nebula_action::Component for GitHubWebhook {
+/// #     type Kind = nebula_action::kind::Action;
+/// #     type Config = serde_json::Value;
 /// const KEY: &'static str = "github.webhook";
-/// #     type Input = serde_json::Value;
-/// #     type Output = serde_json::Value;
-/// #     fn metadata() -> nebula_action::ActionMetadata {
-/// #         nebula_action::ActionMetadata::new(nebula_action::metadata_name!("GitHub"), "Push events")
+/// #     fn metadata() -> nebula_action::Metadata {
+/// #         nebula_action::Metadata::new(nebula_action::metadata_name!("GitHub"), "Push events")
 /// #     }
+/// # }
+/// # impl Action for GitHubWebhook {
+/// #     type Output = serde_json::Value;
 /// #     fn dependencies() -> &'static Dependencies {
 /// #         static D: OnceLock<Dependencies> = OnceLock::new();
 /// #         D.get_or_init(Dependencies::new)
@@ -1749,7 +1752,7 @@ impl<A: WebhookAction> WebhookTriggerAdapter<A> {
     #[tracing::instrument(name = "action.metadata.admit", skip_all, err)]
     pub fn new(action: A) -> Result<Self, crate::ActionAdmissionError> {
         let config = action.config();
-        let meta = <A as Action>::metadata().admit_for::<A>(crate::ActionKind::Trigger)?;
+        let meta = ActionDefinition::admit_for::<A>(crate::ActionKind::Trigger)?;
         Ok(Self {
             action,
             config,

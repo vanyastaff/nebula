@@ -418,17 +418,19 @@ async fn knife_step6_cancel_reports_a_failed_enqueue_and_writes_nothing() {
 /// Mirrors the workflow definition saved below (`action_key = "echo"`).
 struct KnifeEcho;
 
-impl nebula_action::action::Action for KnifeEcho {
-    const KEY: &'static str = "echo";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl nebula_action::action::Component for KnifeEcho {
+    type Kind = nebula_action::action::kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::metadata::ActionMetadata {
-        nebula_action::metadata::ActionMetadata::new(
-            nebula_action::metadata_name!("echo"),
-            "knife echo handler",
-        )
+    const KEY: &'static str = "echo";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(nebula_action::metadata_name!("echo"), "knife echo handler")
     }
+}
+
+impl nebula_action::action::Action for KnifeEcho {
+    type Output = serde_json::Value;
     fn dependencies() -> &'static nebula_core::Dependencies {
         static D: std::sync::OnceLock<nebula_core::Dependencies> = std::sync::OnceLock::new();
         D.get_or_init(nebula_core::Dependencies::new)
@@ -437,7 +439,7 @@ impl nebula_action::action::Action for KnifeEcho {
 impl nebula_action::stateless::StatelessAction for KnifeEcho {
     async fn execute(
         &self,
-        input: <Self as nebula_action::action::Action>::Input,
+        input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<
         nebula_action::result::ActionResult<<Self as nebula_action::action::Action>::Output>,

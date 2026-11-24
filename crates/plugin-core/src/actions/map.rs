@@ -147,20 +147,27 @@ impl HasSchema for MapInput {
 #[derive(Debug)]
 pub struct MapAction;
 
-impl nebula_action::action::Action for MapAction {
-    const KEY: &'static str = "core.map";
-    type Input = MapInput;
-    type Output = Value;
+impl nebula_action::action::Component for MapAction {
+    type Kind = nebula_action::action::kind::Action;
+    type Config = MapInput;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "core.map";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Map"),
             "Reshape each element of a JSON array of objects (per-element \
              pick/omit/rename/flatten)",
         )
         .with_version(nebula_action::MetadataVersion::new(2, 0, 0))
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
+}
+
+impl nebula_action::action::Action for MapAction {
+    type Output = Value;
+
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static nebula_action::Dependencies {
         static DEPS: OnceLock<nebula_action::Dependencies> = OnceLock::new();

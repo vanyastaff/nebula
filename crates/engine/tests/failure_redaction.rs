@@ -31,7 +31,8 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, ActionMetadata, action::Action, result::ActionResult, stateless::StatelessAction,
+    ActionError, Component, Metadata, action::Action, kind, result::ActionResult,
+    stateless::StatelessAction,
 };
 use nebula_core::{Dependencies, NodeKey, id::ExecutionId, node_key};
 use nebula_engine::{
@@ -82,18 +83,25 @@ enum FailureMode {
 
 struct LeakyProviderAction(FailureMode);
 
-impl Action for LeakyProviderAction {
-    const KEY: &'static str = "core.leaky_provider";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for LeakyProviderAction {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    const KEY: &'static str = "core.leaky_provider";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_action::metadata_name!("LeakyProvider"),
             "always fails quoting a provider payload",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
+}
+
+impl Action for LeakyProviderAction {
+    type Output = serde_json::Value;
+
+    const EFFECT_CONTRACT: nebula_action::ActionEffectContract =
+        nebula_action::effect::ActionEffectContract::ReadOnly;
 
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
@@ -104,7 +112,7 @@ impl Action for LeakyProviderAction {
 impl StatelessAction for LeakyProviderAction {
     async fn execute(
         &self,
-        _input: <Self as Action>::Input,
+        _input: Self::Config,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         if matches!(self.0, FailureMode::Panic) {

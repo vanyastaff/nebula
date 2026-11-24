@@ -11,9 +11,9 @@ use std::{
 };
 
 use nebula_action::{
-    Action, ActionError, DeduplicatingCursor, EmitFailurePolicy, ExecutionEmitter,
+    Action, ActionError, Component, DeduplicatingCursor, EmitFailurePolicy, ExecutionEmitter,
     HasTriggerScheduling, PollAction, PollConfig, PollCursor, PollOutcome, PollResult,
-    PollTriggerAdapter, TestContextBuilder, TriggerHandler,
+    PollTriggerAdapter, TestContextBuilder, TriggerHandler, kind,
 };
 use nebula_core::{Dependencies, ExecutionId, context::Context, node_key};
 
@@ -23,17 +23,22 @@ struct TickPoller {
     poll_count: Arc<AtomicU32>,
 }
 
-impl Action for TickPoller {
-    const KEY: &'static str = "test.tick";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for TickPoller {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.tick";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Tick Poller"),
             "Test poll trigger",
         )
     }
+}
+
+impl Action for TickPoller {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -170,17 +175,22 @@ struct ZeroIntervalPoller {
     poll_count: Arc<AtomicU32>,
 }
 
-impl Action for ZeroIntervalPoller {
-    const KEY: &'static str = "test.tick.zero";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for ZeroIntervalPoller {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.tick.zero";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Zero Interval"),
             "Returns Duration::ZERO from poll_config",
         )
     }
+}
+
+impl Action for ZeroIntervalPoller {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -453,17 +463,22 @@ fn dedup_cursor_mark_seen_is_idempotent() {
 
 struct FailingValidator;
 
-impl Action for FailingValidator {
-    const KEY: &'static str = "test.validate.fail";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for FailingValidator {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.validate.fail";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Failing Validator"),
             "validate() returns Err",
         )
     }
+}
+
+impl Action for FailingValidator {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -515,17 +530,22 @@ struct StartFromNowPoller {
     poll_count: Arc<AtomicU32>,
 }
 
-impl Action for StartFromNowPoller {
-    const KEY: &'static str = "test.initial_cursor";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for StartFromNowPoller {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.initial_cursor";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Start From Now"),
             "initial_cursor returns 1000",
         )
     }
+}
+
+impl Action for StartFromNowPoller {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -625,17 +645,22 @@ struct ReadyPoller {
     poll_count: Arc<AtomicU32>,
 }
 
-impl Action for ReadyPoller {
-    const KEY: &'static str = "test.retry_batch";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for ReadyPoller {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.retry_batch";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Retry Batch"),
             "always-ready, emitter fails",
         )
     }
+}
+
+impl Action for ReadyPoller {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -745,17 +770,22 @@ impl ExecutionEmitter for DropCountingFailingEmitter {
 
 struct DropPoller;
 
-impl Action for DropPoller {
-    const KEY: &'static str = "test.drop_loss";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for DropPoller {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.drop_loss";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Drop Loss"),
             "all events dropped under DropAndContinue",
         )
     }
+}
+
+impl Action for DropPoller {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -842,17 +872,22 @@ struct HugeOverridePoller {
     poll_count: Arc<AtomicU32>,
 }
 
-impl Action for HugeOverridePoller {
-    const KEY: &'static str = "test.huge_override";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for HugeOverridePoller {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.huge_override";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Huge Override"),
             "override_next = 1h, max_interval = 200ms",
         )
     }
+}
+
+impl Action for HugeOverridePoller {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -925,17 +960,22 @@ struct EmptyPartialPoller {
     called: Arc<AtomicU32>,
 }
 
-impl Action for EmptyPartialPoller {
-    const KEY: &'static str = "test.empty_partial";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for EmptyPartialPoller {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.empty_partial";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Empty Partial"),
             "returns Partial with no events and a retryable error",
         )
     }
+}
+
+impl Action for EmptyPartialPoller {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -1009,17 +1049,22 @@ struct SlowPoller {
     count: Arc<AtomicU32>,
 }
 
-impl Action for SlowPoller {
-    const KEY: &'static str = "test.first_poll.immediate";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for SlowPoller {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.first_poll.immediate";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Slow Poller"),
             "base_interval 10min, first poll should still run immediately",
         )
     }
+}
+
+impl Action for SlowPoller {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -1164,17 +1209,22 @@ struct WildConfigPoller {
     config: PollConfig,
 }
 
-impl Action for WildConfigPoller {
-    const KEY: &'static str = "test.wild_config";
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+impl Component for WildConfigPoller {
+    type Kind = kind::Action;
+    type Config = serde_json::Value;
 
-    fn metadata() -> nebula_action::ActionMetadata {
-        nebula_action::ActionMetadata::new(
+    const KEY: &'static str = "test.wild_config";
+
+    fn metadata() -> nebula_action::Metadata {
+        nebula_action::Metadata::new(
             nebula_action::metadata_name!("Wild Config"),
             "Configurable PollConfig for clamp tests",
         )
     }
+}
+
+impl Action for WildConfigPoller {
+    type Output = serde_json::Value;
 
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
