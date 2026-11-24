@@ -26,10 +26,11 @@ use nebula_resource::{
     Manager, RegistrationSpec, ResidentConfig, ScopeLevel, ShutdownConfig, SlotIdentity,
     rate_limit::RowLimit,
 };
+use nebula_sdk::integration::resource::{Component, kind};
 use nebula_sdk::integration::resource::{
     CredentialGuard, CredentialUnavailableReason, Effect, Error, ErrorKind, HasCredentialSlots,
-    OperationError, PinSlots, Provider, Rate, Resident, ResidentProvider, ResourceConfig,
-    ResourceContext, ResourceHandle, ResourceMetadata, SentState, SlotCell,
+    Metadata, OperationError, PinSlots, Provider, Rate, Resident, ResidentProvider, ResourceConfig,
+    ResourceContext, ResourceHandle, SentState, SlotCell,
     http::{
         Authorize, HttpApi, HttpConfig, HttpTransport, Request, open_stream, open_stream_until,
     },
@@ -92,17 +93,21 @@ impl PinSlots for Api {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for Api {
+impl Component for Api {
+    type Kind = kind::Resource;
     type Config = HttpConfig;
-    type Instance = HttpTransport;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "test.http-api";
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_sdk::prelude::metadata_name!("HTTP API"), "")
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_sdk::prelude::metadata_name!("HTTP API"), "")
     }
+}
+
+#[async_trait::async_trait]
+impl Provider for Api {
+    type Instance = HttpTransport;
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,

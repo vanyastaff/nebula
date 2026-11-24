@@ -197,12 +197,11 @@ fn validate_projection_parts(
 mod tests {
     use super::*;
     use crate::{
-        BearerTokenCredential, BearerTokenProperties, Credential, CredentialContext,
+        BearerTokenCredential, BearerTokenProperties, Component, Credential, CredentialContext,
         CredentialError, Dynamic, Metadata, OAuth2Credential, SecretToken,
-        contract::plugin_capability_report, metadata_name, register_refreshable_ops,
+        contract::plugin_capability_report, kind, metadata_name, register_refreshable_ops,
         register_runtime_ops, resolve::StaticResolveResult,
     };
-    use crate::{Component, kind};
 
     struct DynamicFixtureCredential;
 

@@ -26,11 +26,9 @@ use nebula_core::{ResourceKey, ScopeLevel, scope::Scope};
 use nebula_credential::CredentialGuard;
 use nebula_resource::Resident;
 use nebula_resource::{
-    AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
-    ResourceContext, SlotCell, SlotIdentity,
-    error::Error,
-    resource::{HasCredentialSlots, ResourceMetadata},
-    topology::resident::ResidentProvider,
+    AcquireOptions, Component, Manager, Metadata, Provider, RegistrationSpec, ResidentConfig,
+    ResourceConfig, ResourceContext, SlotCell, SlotIdentity, error::Error, kind,
+    resource::HasCredentialSlots, topology::resident::ResidentProvider,
 };
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -48,7 +46,7 @@ impl Zeroize for FakeCred {
     }
 }
 
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct RaceConfig;
 
 impl ResourceConfig for RaceConfig {
@@ -114,13 +112,21 @@ struct RaceResource {
     last_built: Arc<std::sync::Mutex<Option<Arc<AtomicU32>>>>,
 }
 
-#[async_trait::async_trait]
-impl Provider for RaceResource {
+impl Component for RaceResource {
+    type Kind = kind::Resource;
     type Config = RaceConfig;
-    type Instance = RaceRuntime;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "race-resident";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("race-resident"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for RaceResource {
+    type Instance = RaceRuntime;
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,
@@ -180,10 +186,6 @@ impl Provider for RaceResource {
         runtime.bound_cred.store(0, Ordering::SeqCst);
         runtime.revoke_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("race-resident"), "")
     }
 }
 

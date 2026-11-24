@@ -49,7 +49,7 @@ use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResourceContext,
     dedup::SlotIdentity,
     error::Error as ResourceError,
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Metadata, Provider, ResourceConfig},
     topology::pooled::{BrokenCheck, RecycleDecision, config::Config as PoolConfig},
 };
 use serde::Deserialize;
@@ -195,13 +195,21 @@ impl Postgres {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for Postgres {
+impl nebula_resource::Component for Postgres {
+    type Kind = nebula_resource::kind::Resource;
     type Config = PostgresConfig;
-    type Instance = Arc<MockPgConnection>;
-    type Topology = Pooled<Self>;
 
     const KEY: &'static str = "demo.postgres";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("demo.postgres"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for Postgres {
+    type Instance = Arc<MockPgConnection>;
+    type Topology = Pooled<Self>;
 
     async fn create(
         &self,
@@ -226,10 +234,6 @@ impl Provider for Postgres {
             "destroying mock postgres connection"
         );
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("demo.postgres"), "")
     }
 }
 

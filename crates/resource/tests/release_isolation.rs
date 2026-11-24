@@ -18,9 +18,9 @@ use std::{
 use async_trait::async_trait;
 use nebula_core::ScopeLevel;
 use nebula_resource::{
-    AcquireOptions, Error, ErrorKind, Manager, ManagerConfig, PoolProvider, Pooled, Provider,
-    RegistrationSpec, Resource, ResourceContext, ResourceGuard, ResourceMetadata, SlotIdentity,
-    TeardownCx,
+    AcquireOptions, Component, Error, ErrorKind, Manager, ManagerConfig, Metadata, PoolProvider,
+    Pooled, Provider, RegistrationSpec, Resource, ResourceContext, ResourceGuard, SlotIdentity,
+    TeardownCx, kind,
     topology::pooled::{BrokenCheck, config::Config as PoolConfig},
 };
 
@@ -36,16 +36,21 @@ struct Stuck {
     destroys_finished: Arc<AtomicUsize>,
 }
 
+impl Component for Stuck {
+    type Kind = kind::Resource;
+    type Config = ();
+
+    const KEY: &'static str = "isolation.stuck";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("stuck"), "")
+    }
+}
+
 #[async_trait]
 impl Provider for Stuck {
-    type Config = ();
     type Instance = ();
-    const KEY: &'static str = "isolation.stuck";
     type Topology = Pooled<Self>;
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("stuck"), "")
-    }
 
     async fn create(&self, _config: &(), _ctx: &ResourceContext) -> Result<(), Error> {
         Ok(())
@@ -69,16 +74,21 @@ impl PoolProvider for Stuck {
 #[derive(Resource, Clone)]
 struct Healthy;
 
+impl Component for Healthy {
+    type Kind = kind::Resource;
+    type Config = ();
+
+    const KEY: &'static str = "isolation.healthy";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("healthy"), "")
+    }
+}
+
 #[async_trait]
 impl Provider for Healthy {
-    type Config = ();
     type Instance = ();
-    const KEY: &'static str = "isolation.healthy";
     type Topology = Pooled<Self>;
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("healthy"), "")
-    }
 
     async fn create(&self, _config: &(), _ctx: &ResourceContext) -> Result<(), Error> {
         Ok(())

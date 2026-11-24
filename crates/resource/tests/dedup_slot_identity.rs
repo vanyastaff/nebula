@@ -26,16 +26,16 @@ use std::sync::{
 use nebula_core::{OrgId, ScopeLevel, scope::Scope};
 use nebula_resource::Resident;
 use nebula_resource::{
-    AcquireOptions, Manager, Provider, RegisterOptions, RegistrationSpec, ResidentConfig,
-    ResourceConfig, ResourceContext, SlotIdentity, error::Error, resource::ResourceMetadata,
-    topology::resident::ResidentProvider,
+    AcquireOptions, Component, Manager, Provider, RegisterOptions, RegistrationSpec,
+    ResidentConfig, ResourceConfig, ResourceContext, SlotIdentity, error::Error, kind,
+    resource::Metadata, topology::resident::ResidentProvider,
 };
 use tokio_util::sync::CancellationToken;
 
 /// Config whose `fingerprint()` is left at the `0` default on purpose: the
 /// dedup separation must come from the resolved slot identity, never from the
 /// author overriding `fingerprint()`.
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct CountingConfig;
 
 impl ResourceConfig for CountingConfig {
@@ -70,13 +70,21 @@ impl CountingResource {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for CountingResource {
+impl Component for CountingResource {
+    type Kind = kind::Resource;
     type Config = CountingConfig;
-    type Instance = CountingRuntime;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "dedup-slot-ident";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("dedup-slot-ident"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for CountingResource {
+    type Instance = CountingRuntime;
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,
@@ -93,10 +101,6 @@ impl Provider for CountingResource {
         _cx: nebula_resource::TeardownCx,
     ) -> Result<(), Error> {
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("dedup-slot-ident"), "")
     }
 }
 
@@ -415,14 +419,22 @@ fn non_empty_bindings_are_never_the_unbound_identity() {
 #[derive(Clone)]
 struct SiblingResidentResource;
 
-#[async_trait::async_trait]
-impl Provider for SiblingResidentResource {
+impl Component for SiblingResidentResource {
+    type Kind = kind::Resource;
     type Config = CountingConfig;
-    type Instance = CountingRuntime;
-    type Topology = Resident<Self>;
 
     // SAME string as `CountingResource::KEY` on purpose.
     const KEY: &'static str = "dedup-slot-ident";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("dedup-slot-ident"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for SiblingResidentResource {
+    type Instance = CountingRuntime;
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,
@@ -440,10 +452,6 @@ impl Provider for SiblingResidentResource {
         _cx: nebula_resource::TeardownCx,
     ) -> Result<(), Error> {
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("dedup-slot-ident"), "")
     }
 }
 

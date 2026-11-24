@@ -47,9 +47,9 @@ assert_eq!(definition.key(), &key);
   cannot hold a schema; admission supplies both from the type.
 - `Component::Kind` is an associated type, so a type has exactly one kind and
   generic code can choose behavior per kind at compile time.
-- The kind traits (`Action`, `Resource`, `Credential`) have `Component` as a
+- The kind traits (`Action`, the resource `Provider`, `Credential`) have `Component` as a
   supertrait and add only what that kind does. They live in their own crates.
 
 ## Status
 
-`Credential` is built on `Component`. `Resource` and `Action` follow.
+`Credential` and the resource `Provider` are built on `Component`. `Action` follows.

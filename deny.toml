@@ -328,6 +328,7 @@ deny = [
   ], reason = "Derive crate; consumed by nebula-action, nebula-credential" },
   { crate = "nebula-component", wrappers = [
     "nebula-credential",
+    "nebula-resource",
     "nebula-sdk",
   ], reason = "Component contract is Core; the kind crates built on it are listed" },
   { crate = "nebula-crypto", wrappers = [

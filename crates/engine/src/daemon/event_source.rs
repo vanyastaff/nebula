@@ -471,12 +471,12 @@ mod tests {
     use nebula_resource::{
         ResourceContext,
         error::Error as ResourceError,
-        resource::{Provider, ResourceConfig, ResourceMetadata},
+        resource::{Metadata, Provider, ResourceConfig},
     };
 
     use super::*;
 
-    #[derive(Clone, Debug, Default, nebula_schema::Schema)]
+    #[derive(Clone, Debug, Default, nebula_schema::Schema, serde::Deserialize)]
     struct EmptyCfg;
 
     impl ResourceConfig for EmptyCfg {
@@ -501,13 +501,21 @@ mod tests {
         emitted: Arc<AtomicU32>,
     }
 
-    #[async_trait::async_trait]
-    impl Provider for ThreeEventSource {
+    impl nebula_resource::Component for ThreeEventSource {
+        type Kind = nebula_resource::kind::Resource;
         type Config = EmptyCfg;
-        type Instance = ();
-        type Topology = nebula_resource::NoTopology;
 
         const KEY: &'static str = "event-three";
+
+        fn metadata() -> Metadata {
+            Metadata::new(nebula_resource::metadata_name!("event-three"), "")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for ThreeEventSource {
+        type Instance = ();
+        type Topology = nebula_resource::NoTopology;
 
         async fn create(
             &self,
@@ -515,10 +523,6 @@ mod tests {
             _ctx: &ResourceContext,
         ) -> Result<(), ResourceError> {
             Ok(())
-        }
-
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::new(nebula_resource::metadata_name!("event-three"), "")
         }
     }
 
@@ -627,13 +631,24 @@ mod tests {
         }
     }
 
-    #[async_trait::async_trait]
-    impl Provider for PermanentlyBrokenSource {
+    impl nebula_resource::Component for PermanentlyBrokenSource {
+        type Kind = nebula_resource::kind::Resource;
         type Config = EmptyCfg;
-        type Instance = ();
-        type Topology = nebula_resource::NoTopology;
 
         const KEY: &'static str = "event-permanently-broken";
+
+        fn metadata() -> Metadata {
+            Metadata::new(
+                nebula_resource::metadata_name!("event-permanently-broken"),
+                "",
+            )
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for PermanentlyBrokenSource {
+        type Instance = ();
+        type Topology = nebula_resource::NoTopology;
 
         async fn create(
             &self,
@@ -641,13 +656,6 @@ mod tests {
             _ctx: &ResourceContext,
         ) -> Result<(), ResourceError> {
             Ok(())
-        }
-
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::new(
-                nebula_resource::metadata_name!("event-permanently-broken"),
-                "",
-            )
         }
     }
 

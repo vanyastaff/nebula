@@ -28,10 +28,11 @@ use nebula_core::{OrgId, ScopeLevel, scope::Scope};
 use nebula_resource::Pooled;
 use nebula_resource::topology::{pooled::PoolProvider, resident::ResidentProvider};
 use nebula_resource::{
-    AcquireOptions, Manager, Provider, RegisterOptions, RegistrationSpec, ResourceConfig,
-    ResourceContext, SlotIdentity,
+    AcquireOptions, Component, Manager, Metadata, Provider, RegisterOptions, RegistrationSpec,
+    ResourceConfig, ResourceContext, SlotIdentity,
     error::Error,
-    resource::{HasCredentialSlots, ResourceMetadata},
+    kind,
+    resource::HasCredentialSlots,
     topology::{Resident, pooled::BrokenCheck},
 };
 use tokio_util::sync::CancellationToken;
@@ -42,7 +43,7 @@ use tokio_util::sync::CancellationToken;
 /// `fingerprint()` deliberately left at the `0` default: the row separation
 /// must come from the resolved slot identity, never the author overriding
 /// `fingerprint()` (a discipline-based defence, explicitly rejected).
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct CountingConfig;
 
 impl ResourceConfig for CountingConfig {
@@ -65,13 +66,21 @@ struct PoolRes {
     create_counter: Arc<AtomicU64>,
 }
 
-#[async_trait::async_trait]
-impl Provider for PoolRes {
+impl Component for PoolRes {
+    type Kind = kind::Resource;
     type Config = CountingConfig;
-    type Instance = u64;
-    type Topology = Pooled<Self>;
 
     const KEY: &'static str = "acquire-for-pool";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("acquire-for-pool"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for PoolRes {
+    type Instance = u64;
+    type Topology = Pooled<Self>;
 
     async fn create(&self, _config: &CountingConfig, _ctx: &ResourceContext) -> Result<u64, Error> {
         Ok(self.create_counter.fetch_add(1, Ordering::SeqCst))
@@ -79,10 +88,6 @@ impl Provider for PoolRes {
 
     async fn destroy(&self, _runtime: u64, _cx: nebula_resource::TeardownCx) -> Result<(), Error> {
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("acquire-for-pool"), "")
     }
 }
 
@@ -228,13 +233,21 @@ struct ResRes {
     id_tag: u64,
 }
 
-#[async_trait::async_trait]
-impl Provider for ResRes {
+impl Component for ResRes {
+    type Kind = kind::Resource;
     type Config = CountingConfig;
-    type Instance = u64;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "acquire-for-resident";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("acquire-for-resident"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for ResRes {
+    type Instance = u64;
+    type Topology = Resident<Self>;
 
     async fn create(&self, _config: &CountingConfig, _ctx: &ResourceContext) -> Result<u64, Error> {
         Ok(self.create_counter.fetch_add(1, Ordering::SeqCst))
@@ -253,10 +266,6 @@ impl Provider for ResRes {
     async fn on_credential_revoke(&self, _slot: &str, _runtime: &u64) -> Result<(), Error> {
         self.revoke_saw.store(self.id_tag, Ordering::SeqCst);
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("acquire-for-resident"), "")
     }
 }
 

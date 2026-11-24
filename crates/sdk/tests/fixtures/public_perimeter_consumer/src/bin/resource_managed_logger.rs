@@ -8,9 +8,9 @@ use std::{
 };
 
 use nebula_sdk::integration::resource::{
-    Cost, Effect, Error, ErrorKind, ResourceMetadata, Operation, OperationCx, OperationError,
+    Component, Cost, Effect, Error, ErrorKind, Metadata, Operation, OperationCx, OperationError,
     PinSlots, Provider, Resident, ResidentProvider, ResourceContext, ResourceHandle, SentState,
-    TeardownCx, no_credential_slots,
+    TeardownCx, kind, no_credential_slots,
 };
 use nebula_sdk::prelude::{Deserialize, Serialize};
 
@@ -41,17 +41,21 @@ impl LogSink {
 struct Logger;
 no_credential_slots!(Logger);
 
-#[async_trait::async_trait]
-impl Provider for Logger {
+impl Component for Logger {
+    type Kind = kind::Resource;
     type Config = ();
-    type Instance = LogSink;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "example.managed-logger";
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_sdk::prelude::metadata_name!("Logger"), "")
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_sdk::prelude::metadata_name!("Logger"), "")
     }
+}
+
+#[async_trait::async_trait]
+impl Provider for Logger {
+    type Instance = LogSink;
+    type Topology = Resident<Self>;
 
     async fn create(&self, _: &(), _: &ResourceContext) -> Result<LogSink, Error> {
         Ok(LogSink {

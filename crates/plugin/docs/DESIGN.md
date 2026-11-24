@@ -171,7 +171,7 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
    `src/manifest.rs:1` восстановлены; `src/plugin.rs` и `src/resolved_plugin.rs` уже были
    исправлены ранее.
 5. **Двойная поверхность ключа credential — закрыто.** Ключ компонента объявляется один раз
-   (`Credential::KEY`, `Provider::KEY`), а допущенное определение получает его при admission,
+   (`Component::KEY` у credential и resource), а допущенное определение получает его при admission,
    поэтому `AnyCredential::key()` и ключ определения не могут разойтись. Сверка в
    `ResolvedPlugin::from` и ошибки `ComponentKeyMismatch` / `InvalidComponentKey` удалены:
    невалидный литерал ключа теперь ошибка компиляции.

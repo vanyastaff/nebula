@@ -21,11 +21,12 @@ use super::{
     PinSlots, ResourceHandle, SentState, Submission,
 };
 use crate::{
-    AcquireOptions, CredentialUnavailableReason, Error, ErrorKind, Manager, ManagerConfig,
-    PoolConfig, Pooled, Provider, RateLimitProfile, RegistrationSpec, Resident, ResidentConfig,
-    ResourceConfig, ResourceContext, ResourceEvent, ResourceGuard, SlotCell, SlotIdentity,
+    AcquireOptions, Component, CredentialUnavailableReason, Error, ErrorKind, Manager,
+    ManagerConfig, Metadata, PoolConfig, Pooled, Provider, RateLimitProfile, RegistrationSpec,
+    Resident, ResidentConfig, ResourceConfig, ResourceContext, ResourceEvent, ResourceGuard,
+    SlotCell, SlotIdentity, kind,
     rate_limit::{Rate, ResiliencePolicy, RowLimit},
-    resource::{HasCredentialSlots, ResourceMetadata},
+    resource::HasCredentialSlots,
     runtime::managed::ManagedResource,
     topology::{
         PoolProvider, ResidentProvider,
@@ -35,7 +36,7 @@ use crate::{
 
 // ── fixtures ─────────────────────────────────────────────────────────────
 
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct Config {
     version: u64,
 }
@@ -71,17 +72,21 @@ macro_rules! facade_row {
             }
         }
 
-        #[async_trait::async_trait]
-        impl Provider for $ty {
+        impl Component for $ty {
+            type Kind = kind::Resource;
             type Config = Config;
-            type Instance = u64;
-            type Topology = $topology;
 
             const KEY: &'static str = $key;
 
-            fn metadata() -> ResourceMetadata {
-                ResourceMetadata::new(crate::metadata_name!($key), "")
+            fn metadata() -> Metadata {
+                Metadata::new(crate::metadata_name!($key), "")
             }
+        }
+
+        #[async_trait::async_trait]
+        impl Provider for $ty {
+            type Instance = u64;
+            type Topology = $topology;
 
             fn resilience() -> ResiliencePolicy {
                 ResiliencePolicy::new().keyed("chat_id", per_second(1, 1))

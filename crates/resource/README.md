@@ -21,19 +21,30 @@ External connections — database pools, HTTP clients, message brokers — are a
 
 The v4 surface — singular `type Credential` is dropped in favor of typed credential **slot fields** declared via `#[credential(key = "…")]` field attributes on the resource struct. Each slot field is a lock-free `SlotCell<CredentialGuard<C>>` the framework populates and rotates through `&self`; the derive emits a `<field>_slot()` read accessor. Multi-credential resources are now natural; per-slot rotation lands via `Provider::on_credential_refresh(&self, slot_name, instance)` with a companion `Provider::on_credential_revoke(&self, slot_name, instance)`.
 
-### `Provider` trait — 3 associated types, slot fields on Self
+### `Provider` trait — a `Component` with an instance and a topology
 
-Only `Config` / `Instance` / `Topology`, `key()`, and `create()` are required;
-every other method has a default.
+A resource is a `nebula_component::Component` of kind `kind::Resource`: the
+`Component` impl carries the key, the `Config` type and the catalog metadata,
+and `Provider` adds only what a resource does. `Instance`, `Topology` and
+`create()` are required; every other method has a default.
 
 ```rust
-pub trait Provider: HasCredentialSlots + Send + Sync + Sized + 'static {
-    type Config:   ResourceConfig;
+// From nebula-component, re-exported here:
+pub trait Component: Sized + Send + Sync + 'static {
+    type Kind: ComponentKind;          // kind::Resource for a resource
+    type Config: HasSchema + DeserializeOwned + Send + Sync + 'static;
+    const KEY: &'static str;
+    /// Schema-free author intent. The factory derives and binds `Config`'s
+    /// canonical schema exactly once.
+    fn metadata() -> Metadata;
+}
+
+pub trait Provider:
+    Component<Kind = kind::Resource, Config: ResourceConfig> + HasCredentialSlots
+{
     type Instance: Send + Sync + 'static;
     // Pooled<Self> | Resident<Self> | Bounded<Self> | custom Topology<R>
     type Topology: Topology<Self>;
-
-    const KEY: &'static str;
 
     /// Slot cells are populated on `&self` BEFORE create runs; read the
     /// resolved guard via the derive-emitted `<field>_slot()` accessor.
@@ -69,18 +80,14 @@ pub trait Provider: HasCredentialSlots + Send + Sync + Sized + 'static {
     /// `None` disables the hold-deadline leak watchdog (diagnostic only —
     /// it never force-releases a lease).
     fn max_hold_duration() -> Option<Duration> { None }
-
-    /// Schema-free author intent. The factory derives and binds `Config`'s
-    /// canonical schema exactly once.
-    fn metadata() -> ResourceMetadata;
 }
 ```
 
 `HasSchema::schema()` and `schema_of::<T>()` admit definitions through
 `Result<ValidSchema, ValidationReport>`. `ResourceFactory::definition()` performs
 the only resource admission, caches the resulting immutable
-`ResourceDefinition`, and returns it by reference. The author's `ResourceMetadata`
-carries neither a key nor a schema: the factory stamps `Provider::KEY` and derives the schema from
+`ResourceDefinition`, and returns it by reference. The author's `Metadata`
+carries neither a key nor a schema: the factory stamps `Component::KEY` and derives the schema from
 `Config`, so an admitted definition cannot name another resource. Schema and
 catalog failures propagate as `ResourceAdmissionError`; registry insertion fails
 before mutation. Catalog enumeration must not drop a failing entry.
@@ -92,10 +99,10 @@ therefore share one concrete `Provider` type instead of being caller attestation
 Metadata names are checked
 `MetadataName` values (`metadata_name!("HTTP client")` for static definitions),
 and invariant-bearing base fields are read through accessors.
-`Provider::KEY` is the one declaration of a resource's identity; `key_of::<R>()`
+`Component::KEY` is the one declaration of a resource's identity; `key_of::<R>()`
 is its typed `ResourceKey`, and
-an invalid literal fails the build. `Provider::metadata` is required and returns
-`ResourceMetadata::new(metadata_name!("Display name"), description)` or the checked
+an invalid literal fails the build. `Component::metadata` is required and returns
+`Metadata::new(metadata_name!("Display name"), description)` or the checked
 `try_new(name, description)`; names are never inferred from keys. Typed
 icons use `with_icon`, `with_inline_icon`, or `with_url_icon`; there is no
 separate `icon_url` field. Typed categories and links use `with_categories` and
@@ -291,15 +298,19 @@ struct Postgres {
     audit: SlotCell<CredentialGuard<AuditCredential>>,
 }
 
-impl Provider for Postgres {
-    type Config    = PostgresConfig;
-    type Instance  = PgPool;
-    type Topology  = Pooled<Self>;
+impl Component for Postgres {
+    type Kind   = kind::Resource;
+    type Config = PostgresConfig;
 
     const KEY: &'static str = "postgres";
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(metadata_name!("Postgres"), "Database pool")
+    fn metadata() -> Metadata {
+        Metadata::new(metadata_name!("Postgres"), "Database pool")
     }
+}
+
+impl Provider for Postgres {
+    type Instance  = PgPool;
+    type Topology  = Pooled<Self>;
 
     async fn create(&self, config: &PostgresConfig, _ctx: &ResourceContext)
         -> Result<PgPool, Error>
@@ -895,8 +906,9 @@ is not SDK-exported.
 - `SlotIdentity`, `DedupKey` — structural resolved-credential identity (`Unbound` / `Structural`) and the `(key, scope, slot_identity)` registry dedup key; neither is tenant authority.
 - `ManagerConfig`, `RegisterOptions` — configuration surface.
 - `Registry`, `LookupOutcome`, `ManagedResourceView` — type-erased storage with read-only diagnostic lookup; lifecycle authority remains inside `Manager`.
-- `ResourceMetadata` — key-free and schema-free author intent returned by `Provider::metadata` (an alias of `nebula_metadata::Metadata`).
-- `key_of::<R>()` — the typed `ResourceKey` derived from `Provider::KEY`; an invalid literal fails the build.
+- `Component`, `kind` — the shared component contract (from `nebula-component`) that `Provider` is built on; `Component::Config`, `Component::KEY` and `Component::metadata` live there.
+- `Metadata` — key-free and schema-free author intent returned by `Component::metadata` (`nebula_metadata::Metadata`).
+- `key_of::<R>()` — the typed `ResourceKey` derived from `Component::KEY`; an invalid literal fails the build.
 - `ResourceDefinition` — immutable factory-admitted descriptor with getter-only key, name, description, schema, version, and tags; serializable but not deserializable.
 - `RecordedResourceDefinition` — deserialized catalog evidence requiring explicit readmission against a fresh factory definition.
 - `ResourceConfig` — operational config trait (no secrets); supertype `HasSchema`.

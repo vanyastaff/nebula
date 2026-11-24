@@ -31,15 +31,15 @@ use tokio_util::sync::CancellationToken;
 
 use super::*;
 use crate::{
-    TopologyTag,
+    Metadata, TopologyTag,
     context::ResourceContext,
     error::ErrorKind,
     options::AcquireOptions,
-    resource::{ResourceConfig, ResourceMetadata},
+    resource::ResourceConfig,
     topology::{Resident, resident::config::Config as ResidentConfig},
 };
 
-#[derive(Clone, Default, nebula_schema::Schema)]
+#[derive(Clone, Default, nebula_schema::Schema, serde::Deserialize)]
 struct RaceCfg;
 
 impl ResourceConfig for RaceCfg {
@@ -52,23 +52,27 @@ impl ResourceConfig for RaceCfg {
 #[derive(Clone)]
 struct ShutdownRaceResident;
 
-#[async_trait::async_trait]
-impl Provider for ShutdownRaceResident {
+impl crate::Component for ShutdownRaceResident {
+    type Kind = crate::kind::Resource;
     type Config = RaceCfg;
-    type Instance = ();
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "test.shutdown_post_count_race.resident";
 
-    async fn create(&self, _config: &RaceCfg, _ctx: &ResourceContext) -> Result<(), Error> {
-        Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             crate::metadata_name!("test.shutdown_post_count_race.resident"),
             "",
         )
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for ShutdownRaceResident {
+    type Instance = ();
+    type Topology = Resident<Self>;
+
+    async fn create(&self, _config: &RaceCfg, _ctx: &ResourceContext) -> Result<(), Error> {
+        Ok(())
     }
 }
 
@@ -130,6 +134,16 @@ struct BlockingValidation {
     resume: Arc<std::sync::Barrier>,
 }
 
+// The barriers make this config unrepresentable as user data; it is built in
+// code only, so decoding always fails.
+impl<'de> serde::Deserialize<'de> for BlockingValidation {
+    fn deserialize<D: serde::Deserializer<'de>>(_: D) -> Result<Self, D::Error> {
+        Err(serde::de::Error::custom(
+            "BlockingValidation is built in code only",
+        ))
+    }
+}
+
 // This typed-only validation race fixture carries synchronization state,
 // not JSON configuration. It deliberately has no Deserialize implementation.
 impl nebula_schema::HasSchema for BlockingValidation {
@@ -152,19 +166,24 @@ impl ResourceConfig for BlockingValidation {
 
 struct ValidatingResident;
 
-#[async_trait::async_trait]
-impl Provider for ValidatingResident {
+impl crate::Component for ValidatingResident {
+    type Kind = crate::kind::Resource;
     type Config = BlockingValidation;
-    type Instance = ();
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "test.registration_validation_race";
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
+
+    fn metadata() -> Metadata {
+        Metadata::new(
             crate::metadata_name!("test.registration_validation_race"),
             "",
         )
     }
+}
+
+#[async_trait::async_trait]
+impl Provider for ValidatingResident {
+    type Instance = ();
+    type Topology = Resident<Self>;
     async fn create(&self, _: &Self::Config, _: &ResourceContext) -> Result<(), Error> {
         Ok(())
     }

@@ -4,12 +4,13 @@ use nebula_core::ExecutionId;
 
 use super::*;
 use crate::{
+    Metadata,
     context::ResourceContext,
-    resource::{ResourceConfig, ResourceMetadata},
+    resource::ResourceConfig,
     topology::{pooled::BrokenCheck, store::ReturnOutcome},
 };
 
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct PoolTestConfig;
 
 impl ResourceConfig for PoolTestConfig {
@@ -58,13 +59,21 @@ impl MockPool {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for MockPool {
+impl crate::Component for MockPool {
+    type Kind = crate::kind::Resource;
     type Config = PoolTestConfig;
-    type Instance = u64;
-    type Topology = Pooled<Self>;
 
     const KEY: &'static str = "mock-pool";
+
+    fn metadata() -> Metadata {
+        Metadata::new(crate::metadata_name!("mock-pool"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for MockPool {
+    type Instance = u64;
+    type Topology = Pooled<Self>;
 
     async fn create(&self, _config: &PoolTestConfig, _ctx: &ResourceContext) -> Result<u64, Error> {
         Ok(self.created.fetch_add(1, Ordering::SeqCst))
@@ -99,10 +108,6 @@ impl Provider for MockPool {
         } else {
             Ok(())
         }
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(crate::metadata_name!("mock-pool"), "")
     }
 }
 

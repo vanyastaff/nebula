@@ -29,7 +29,7 @@ use nebula_resource::Resident;
 use nebula_resource::{
     Manager, RegistrationSpec, ResidentConfig, ResourceContext, SlotIdentity,
     error::Error as ResourceError,
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Metadata, Provider, ResourceConfig},
     topology::resident::ResidentProvider,
 };
 use nebula_workflow::{
@@ -284,7 +284,7 @@ impl From<IntegrationProbeError> for ResourceError {
     }
 }
 
-#[derive(Clone, Debug, Default, nebula_schema::Schema)]
+#[derive(Clone, Debug, Default, nebula_schema::Schema, serde::Deserialize)]
 struct IntegrationProbeConfig;
 
 impl ResourceConfig for IntegrationProbeConfig {
@@ -297,13 +297,24 @@ impl ResourceConfig for IntegrationProbeConfig {
 #[derive(Clone)]
 struct IntegrationProbeResource;
 
-#[async_trait::async_trait]
-impl Provider for IntegrationProbeResource {
+impl nebula_resource::Component for IntegrationProbeResource {
+    type Kind = nebula_resource::kind::Resource;
     type Config = IntegrationProbeConfig;
-    type Instance = Arc<AtomicU64>;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "test.engine_integration.probe";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
+            nebula_resource::metadata_name!("test.engine_integration.probe"),
+            "",
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for IntegrationProbeResource {
+    type Instance = Arc<AtomicU64>;
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,
@@ -311,13 +322,6 @@ impl Provider for IntegrationProbeResource {
         _ctx: &ResourceContext,
     ) -> Result<Arc<AtomicU64>, ResourceError> {
         Ok(Arc::new(AtomicU64::new(7)))
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
-            nebula_resource::metadata_name!("test.engine_integration.probe"),
-            "",
-        )
     }
 }
 
@@ -734,7 +738,7 @@ mod shared_resource {
         AcquireOptions, Manager, RegistrationSpec, Resident, ResidentConfig, ResourceContext,
         SlotIdentity,
         error::Error,
-        resource::{Provider, ResourceConfig, ResourceMetadata},
+        resource::{Metadata, Provider, ResourceConfig},
         topology::resident::ResidentProvider,
     };
     use tokio_util::sync::CancellationToken;
@@ -765,7 +769,7 @@ mod shared_resource {
     // from "the original bot."
     // -----------------------------------------------------------------------
 
-    #[derive(Clone, Debug, nebula_schema::Schema)]
+    #[derive(Clone, Debug, nebula_schema::Schema, serde::Deserialize)]
     struct TelegramConfig {
         token: String,
     }
@@ -819,13 +823,21 @@ mod shared_resource {
         }
     }
 
-    #[async_trait::async_trait]
-    impl Provider for TelegramBot {
+    impl nebula_resource::Component for TelegramBot {
+        type Kind = nebula_resource::kind::Resource;
         type Config = TelegramConfig;
-        type Instance = Arc<TelegramBotInner>;
-        type Topology = Resident<Self>;
 
         const KEY: &'static str = "telegram-bot";
+
+        fn metadata() -> Metadata {
+            Metadata::new(nebula_resource::metadata_name!("telegram-bot"), "")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for TelegramBot {
+        type Instance = Arc<TelegramBotInner>;
+        type Topology = Resident<Self>;
 
         async fn create(
             &self,
@@ -846,10 +858,6 @@ mod shared_resource {
             _cx: nebula_resource::TeardownCx,
         ) -> Result<(), Error> {
             Ok(())
-        }
-
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::new(nebula_resource::metadata_name!("telegram-bot"), "")
         }
     }
 
@@ -880,13 +888,21 @@ mod shared_resource {
         }
     }
 
-    #[async_trait::async_trait]
-    impl Provider for AlternateBot {
+    impl nebula_resource::Component for AlternateBot {
+        type Kind = nebula_resource::kind::Resource;
         type Config = TelegramConfig;
-        type Instance = Arc<TelegramBotInner>;
-        type Topology = Resident<Self>;
 
         const KEY: &'static str = "telegram-bot-alt";
+
+        fn metadata() -> Metadata {
+            Metadata::new(nebula_resource::metadata_name!("telegram-bot-alt"), "")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for AlternateBot {
+        type Instance = Arc<TelegramBotInner>;
+        type Topology = Resident<Self>;
 
         async fn create(
             &self,
@@ -906,10 +922,6 @@ mod shared_resource {
             _cx: nebula_resource::TeardownCx,
         ) -> Result<(), Error> {
             Ok(())
-        }
-
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::new(nebula_resource::metadata_name!("telegram-bot-alt"), "")
         }
     }
 
@@ -1324,17 +1336,21 @@ mod resource_handle {
     #[derive(Clone)]
     struct Svc(Arc<Calls>);
 
-    #[async_trait::async_trait]
-    impl Provider for Svc {
+    impl nebula_resource::Component for Svc {
+        type Kind = nebula_resource::kind::Resource;
         type Config = ();
-        type Instance = Arc<Calls>;
-        type Topology = Resident<Self>;
 
         const KEY: &'static str = "test.resource_handle.svc";
 
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::new(nebula_resource::metadata_name!("ResourceHandleSvc"), "")
+        fn metadata() -> Metadata {
+            Metadata::new(nebula_resource::metadata_name!("ResourceHandleSvc"), "")
         }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for Svc {
+        type Instance = Arc<Calls>;
+        type Topology = Resident<Self>;
 
         async fn create(&self, (): &(), _: &ResourceContext) -> Result<Arc<Calls>, ResourceError> {
             Ok(Arc::clone(&self.0))
@@ -1406,17 +1422,21 @@ mod resource_handle {
         pending: Vec<String>,
     }
 
-    #[async_trait::async_trait]
-    impl Provider for Ledger {
+    impl nebula_resource::Component for Ledger {
+        type Kind = nebula_resource::kind::Resource;
         type Config = ();
-        type Instance = Conn;
-        type Topology = Pooled<Self>;
 
         const KEY: &'static str = "test.resource_handle.ledger";
 
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::new(nebula_resource::metadata_name!("ResourceHandleLedger"), "")
+        fn metadata() -> Metadata {
+            Metadata::new(nebula_resource::metadata_name!("ResourceHandleLedger"), "")
         }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for Ledger {
+        type Instance = Conn;
+        type Topology = Pooled<Self>;
 
         async fn create(&self, (): &(), _: &ResourceContext) -> Result<Conn, ResourceError> {
             Ok(Conn(Arc::clone(&self.0)))

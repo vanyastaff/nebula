@@ -32,11 +32,11 @@ use nebula_credential::{
     TenantScope,
 };
 use nebula_resource::{
-    CredentialAdmissionProfile, Error, ErrorKind, Manager, ManagerConfig, RateLimitProfile,
-    RegistrationSpec, Resident, ResidentConfig, ResourceConfig, ResourceContext, ResourceEvent,
-    ScopeLevel, ShutdownConfig, SlotIdentity, TeardownCx,
+    CredentialAdmissionProfile, Error, ErrorKind, Manager, ManagerConfig, Metadata,
+    RateLimitProfile, RegistrationSpec, Resident, ResidentConfig, ResourceConfig, ResourceContext,
+    ResourceEvent, ScopeLevel, ShutdownConfig, SlotIdentity, TeardownCx,
     call::{Cost, Effect, Operation, OperationCx, OperationError, ResourceHandle, SentState},
-    resource::{Provider, ResourceMetadata},
+    resource::Provider,
     topology::ResidentProvider,
 };
 use serde::{Deserialize, Serialize};
@@ -45,7 +45,7 @@ use tokio_util::sync::CancellationToken;
 
 // ── the resource ─────────────────────────────────────────────────────────
 
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct LoggerConfig {
     buffer: u64,
 }
@@ -183,20 +183,24 @@ impl LogSink {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for Logger {
+impl nebula_resource::Component for Logger {
+    type Kind = nebula_resource::kind::Resource;
     type Config = LoggerConfig;
-    type Instance = LogSink;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "fixture.logger";
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_resource::metadata_name!("Logger"),
             "An in-memory log sink",
         )
     }
+}
+
+#[async_trait::async_trait]
+impl Provider for Logger {
+    type Instance = LogSink;
+    type Topology = Resident<Self>;
 
     fn teardown_budget(&self) -> Duration {
         Duration::from_secs(2)

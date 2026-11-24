@@ -42,13 +42,13 @@
 
 ## 3. Зависимости и зависимые
 
-- **Deps:** `nebula-core`, `nebula-credential`, `nebula-eventbus`, `nebula-expression` (default-features=false, `cache`), `nebula-metrics`, `nebula-metadata`, `nebula-resource-macros` (path=`macros`), `nebula-schema`, `nebula-error`; рантайм `tokio`/`tokio-util`/`futures`/`async-trait`/`arc-swap`/`dashmap`/`smallvec`/`serde`/`serde_json`/`semver`/`thiserror`/`tracing`. Feature `rotation` без новых deps.
+- **Deps:** `nebula-component`, `nebula-core`, `nebula-credential`, `nebula-eventbus`, `nebula-expression` (default-features=false, `cache`), `nebula-metrics`, `nebula-metadata`, `nebula-resource-macros` (path=`macros`), `nebula-schema`, `nebula-error`; рантайм `tokio`/`tokio-util`/`futures`/`async-trait`/`arc-swap`/`dashmap`/`smallvec`/`serde`/`serde_json`/`semver`/`thiserror`/`tracing`. Feature `rotation` без новых deps.
 - **Dependents:** `nebula-action`, `nebula-engine` (прокидывает feature `rotation`), `nebula-sdk`, `nebula-plugin`.
 
 ## 4. Внутренняя архитектура
 
 - `lib.rs` — фасад, реэкспорты, `prelude`.
-- `resource.rs` — `Provider`, `ResourceConfig`, `HasCredentialSlots`, `Provider::KEY` + derived `key_of::<R>()`, immutable `ResourceDefinition` (admitted from the shared key-free `ResourceMetadata`), recorded readmission evidence, `TeardownCx/Reason`, `CheckCost`.
+- `resource.rs` — `Provider` (built on `nebula_component::Component`: key, `Config` and metadata live there), `ResourceConfig`, `HasCredentialSlots`, re-exported `key_of::<R>()`, immutable `ResourceDefinition` (admitted through `nebula_component::admit` from the shared key-free `Metadata`), recorded readmission evidence, `TeardownCx/Reason`, `CheckCost`.
 - `manager/` — `mod` (`Manager`, каноническая doc двухфазного revoke-инварианта), `acquire`, `gate`, `options`, `registration`, `rotation`, `shutdown`.
 - `topology/` — `contract` (открытый `Topology<R>`), `store` (`InstanceStore`), `pooled`/`resident`/`bounded` (hook-трейты + конфиги).
 - `runtime/` — `pool`/`resident`/`bounded` (сами структуры топологий), `managed` (`ManagedResource` — framework acquire loop).
@@ -144,11 +144,11 @@ This completes deployment wiring, not a catalog of first-party resource integrat
 - **Несинхронизированные breaking-коммиты.** На ветке `dreamy-kare-8698d4` лежат ещё 4 breaking-коммита redesign API, не влитые в этот worktree; их надо re-derive против пост-0093 состояния перед мержем (риск дрейфа `RegistrationSpec`/topology API).
 - ~~**Долг по докам — это риск онбординга, а не косметика.**~~ **Closed by Batch D (2026-07-02)** — see §6 above.
 - **Phase-5 target design, implementation pending** —
-  [контракт](../../schema/docs/PHASE5_PROPERTY.md) сохраняет явный `Provider::Config` как
+  [контракт](../../schema/docs/PHASE5_PROPERTY.md) сохраняет явный `Component::Config` как
   канонический data-тип с value-only `#[property(...)]`; отдельный `#[slot(credential, ...)]`
   описывает зависимости на resource вне `HasSchema` и persisted config values.
-  Handwritten `impl Provider`, `create(&self, config, ...)`, `Instance`, topology и
+  Handwritten `impl Component` + `impl Provider`, `create(&self, config, ...)`, `Instance`, topology и
   `ResourceConfig: Clone` сохраняются; текущие `#[credential]` поля — implementation baseline.
-  Общий `ResourceMetadata` без ключа и схемы и factory-only привязка ключа и схемы следуют
+  Общий `Metadata` без ключа и схемы и factory-only привязка ключа и схемы следуют
   [общему metadata-контракту](../../../docs/INTEGRATION_MODEL.md#shared-metadata-authoring-current-foundation-target-parity).
 - ~~**Гигиена feature/тест-команд.**~~ **Closed by Batch D (2026-07-02)** — see §6, items 6-7 above.

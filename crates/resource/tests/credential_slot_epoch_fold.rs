@@ -115,20 +115,21 @@ struct TwoSlotDerived {
     slot_b: SlotCell<CredentialGuard<FakeCred>>,
 }
 
-#[async_trait::async_trait]
-impl Provider for TwoSlotDerived {
+impl Component for TwoSlotDerived {
+    type Kind = kind::Resource;
     type Config = TwoSlotCfg;
-    type Instance = ();
-    type Topology = Resident<Self>;
-
-    fn metadata() -> nebula_resource::ResourceMetadata {
-        nebula_resource::ResourceMetadata::new(
-            nebula_resource::metadata_name!("TwoSlotDerived"),
-            "",
-        )
-    }
 
     const KEY: &'static str = "epochfold-derived";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("TwoSlotDerived"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for TwoSlotDerived {
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     async fn create(&self, _config: &TwoSlotCfg, _ctx: &ResourceContext) -> Result<(), Error> {
         Ok(())
@@ -229,7 +230,7 @@ fn derived_epoch_changes_when_non_max_slot_rotates() {
 
 // ── Part 2: the resident reconcile keys off the order-sensitive epoch ─
 
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct RaceCfg;
 impl ResourceConfig for RaceCfg {
     fn validate(&self) -> Result<(), Error> {
@@ -261,20 +262,21 @@ struct TwoSlotResident {
     refresh_calls: Arc<AtomicUsize>,
 }
 
-#[async_trait::async_trait]
-impl Provider for TwoSlotResident {
+impl Component for TwoSlotResident {
+    type Kind = kind::Resource;
     type Config = RaceCfg;
-    type Instance = TwoSlotRuntime;
-    type Topology = Resident<Self>;
-
-    fn metadata() -> nebula_resource::ResourceMetadata {
-        nebula_resource::ResourceMetadata::new(
-            nebula_resource::metadata_name!("TwoSlotResident"),
-            "",
-        )
-    }
 
     const KEY: &'static str = "epochfold-resident";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("TwoSlotResident"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for TwoSlotResident {
+    type Instance = TwoSlotRuntime;
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,
@@ -541,17 +543,21 @@ async fn refresh_slot_rejects_a_name_not_in_the_declared_slot_list() {
 #[derive(Resource)]
 struct NoSlotDerived;
 
-#[async_trait::async_trait]
-impl Provider for NoSlotDerived {
+impl Component for NoSlotDerived {
+    type Kind = kind::Resource;
     type Config = TwoSlotCfg;
-    type Instance = ();
-    type Topology = Resident<Self>;
-
-    fn metadata() -> nebula_resource::ResourceMetadata {
-        nebula_resource::ResourceMetadata::new(nebula_resource::metadata_name!("NoSlotDerived"), "")
-    }
 
     const KEY: &'static str = "epochfold-noslot";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("NoSlotDerived"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for NoSlotDerived {
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     async fn create(&self, _config: &TwoSlotCfg, _ctx: &ResourceContext) -> Result<(), Error> {
         Ok(())
@@ -600,20 +606,21 @@ struct PooledCredResource {
     slot: Arc<SlotCell<CredentialGuard<FakeCred>>>,
 }
 
-#[async_trait::async_trait]
-impl Provider for PooledCredResource {
+impl Component for PooledCredResource {
+    type Kind = kind::Resource;
     type Config = RaceCfg;
-    type Instance = ();
-    type Topology = nebula_resource::Pooled<Self>;
-
-    fn metadata() -> nebula_resource::ResourceMetadata {
-        nebula_resource::ResourceMetadata::new(
-            nebula_resource::metadata_name!("PooledCredResource"),
-            "",
-        )
-    }
 
     const KEY: &'static str = "epochfold-pooled-cred";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("PooledCredResource"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for PooledCredResource {
+    type Instance = ();
+    type Topology = nebula_resource::Pooled<Self>;
 
     async fn create(&self, _config: &RaceCfg, _ctx: &ResourceContext) -> Result<(), Error> {
         Ok(())

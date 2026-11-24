@@ -19,7 +19,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nebula_core::ScopeLevel;
 use nebula_resource::error::Error;
-use nebula_resource::resource::{Provider, ResourceConfig, ResourceMetadata};
+use nebula_resource::resource::{Component, kind};
+use nebula_resource::resource::{Metadata, Provider, ResourceConfig};
 use nebula_resource::topology::{
     AdmissionPhase, InstanceStore, ReturnOutcome, StoreView, Ticket, Topology, Unavailable,
 };
@@ -30,7 +31,7 @@ use tokio::sync::Semaphore;
 
 // ─── A minimal resource to parameterize the custom topology ──────────────────
 
-#[derive(Clone, Default, nebula_schema::Schema)]
+#[derive(Clone, Default, nebula_schema::Schema, serde::Deserialize)]
 struct PermitCfg;
 impl ResourceConfig for PermitCfg {
     fn fingerprint(&self) -> u64 {
@@ -41,13 +42,24 @@ impl ResourceConfig for PermitCfg {
 #[derive(Clone)]
 struct PermitRes;
 
-#[async_trait]
-impl Provider for PermitRes {
+impl Component for PermitRes {
+    type Kind = kind::Resource;
     type Config = PermitCfg;
-    type Instance = u32;
-    type Topology = EntryPool;
 
     const KEY: &'static str = "custom.standalone.permit";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
+            nebula_resource::metadata_name!("custom.standalone.permit"),
+            "",
+        )
+    }
+}
+
+#[async_trait]
+impl Provider for PermitRes {
+    type Instance = u32;
+    type Topology = EntryPool;
 
     async fn create(&self, _config: &PermitCfg, _ctx: &ResourceContext) -> Result<u32, Error> {
         Ok(42)
@@ -55,13 +67,6 @@ impl Provider for PermitRes {
 
     async fn destroy(&self, _runtime: u32, _cx: nebula_resource::TeardownCx) -> Result<(), Error> {
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
-            nebula_resource::metadata_name!("custom.standalone.permit"),
-            "",
-        )
     }
 }
 

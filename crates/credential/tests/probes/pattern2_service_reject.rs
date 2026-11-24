@@ -12,8 +12,8 @@ use std::future::Future;
 use nebula_credential::{
     AuthPattern, AuthScheme, Credential, CredentialContext, Metadata,
     error::CredentialError, resolve::StaticResolveResult,
+    Component, kind,
 };
-use nebula_credential::{Component, kind};
 use serde::{Deserialize, Serialize};
 
 // Per capability macro 4.1, the crate author declares `mod sealed_caps`

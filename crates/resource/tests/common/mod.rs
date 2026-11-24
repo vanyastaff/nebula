@@ -14,10 +14,10 @@ use std::sync::{
 
 use nebula_core::ExecutionId;
 use nebula_resource::{
-    Manager, ManagerConfig, Pooled, RegistrationSpec, Resident, ResourceContext, ScopeLevel,
-    SlotIdentity,
+    Manager, ManagerConfig, Metadata, Pooled, RegistrationSpec, Resident, ResourceContext,
+    ScopeLevel, SlotIdentity,
     error::Error,
-    resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
+    resource::{HasCredentialSlots, Provider, ResourceConfig},
     topology::{
         pooled::{BrokenCheck, PoolProvider},
         resident::ResidentProvider,
@@ -31,7 +31,7 @@ use nebula_resource::{
 // Mock config
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug, nebula_schema::Schema)]
+#[derive(Clone, Debug, nebula_schema::Schema, serde::Deserialize)]
 pub(crate) struct TestConfig {
     pub(crate) name: String,
 }
@@ -79,13 +79,21 @@ impl PoolTestResource {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for PoolTestResource {
+impl nebula_resource::Component for PoolTestResource {
+    type Kind = nebula_resource::kind::Resource;
     type Config = TestConfig;
-    type Instance = Arc<AtomicU64>;
-    type Topology = Pooled<Self>;
 
     const KEY: &'static str = "test-pool";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("test-pool"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for PoolTestResource {
+    type Instance = Arc<AtomicU64>;
+    type Topology = Pooled<Self>;
 
     async fn create(
         &self,
@@ -103,10 +111,6 @@ impl Provider for PoolTestResource {
     ) -> Result<(), Error> {
         self.destroy_counter.fetch_add(1, Ordering::Relaxed);
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("test-pool"), "")
     }
 }
 
@@ -141,13 +145,21 @@ impl ResidentTestResource {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for ResidentTestResource {
+impl nebula_resource::Component for ResidentTestResource {
+    type Kind = nebula_resource::kind::Resource;
     type Config = TestConfig;
-    type Instance = Arc<AtomicU64>;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "test-resident";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("test-resident"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for ResidentTestResource {
+    type Instance = Arc<AtomicU64>;
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,
@@ -164,10 +176,6 @@ impl Provider for ResidentTestResource {
         _cx: nebula_resource::TeardownCx,
     ) -> Result<(), Error> {
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("test-resident"), "")
     }
 }
 

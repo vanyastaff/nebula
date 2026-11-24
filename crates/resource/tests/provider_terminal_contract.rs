@@ -9,8 +9,9 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use nebula_resource::{
-    AcquireOptions, Error, ErrorKind, Manager, Provider, Resident, ResidentConfig,
+    AcquireOptions, Component, Error, ErrorKind, Manager, Provider, Resident, ResidentConfig,
     ResidentProvider, ResourceContext, ShutdownConfig, ShutdownError, TeardownCx, TeardownReason,
+    kind,
 };
 use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
@@ -45,20 +46,21 @@ struct TerminalProvider {
 nebula_resource::no_credential_slots!(TerminalProvider);
 impl ResidentProvider for TerminalProvider {}
 
-#[async_trait::async_trait]
-impl Provider for TerminalProvider {
+impl Component for TerminalProvider {
+    type Kind = kind::Resource;
     type Config = ();
-    type Instance = OwnedInstance;
-    type Topology = Resident<Self>;
-
-    fn metadata() -> nebula_resource::ResourceMetadata {
-        nebula_resource::ResourceMetadata::new(
-            nebula_resource::metadata_name!("TerminalProvider"),
-            "",
-        )
-    }
 
     const KEY: &'static str = "terminal-contract";
+
+    fn metadata() -> nebula_resource::Metadata {
+        nebula_resource::Metadata::new(nebula_resource::metadata_name!("TerminalProvider"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for TerminalProvider {
+    type Instance = OwnedInstance;
+    type Topology = Resident<Self>;
 
     async fn create(&self, (): &(), _: &ResourceContext) -> Result<OwnedInstance, Error> {
         Ok(OwnedInstance(Arc::clone(&self.drops)))
@@ -191,20 +193,21 @@ struct DefaultDropProvider(Arc<AtomicUsize>);
 nebula_resource::no_credential_slots!(DefaultDropProvider);
 impl ResidentProvider for DefaultDropProvider {}
 
-#[async_trait::async_trait]
-impl Provider for DefaultDropProvider {
+impl Component for DefaultDropProvider {
+    type Kind = kind::Resource;
     type Config = ();
-    type Instance = OwnedInstance;
-    type Topology = Resident<Self>;
-
-    fn metadata() -> nebula_resource::ResourceMetadata {
-        nebula_resource::ResourceMetadata::new(
-            nebula_resource::metadata_name!("DefaultDropProvider"),
-            "",
-        )
-    }
 
     const KEY: &'static str = "default-drop";
+
+    fn metadata() -> nebula_resource::Metadata {
+        nebula_resource::Metadata::new(nebula_resource::metadata_name!("DefaultDropProvider"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for DefaultDropProvider {
+    type Instance = OwnedInstance;
+    type Topology = Resident<Self>;
 
     async fn create(&self, (): &(), _: &ResourceContext) -> Result<OwnedInstance, Error> {
         Ok(OwnedInstance(Arc::clone(&self.0)))

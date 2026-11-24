@@ -44,7 +44,7 @@ use nebula_resource::Resident;
 use nebula_resource::{
     ScopeLevel,
     error::Error as ResourceError,
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Metadata, Provider, ResourceConfig},
     topology::resident,
 };
 
@@ -103,13 +103,24 @@ impl DemoResource {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for DemoResource {
+impl nebula_resource::Component for DemoResource {
+    type Kind = nebula_resource::kind::Resource;
     type Config = DemoConfig;
-    type Instance = Arc<AtomicU64>;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "demo.widget";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
+            nebula_resource::metadata_name!("demo.widget"),
+            String::new(),
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for DemoResource {
+    type Instance = Arc<AtomicU64>;
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,
@@ -118,13 +129,6 @@ impl Provider for DemoResource {
     ) -> Result<Arc<AtomicU64>, nebula_resource::Error> {
         let id = self.create_counter.fetch_add(1, Ordering::Relaxed);
         Ok(Arc::new(AtomicU64::new(id)))
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
-            nebula_resource::metadata_name!("demo.widget"),
-            String::new(),
-        )
     }
 }
 

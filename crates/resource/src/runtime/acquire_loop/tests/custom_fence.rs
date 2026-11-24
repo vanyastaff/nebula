@@ -10,17 +10,21 @@ struct CustomResource {
     destroy_finished: Arc<Notify>,
 }
 
-#[async_trait::async_trait]
-impl Provider for CustomResource {
+impl crate::Component for CustomResource {
+    type Kind = crate::kind::Resource;
     type Config = PoolCfg;
-    type Instance = u64;
-    type Topology = CustomTopology;
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(crate::metadata_name!("CustomResource"), "")
-    }
 
     const KEY: &'static str = "custom-checkout-fence";
+
+    fn metadata() -> Metadata {
+        Metadata::new(crate::metadata_name!("CustomResource"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for CustomResource {
+    type Instance = u64;
+    type Topology = CustomTopology;
 
     async fn create(&self, _: &PoolCfg, _: &ResourceContext) -> Result<u64, Error> {
         Ok(self.created.fetch_add(1, Ordering::SeqCst))

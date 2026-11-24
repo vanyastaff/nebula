@@ -28,6 +28,7 @@ nebula-credential = { path = "../credential" }
 nebula-eventbus = { path = "../eventbus" }
 nebula-expression = { path = "../expression", default-features = false, features = ["cache"] }
 nebula-metrics = { path = "../metrics" }
+nebula-component = { path = "../component" }
 nebula-metadata = { path = "../metadata" }
 nebula-resilience = { path = "../resilience" }
 nebula-resource-macros = { path = "macros" }

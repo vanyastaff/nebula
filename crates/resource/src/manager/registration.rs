@@ -175,8 +175,9 @@ impl Manager {
     /// use async_trait::async_trait;
     /// use nebula_core::ScopeLevel;
     /// use nebula_resource::{
-    ///     AcquireOptions, Error, Manager, ResourceMetadata, PoolConfig, PoolProvider, Pooled,
-    ///     Provider, RegistrationSpec, Resource, ResourceContext, SlotIdentity, metadata_name,
+    ///     AcquireOptions, Component, Error, Manager, Metadata, PoolConfig, PoolProvider, Pooled,
+    ///     Provider, RegistrationSpec, Resource, ResourceContext, SlotIdentity, kind,
+    ///     metadata_name,
     /// };
     ///
     /// // `Resource` emits the (here-empty) credential-slot plumbing; the
@@ -184,17 +185,21 @@ impl Manager {
     /// #[derive(Resource, Clone)]
     /// struct HttpClient;
     ///
-    /// #[async_trait]
-    /// impl Provider for HttpClient {
+    /// impl Component for HttpClient {
+    ///     type Kind = kind::Resource;
     ///     type Config = ();
-    ///     type Instance = ();
-    ///     type Topology = Pooled<Self>;
     ///
     ///     const KEY: &'static str = "doctest.http_client";
     ///
-    ///     fn metadata() -> ResourceMetadata {
-    ///         ResourceMetadata::new(metadata_name!("HTTP client"), "")
+    ///     fn metadata() -> Metadata {
+    ///         Metadata::new(metadata_name!("HTTP client"), "")
     ///     }
+    /// }
+    ///
+    /// #[async_trait]
+    /// impl Provider for HttpClient {
+    ///     type Instance = ();
+    ///     type Topology = Pooled<Self>;
     ///
     ///     async fn create(&self, _config: &(), _ctx: &ResourceContext) -> Result<(), Error> {
     ///         Ok(())

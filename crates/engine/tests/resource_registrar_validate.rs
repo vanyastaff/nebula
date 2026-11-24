@@ -33,7 +33,7 @@ use nebula_resource::{
     HasCredentialSlots, Manager, ScopeLevel,
     error::Error as ResourceError,
     rate_limit::{Rate, ResiliencePolicy},
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Metadata, Provider, ResourceConfig},
     topology::resident,
     topology::resident::ResidentProvider,
 };
@@ -87,13 +87,21 @@ impl ResourceConfig for HttpPoolConfig {
 #[derive(Clone)]
 struct HttpPool;
 
-#[async_trait::async_trait]
-impl Provider for HttpPool {
+impl nebula_resource::Component for HttpPool {
+    type Kind = nebula_resource::kind::Resource;
     type Config = HttpPoolConfig;
-    type Instance = ();
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "http_pool";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("http_pool"), String::new())
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for HttpPool {
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,
@@ -101,10 +109,6 @@ impl Provider for HttpPool {
         _ctx: &nebula_resource::ResourceContext,
     ) -> Result<(), nebula_resource::Error> {
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("http_pool"), String::new())
     }
 
     /// The provider allows 30 requests per second, 30 back to back.
@@ -151,13 +155,21 @@ fn registry_with_http_pool() -> ResourceActivatorRegistry {
 #[derive(Clone)]
 struct TokenPool;
 
-#[async_trait::async_trait]
-impl Provider for TokenPool {
+impl nebula_resource::Component for TokenPool {
+    type Kind = nebula_resource::kind::Resource;
     type Config = HttpPoolConfig;
-    type Instance = ();
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "token_pool";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("token_pool"), String::new())
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for TokenPool {
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,
@@ -165,10 +177,6 @@ impl Provider for TokenPool {
         _ctx: &nebula_resource::ResourceContext,
     ) -> Result<(), nebula_resource::Error> {
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("token_pool"), String::new())
     }
 }
 

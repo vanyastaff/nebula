@@ -34,7 +34,7 @@ pub enum PluginError {
     /// A resource could not produce an admitted catalog definition.
     #[classify(category = "validation", code = "PLUGIN:INVALID_RESOURCE_METADATA")]
     #[error("plugin resource metadata admission failed")]
-    ResourceMetadata(#[from] nebula_resource::ResourceAdmissionError),
+    Metadata(#[from] nebula_resource::ResourceAdmissionError),
     /// A credential could not produce a checked catalog definition.
     #[classify(category = "validation", code = "PLUGIN:INVALID_CREDENTIAL_METADATA")]
     #[error("plugin credential metadata admission failed")]

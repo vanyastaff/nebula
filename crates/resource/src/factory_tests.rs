@@ -12,9 +12,9 @@ use nebula_expression::ExpressionEngine;
 
 use super::*;
 use crate::{
-    Manager, Resident, ScopeLevel,
+    Manager, Metadata, Resident, ScopeLevel,
     error::Error as ResourceError,
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig},
     topology::resident::{self, ResidentProvider},
 };
 
@@ -73,13 +73,21 @@ impl TestRes {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for TestRes {
+impl crate::Component for TestRes {
+    type Kind = crate::kind::Resource;
     type Config = TestConfig;
-    type Instance = Arc<AtomicU64>;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "test-factory-res";
+
+    fn metadata() -> Metadata {
+        Metadata::new(crate::metadata_name!("test-factory-res"), String::new())
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for TestRes {
+    type Instance = Arc<AtomicU64>;
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,
@@ -88,10 +96,6 @@ impl Provider for TestRes {
     ) -> Result<Arc<AtomicU64>, ResourceError> {
         let id = self.create_counter.fetch_add(1, Ordering::Relaxed);
         Ok(Arc::new(AtomicU64::new(id)))
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(crate::metadata_name!("test-factory-res"), String::new())
     }
 }
 
@@ -146,17 +150,22 @@ impl BoundTestRes {
 }
 
 #[cfg(feature = "rotation")]
-#[async_trait::async_trait]
-impl Provider for BoundTestRes {
+impl crate::Component for BoundTestRes {
+    type Kind = crate::kind::Resource;
     type Config = TestConfig;
-    type Instance = ();
-    type Topology = Resident<Self>;
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(crate::metadata_name!("BoundTestRes"), "")
-    }
 
     const KEY: &'static str = "test-factory-bound-res";
+
+    fn metadata() -> Metadata {
+        Metadata::new(crate::metadata_name!("BoundTestRes"), "")
+    }
+}
+
+#[cfg(feature = "rotation")]
+#[async_trait::async_trait]
+impl Provider for BoundTestRes {
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,

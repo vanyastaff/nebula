@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, Resident, ResidentConfig, ResourceContext,
     call::{Cost, Operation, OperationCx, OperationError, ResourceHandle, SentState},
-    resource::{Provider, ResourceMetadata},
+    resource::{Metadata, Provider},
     topology::resident::ResidentProvider,
 };
 use nebula_storage_port::{
@@ -908,7 +908,7 @@ impl Desk {
 }
 
 /// The gateway row's configuration: which endpoint it calls.
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct GatewayConfig {
     endpoint: u64,
 }
@@ -924,17 +924,21 @@ impl nebula_resource::ResourceConfig for GatewayConfig {
 #[derive(Clone)]
 struct Gateway(Arc<Desk>);
 
-#[async_trait::async_trait]
-impl Provider for Gateway {
+impl nebula_resource::Component for Gateway {
+    type Kind = nebula_resource::kind::Resource;
     type Config = GatewayConfig;
-    type Instance = Arc<Desk>;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "billing.gateway";
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("JournalGateway"), "")
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("JournalGateway"), "")
     }
+}
+
+#[async_trait::async_trait]
+impl Provider for Gateway {
+    type Instance = Arc<Desk>;
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,

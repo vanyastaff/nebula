@@ -17,11 +17,11 @@ use std::sync::{
 use common::{ResidentTestResource, TestConfig, test_config, test_ctx};
 use nebula_core::resource_key;
 use nebula_resource::{
-    AcquireOptions, Bounded, Manager, Pooled, RegistrationSpec, Resident, ResidentConfig,
+    AcquireOptions, Bounded, Manager, Metadata, Pooled, RegistrationSpec, Resident, ResidentConfig,
     ResourceContext, ScopeLevel, ShutdownConfig, SlotIdentity,
     error::{Error, ErrorKind},
     guard::ResourceGuard,
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig},
     topology::{
         bounded::BoundedProvider,
         pooled::{BrokenCheck, PoolProvider},
@@ -192,7 +192,7 @@ async fn remove_nonexistent_returns_not_found() {
 // ---------------------------------------------------------------------------
 
 /// Config with a controllable fingerprint for reload tests.
-#[derive(Clone, Debug, nebula_schema::Schema)]
+#[derive(Clone, Debug, nebula_schema::Schema, serde::Deserialize)]
 struct ReloadConfig {
     fingerprint: u64,
     valid: bool,
@@ -259,13 +259,21 @@ impl ReloadPoolResource {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for ReloadPoolResource {
+impl nebula_resource::Component for ReloadPoolResource {
+    type Kind = nebula_resource::kind::Resource;
     type Config = ReloadConfig;
-    type Instance = Arc<AtomicU64>;
-    type Topology = Pooled<Self>;
 
     const KEY: &'static str = "test-reload-pool";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("test-reload-pool"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for ReloadPoolResource {
+    type Instance = Arc<AtomicU64>;
+    type Topology = Pooled<Self>;
 
     async fn create(
         &self,
@@ -288,10 +296,6 @@ impl Provider for ReloadPoolResource {
         self.destroy_counter.fetch_add(1, Ordering::Relaxed);
         self.destroy_finished.notify_one();
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("test-reload-pool"), "")
     }
 }
 
@@ -319,13 +323,21 @@ impl ReloadExclusiveResource {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for ReloadExclusiveResource {
+impl nebula_resource::Component for ReloadExclusiveResource {
+    type Kind = nebula_resource::kind::Resource;
     type Config = ReloadConfig;
-    type Instance = Arc<AtomicU64>;
-    type Topology = Bounded<Self>;
 
     const KEY: &'static str = "test-reload-exclusive";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("test-reload-exclusive"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for ReloadExclusiveResource {
+    type Instance = Arc<AtomicU64>;
+    type Topology = Bounded<Self>;
 
     async fn create(
         &self,
@@ -334,10 +346,6 @@ impl Provider for ReloadExclusiveResource {
     ) -> Result<Arc<AtomicU64>, Error> {
         let id = self.create_counter.fetch_add(1, Ordering::Relaxed);
         Ok(Arc::new(AtomicU64::new(id)))
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("test-reload-exclusive"), "")
     }
 }
 

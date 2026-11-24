@@ -17,18 +17,18 @@ use tokio::{sync::Notify, time::Instant};
 use tokio_util::sync::CancellationToken;
 
 use super::{StreamOperation, StreamSink};
+use crate::{Component, kind};
 use crate::{
-    Error, ErrorKind, Manager, Provider, RegistrationSpec, Resident, ResidentConfig,
+    Error, ErrorKind, Manager, Metadata, Provider, RegistrationSpec, Resident, ResidentConfig,
     ResourceConfig, ResourceContext, SlotIdentity,
     call::{Cost, Effect, OperationCx, OperationError, ResourceHandle, SentState},
-    resource::ResourceMetadata,
     runtime::managed::ManagedResource,
     topology::ResidentProvider,
 };
 
 // ── fixtures ─────────────────────────────────────────────────────────────
 
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct Config {
     version: u64,
 }
@@ -43,17 +43,21 @@ impl ResourceConfig for Config {
 #[derive(Clone)]
 struct Feed;
 
-#[async_trait::async_trait]
-impl Provider for Feed {
+impl Component for Feed {
+    type Kind = kind::Resource;
     type Config = Config;
-    type Instance = ();
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "call-stream";
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(crate::metadata_name!("call-stream"), "")
+    fn metadata() -> Metadata {
+        Metadata::new(crate::metadata_name!("call-stream"), "")
     }
+}
+
+#[async_trait::async_trait]
+impl Provider for Feed {
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<(), Error> {
         Ok(())

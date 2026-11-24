@@ -5,8 +5,8 @@
 use nebula_credential::{
     Credential, CredentialContext, CredentialError, CredentialGuard, Metadata,
     SecretString, SecretToken, StaticResolveResult,
+    Component, kind,
 };
-use nebula_credential::{Component, kind};
 use nebula_resource::{Resource, SlotCell};
 use zeroize::Zeroize;
 

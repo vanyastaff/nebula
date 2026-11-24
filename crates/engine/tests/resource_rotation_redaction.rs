@@ -59,11 +59,12 @@ use nebula_core::{OrgId, ScopeLevel, scope::Scope};
 use nebula_credential::{CredentialGuard, CredentialId};
 use nebula_resource::Resident;
 use nebula_resource::{
-    AcquireOptions, Manager, ManagerConfig, Provider, RegistrationSpec, ResidentConfig,
+    AcquireOptions, Component, Manager, ManagerConfig, Provider, RegistrationSpec, ResidentConfig,
     ResourceConfig, ResourceContext, SlotCell, SlotIdentity,
     error::Error as ResourceError,
     events::ResourceEvent,
-    resource::{HasCredentialSlots, ResourceMetadata},
+    kind,
+    resource::{HasCredentialSlots, Metadata},
     topology::resident::ResidentProvider,
 };
 use nebula_resource::{ResourceFanoutIndex, RotationOutcome};
@@ -182,7 +183,7 @@ impl From<HookError> for ResourceError {
     }
 }
 
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct Cfg;
 impl ResourceConfig for Cfg {
     fn validate(&self) -> Result<(), ResourceError> {
@@ -222,13 +223,24 @@ struct SecretBearingResource {
     hook_entered: Arc<AtomicUsize>,
 }
 
-#[async_trait::async_trait]
-impl Provider for SecretBearingResource {
+impl Component for SecretBearingResource {
+    type Kind = kind::Resource;
     type Config = Cfg;
-    type Instance = SecretRuntime;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "rotation-redaction-res";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
+            nebula_resource::metadata_name!("rotation-redaction-res"),
+            "",
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for SecretBearingResource {
+    type Instance = SecretRuntime;
+    type Topology = Resident<Self>;
 
     async fn create(&self, _c: &Cfg, _x: &ResourceContext) -> Result<SecretRuntime, ResourceError> {
         Ok(SecretRuntime {
@@ -266,13 +278,6 @@ impl Provider for SecretBearingResource {
             Behaviour::Ok => Ok(()),
             Behaviour::Err => Err(HookError("revoke hook rejected: simulated upstream 503").into()),
         }
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
-            nebula_resource::metadata_name!("rotation-redaction-res"),
-            "",
-        )
     }
 }
 

@@ -23,10 +23,10 @@ use nebula_core::{DeclaresDependencies, Dependencies, ScopeLevel};
 use nebula_expression::ExpressionEngine;
 use nebula_resource::Resident;
 use nebula_resource::{
-    KindActivator, Manager, RegisterRequest, ResidentConfig, ResourceConfigInput, ResourceContext,
-    ResourceFactory,
+    KindActivator, Manager, Metadata, RegisterRequest, ResidentConfig, ResourceConfigInput,
+    ResourceContext, ResourceFactory,
     error::Error,
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig},
     topology::resident::ResidentProvider,
 };
 use nebula_schema::{HasSchema, Property, Schema, ValidSchema, field_key};
@@ -83,13 +83,24 @@ impl ResourceConfig for DbConfig {
 #[derive(Clone)]
 struct Db;
 
-#[async_trait::async_trait]
-impl Provider for Db {
+impl nebula_resource::Component for Db {
+    type Kind = nebula_resource::kind::Resource;
     type Config = DbConfig;
-    type Instance = Arc<()>;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "secret-config-guard-db";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
+            nebula_resource::metadata_name!("secret-config-guard-db"),
+            "",
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for Db {
+    type Instance = Arc<()>;
+    type Topology = Resident<Self>;
 
     async fn create(&self, _config: &DbConfig, _ctx: &ResourceContext) -> Result<Arc<()>, Error> {
         Ok(Arc::new(()))
@@ -101,13 +112,6 @@ impl Provider for Db {
         _cx: nebula_resource::TeardownCx,
     ) -> Result<(), Error> {
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
-            nebula_resource::metadata_name!("secret-config-guard-db"),
-            "",
-        )
     }
 }
 

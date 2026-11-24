@@ -3,10 +3,11 @@
 use std::sync::Arc;
 
 use nebula_core::{Dependencies, resource_key};
+use nebula_resource::{Component, kind};
 use nebula_resource::{
-    Error, HasCredentialSlots, KindActivator, Provider, RecordedResourceDefinition, Resident,
-    ResourceActivatorRegistry, ResourceAdmissionError, ResourceConfig, ResourceContext,
-    ResourceFactory, ResourceMetadata,
+    Error, HasCredentialSlots, KindActivator, Metadata, Provider, RecordedResourceDefinition,
+    Resident, ResourceActivatorRegistry, ResourceAdmissionError, ResourceConfig, ResourceContext,
+    ResourceFactory,
 };
 use nebula_schema::{HasSchema, SchemaKind, ValidSchema, ValidationReport};
 use semver::Version;
@@ -20,17 +21,17 @@ thread_local! {
     ///
     /// A factory reads metadata only from its provider type; these tests vary
     /// the authored metadata, so they install it for the admission.
-    static AUTHORED: std::cell::RefCell<Option<ResourceMetadata>> =
+    static AUTHORED: std::cell::RefCell<Option<Metadata>> =
         const { std::cell::RefCell::new(None) };
 }
 
-fn authored_or(default: impl FnOnce() -> ResourceMetadata) -> ResourceMetadata {
+fn authored_or(default: impl FnOnce() -> Metadata) -> Metadata {
     AUTHORED.with_borrow(Clone::clone).unwrap_or_else(default)
 }
 
 /// Build `factory` with `authored` installed as its provider's metadata and
 /// admit (and cache) its definition before the metadata is cleared.
-fn admitted<F: ResourceFactory>(authored: ResourceMetadata, factory: impl FnOnce() -> F) -> F {
+fn admitted<F: ResourceFactory>(authored: Metadata, factory: impl FnOnce() -> F) -> F {
     AUTHORED.set(Some(authored));
     let factory = factory();
     let _admission = factory.definition();
@@ -77,17 +78,15 @@ impl nebula_core::DeclaresDependencies for MetadataProbe {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for MetadataProbe {
+impl Component for MetadataProbe {
+    type Kind = kind::Resource;
     type Config = EmptyRecordConfig;
-    type Instance = ();
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "test.metadata-probe";
 
-    fn metadata() -> ResourceMetadata {
+    fn metadata() -> Metadata {
         authored_or(|| {
-            ResourceMetadata::new(
+            Metadata::new(
                 nebula_resource::metadata_name!("Metadata probe"),
                 "Factory admission probe",
             )
@@ -95,6 +94,12 @@ impl Provider for MetadataProbe {
             .with_tags(["metadata", "resource"])
         })
     }
+}
+
+#[async_trait::async_trait]
+impl Provider for MetadataProbe {
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,
@@ -123,19 +128,21 @@ impl HasCredentialSlots for ExplicitMetadataProbe {
 
 impl nebula_core::DeclaresDependencies for ExplicitMetadataProbe {}
 
-#[async_trait::async_trait]
-impl Provider for ExplicitMetadataProbe {
+impl Component for ExplicitMetadataProbe {
+    type Kind = kind::Resource;
     type Config = ();
-    type Instance = ();
-    type Topology = Resident<Self>;
-
-    fn metadata() -> ResourceMetadata {
-        authored_or(|| {
-            ResourceMetadata::new(nebula_resource::metadata_name!("ExplicitMetadataProbe"), "")
-        })
-    }
 
     const KEY: &'static str = "test.explicit-metadata-key";
+
+    fn metadata() -> Metadata {
+        authored_or(|| Metadata::new(nebula_resource::metadata_name!("ExplicitMetadataProbe"), ""))
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for ExplicitMetadataProbe {
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,
@@ -195,7 +202,7 @@ fn authored_shared_authoring_surface_survives_factory_admission() {
             .parse()
             .expect("valid documentation link"),
     );
-    let authored = ResourceMetadata::try_new("Metadata probe", "Factory admission probe")
+    let authored = Metadata::try_new("Metadata probe", "Factory admission probe")
         .expect("dynamic name is valid")
         .with_version(version.clone())
         .with_icon(nebula_metadata::Icon::None)
@@ -242,7 +249,7 @@ fn recorded_metadata_only_readmits_against_an_exact_fresh_definition() {
         .expect("exact evidence readmits");
     assert_eq!(readmitted, fresh.clone());
 
-    let changed = ResourceMetadata::new(
+    let changed = Metadata::new(
         nebula_resource::metadata_name!("Metadata probe"),
         "Factory admission probe",
     )
@@ -281,7 +288,7 @@ fn forged_recorded_metadata_cannot_become_an_admitted_definition() {
 
 #[test]
 fn explicit_metadata_is_admitted_under_the_providers_key() {
-    let factory = catalog_factory(ResourceMetadata::new(
+    let factory = catalog_factory(Metadata::new(
         nebula_resource::metadata_name!("Another name"),
         "",
     ));
@@ -295,7 +302,7 @@ fn explicit_metadata_is_admitted_under_the_providers_key() {
     assert_eq!(metadata.base().name(), "Another name");
 }
 
-fn catalog_factory(authored: ResourceMetadata) -> impl ResourceFactory {
+fn catalog_factory(authored: Metadata) -> impl ResourceFactory {
     admitted(authored, || {
         KindActivator::<ExplicitMetadataProbe, _, _>::new(
             || ExplicitMetadataProbe,
@@ -315,11 +322,11 @@ fn shared_catalog_failures_are_cached_before_registry_mutation() {
             MetadataError::BlankTag,
         ),
         (
-            ResourceMetadata::new(nebula_resource::metadata_name!("Probe"), "x".repeat(8193)),
+            Metadata::new(nebula_resource::metadata_name!("Probe"), "x".repeat(8193)),
             MetadataError::FieldTooLarge(MetadataField::Description),
         ),
         (
-            ResourceMetadata::try_new("\"".repeat(20_000), "").expect("nonblank name"),
+            Metadata::try_new("\"".repeat(20_000), "").expect("nonblank name"),
             MetadataError::SharedBudgetExceeded,
         ),
     ] {

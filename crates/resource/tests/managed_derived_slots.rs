@@ -17,13 +17,13 @@ use nebula_resource::{
     CredentialSlot, Error, Manager, PinSlots, RegistrationSpec, Resident, ResidentConfig, Resource,
     ResourceConfig, ResourceContext, ScopeLevel, SlotCell, SlotIdentity,
     call::{Cost, Effect, Operation, OperationCx, OperationError},
-    resource::{Provider, ResourceMetadata},
+    resource::Provider,
     topology::ResidentProvider,
 };
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroize;
 
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct MailerConfig {
     version: u64,
 }
@@ -43,17 +43,21 @@ struct Mailer {
     api: CredentialSlot<ApiToken>,
 }
 
-#[async_trait::async_trait]
-impl Provider for Mailer {
+impl Component for Mailer {
+    type Kind = kind::Resource;
     type Config = MailerConfig;
-    type Instance = ();
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "derived.mailer";
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("Mailer"), "")
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("Mailer"), "")
     }
+}
+
+#[async_trait::async_trait]
+impl Provider for Mailer {
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     async fn create(&self, _: &MailerConfig, _: &ResourceContext) -> Result<(), Error> {
         Ok(())

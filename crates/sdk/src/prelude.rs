@@ -29,17 +29,21 @@
 //! struct HttpResource;
 //! no_credential_slots!(HttpResource);
 //!
-//! #[async_trait::async_trait]
-//! impl Provider for HttpResource {
+//! impl Component for HttpResource {
+//!     type Kind = kind::Resource;
 //!     type Config = ();
-//!     type Instance = HttpClient;
-//!     type Topology = Pooled<Self>;
 //!
 //!     const KEY: &'static str = "http.client.sdk_prelude";
 //!
-//!     fn metadata() -> ResourceMetadata {
-//!         ResourceMetadata::new(metadata_name!("HTTP client"), "Pooled HTTP client")
+//!     fn metadata() -> Metadata {
+//!         Metadata::new(metadata_name!("HTTP client"), "Pooled HTTP client")
 //!     }
+//! }
+//!
+//! #[async_trait::async_trait]
+//! impl Provider for HttpResource {
+//!     type Instance = HttpClient;
+//!     type Topology = Pooled<Self>;
 //!
 //!     async fn create(&self, _config: &(), _ctx: &ResourceContext) -> Result<HttpClient, Error> {
 //!         Ok(HttpClient {
@@ -156,8 +160,8 @@ pub use nebula_plugin::{
 pub use nebula_resource::{
     Bounded, BoundedMode, BoundedProvider, ClassifyError, Error, ErrorKind, HasCredentialSlots,
     PoolConfig, PoolProvider, Pooled, Provider, ReloadOutcome, Resident, ResidentConfig,
-    ResidentProvider, Resource, ResourceConfig, ResourceContext, ResourceMetadata, SlotCell,
-    TeardownCx, TeardownReason, TopologyTag, no_credential_slots,
+    ResidentProvider, Resource, ResourceConfig, ResourceContext, SlotCell, TeardownCx,
+    TeardownReason, TopologyTag, no_credential_slots,
 };
 // Derive names are re-exported from their respective domain crates. Generated
 // paths prefer a direct (including renamed) leaf dependency, then the SDK's

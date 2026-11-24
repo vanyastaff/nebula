@@ -22,10 +22,10 @@ for direct use.
 
 - `prelude` — curated authoring types and traits.
 - Authors write metadata; they never build an admitted definition. The key-free
-  `ActionMetadata`, a credential's `Metadata` and `ResourceMetadata` share
+  `ActionMetadata` and the `Metadata` a credential or resource returns share
   curated author vocabulary (`MetadataName`, `MetadataVersion`, `Icon`, `DeprecationNotice`)
   without exposing any admitted/recorded form. An action's identity is `Action::KEY`, a
-  resource's `Provider::KEY` and a credential's `Credential::KEY`, not a metadata field. Runtime factories alone bind schemas and create terminal definitions.
+  resource's or credential's `Component::KEY`, not a metadata field. Runtime factories alone bind schemas and create terminal definitions.
 - `integration` — narrow integration contracts; credential integrations expose
   `ResolveResult`, `StaticResolveResult`, `TestFailureCode`, and `TestResult` here.
 - `action::ActionMetadata` and `workflow::WorkflowBuilder` — programmatic authoring.

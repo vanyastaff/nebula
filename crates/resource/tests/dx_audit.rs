@@ -29,10 +29,10 @@ use nebula_core::ExecutionId;
 use nebula_resource::Pooled;
 use nebula_resource::topology::pooled::PoolProvider;
 use nebula_resource::{
-    AcquireOptions, Manager, PoolConfig, RegistrationSpec, ResidentConfig, ResourceContext,
-    ResourceGuard, ScopeLevel, ShutdownConfig, SlotIdentity,
+    AcquireOptions, Manager, Metadata, PoolConfig, RegistrationSpec, ResidentConfig,
+    ResourceContext, ResourceGuard, ScopeLevel, ShutdownConfig, SlotIdentity,
     error::{Error, ErrorKind},
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig},
     topology::{Resident, pooled::BrokenCheck},
 };
 
@@ -75,7 +75,7 @@ struct FakeHttpClient {
     connection_id: u64,
 }
 
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct HttpClientConfig {
     base_url: String,
     pool_size: u32,
@@ -105,13 +105,21 @@ struct HttpClientResource {
 // FRICTION NOTE [the key is STATIC]: `Provider::KEY` is an associated
 // constant, read as `key_of::<R>()`. Instance data cannot derive the key,
 // even though the struct has data. This is intentional (type-level identity).
-#[async_trait::async_trait]
-impl Provider for HttpClientResource {
+impl nebula_resource::Component for HttpClientResource {
+    type Kind = nebula_resource::kind::Resource;
     type Config = HttpClientConfig;
-    type Instance = FakeHttpClient;
-    type Topology = Pooled<Self>;
 
     const KEY: &'static str = "http.client";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("http.client"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for HttpClientResource {
+    type Instance = FakeHttpClient;
+    type Topology = Pooled<Self>;
 
     async fn create(
         &self,
@@ -120,10 +128,6 @@ impl Provider for HttpClientResource {
     ) -> Result<FakeHttpClient, Error> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         Ok(FakeHttpClient { connection_id: id })
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("http.client"), "")
     }
 }
 
@@ -233,7 +237,7 @@ struct ConfigStore {
     values: Arc<std::collections::HashMap<String, String>>,
 }
 
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct ConfigStoreConfig {
     path: String,
 }
@@ -250,17 +254,21 @@ impl ResourceConfig for ConfigStoreConfig {
 #[derive(Clone)]
 struct ConfigStoreResource;
 
-#[async_trait::async_trait]
-impl Provider for ConfigStoreResource {
+impl nebula_resource::Component for ConfigStoreResource {
+    type Kind = nebula_resource::kind::Resource;
     type Config = ConfigStoreConfig;
-    type Instance = ConfigStore;
-    type Topology = Resident<Self>;
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("ConfigStoreResource"), "")
-    }
 
     const KEY: &'static str = "config.store";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("ConfigStoreResource"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for ConfigStoreResource {
+    type Instance = ConfigStore;
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,
@@ -355,7 +363,7 @@ struct FakeDbConnection {
     id: u64,
 }
 
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct DbConfig {
     host: String,
 }
@@ -391,13 +399,21 @@ impl DbResource {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for DbResource {
+impl nebula_resource::Component for DbResource {
+    type Kind = nebula_resource::kind::Resource;
     type Config = DbConfig;
-    type Instance = FakeDbConnection;
-    type Topology = Pooled<Self>;
 
     const KEY: &'static str = "db.connection";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("db.connection"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for DbResource {
+    type Instance = FakeDbConnection;
+    type Topology = Pooled<Self>;
 
     async fn create(
         &self,
@@ -409,10 +425,6 @@ impl Provider for DbResource {
         }
         let id = self.create_count.fetch_add(1, Ordering::Relaxed);
         Ok(FakeDbConnection { id })
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("db.connection"), "")
     }
 }
 

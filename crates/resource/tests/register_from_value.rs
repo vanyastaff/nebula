@@ -15,10 +15,10 @@ use nebula_core::{CredentialKey, DeclaresDependencies, Dependencies, ScopeLevel}
 use nebula_expression::ExpressionEngine;
 use nebula_resource::Resident;
 use nebula_resource::{
-    KindActivator, Manager, RegisterRequest, ResidentConfig, ResourceConfigInput, ResourceContext,
-    ResourceFactory,
+    KindActivator, Manager, Metadata, RegisterRequest, ResidentConfig, ResourceConfigInput,
+    ResourceContext, ResourceFactory,
     error::Error,
-    resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
+    resource::{HasCredentialSlots, Provider, ResourceConfig},
     topology::resident::ResidentProvider,
 };
 use serde::Deserialize;
@@ -119,13 +119,21 @@ impl ResourceConfig for PgConfig {
 #[derive(Clone)]
 struct Postgres;
 
-#[async_trait::async_trait]
-impl Provider for Postgres {
+impl nebula_resource::Component for Postgres {
+    type Kind = nebula_resource::kind::Resource;
     type Config = PgConfig;
-    type Instance = Arc<()>;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "phase9-pg";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("phase9-pg"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for Postgres {
+    type Instance = Arc<()>;
+    type Topology = Resident<Self>;
 
     async fn create(&self, _config: &PgConfig, _ctx: &ResourceContext) -> Result<Arc<()>, Error> {
         Ok(Arc::new(()))
@@ -137,10 +145,6 @@ impl Provider for Postgres {
         _cx: nebula_resource::TeardownCx,
     ) -> Result<(), Error> {
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("phase9-pg"), "")
     }
 }
 
@@ -165,17 +169,21 @@ impl DeclaresDependencies for Postgres {
 
 struct AdmissionResource<const CREDENTIALS: bool>;
 
-#[async_trait::async_trait]
-impl<const CREDENTIALS: bool> Provider for AdmissionResource<CREDENTIALS> {
+impl<const CREDENTIALS: bool> nebula_resource::Component for AdmissionResource<CREDENTIALS> {
+    type Kind = nebula_resource::kind::Resource;
     type Config = PgConfig;
-    type Instance = ();
-    type Topology = AdmissionTopology;
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("AdmissionResource"), "")
-    }
 
     const KEY: &'static str = "test.revoke-admission";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("AdmissionResource"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl<const CREDENTIALS: bool> Provider for AdmissionResource<CREDENTIALS> {
+    type Instance = ();
+    type Topology = AdmissionTopology;
 
     async fn create(&self, _config: &PgConfig, _ctx: &ResourceContext) -> Result<(), Error> {
         Ok(())
@@ -480,23 +488,27 @@ async fn register_from_value_unknown_slot_binding_rejected() {
 #[derive(Clone)]
 struct DriftedSlotSignals;
 
-#[async_trait::async_trait]
-impl Provider for DriftedSlotSignals {
+impl nebula_resource::Component for DriftedSlotSignals {
+    type Kind = nebula_resource::kind::Resource;
     type Config = PgConfig;
-    type Instance = Arc<()>;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "phase9-drifted-slot-signals";
 
-    async fn create(&self, _config: &PgConfig, _ctx: &ResourceContext) -> Result<Arc<()>, Error> {
-        Ok(Arc::new(()))
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_resource::metadata_name!("phase9-drifted-slot-signals"),
             "",
         )
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for DriftedSlotSignals {
+    type Instance = Arc<()>;
+    type Topology = Resident<Self>;
+
+    async fn create(&self, _config: &PgConfig, _ctx: &ResourceContext) -> Result<Arc<()>, Error> {
+        Ok(Arc::new(()))
     }
 }
 
@@ -566,23 +578,27 @@ async fn register_from_value_rejects_drifted_slot_signals() {
 #[derive(Clone)]
 struct DriftedSlotNames;
 
-#[async_trait::async_trait]
-impl Provider for DriftedSlotNames {
+impl nebula_resource::Component for DriftedSlotNames {
+    type Kind = nebula_resource::kind::Resource;
     type Config = PgConfig;
-    type Instance = Arc<()>;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "phase9-drifted-slot-names";
 
-    async fn create(&self, _config: &PgConfig, _ctx: &ResourceContext) -> Result<Arc<()>, Error> {
-        Ok(Arc::new(()))
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_resource::metadata_name!("phase9-drifted-slot-names"),
             "",
         )
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for DriftedSlotNames {
+    type Instance = Arc<()>;
+    type Topology = Resident<Self>;
+
+    async fn create(&self, _config: &PgConfig, _ctx: &ResourceContext) -> Result<Arc<()>, Error> {
+        Ok(Arc::new(()))
     }
 }
 
@@ -725,13 +741,21 @@ impl ResourceConfig for CacheBackendConfig {
 #[derive(Clone)]
 struct CacheBackend;
 
-#[async_trait::async_trait]
-impl Provider for CacheBackend {
+impl nebula_resource::Component for CacheBackend {
+    type Kind = nebula_resource::kind::Resource;
     type Config = CacheBackendConfig;
-    type Instance = Arc<()>;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "union-cache";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("union-cache"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for CacheBackend {
+    type Instance = Arc<()>;
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,
@@ -747,10 +771,6 @@ impl Provider for CacheBackend {
         _cx: nebula_resource::TeardownCx,
     ) -> Result<(), Error> {
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("union-cache"), "")
     }
 }
 
@@ -873,22 +893,26 @@ struct WarmPool {
     creates: Arc<std::sync::atomic::AtomicU64>,
 }
 
-#[async_trait::async_trait]
-impl Provider for WarmPool {
+impl nebula_resource::Component for WarmPool {
+    type Kind = nebula_resource::kind::Resource;
     type Config = PgConfig;
-    type Instance = Arc<()>;
-    type Topology = nebula_resource::Pooled<Self>;
 
     const KEY: &'static str = "warm-pool";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("warm-pool"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for WarmPool {
+    type Instance = Arc<()>;
+    type Topology = nebula_resource::Pooled<Self>;
 
     async fn create(&self, _config: &PgConfig, _ctx: &ResourceContext) -> Result<Arc<()>, Error> {
         self.creates
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(Arc::new(()))
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("warm-pool"), "")
     }
 }
 

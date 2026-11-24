@@ -17,16 +17,17 @@ use std::sync::{
 
 use nebula_core::{ResourceKey, ScopeLevel, scope::Scope};
 use nebula_resource::{
-    AcquireOptions, Bounded, Manager, RegistrationSpec, ResourceContext, SlotIdentity, TopologyTag,
+    AcquireOptions, Bounded, Manager, Metadata, RegistrationSpec, ResourceContext, SlotIdentity,
+    TopologyTag,
     error::Error,
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig},
     topology::bounded::BoundedProvider,
 };
 use tokio_util::sync::CancellationToken;
 
 // ─── The resource ──────────────────────────────────────────────────────────
 
-#[derive(Clone, Default, nebula_schema::Schema)]
+#[derive(Clone, Default, nebula_schema::Schema, serde::Deserialize)]
 struct SeatCfg;
 impl ResourceConfig for SeatCfg {
     fn fingerprint(&self) -> u64 {
@@ -70,13 +71,21 @@ impl Seats {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for Seats {
+impl nebula_resource::Component for Seats {
+    type Kind = nebula_resource::kind::Resource;
     type Config = SeatCfg;
-    type Instance = Seat;
-    type Topology = Bounded<Seats>;
 
     const KEY: &'static str = "bounded.seats";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("bounded.seats"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for Seats {
+    type Instance = Seat;
+    type Topology = Bounded<Seats>;
 
     async fn create(&self, _config: &SeatCfg, _ctx: &ResourceContext) -> Result<Seat, Error> {
         let id = self.create_count.fetch_add(1, Ordering::SeqCst);
@@ -90,10 +99,6 @@ impl Provider for Seats {
     ) -> Result<(), Error> {
         self.destroy_count.fetch_add(1, Ordering::SeqCst);
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("bounded.seats"), "")
     }
 }
 

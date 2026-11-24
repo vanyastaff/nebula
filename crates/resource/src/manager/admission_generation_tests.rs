@@ -18,14 +18,13 @@ use super::{
     SlotDrainOutcome,
 };
 use crate::{
-    AcquireOptions, Error, Provider, Resident, ResidentConfig, ResourceConfig, ResourceContext,
-    ResourceGuard, SlotCell, SlotIdentity, SlotInstallError, SlotUpdate,
-    resource::{HasCredentialSlots, ResourceMetadata},
-    runtime::managed::ManagedResource,
+    AcquireOptions, Component, Error, Metadata, Provider, Resident, ResidentConfig, ResourceConfig,
+    ResourceContext, ResourceGuard, SlotCell, SlotIdentity, SlotInstallError, SlotUpdate, kind,
+    resource::HasCredentialSlots, runtime::managed::ManagedResource,
     topology::resident::ResidentProvider,
 };
 
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct Config {
     version: u64,
 }
@@ -62,17 +61,21 @@ impl Tenant {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for Tenant {
+impl Component for Tenant {
+    type Kind = kind::Resource;
     type Config = Config;
-    type Instance = ();
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "admission-generation";
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(crate::metadata_name!("admission-generation"), "")
+    fn metadata() -> Metadata {
+        Metadata::new(crate::metadata_name!("admission-generation"), "")
     }
+}
+
+#[async_trait::async_trait]
+impl Provider for Tenant {
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<(), Error> {
         if self.gate.armed.swap(false, Ordering::SeqCst) {

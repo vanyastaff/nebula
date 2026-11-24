@@ -34,10 +34,11 @@ use nebula_credential::{CredentialEvent, CredentialGuard, CredentialId, LeaseEve
 use nebula_eventbus::EventBus;
 use nebula_resource::Resident;
 use nebula_resource::{
-    AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
+    AcquireOptions, Component, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
     ResourceContext, SlotCell, SlotIdentity,
     error::Error as ResourceError,
-    resource::{HasCredentialSlots, ResourceMetadata},
+    kind,
+    resource::{HasCredentialSlots, Metadata},
     topology::resident::ResidentProvider,
 };
 use nebula_resource::{ResourceFanoutDriver, ResourceFanoutIndex};
@@ -118,7 +119,7 @@ impl From<HookError> for ResourceError {
     }
 }
 
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct Cfg;
 impl ResourceConfig for Cfg {
     fn validate(&self) -> Result<(), ResourceError> {
@@ -153,13 +154,21 @@ struct SecretRes {
     hook_observed: tokio::sync::mpsc::UnboundedSender<HookDirection>,
 }
 
-#[async_trait::async_trait]
-impl Provider for SecretRes {
+impl Component for SecretRes {
+    type Kind = kind::Resource;
     type Config = Cfg;
-    type Instance = SecretRuntime;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "wired-redaction-res";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("wired-redaction-res"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for SecretRes {
+    type Instance = SecretRuntime;
+    type Topology = Resident<Self>;
 
     async fn create(&self, _c: &Cfg, _x: &ResourceContext) -> Result<SecretRuntime, ResourceError> {
         Ok(SecretRuntime {
@@ -193,10 +202,6 @@ impl Provider for SecretRes {
             .send(HookDirection::Revoke)
             .expect("test observes the revoke hook");
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("wired-redaction-res"), "")
     }
 }
 

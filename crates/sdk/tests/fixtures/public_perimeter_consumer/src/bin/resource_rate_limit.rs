@@ -6,9 +6,9 @@
 use std::{num::NonZeroU32, time::Duration};
 
 use nebula_sdk::integration::resource::{
-    Cost, Error, ErrorKind, Operation, OperationCx, OperationError, Provider, Rate, Resident,
-    ResidentProvider, ResiliencePolicy, ResourceContext, ResourceHandle, TeardownCx,
-    no_credential_slots, retry_after_from_header,
+    Component, Cost, Error, ErrorKind, Operation, OperationCx, OperationError, Provider, Rate,
+    Resident, ResidentProvider, ResiliencePolicy, ResourceContext, ResourceHandle, TeardownCx,
+    kind, no_credential_slots, retry_after_from_header,
 };
 use nebula_sdk::prelude::{Deserialize, Serialize};
 
@@ -39,20 +39,24 @@ impl ChatClient {
 struct ChatProvider;
 no_credential_slots!(ChatProvider);
 
-#[async_trait::async_trait]
-impl Provider for ChatProvider {
+impl Component for ChatProvider {
+    type Kind = kind::Resource;
     type Config = ();
-    type Instance = ChatClient;
-    type Topology = Resident<Self>;
 
-    fn metadata() -> nebula_sdk::integration::resource::ResourceMetadata {
-        nebula_sdk::integration::resource::ResourceMetadata::new(
+    const KEY: &'static str = "example.rate-limited-chat";
+
+    fn metadata() -> nebula_sdk::integration::resource::Metadata {
+        nebula_sdk::integration::resource::Metadata::new(
             nebula_sdk::prelude::metadata_name!("ChatProvider"),
             "",
         )
     }
+}
 
-    const KEY: &'static str = "example.rate-limited-chat";
+#[async_trait::async_trait]
+impl Provider for ChatProvider {
+    type Instance = ChatClient;
+    type Topology = Resident<Self>;
 
     fn resilience() -> ResiliencePolicy {
         ResiliencePolicy::new()

@@ -13,9 +13,9 @@ use std::sync::Arc;
 use nebula_core::{ExecutionId, resource_key, scope::Scope};
 use nebula_resource::topology::{pooled::PoolProvider, resident::ResidentProvider};
 use nebula_resource::{
-    AcquireOptions, Manager, RegistrationSpec, ResourceContext, ScopeLevel, SlotIdentity,
+    AcquireOptions, Manager, Metadata, RegistrationSpec, ResourceContext, ScopeLevel, SlotIdentity,
     error::{Error, ErrorKind},
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig},
     topology::{AdmissionPhase, Load, Pooled, Resident, Unavailable},
 };
 use tokio_util::sync::CancellationToken;
@@ -32,7 +32,7 @@ fn ctx() -> ResourceContext {
 
 // ─── Minimal pool resource ───────────────────────────────────────────────────
 
-#[derive(Clone, Default, nebula_schema::Schema)]
+#[derive(Clone, Default, nebula_schema::Schema, serde::Deserialize)]
 struct MinCfg;
 
 impl ResourceConfig for MinCfg {
@@ -46,23 +46,27 @@ struct TinyPool;
 
 nebula_resource::no_credential_slots!(TinyPool);
 
-#[async_trait::async_trait]
-impl Provider for TinyPool {
+impl nebula_resource::Component for TinyPool {
+    type Kind = nebula_resource::kind::Resource;
     type Config = MinCfg;
-    type Instance = ();
-    type Topology = Pooled<Self>;
 
     const KEY: &'static str = "test.admission.tiny_pool";
 
-    async fn create(&self, _config: &MinCfg, _ctx: &ResourceContext) -> Result<(), Error> {
-        Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_resource::metadata_name!("test.admission.tiny_pool"),
             "",
         )
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for TinyPool {
+    type Instance = ();
+    type Topology = Pooled<Self>;
+
+    async fn create(&self, _config: &MinCfg, _ctx: &ResourceContext) -> Result<(), Error> {
+        Ok(())
     }
 }
 
@@ -75,23 +79,27 @@ struct SimpleResident;
 
 nebula_resource::no_credential_slots!(SimpleResident);
 
-#[async_trait::async_trait]
-impl Provider for SimpleResident {
+impl nebula_resource::Component for SimpleResident {
+    type Kind = nebula_resource::kind::Resource;
     type Config = MinCfg;
-    type Instance = ();
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "test.admission.simple_resident";
 
-    async fn create(&self, _config: &MinCfg, _ctx: &ResourceContext) -> Result<(), Error> {
-        Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
+    fn metadata() -> Metadata {
+        Metadata::new(
             nebula_resource::metadata_name!("test.admission.simple_resident"),
             "",
         )
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for SimpleResident {
+    type Instance = ();
+    type Topology = Resident<Self>;
+
+    async fn create(&self, _config: &MinCfg, _ctx: &ResourceContext) -> Result<(), Error> {
+        Ok(())
     }
 }
 

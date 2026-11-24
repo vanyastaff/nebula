@@ -4,8 +4,8 @@
 //! unit's `OperationError` into `ActionError` — all through `nebula_sdk`.
 
 use nebula_sdk::integration::resource::{
-    Cost, Effect, Error, ResourceMetadata, Operation, OperationCx, OperationError, PoolProvider,
-    Pooled, Provider, Resident, ResidentProvider, ResourceContext, ResourceHandle,
+    Component, Cost, Effect, Error, Metadata, Operation, OperationCx, OperationError, PoolProvider,
+    Pooled, Provider, Resident, ResidentProvider, ResourceContext, ResourceHandle, kind,
     no_credential_slots,
 };
 use nebula_sdk::prelude::{
@@ -18,17 +18,21 @@ use nebula_sdk::prelude::{
 struct Directory;
 no_credential_slots!(Directory);
 
-#[async_trait::async_trait]
-impl Provider for Directory {
+impl Component for Directory {
+    type Kind = kind::Resource;
     type Config = ();
-    type Instance = u64;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "example.directory";
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(metadata_name!("Directory"), "")
+    fn metadata() -> Metadata {
+        Metadata::new(metadata_name!("Directory"), "")
     }
+}
+
+#[async_trait::async_trait]
+impl Provider for Directory {
+    type Instance = u64;
+    type Topology = Resident<Self>;
 
     async fn create(&self, (): &(), _: &ResourceContext) -> Result<u64, Error> {
         Ok(7)
@@ -59,17 +63,21 @@ no_credential_slots!(Ledger);
 
 struct Conn;
 
-#[async_trait::async_trait]
-impl Provider for Ledger {
+impl Component for Ledger {
+    type Kind = kind::Resource;
     type Config = ();
-    type Instance = Conn;
-    type Topology = Pooled<Self>;
 
     const KEY: &'static str = "example.ledger";
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(metadata_name!("Ledger"), "")
+    fn metadata() -> Metadata {
+        Metadata::new(metadata_name!("Ledger"), "")
     }
+}
+
+#[async_trait::async_trait]
+impl Provider for Ledger {
+    type Instance = Conn;
+    type Topology = Pooled<Self>;
 
     async fn create(&self, (): &(), _: &ResourceContext) -> Result<Conn, Error> {
         Ok(Conn)

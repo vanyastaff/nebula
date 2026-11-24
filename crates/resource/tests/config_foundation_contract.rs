@@ -6,6 +6,7 @@ use std::{
 };
 
 use nebula_core::{DeclaresDependencies, Dependencies};
+use nebula_resource::{Component, kind};
 use nebula_resource::{
     Error, HasCredentialSlots, KindActivator, Manager, Provider, RegisterRequest, Resident,
     ResourceConfig, ResourceConfigInput, ResourceContext, ResourceFactory,
@@ -107,17 +108,21 @@ impl<C: ResourceConfig> DeclaresDependencies for ConfigProbe<C> {
     }
 }
 
-#[async_trait::async_trait]
-impl<C: ResourceConfig> Provider for ConfigProbe<C> {
+impl<C: ResourceConfig + serde::de::DeserializeOwned> Component for ConfigProbe<C> {
+    type Kind = kind::Resource;
     type Config = C;
-    type Instance = ();
-    type Topology = Resident<Self>;
-
-    fn metadata() -> nebula_resource::ResourceMetadata {
-        nebula_resource::ResourceMetadata::new(nebula_resource::metadata_name!("ConfigProbe"), "")
-    }
 
     const KEY: &'static str = "test.config-foundation";
+
+    fn metadata() -> nebula_resource::Metadata {
+        nebula_resource::Metadata::new(nebula_resource::metadata_name!("ConfigProbe"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl<C: ResourceConfig + serde::de::DeserializeOwned> Provider for ConfigProbe<C> {
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     async fn create(&self, _config: &C, _ctx: &ResourceContext) -> Result<(), Error> {
         Ok(())
@@ -125,7 +130,10 @@ impl<C: ResourceConfig> Provider for ConfigProbe<C> {
 }
 
 #[async_trait::async_trait]
-impl<C: ResourceConfig> nebula_resource::ResidentProvider for ConfigProbe<C> {}
+impl<C: ResourceConfig + serde::de::DeserializeOwned> nebula_resource::ResidentProvider
+    for ConfigProbe<C>
+{
+}
 
 #[derive(Clone, Debug, Deserialize, Hash)]
 struct PreparedConfig {

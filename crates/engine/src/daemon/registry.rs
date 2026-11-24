@@ -314,14 +314,14 @@ mod tests {
     use nebula_resource::{
         context::ResourceContext,
         error::Error as ResourceError,
-        resource::{Provider, ResourceConfig, ResourceMetadata},
+        resource::{Metadata, Provider, ResourceConfig},
     };
     use tokio_util::sync::CancellationToken;
 
     use super::*;
     use crate::daemon::{Daemon, DaemonConfig, RestartPolicy};
 
-    #[derive(Clone, Debug, Default, nebula_schema::Schema)]
+    #[derive(Clone, Debug, Default, nebula_schema::Schema, serde::Deserialize)]
     struct EmptyCfg;
 
     impl ResourceConfig for EmptyCfg {
@@ -345,13 +345,21 @@ mod tests {
         attempts: Arc<AtomicU32>,
     }
 
-    #[async_trait::async_trait]
-    impl Provider for CountedDaemon {
+    impl nebula_resource::Component for CountedDaemon {
+        type Kind = nebula_resource::kind::Resource;
         type Config = EmptyCfg;
-        type Instance = ();
-        type Topology = nebula_resource::NoTopology;
 
         const KEY: &'static str = "registry-counted";
+
+        fn metadata() -> Metadata {
+            Metadata::new(nebula_resource::metadata_name!("registry-counted"), "")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for CountedDaemon {
+        type Instance = ();
+        type Topology = nebula_resource::NoTopology;
 
         async fn create(
             &self,
@@ -359,10 +367,6 @@ mod tests {
             _ctx: &ResourceContext,
         ) -> Result<(), ResourceError> {
             Ok(())
-        }
-
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::new(nebula_resource::metadata_name!("registry-counted"), "")
         }
     }
 
@@ -462,21 +466,27 @@ mod tests {
     struct CountedDaemonB {
         attempts: Arc<AtomicU32>,
     }
+    impl nebula_resource::Component for CountedDaemonB {
+        type Kind = nebula_resource::kind::Resource;
+        type Config = EmptyCfg;
+
+        const KEY: &'static str = "registry-counted-b";
+
+        fn metadata() -> Metadata {
+            Metadata::new(nebula_resource::metadata_name!("registry-counted-b"), "")
+        }
+    }
+
     #[async_trait::async_trait]
     impl Provider for CountedDaemonB {
-        type Config = EmptyCfg;
         type Instance = ();
         type Topology = nebula_resource::NoTopology;
-        const KEY: &'static str = "registry-counted-b";
         async fn create(
             &self,
             _config: &Self::Config,
             _ctx: &ResourceContext,
         ) -> Result<(), ResourceError> {
             Ok(())
-        }
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::new(nebula_resource::metadata_name!("registry-counted-b"), "")
         }
     }
     nebula_resource::no_credential_slots!(CountedDaemonB);

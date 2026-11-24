@@ -11,7 +11,7 @@ use serde_json::json;
 use nebula_credential::default_credential_accessor;
 use nebula_resource::{
     Manager, RegistrationSpec, Resident, ResidentConfig, ResourceContext, SlotIdentity,
-    resource::{Provider, ResourceMetadata},
+    resource::{Metadata, Provider},
     topology::resident::ResidentProvider,
 };
 use nebula_storage_port::{
@@ -438,17 +438,21 @@ async fn a_dispatched_node_after_an_unexplained_call_fails_unknown() {
 #[derive(Clone)]
 struct Payments;
 
-#[async_trait::async_trait]
-impl Provider for Payments {
+impl nebula_resource::Component for Payments {
+    type Kind = nebula_resource::kind::Resource;
     type Config = ();
-    type Instance = Arc<Mutex<u32>>;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "test.payments";
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("ScopedPayments"), "")
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("ScopedPayments"), "")
     }
+}
+
+#[async_trait::async_trait]
+impl Provider for Payments {
+    type Instance = Arc<Mutex<u32>>;
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,

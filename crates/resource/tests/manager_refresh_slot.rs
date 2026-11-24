@@ -18,12 +18,10 @@ use std::sync::{
 
 use nebula_core::{ResourceKey, ScopeLevel};
 use nebula_credential::CredentialGuard;
-use nebula_resource::Resident;
+use nebula_resource::{Component, Resident, kind};
 use nebula_resource::{
-    Manager, ManagerConfig, Provider, RegisterOptions, RegistrationSpec, ResidentConfig,
-    ResourceConfig, ResourceContext, SlotCell,
-    error::Error,
-    resource::{HasCredentialSlots, ResourceMetadata},
+    Manager, ManagerConfig, Metadata, Provider, RegisterOptions, RegistrationSpec, ResidentConfig,
+    ResourceConfig, ResourceContext, SlotCell, error::Error, resource::HasCredentialSlots,
     topology::resident::ResidentProvider,
 };
 use zeroize::Zeroize;
@@ -97,7 +95,7 @@ mod counting {
     // Custom error boilerplate removed — Resource lifecycle methods now return
     // `crate::Error` directly (HasCredentialSlots redesign).
 
-    #[derive(Clone, nebula_schema::Schema)]
+    #[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
     pub(crate) struct CountingConfig;
 
     impl ResourceConfig for CountingConfig {
@@ -111,13 +109,21 @@ mod counting {
         }
     }
 
-    #[async_trait::async_trait]
-    impl Provider for CountingResource {
+    impl Component for CountingResource {
+        type Kind = kind::Resource;
         type Config = CountingConfig;
-        type Instance = CountingRuntime;
-        type Topology = Resident<Self>;
 
         const KEY: &'static str = "counting-resident";
+
+        fn metadata() -> Metadata {
+            Metadata::new(nebula_resource::metadata_name!("counting-resident"), "")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for CountingResource {
+        type Instance = CountingRuntime;
+        type Topology = Resident<Self>;
 
         async fn create(
             &self,
@@ -164,10 +170,6 @@ mod counting {
                 ));
             }
             Ok(())
-        }
-
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::new(nebula_resource::metadata_name!("counting-resident"), "")
         }
     }
 
@@ -1408,11 +1410,9 @@ mod u9_gate {
     use nebula_core::{ScopeLevel, scope::Scope};
     use nebula_credential::CredentialGuard;
     use nebula_resource::{
-        AcquireOptions, Manager, Provider, RegistrationSpec, Resident, ResidentConfig,
-        ResourceConfig, ResourceContext, SlotCell, SlotIdentity,
-        error::Error,
-        resource::{HasCredentialSlots, ResourceMetadata},
-        topology::resident::ResidentProvider,
+        AcquireOptions, Manager, Metadata, Provider, RegistrationSpec, Resident, ResidentConfig,
+        ResourceConfig, ResourceContext, SlotCell, SlotIdentity, error::Error,
+        resource::HasCredentialSlots, topology::resident::ResidentProvider,
     };
     use tokio_util::sync::CancellationToken;
     use zeroize::Zeroize;
@@ -1429,7 +1429,7 @@ mod u9_gate {
     // Custom error boilerplate removed — Resource lifecycle methods now return
     // `crate::Error` directly (HasCredentialSlots redesign).
 
-    #[derive(Clone, nebula_schema::Schema)]
+    #[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
     struct GateConfig;
 
     impl ResourceConfig for GateConfig {
@@ -1456,13 +1456,21 @@ mod u9_gate {
         refresh_calls: Arc<AtomicUsize>,
     }
 
-    #[async_trait::async_trait]
-    impl Provider for GateResource {
+    impl nebula_resource::Component for GateResource {
+        type Kind = nebula_resource::kind::Resource;
         type Config = GateConfig;
-        type Instance = GateRuntime;
-        type Topology = Resident<Self>;
 
         const KEY: &'static str = "u9-gate-resident";
+
+        fn metadata() -> Metadata {
+            Metadata::new(nebula_resource::metadata_name!("u9-gate-resident"), "")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for GateResource {
+        type Instance = GateRuntime;
+        type Topology = Resident<Self>;
 
         async fn create(
             &self,
@@ -1489,10 +1497,6 @@ mod u9_gate {
         ) -> Result<(), Error> {
             self.refresh_calls.fetch_add(1, Ordering::SeqCst);
             Ok(())
-        }
-
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::new(nebula_resource::metadata_name!("u9-gate-resident"), "")
         }
     }
 
@@ -1658,7 +1662,7 @@ mod reload_deferral {
         Manager, PoolConfig, Provider, RegistrationSpec, ReloadOutcome, ResidentConfig,
         ResourceConfig, ResourceContext, SlotIdentity,
         error::Error,
-        resource::ResourceMetadata,
+        resource::Metadata,
         topology::{Pooled, Resident, pooled::PoolProvider, resident::ResidentProvider},
     };
 
@@ -1668,7 +1672,7 @@ mod reload_deferral {
     /// A config whose `fingerprint()` is its `version` field, so a reload
     /// with a different version is actually detected as a change (the `0`
     /// default would always early-return `NoChange`).
-    #[derive(Clone, nebula_schema::Schema)]
+    #[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
     struct VersionedConfig {
         version: u64,
     }
@@ -1687,13 +1691,21 @@ mod reload_deferral {
             #[derive(Clone)]
             struct $name;
 
-            #[async_trait::async_trait]
-            impl Provider for $name {
+            impl nebula_resource::Component for $name {
+                type Kind = nebula_resource::kind::Resource;
                 type Config = VersionedConfig;
-                type Instance = u32;
-                type Topology = $topo;
 
                 const KEY: &'static str = $key;
+
+                fn metadata() -> Metadata {
+                    Metadata::new(nebula_resource::metadata_name!(stringify!($name)), "")
+                }
+            }
+
+            #[async_trait::async_trait]
+            impl Provider for $name {
+                type Instance = u32;
+                type Topology = $topo;
 
                 async fn create(
                     &self,
@@ -1709,10 +1721,6 @@ mod reload_deferral {
                     _cx: nebula_resource::TeardownCx,
                 ) -> Result<(), Error> {
                     Ok(())
-                }
-
-                fn metadata() -> ResourceMetadata {
-                    ResourceMetadata::new(nebula_resource::metadata_name!(stringify!($name)), "")
                 }
             }
 

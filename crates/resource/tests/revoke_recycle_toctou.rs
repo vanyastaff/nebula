@@ -43,16 +43,17 @@ use std::{
 
 use nebula_core::{ScopeLevel, scope::Scope};
 use nebula_resource::{
-    AcquireOptions, Manager, PoolConfig, Pooled, Provider, RegistrationSpec, ResourceConfig,
-    ResourceContext, SlotIdentity,
+    AcquireOptions, Component, Manager, Metadata, PoolConfig, Pooled, Provider, RegistrationSpec,
+    ResourceConfig, ResourceContext, SlotIdentity,
     error::{Error, ErrorKind},
-    resource::{HasCredentialSlots, ResourceMetadata},
+    kind,
+    resource::HasCredentialSlots,
     topology::pooled::{PoolProvider, RecycleDecision, config::WarmupStrategy},
 };
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct PoolCfg;
 
 impl ResourceConfig for PoolCfg {
@@ -119,13 +120,21 @@ impl PoolResource {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for PoolResource {
+impl Component for PoolResource {
+    type Kind = kind::Resource;
     type Config = PoolCfg;
-    type Instance = PoolRt;
-    type Topology = Pooled<Self>;
 
     const KEY: &'static str = "r16-pool";
+
+    fn metadata() -> Metadata {
+        Metadata::new(nebula_resource::metadata_name!("r16-pool"), "")
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for PoolResource {
+    type Instance = PoolRt;
+    type Topology = Pooled<Self>;
 
     async fn create(&self, _config: &PoolCfg, _ctx: &ResourceContext) -> Result<PoolRt, Error> {
         let seq = self.create_seq.fetch_add(1, Ordering::SeqCst);
@@ -153,10 +162,6 @@ impl Provider for PoolResource {
         runtime.revoked.store(true, Ordering::SeqCst);
         self.revoke_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(nebula_resource::metadata_name!("r16-pool"), "")
     }
 }
 

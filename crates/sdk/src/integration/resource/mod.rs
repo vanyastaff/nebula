@@ -65,8 +65,11 @@
 #[cfg(feature = "resource-http")]
 pub mod http;
 
+/// The component contract a provider implements, and its catalog metadata.
+pub use nebula_component::{Component, kind};
 pub use nebula_core::{ResourceKey, resource_key};
 pub use nebula_credential::CredentialGuard;
+pub use nebula_metadata::Metadata;
 pub use nebula_resource::call::{
     Attempt, ConsumerGone, Cost, Effect, Operation, OperationCx, OperationError, PinSlots,
     ResourceHandle, SentState, SessionBinding, SessionClosed, SessionCx, SessionEnd, SessionFuture,
@@ -86,6 +89,6 @@ pub use nebula_resource::{
     Bounded, BoundedMode, BoundedProvider, CheckCost, ClassifyError, ConfigFingerprint,
     ConfigFingerprintError, CredentialSlot, CredentialUnavailableReason, Error, ErrorKind,
     HasCredentialSlots, LeaseClosing, PoolConfig, PoolProvider, Pooled, Provider, Resident,
-    ResidentConfig, ResidentProvider, Resource, ResourceConfig, ResourceContext, ResourceMetadata,
-    SlotCell, TeardownCx, TeardownReason, TopologyTag, key_of, no_credential_slots,
+    ResidentConfig, ResidentProvider, Resource, ResourceConfig, ResourceContext, SlotCell,
+    TeardownCx, TeardownReason, TopologyTag, key_of, no_credential_slots,
 };

@@ -25,16 +25,15 @@ use tokio_util::sync::CancellationToken;
 
 use super::{Bind, ResourceFanoutDriver, ResourceFanoutIndex, orchestrator::ScanHint};
 use crate::{
-    AcquireOptions, CredentialUnavailableReason, Error, ErrorKind, Manager, Provider,
-    RegistrationSpec, Resident, ResidentConfig, ResourceConfig, ResourceContext, ResourceEvent,
-    ResourceGuard, SlotCell, SlotIdentity, SlotInstallError, SlotUpdate,
-    resource::{HasCredentialSlots, ResourceMetadata},
-    topology::ResidentProvider,
+    AcquireOptions, Component, CredentialUnavailableReason, Error, ErrorKind, Manager, Metadata,
+    Provider, RegistrationSpec, Resident, ResidentConfig, ResourceConfig, ResourceContext,
+    ResourceEvent, ResourceGuard, SlotCell, SlotIdentity, SlotInstallError, SlotUpdate, kind,
+    resource::HasCredentialSlots, topology::ResidentProvider,
 };
 
 const WAKE: Duration = Duration::from_secs(5);
 
-#[derive(Clone, nebula_schema::Schema)]
+#[derive(Clone, nebula_schema::Schema, serde::Deserialize)]
 struct Config;
 
 impl ResourceConfig for Config {
@@ -60,17 +59,21 @@ impl Bound {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for Bound {
+impl Component for Bound {
+    type Kind = kind::Resource;
     type Config = Config;
-    type Instance = ();
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "fanout-suspension";
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(crate::metadata_name!("fanout-suspension"), "")
+    fn metadata() -> Metadata {
+        Metadata::new(crate::metadata_name!("fanout-suspension"), "")
     }
+}
+
+#[async_trait::async_trait]
+impl Provider for Bound {
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<(), Error> {
         self.creates.fetch_add(1, Ordering::SeqCst);
@@ -607,17 +610,21 @@ async fn an_unavailable_store_changes_no_gate() {
 #[derive(Clone)]
 struct Slotless;
 
-#[async_trait::async_trait]
-impl Provider for Slotless {
+impl Component for Slotless {
+    type Kind = kind::Resource;
     type Config = Config;
-    type Instance = ();
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "fanout-slotless";
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(crate::metadata_name!("fanout-slotless"), "")
+    fn metadata() -> Metadata {
+        Metadata::new(crate::metadata_name!("fanout-slotless"), "")
     }
+}
+
+#[async_trait::async_trait]
+impl Provider for Slotless {
+    type Instance = ();
+    type Topology = Resident<Self>;
 
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<(), Error> {
         Ok(())

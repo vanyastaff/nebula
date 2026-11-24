@@ -285,15 +285,17 @@ mod tests {
 
     use nebula_core::ExecutionId;
     use nebula_resource::{
+        Component,
         context::ResourceContext,
         error::Error as ResourceError,
-        resource::{Provider, ResourceConfig, ResourceMetadata},
+        kind,
+        resource::{Metadata, Provider, ResourceConfig},
     };
 
     use super::*;
     use crate::daemon::{Daemon, DaemonConfig as DaemonCfg, RestartPolicy};
 
-    #[derive(Clone, Debug, Default, nebula_schema::Schema)]
+    #[derive(Clone, Debug, Default, nebula_schema::Schema, serde::Deserialize)]
     struct EmptyCfg;
 
     impl ResourceConfig for EmptyCfg {
@@ -317,13 +319,21 @@ mod tests {
         attempts: Arc<AtomicU32>,
     }
 
-    #[async_trait::async_trait]
-    impl Provider for FlakyDaemon {
+    impl Component for FlakyDaemon {
+        type Kind = kind::Resource;
         type Config = EmptyCfg;
-        type Instance = ();
-        type Topology = nebula_resource::NoTopology;
 
         const KEY: &'static str = "daemon-flaky";
+
+        fn metadata() -> Metadata {
+            Metadata::new(nebula_resource::metadata_name!("daemon-flaky"), "")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for FlakyDaemon {
+        type Instance = ();
+        type Topology = nebula_resource::NoTopology;
 
         async fn create(
             &self,
@@ -331,10 +341,6 @@ mod tests {
             _ctx: &ResourceContext,
         ) -> Result<(), ResourceError> {
             Ok(())
-        }
-
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::new(nebula_resource::metadata_name!("daemon-flaky"), "")
         }
     }
 
@@ -355,13 +361,21 @@ mod tests {
     #[derive(Clone)]
     struct OneShotDaemon;
 
-    #[async_trait::async_trait]
-    impl Provider for OneShotDaemon {
+    impl Component for OneShotDaemon {
+        type Kind = kind::Resource;
         type Config = EmptyCfg;
-        type Instance = ();
-        type Topology = nebula_resource::NoTopology;
 
         const KEY: &'static str = "daemon-oneshot";
+
+        fn metadata() -> Metadata {
+            Metadata::new(nebula_resource::metadata_name!("daemon-oneshot"), "")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for OneShotDaemon {
+        type Instance = ();
+        type Topology = nebula_resource::NoTopology;
 
         async fn create(
             &self,
@@ -369,10 +383,6 @@ mod tests {
             _ctx: &ResourceContext,
         ) -> Result<(), ResourceError> {
             Ok(())
-        }
-
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::new(nebula_resource::metadata_name!("daemon-oneshot"), "")
         }
     }
 
@@ -392,13 +402,21 @@ mod tests {
     #[derive(Clone)]
     struct PanickingDaemon;
 
-    #[async_trait::async_trait]
-    impl Provider for PanickingDaemon {
+    impl Component for PanickingDaemon {
+        type Kind = kind::Resource;
         type Config = EmptyCfg;
-        type Instance = ();
-        type Topology = nebula_resource::NoTopology;
 
         const KEY: &'static str = "daemon-panicking";
+
+        fn metadata() -> Metadata {
+            Metadata::new(nebula_resource::metadata_name!("daemon-panicking"), "")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for PanickingDaemon {
+        type Instance = ();
+        type Topology = nebula_resource::NoTopology;
 
         async fn create(
             &self,
@@ -406,10 +424,6 @@ mod tests {
             _ctx: &ResourceContext,
         ) -> Result<(), ResourceError> {
             Ok(())
-        }
-
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::new(nebula_resource::metadata_name!("daemon-panicking"), "")
         }
     }
 

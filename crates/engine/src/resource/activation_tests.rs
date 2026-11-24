@@ -15,7 +15,7 @@ use nebula_core::{
 use nebula_resource::{
     KindActivator, Resident, ResourceContext, ResourceEvent,
     error::Error as ResourceError,
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Metadata, Provider, ResourceConfig},
     topology::resident,
 };
 use nebula_storage::inmem::InMemoryResourceStore;
@@ -50,13 +50,24 @@ impl ResourceConfig for LabelConfig {
 #[derive(Clone)]
 struct Plain;
 
-#[async_trait::async_trait]
-impl Provider for Plain {
+impl nebula_resource::Component for Plain {
+    type Kind = nebula_resource::kind::Resource;
     type Config = LabelConfig;
-    type Instance = Arc<AtomicU64>;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "activation.plain";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
+            nebula_resource::metadata_name!("activation.plain"),
+            String::new(),
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for Plain {
+    type Instance = Arc<AtomicU64>;
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,
@@ -64,13 +75,6 @@ impl Provider for Plain {
         _ctx: &ResourceContext,
     ) -> Result<Arc<AtomicU64>, ResourceError> {
         Ok(Arc::new(AtomicU64::new(1)))
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
-            nebula_resource::metadata_name!("activation.plain"),
-            String::new(),
-        )
     }
 }
 
@@ -92,13 +96,24 @@ impl resident::ResidentProvider for Plain {
 #[derive(Clone)]
 struct Misnamed;
 
-#[async_trait::async_trait]
-impl Provider for Misnamed {
+impl nebula_resource::Component for Misnamed {
+    type Kind = nebula_resource::kind::Resource;
     type Config = LabelConfig;
-    type Instance = Arc<AtomicU64>;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "activation.misnamed";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
+            nebula_resource::metadata_name!("activation.misnamed"),
+            String::new(),
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for Misnamed {
+    type Instance = Arc<AtomicU64>;
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,
@@ -106,13 +121,6 @@ impl Provider for Misnamed {
         _ctx: &ResourceContext,
     ) -> Result<Arc<AtomicU64>, ResourceError> {
         Ok(Arc::new(AtomicU64::new(1)))
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
-            nebula_resource::metadata_name!("activation.misnamed"),
-            String::new(),
-        )
     }
 
     fn resilience() -> nebula_resource::rate_limit::ResiliencePolicy {
@@ -151,13 +159,24 @@ impl Slotted {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for Slotted {
+impl nebula_resource::Component for Slotted {
+    type Kind = nebula_resource::kind::Resource;
     type Config = LabelConfig;
-    type Instance = Arc<AtomicU64>;
-    type Topology = Resident<Self>;
 
     const KEY: &'static str = "activation.slotted";
+
+    fn metadata() -> Metadata {
+        Metadata::new(
+            nebula_resource::metadata_name!("activation.slotted"),
+            String::new(),
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for Slotted {
+    type Instance = Arc<AtomicU64>;
+    type Topology = Resident<Self>;
 
     async fn create(
         &self,
@@ -165,13 +184,6 @@ impl Provider for Slotted {
         _ctx: &ResourceContext,
     ) -> Result<Arc<AtomicU64>, ResourceError> {
         Ok(Arc::new(AtomicU64::new(1)))
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
-            nebula_resource::metadata_name!("activation.slotted"),
-            String::new(),
-        )
     }
 }
 
