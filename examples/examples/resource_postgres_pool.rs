@@ -42,14 +42,14 @@ use std::{
     time::Duration,
 };
 
-use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
+use nebula_core::{ScopeLevel, scope::Scope};
 use nebula_resource::Pooled;
 use nebula_resource::topology::pooled::PoolProvider;
 use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResourceContext,
     dedup::SlotIdentity,
     error::Error as ResourceError,
-    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::pooled::{BrokenCheck, RecycleDecision, config::Config as PoolConfig},
 };
 use serde::Deserialize;
@@ -201,9 +201,7 @@ impl Provider for Postgres {
     type Instance = Arc<MockPgConnection>;
     type Topology = Pooled<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("demo.postgres")
-    }
+    const KEY: &'static str = "demo.postgres";
 
     async fn create(
         &self,
@@ -230,12 +228,8 @@ impl Provider for Postgres {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("demo.postgres"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("demo.postgres"), "")
     }
 }
 

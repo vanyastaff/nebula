@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 use nebula_core::ActionKey;
 use nebula_error::{Classify, ErrorCategory, ErrorSeverity};
 use nebula_metadata::{
-    DeprecationNotice, MaturityLevel, MetadataDraft, MetadataError, MetadataReadmissionError,
-    PluginManifest, RecordedBaseMetadata, validate_base_compat,
+    DeprecationNotice, MaturityLevel, Metadata, MetadataError, MetadataReadmissionError,
+    PluginManifest, RecordedBaseDefinition, validate_base_compat,
 };
 use nebula_schema::ValidSchema;
 use semver::Version;
@@ -41,10 +41,10 @@ impl<'a> MakeWriter<'a> for Capture {
 }
 
 #[test]
-fn draft_name_rejection_does_not_expose_submitted_text() {
+fn authored_name_rejection_does_not_expose_submitted_text() {
     const SUBMITTED: &str = " \t\u{2003}";
-    let error = MetadataDraft::try_new("example", SUBMITTED, "private-description")
-        .expect_err("blank draft name is rejected");
+    let error = Metadata::try_new(SUBMITTED, "private-description")
+        .expect_err("blank metadata name is rejected");
 
     let rendered = format!("{error:?}: {error}");
     assert!(!rendered.contains(SUBMITTED));
@@ -122,52 +122,49 @@ fn construction_and_revision_traces_exclude_submitted_payloads() {
             nebula_schema::ValidationReport::from(report),
         );
         assert!(!format!("{schema_error:?}: {schema_error}").contains(SUBMITTED));
-        let metadata = MetadataDraft::try_new(
-            SUBMITTED.parse::<ActionKey>().expect("valid key"),
-            SUBMITTED,
-            SUBMITTED,
-        )
-        .expect("valid metadata")
-        .bind_schema(ValidSchema::empty())
-        .expect("valid bounded metadata");
-        let deprecated = MetadataDraft::try_new(SUBMITTED, SUBMITTED, SUBMITTED)
+        let metadata = Metadata::try_new(SUBMITTED, SUBMITTED)
+            .expect("valid metadata")
+            .bind(
+                SUBMITTED.parse::<ActionKey>().expect("valid key"),
+                ValidSchema::empty(),
+            )
+            .expect("valid bounded metadata");
+        let deprecated = Metadata::try_new(SUBMITTED, SUBMITTED)
             .expect("valid metadata")
             .with_deprecation(DeprecationNotice::new(Version::new(1, 0, 0)).with_reason(SUBMITTED))
             .mark_stable()
-            .bind_schema(ValidSchema::empty())
+            .bind(SUBMITTED, ValidSchema::empty())
             .expect("valid bounded metadata");
         assert_eq!(deprecated.maturity(), MaturityLevel::Deprecated);
 
-        let name_error = MetadataDraft::try_new(SUBMITTED, " ", SUBMITTED).expect_err("blank name");
+        let name_error = Metadata::try_new(" ", SUBMITTED).expect_err("blank name");
         assert!(!format!("{name_error:?}: {name_error}").contains(SUBMITTED));
         let mut invalid_lifecycle = serde_json::to_value(&metadata).expect("metadata serializes");
         invalid_lifecycle["maturity"] = "deprecated".into();
-        serde_json::from_value::<RecordedBaseMetadata<ActionKey>>(invalid_lifecycle)
+        serde_json::from_value::<RecordedBaseDefinition<ActionKey>>(invalid_lifecycle)
             .expect_err("notice required");
-        let previous = MetadataDraft::try_new(
-            SUBMITTED.parse::<ActionKey>().expect("valid key"),
-            SUBMITTED,
-            SUBMITTED,
-        )
-        .expect("valid metadata")
-        .with_version(Version::new(2, 0, 0))
-        .bind_schema(ValidSchema::empty())
-        .expect("valid bounded metadata");
-        let recorded: RecordedBaseMetadata<ActionKey> =
+        let previous = Metadata::try_new(SUBMITTED, SUBMITTED)
+            .expect("valid metadata")
+            .with_version(Version::new(2, 0, 0))
+            .bind(
+                SUBMITTED.parse::<ActionKey>().expect("valid key"),
+                ValidSchema::empty(),
+            )
+            .expect("valid bounded metadata");
+        let recorded: RecordedBaseDefinition<ActionKey> =
             serde_json::from_value(serde_json::to_value(&metadata).expect("metadata serializes"))
                 .expect("recorded metadata validates");
         recorded
             .readmit_against(&previous)
             .expect_err("changed static definition rejects recorded evidence");
         validate_base_compat(&metadata, &previous).expect_err("version regression");
-        let renamed = MetadataDraft::try_new(
-            "different".parse::<ActionKey>().expect("valid key"),
-            SUBMITTED,
-            SUBMITTED,
-        )
-        .expect("valid metadata")
-        .bind_schema(ValidSchema::empty())
-        .expect("valid bounded metadata");
+        let renamed = Metadata::try_new(SUBMITTED, SUBMITTED)
+            .expect("valid metadata")
+            .bind(
+                "different".parse::<ActionKey>().expect("valid key"),
+                ValidSchema::empty(),
+            )
+            .expect("valid bounded metadata");
         validate_base_compat(&renamed, &metadata).expect_err("identity change");
 
         PluginManifest::builder(SUBMITTED, SUBMITTED)
@@ -184,7 +181,7 @@ fn construction_and_revision_traces_exclude_submitted_payloads() {
             serde_json::json!({"metadata_wire_version": 2, "key": {SUBMITTED: SUBMITTED}}),
             serde_json::json!({"metadata_wire_version": 2, "maturity": SUBMITTED}),
         ] {
-            serde_json::from_value::<RecordedBaseMetadata<ActionKey>>(hostile.clone())
+            serde_json::from_value::<RecordedBaseDefinition<ActionKey>>(hostile.clone())
                 .expect_err("hostile recorded fields");
             serde_json::from_value::<PluginManifest>(hostile).expect_err("hostile manifest fields");
         }
@@ -202,18 +199,18 @@ fn construction_and_revision_traces_exclude_submitted_payloads() {
             .expect_err("complete record depth is bounded");
         assert_eq!(depth_error, MetadataError::RecordNotDecodable);
         assert!(!format!("{depth_error:?}: {depth_error}").contains(SUBMITTED));
-        let field_error = MetadataDraft::try_new(SUBMITTED, "Example", "")
+        let field_error = Metadata::try_new("Example", "")
             .unwrap()
             .with_tags(["x".repeat(65)])
-            .bind_schema(ValidSchema::empty())
+            .bind(SUBMITTED, ValidSchema::empty())
             .unwrap_err();
         assert!(!format!("{field_error}: {field_error:?}").contains(SUBMITTED));
     });
 
     let output = String::from_utf8(capture.0.lock().expect("test capture lock").clone())
         .expect("UTF-8 tracing output");
-    assert!(output.contains("metadata.try_construct_draft"), "{output}");
-    assert!(output.contains("metadata.bind_schema"), "{output}");
+    assert!(output.contains("metadata.try_construct"), "{output}");
+    assert!(output.contains("metadata.bind"), "{output}");
     assert!(output.contains("metadata.reject_schema"), "{output}");
     assert!(output.contains("METADATA:INVALID_SCHEMA"), "{output}");
     assert!(output.contains("metadata.resolve_maturity"), "{output}");

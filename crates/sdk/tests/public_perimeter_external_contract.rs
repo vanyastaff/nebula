@@ -82,11 +82,11 @@ const FIXTURE_FILES: &[&str] = &[
     "src/bin/expression_context.rs",
     "src/bin/action_input.rs",
     "src/bin/prepared_action_input.rs",
-    "src/bin/base_metadata.rs",
+    "src/bin/base_definition.rs",
     "src/bin/action_metadata.rs",
     "src/bin/credential_metadata.rs",
-    "src/bin/resource_metadata.rs",
-    "src/bin/metadata_trait.rs",
+    "src/bin/resource_definition.rs",
+    "src/bin/definition_trait.rs",
     "src/bin/metadata_build_error.rs",
     "src/bin/value_tree.rs",
     "src/bin/valid_values.rs",
@@ -105,7 +105,7 @@ const FIXTURE_FILES: &[&str] = &[
     "src/bin/hidden_resource_kind_activator.rs",
     "src/bin/hidden_resource_register_request.rs",
     "src/bin/hidden_resource_box_fut.rs",
-    "src/bin/hidden_resource_metadata.rs",
+    "src/bin/hidden_resource_definition.rs",
     "src/bin/hidden_resource_metadata_build_error.rs",
     "src/bin/hidden_resource_slot_identity.rs",
     "src/bin/hidden_resource_bridge_field.rs",
@@ -136,11 +136,11 @@ const FORBIDDEN: &[(&str, &str)] = &[
     ("expression_context", "ExpressionContext"),
     ("action_input", "ActionInput"),
     ("prepared_action_input", "PreparedActionInput"),
-    ("base_metadata", "BaseMetadata"),
+    ("base_definition", "BaseDefinition"),
     ("action_metadata", "ActionMetadata"),
     ("credential_metadata", "CredentialMetadata"),
-    ("resource_metadata", "ResourceMetadata"),
-    ("metadata_trait", "Metadata"),
+    ("resource_definition", "ResourceDefinition"),
+    ("definition_trait", "Definition"),
     ("metadata_build_error", "MetadataBuildError"),
     ("value_tree", "ValueTree"),
     ("valid_values", "ValidValues"),
@@ -159,7 +159,7 @@ const FORBIDDEN: &[(&str, &str)] = &[
     ("hidden_resource_kind_activator", "factory"),
     ("hidden_resource_register_request", "factory"),
     ("hidden_resource_box_fut", "factory"),
-    ("hidden_resource_metadata", "ResourceMetadata"),
+    ("hidden_resource_definition", "ResourceDefinition"),
     ("hidden_resource_metadata_build_error", "MetadataBuildError"),
     ("hidden_resource_slot_identity", "SlotIdentity"),
 ];
@@ -175,10 +175,11 @@ const REMOVED_CATALOG_API: &[(&str, &str, &str)] = &[
         "with_checkpoint_policy",
         "ActionMetadataDraft",
     ),
+    // `ResourceMetadata` is an alias; rustc names the type behind it.
     (
         "removed_resource_from_key",
         "from_key",
-        "ResourceMetadataDraft",
+        "nebula_metadata::base::Metadata",
     ),
     (
         "removed_credential_pattern",
@@ -510,8 +511,8 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
             }
             pub mod resource {
                 pub use nebula_resource::{
-                    ConfigFingerprint, Error, HasCredentialSlots, PinSlots, ResourceConfig,
-                    SlotInstallError, SlotUpdate,
+                    __assert_provider_key, ConfigFingerprint, Error, HasCredentialSlots, PinSlots,
+                    ResourceConfig, SlotInstallError, SlotUpdate,
                 };
                 pub mod contribution {
                     pub use crate::resource_contribution::{
@@ -523,7 +524,7 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
                     reason = "the hidden macro ABI mirrors nebula_resource::resource paths emitted by existing derives"
                 )]
                 pub mod resource {
-                    pub use nebula_resource::resource::Provider;
+                    pub use nebula_resource::resource::{Provider, ProviderKey};
                 }
                 pub mod topology {
                     pub use nebula_resource::topology::{Pooled, Resident, Topology};

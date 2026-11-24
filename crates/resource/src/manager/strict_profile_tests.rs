@@ -3,6 +3,7 @@
 //! in the health snapshot, the erased view and the erased handle; a strict
 //! manager refuses a row it cannot observe.
 
+use crate::resource::ProviderKey;
 use std::sync::{Arc, atomic::Ordering};
 
 use nebula_core::ScopeLevel;

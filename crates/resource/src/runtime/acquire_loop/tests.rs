@@ -5,7 +5,7 @@ use std::sync::{
 
 use arc_swap::ArcSwap;
 use futures::FutureExt;
-use nebula_core::{ExecutionId, ResourceKey, resource_key};
+use nebula_core::ExecutionId;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
@@ -15,7 +15,7 @@ use crate::{
     error::Error,
     recovery::gate::{RecoveryGate, RecoveryGateConfig},
     release_queue::ReleaseQueue,
-    resource::{Provider, ResourceConfig, ResourceMetadataDraft, TeardownCx},
+    resource::{Provider, ResourceConfig, ResourceMetadata, TeardownCx},
     runtime::managed::ManagedResource,
     state::ResourceStatus,
     topology::{
@@ -357,9 +357,7 @@ impl Provider for Mock {
     type Instance = u64;
     type Topology = Pooled<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("acquire-loop-guard-mock")
-    }
+    const KEY: &'static str = "acquire-loop-guard-mock";
 
     async fn create(&self, _config: &PoolCfg, _ctx: &ResourceContext) -> Result<u64, Error> {
         let id = self.created.fetch_add(1, Ordering::SeqCst);
@@ -425,12 +423,8 @@ impl Provider for Mock {
         }
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            crate::metadata_name!("acquire-loop-guard-mock"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("acquire-loop-guard-mock"), "")
     }
 }
 
@@ -459,9 +453,7 @@ impl Provider for RetainedHookMock {
     type Instance = u64;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("retained-hook-settlement-mock")
-    }
+    const KEY: &'static str = "retained-hook-settlement-mock";
 
     async fn create(&self, _config: &PoolCfg, _ctx: &ResourceContext) -> Result<u64, Error> {
         Ok(0)
@@ -473,12 +465,8 @@ impl Provider for RetainedHookMock {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            crate::metadata_name!("retained-hook-settlement-mock"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("retained-hook-settlement-mock"), "")
     }
 }
 

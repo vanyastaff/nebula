@@ -1,3 +1,4 @@
+use nebula_resource::ProviderKey;
 use std::{any::TypeId, fmt, sync::OnceLock};
 
 use nebula_action::{
@@ -7,7 +8,7 @@ use nebula_action::{
 use nebula_core::{ActionKey, ArtifactSetDigest, Dependencies, OrgId, WorkspaceId, node_key};
 use nebula_plugin::{Plugin, PluginManifest, PluginRegistry, ResolvedPlugin};
 use nebula_resource::{
-    KindActivator, Provider, Resident, ResidentConfig, ResourceFactory, ResourceMetadataDraft,
+    KindActivator, Provider, Resident, ResidentConfig, ResourceFactory, ResourceMetadata,
 };
 use nebula_schema::{HasSchema, ValidSchema};
 use nebula_storage::{
@@ -248,16 +249,10 @@ impl Provider for FixtureResource {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn key() -> nebula_core::ResourceKey {
-        "start.client".parse().unwrap()
-    }
+    const KEY: &'static str = "start.client";
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("Start Client"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("Start Client"), "")
     }
 
     async fn create(

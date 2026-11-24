@@ -11,6 +11,7 @@
 //! `acquire_loop` module. This module holds only the
 //! admission-surface + status/phase/taint/drain impl blocks.
 
+use crate::resource::ProviderKey;
 use std::{
     sync::{
         Arc,

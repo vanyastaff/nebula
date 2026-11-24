@@ -4,7 +4,7 @@
 //! credentials, and resources under a versioned identity. It reuses the
 //! shared small types from this crate ([`Icon`], [`MaturityLevel`],
 //! [`DeprecationNotice`]) but deliberately does **not** compose
-//! `BaseMetadata<K>`: a plugin is a container, not a schematized leaf.
+//! `BaseDefinition<K>`: a plugin is a container, not a schematized leaf.
 //! See ADR-0018 (historical — the maintainers' private design vault).
 //!
 //! This module lives in `nebula-metadata` (moved here from `nebula-plugin`

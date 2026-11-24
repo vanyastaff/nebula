@@ -1,4 +1,5 @@
 use super::*;
+use crate::resource::ProviderKey;
 use crate::{
     AcquireOptions, Manager, RegistrationSpec,
     dedup::SlotIdentity,
@@ -43,13 +44,11 @@ impl Provider for DummyResource {
     type Instance = Payload;
     type Topology = Pooled<Self>;
 
-    fn metadata() -> crate::ResourceMetadataDraft {
-        crate::ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("DummyResource"), "")
+    fn metadata() -> crate::ResourceMetadata {
+        crate::ResourceMetadata::new(crate::metadata_name!("DummyResource"), "")
     }
 
-    fn key() -> ResourceKey {
-        nebula_core::resource_key!("guard-test")
-    }
+    const KEY: &'static str = "guard-test";
 
     async fn create(&self, (): &(), _: &ResourceContext) -> Result<Payload, crate::Error> {
         Ok(Payload {

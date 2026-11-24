@@ -24,7 +24,7 @@
 ## Conventions & never-do
 
 - `impl Plugin` is the single runtime source of truth for what's registered. Do NOT duplicate `fn actions()`/`fn credentials()`/`fn resources()` in `plugin.toml` (spec theater).
-- `PluginManifest` does NOT compose `BaseMetadata<K>` — a plugin is a container, not a schematized leaf.
+- `PluginManifest` does NOT compose `BaseDefinition<K>` — a plugin is a container, not a schematized leaf.
 - Registries are in-memory; persistence belongs behind storage ports. The existing `plugin.toml` parser must not grow a second runtime component list or imply signature enforcement. Process/WASM isolation is a non-goal (ADR-0091, canon §12.6).
 - Compilation performs no persistence, tenant authorization, or binding resolution. First-party activation and exact execution consume frozen plans, but compiler success alone does not grant runtime admission.
 - `PluginSetId` is an independent pin for the normalized registered surface

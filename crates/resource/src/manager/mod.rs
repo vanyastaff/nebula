@@ -454,6 +454,7 @@
 //! [#718]: https://github.com/vanyastaff/nebula/issues/718
 //! [#719]: https://github.com/vanyastaff/nebula/issues/719
 
+use crate::resource::ProviderKey;
 use std::{
     sync::{
         Arc,

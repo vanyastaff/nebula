@@ -35,10 +35,7 @@ use nebula_action::{
     ActionError, ActionMetadataDraft, action::Action, result::ActionResult,
     stateless::StatelessAction,
 };
-use nebula_core::{
-    ActionKey, Dependencies, ResourceKey, ScopeLevel, action_key, id::WorkflowId, node_key,
-    resource_key,
-};
+use nebula_core::{ActionKey, Dependencies, ScopeLevel, action_key, id::WorkflowId, node_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, WorkflowEngine,
 };
@@ -48,7 +45,7 @@ use nebula_resource::Resident;
 use nebula_resource::{
     Manager, RegistrationSpec, ResidentConfig, ResourceContext, SlotIdentity,
     error::Error as ResourceError,
-    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
 use nebula_workflow::{
@@ -183,9 +180,7 @@ impl Provider for WitnessResource {
     type Instance = Arc<WitnessResourceInner>;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("phase9-witness-resource")
-    }
+    const KEY: &'static str = "phase9-witness-resource";
 
     async fn create(
         &self,
@@ -207,9 +202,8 @@ impl Provider for WitnessResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("phase9-witness-resource"),
             "",
         )

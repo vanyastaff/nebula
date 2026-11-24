@@ -9,7 +9,7 @@ use crate::{CatalogReference, MetadataError, RemovalSchedule};
 /// Deprecation payload describing when a catalog entity became deprecated,
 /// when it will be removed, and what replaces it.
 ///
-/// Attached to [`BaseMetadata::deprecation`](crate::BaseMetadata::deprecation);
+/// Attached to [`BaseDefinition::deprecation`](crate::BaseDefinition::deprecation);
 /// its presence requires [`MaturityLevel::Deprecated`](crate::MaturityLevel::Deprecated)
 /// through every catalog construction and deserialization path.
 ///

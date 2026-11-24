@@ -1,11 +1,11 @@
 use std::{future::Future, sync::atomic::AtomicBool, time::Duration};
 
-use nebula_core::{ExecutionId, ResourceKey, resource_key};
+use nebula_core::ExecutionId;
 
 use super::*;
 use crate::{
     context::ResourceContext,
-    resource::{ResourceConfig, ResourceMetadataDraft},
+    resource::{ResourceConfig, ResourceMetadata},
     topology::{pooled::BrokenCheck, store::ReturnOutcome},
 };
 
@@ -64,9 +64,7 @@ impl Provider for MockPool {
     type Instance = u64;
     type Topology = Pooled<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("mock-pool")
-    }
+    const KEY: &'static str = "mock-pool";
 
     async fn create(&self, _config: &PoolTestConfig, _ctx: &ResourceContext) -> Result<u64, Error> {
         Ok(self.created.fetch_add(1, Ordering::SeqCst))
@@ -103,8 +101,8 @@ impl Provider for MockPool {
         }
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("mock-pool"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("mock-pool"), "")
     }
 }
 

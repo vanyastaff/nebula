@@ -34,17 +34,18 @@ use std::{
 use nebula_action::{
     ActionError, action::Action, result::ActionResult, stateless::StatelessAction,
 };
-use nebula_core::{Dependencies, ResourceKey, action_key, node_key, resource_key};
+use nebula_core::{Dependencies, action_key, node_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, KindActivator, Plugin,
     PluginManifest, PluginRegistry, ResolvedPlugin, ResourceActivatorRegistry, WorkflowEngine,
 };
 use nebula_metrics::MetricsRegistry;
+use nebula_resource::ProviderKey;
 use nebula_resource::Resident;
 use nebula_resource::{
     ScopeLevel,
     error::Error as ResourceError,
-    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::resident,
 };
 
@@ -109,9 +110,7 @@ impl Provider for DemoResource {
     type Instance = Arc<AtomicU64>;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("demo.widget")
-    }
+    const KEY: &'static str = "demo.widget";
 
     async fn create(
         &self,
@@ -122,9 +121,8 @@ impl Provider for DemoResource {
         Ok(Arc::new(AtomicU64::new(id)))
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            <Self as Provider>::key(),
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("demo.widget"),
             String::new(),
         )
@@ -347,7 +345,7 @@ async fn wired_registrar_performs_typed_registration() {
 
     assert!(
         manager
-            .get_any(&<DemoResource as Provider>::key(), &ScopeLevel::Global)
+            .get_any(&<DemoResource as ProviderKey>::key(), &ScopeLevel::Global)
             .is_some(),
         "the plugin-declared resource must be resolvable in the manager \
          after registration"

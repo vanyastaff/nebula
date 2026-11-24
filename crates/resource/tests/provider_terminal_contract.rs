@@ -1,5 +1,6 @@
 //! Provider author obligations at the framework-owned terminal boundary.
 
+use nebula_resource::ProviderKey;
 mod common;
 
 use std::sync::{
@@ -8,11 +9,9 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use nebula_core::ResourceKey;
 use nebula_resource::{
     AcquireOptions, Error, ErrorKind, Manager, Provider, Resident, ResidentConfig,
     ResidentProvider, ResourceContext, ShutdownConfig, ShutdownError, TeardownCx, TeardownReason,
-    resource_key,
 };
 use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
@@ -53,17 +52,14 @@ impl Provider for TerminalProvider {
     type Instance = OwnedInstance;
     type Topology = Resident<Self>;
 
-    fn metadata() -> nebula_resource::ResourceMetadataDraft {
-        nebula_resource::ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> nebula_resource::ResourceMetadata {
+        nebula_resource::ResourceMetadata::new(
             nebula_resource::metadata_name!("TerminalProvider"),
             "",
         )
     }
 
-    fn key() -> ResourceKey {
-        resource_key!("terminal-contract")
-    }
+    const KEY: &'static str = "terminal-contract";
 
     async fn create(&self, (): &(), _: &ResourceContext) -> Result<OwnedInstance, Error> {
         Ok(OwnedInstance(Arc::clone(&self.drops)))
@@ -202,17 +198,14 @@ impl Provider for DefaultDropProvider {
     type Instance = OwnedInstance;
     type Topology = Resident<Self>;
 
-    fn metadata() -> nebula_resource::ResourceMetadataDraft {
-        nebula_resource::ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> nebula_resource::ResourceMetadata {
+        nebula_resource::ResourceMetadata::new(
             nebula_resource::metadata_name!("DefaultDropProvider"),
             "",
         )
     }
 
-    fn key() -> ResourceKey {
-        resource_key!("default-drop")
-    }
+    const KEY: &'static str = "default-drop";
 
     async fn create(&self, (): &(), _: &ResourceContext) -> Result<OwnedInstance, Error> {
         Ok(OwnedInstance(Arc::clone(&self.0)))

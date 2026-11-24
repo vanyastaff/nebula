@@ -17,14 +17,14 @@ use std::sync::{
 };
 
 use common::{ResidentTestResource, TestConfig, test_config, test_ctx};
-use nebula_core::{ResourceKey, resource_key};
+use nebula_core::resource_key;
 use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, Resident, ResidentConfig, ResourceContext,
     ScopeLevel, ShutdownConfig, SlotIdentity,
     error::{Error, ErrorKind},
     guard::ResourceGuard,
     recovery::{GateState, RecoveryGate, RecoveryGateConfig},
-    resource::{Provider, ResourceMetadataDraft},
+    resource::{Provider, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
 
@@ -226,9 +226,7 @@ impl Provider for FailingResidentResource {
     type Instance = Arc<AtomicU64>;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("test-failing-resident")
-    }
+    const KEY: &'static str = "test-failing-resident";
 
     async fn create(
         &self,
@@ -251,12 +249,8 @@ impl Provider for FailingResidentResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("test-failing-resident"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("test-failing-resident"), "")
     }
 }
 
@@ -293,9 +287,7 @@ impl Provider for BlockingResidentResource {
     type Instance = Arc<AtomicU64>;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("test-blocking-resident")
-    }
+    const KEY: &'static str = "test-blocking-resident";
 
     async fn create(
         &self,
@@ -314,9 +306,8 @@ impl Provider for BlockingResidentResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("test-blocking-resident"),
             "",
         )
@@ -352,9 +343,7 @@ impl Provider for PermanentFailResource {
     type Instance = Arc<AtomicU64>;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("test-permanent-fail")
-    }
+    const KEY: &'static str = "test-permanent-fail";
 
     async fn create(
         &self,
@@ -373,12 +362,8 @@ impl Provider for PermanentFailResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("test-permanent-fail"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("test-permanent-fail"), "")
     }
 }
 

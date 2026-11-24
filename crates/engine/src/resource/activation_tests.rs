@@ -1,3 +1,4 @@
+use nebula_resource::ProviderKey;
 use std::{
     collections::BTreeMap,
     future::Future,
@@ -11,12 +12,11 @@ use std::{
 use nebula_core::{
     CredentialKey, DeclaresDependencies, Dependencies, ResourceKey,
     dependencies::{SlotField, SlotKind},
-    resource_key,
 };
 use nebula_resource::{
     KindActivator, Resident, ResourceContext, ResourceEvent,
     error::Error as ResourceError,
-    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::resident,
 };
 use nebula_storage::inmem::InMemoryResourceStore;
@@ -57,9 +57,7 @@ impl Provider for Plain {
     type Instance = Arc<AtomicU64>;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("activation.plain")
-    }
+    const KEY: &'static str = "activation.plain";
 
     async fn create(
         &self,
@@ -69,9 +67,8 @@ impl Provider for Plain {
         Ok(Arc::new(AtomicU64::new(1)))
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("activation.plain"),
             String::new(),
         )
@@ -102,9 +99,7 @@ impl Provider for Misnamed {
     type Instance = Arc<AtomicU64>;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("activation.misnamed")
-    }
+    const KEY: &'static str = "activation.misnamed";
 
     async fn create(
         &self,
@@ -114,9 +109,8 @@ impl Provider for Misnamed {
         Ok(Arc::new(AtomicU64::new(1)))
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("activation.misnamed"),
             String::new(),
         )
@@ -164,9 +158,7 @@ impl Provider for Slotted {
     type Instance = Arc<AtomicU64>;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("activation.slotted")
-    }
+    const KEY: &'static str = "activation.slotted";
 
     async fn create(
         &self,
@@ -176,9 +168,8 @@ impl Provider for Slotted {
         Ok(Arc::new(AtomicU64::new(1)))
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("activation.slotted"),
             String::new(),
         )

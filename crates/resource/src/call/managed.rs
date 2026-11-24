@@ -2,6 +2,7 @@
 //! ([`Submission`]) and the per-unit runtime: spawn, deadline, attempt
 //! admission and the settled outcome.
 
+use crate::resource::ProviderKey;
 use std::{
     fmt,
     future::Future,

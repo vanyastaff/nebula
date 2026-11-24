@@ -17,11 +17,11 @@
 //!      each slot's guard `Arc` loaded once per unit, read through a
 //!      `<field>()` accessor (generic structs with slots get none).
 //!
-//! 2. Hand-written `impl Provider` — the implementor supplies `key()`, `metadata()`, the three
+//! 2. Hand-written `impl Provider` — the implementor supplies `KEY`, `metadata()`, the three
 //!    associated types (`Config`, `Instance`, `Topology`), and lifecycle methods
 //!    (`create`, optionally `check`, consuming `destroy`, hooks).
 //!
-//! The macro **never** emits any `Provider` item, `todo!()`, `key()`, or
+//! The macro **never** emits any `Provider` item, `todo!()`, `KEY`, or
 //! `metadata()`. There is no `#[resource(...)]` container attribute.
 //!
 //! ## Field attributes
@@ -238,14 +238,32 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     };
 
     let pin_slots_item = emit_pin_slots(&input, &slots);
+    let key_check = emit_key_check(&input);
 
     Ok(quote! {
+        #key_check
         #has_credential_slots_impl
         #deps_impl
         #slot_accessor_impl
         #pin_slots_item
         #factory_item
     })
+}
+
+/// Emit a definition-site check of the provider's `KEY` literal.
+///
+/// `ProviderKey::key` rejects an invalid literal when it is instantiated, which
+/// `cargo check` and an editor never do. This item names the concrete type, so
+/// the same mistake is reported where the resource is declared. A generic
+/// struct has no concrete `KEY` to evaluate here and relies on `key()` alone.
+fn emit_key_check(input: &DeriveInput) -> proc_macro2::TokenStream {
+    if !input.generics.params.is_empty() {
+        return quote! {};
+    }
+    let struct_name = &input.ident;
+    quote! {
+        ::nebula_resource::__assert_provider_key!(#struct_name);
+    }
 }
 
 /// Emit `impl PinSlots` — the per-unit slot snapshot of the managed call

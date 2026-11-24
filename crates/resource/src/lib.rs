@@ -22,7 +22,7 @@
 //!
 //! ```
 //! use async_trait::async_trait;
-//! use nebula_core::{ResourceKey, ScopeLevel, resource_key};
+//! use nebula_core::ScopeLevel;
 //! use nebula_resource::{
 //!     AcquireOptions, Error, Manager, PoolConfig, PoolProvider, Pooled, Provider,
 //!     RegistrationSpec, Resource, ResourceContext, SlotIdentity,
@@ -37,13 +37,12 @@
 //!     type Instance = ();
 //!     type Topology = Pooled<Self>;
 //!
-//!     fn key() -> ResourceKey {
-//!         resource_key!("quickstart.http_client")
-//!     }
+//!     const KEY: &'static str = "quickstart.http_client";
 //!
-//!     fn metadata() -> nebula_resource::ResourceMetadataDraft {
-//!         nebula_resource::ResourceMetadataDraft::new(
-//!             Self::key(), nebula_resource::metadata_name!("HTTP client"), "Pooled HTTP client",
+//!     fn metadata() -> nebula_resource::ResourceMetadata {
+//!         nebula_resource::ResourceMetadata::new(
+//!             nebula_resource::metadata_name!("HTTP client"),
+//!             "Pooled HTTP client",
 //!         )
 //!     }
 //!
@@ -404,8 +403,8 @@ pub use release_queue::ReleaseQueue;
 pub use reload::ReloadOutcome;
 pub use resource::{
     CheckCost, HasCredentialSlots, MetadataBuildError, MetadataCompatibilityError, Provider,
-    RecordedResourceMetadata, ResourceConfig, ResourceMetadata, ResourceMetadataDraft, TeardownCx,
-    TeardownReason,
+    ProviderKey, RecordedResourceDefinition, ResourceConfig, ResourceDefinition, ResourceMetadata,
+    TeardownCx, TeardownReason,
 };
 pub use slot::{CredentialSlot, SlotCell, SlotInstallError, SlotUpdate};
 // Runtime types — the framework topologies needed for `Manager::register()`.
@@ -455,9 +454,9 @@ pub use credential_fanout::{
 ///     type Config = ();
 ///     type Instance = ();
 ///     type Topology = Pooled<Self>;
-///     fn key() -> ResourceKey { resource_key!("my.resource") }
-///     fn metadata() -> ResourceMetadataDraft {
-///         ResourceMetadataDraft::new(Self::key(), nebula_resource::metadata_name!("My resource"), "")
+///     const KEY: &'static str = "my.resource";
+///     fn metadata() -> ResourceMetadata {
+///         ResourceMetadata::new(nebula_resource::metadata_name!("My resource"), "")
 ///     }
 ///     async fn create(&self, _: &(), _: &ResourceContext) -> Result<(), Error> {
 ///         Ok(())
@@ -473,8 +472,9 @@ pub use credential_fanout::{
 pub mod prelude {
     pub use crate::{
         AcquireOptions, Error, ErrorKind, HasCredentialSlots, Manager, PoolConfig, Pooled,
-        Provider, RegistrationSpec, ReleaseOutcome, Resident, ResidentConfig, ResourceConfig,
-        ResourceContext, ResourceGuard, ResourceKey, ResourceMetadata, ResourceMetadataDraft,
-        ScopeLevel, ShutdownConfig, SlotCell, SlotIdentity, TopologyTag, resource_key,
+        Provider, ProviderKey, RegistrationSpec, ReleaseOutcome, Resident, ResidentConfig,
+        ResourceConfig, ResourceContext, ResourceDefinition, ResourceGuard, ResourceKey,
+        ResourceMetadata, ScopeLevel, ShutdownConfig, SlotCell, SlotIdentity, TopologyTag,
+        resource_key,
     };
 }

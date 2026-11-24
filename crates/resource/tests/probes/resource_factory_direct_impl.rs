@@ -2,7 +2,7 @@ use std::any::TypeId;
 
 use nebula_core::{Dependencies, ResourceKey};
 use nebula_resource::{
-    Error, Manager, MetadataBuildError, ResourceFactory, ResourceMetadata, SlotIdentity,
+    Error, Manager, MetadataBuildError, ResourceFactory, ResourceDefinition, SlotIdentity,
     factory::{BoxFut, RegisterRequest},
 };
 
@@ -21,7 +21,7 @@ impl ResourceFactory for ForgedFactory {
         TypeId::of::<Self>()
     }
 
-    fn metadata(&self) -> Result<&ResourceMetadata, MetadataBuildError> {
+    fn definition(&self) -> Result<&ResourceDefinition, MetadataBuildError> {
         panic!("compile-only probe")
     }
 

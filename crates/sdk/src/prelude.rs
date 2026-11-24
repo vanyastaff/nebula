@@ -35,12 +35,10 @@
 //!     type Instance = HttpClient;
 //!     type Topology = Pooled<Self>;
 //!
-//!     fn key() -> ResourceKey {
-//!         resource_key!("http.client.sdk_prelude")
-//!     }
+//!     const KEY: &'static str = "http.client.sdk_prelude";
 //!
-//!     fn metadata() -> ResourceMetadataDraft {
-//!         ResourceMetadataDraft::new(Self::key(), metadata_name!("HTTP client"), "Pooled HTTP client")
+//!     fn metadata() -> ResourceMetadata {
+//!         ResourceMetadata::new(metadata_name!("HTTP client"), "Pooled HTTP client")
 //!     }
 //!
 //!     async fn create(&self, _config: &(), _ctx: &ResourceContext) -> Result<HttpClient, Error> {
@@ -131,7 +129,7 @@ pub use nebula_credential::{
 };
 pub use nebula_credential::{AuthScheme, credential};
 pub use nebula_credential::{CredentialContext, CredentialId};
-// Shared authoring vocabulary used by action, credential, and resource drafts.
+// Shared authoring vocabulary used by action, credential, and resource metadata.
 pub use nebula_metadata::{
     CatalogCategoryKey, CatalogLink, CatalogLinkRelation, CatalogLinkTarget, CatalogReference,
     CatalogValueError, DeprecationNotice, DocumentationOrigin, Icon, MaturityLevel, MetadataError,
@@ -157,9 +155,9 @@ pub use nebula_plugin::{
 // `ReleaseOutcome`, `Lease`) are deliberately absent from the supported SDK.
 pub use nebula_resource::{
     Bounded, BoundedMode, BoundedProvider, ClassifyError, Error, ErrorKind, HasCredentialSlots,
-    PoolConfig, PoolProvider, Pooled, Provider, ReloadOutcome, Resident, ResidentConfig,
-    ResidentProvider, Resource, ResourceConfig, ResourceContext, ResourceMetadataDraft, SlotCell,
-    TeardownCx, TeardownReason, TopologyTag, no_credential_slots,
+    PoolConfig, PoolProvider, Pooled, Provider, ProviderKey, ReloadOutcome, Resident,
+    ResidentConfig, ResidentProvider, Resource, ResourceConfig, ResourceContext, ResourceMetadata,
+    SlotCell, TeardownCx, TeardownReason, TopologyTag, no_credential_slots,
 };
 // Derive names are re-exported from their respective domain crates. Generated
 // paths prefer a direct (including renamed) leaf dependency, then the SDK's

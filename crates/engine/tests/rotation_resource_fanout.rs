@@ -11,20 +11,21 @@
 //! invariant under test: one slow/wedged resource MUST NOT abort or fail its
 //! siblings — every row's outcome is independent.
 
+use nebula_resource::ProviderKey;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
 use std::time::Duration;
 
-use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
+use nebula_core::{OrgId, ScopeLevel, scope::Scope};
 use nebula_credential::CredentialId;
 use nebula_resource::Resident;
 use nebula_resource::{
     AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
     ResourceContext, SlotIdentity,
     error::Error as ResourceError,
-    resource::{HasCredentialSlots, ResourceMetadataDraft},
+    resource::{HasCredentialSlots, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
 use nebula_resource::{ResourceFanoutIndex, RotationOutcome};
@@ -83,9 +84,7 @@ impl Provider for Ctl {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("it-fanout-ctl")
-    }
+    const KEY: &'static str = "it-fanout-ctl";
 
     async fn create(&self, _c: &Cfg, _x: &ResourceContext) -> Result<(), ResourceError> {
         Ok(())
@@ -110,12 +109,8 @@ impl Provider for Ctl {
         }
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("it-fanout-ctl"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("it-fanout-ctl"), "")
     }
 }
 

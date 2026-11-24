@@ -20,6 +20,7 @@
 //!  ::dispatch_{refresh,revoke} → Manager::{refresh_slot_for,
 //!  taint_slot_for + drain_and_revoke} → resource on_credential_* hook`.
 
+use nebula_resource::ProviderKey;
 use std::future::Future;
 use std::sync::{
     Arc,
@@ -27,7 +28,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
+use nebula_core::{OrgId, ResourceKey, ScopeLevel, scope::Scope};
 use nebula_credential::{CredentialEvent, CredentialId, LeaseEvent};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
@@ -40,7 +41,7 @@ use nebula_resource::{
     AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
     ResourceContext, SlotIdentity,
     error::Error as ResourceError,
-    resource::{HasCredentialSlots, ResourceMetadataDraft},
+    resource::{HasCredentialSlots, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
 use nebula_resource::{ResourceFanoutDriver, ResourceFanoutIndex};
@@ -1558,9 +1559,7 @@ impl Provider for ReplacementResource {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("fanout-replacement-order")
-    }
+    const KEY: &'static str = "fanout-replacement-order";
 
     async fn create(&self, _c: &NoCfg, _x: &ResourceContext) -> Result<(), ResourceError> {
         Ok(())
@@ -1579,9 +1578,8 @@ impl Provider for ReplacementResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("fanout-replacement-order"),
             "",
         )
@@ -1864,9 +1862,7 @@ impl Provider for Recording {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("fanout-wiring-rec")
-    }
+    const KEY: &'static str = "fanout-wiring-rec";
 
     async fn create(&self, _c: &NoCfg, _x: &ResourceContext) -> Result<(), ResourceError> {
         Ok(())
@@ -1882,12 +1878,8 @@ impl Provider for Recording {
         drive(self.behaviour).await
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("fanout-wiring-rec"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("fanout-wiring-rec"), "")
     }
 }
 

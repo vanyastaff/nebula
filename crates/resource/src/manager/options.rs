@@ -7,6 +7,7 @@
 //! - [`ShutdownConfig`] — graceful shutdown tuning
 //! - [`DrainTimeoutPolicy`] — what to do on drain timeout (#302)
 
+use crate::resource::ProviderKey;
 use std::{sync::Arc, time::Duration};
 
 use nebula_core::ScopeLevel;

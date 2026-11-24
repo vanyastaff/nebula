@@ -27,13 +27,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nebula_core::{ExecutionId, ResourceKey, scope::Scope};
+use nebula_core::{ExecutionId, scope::Scope};
 use nebula_resource::ResidentConfig;
 use nebula_resource::{
     AcquireOptions, Manager, Pooled, RegistrationSpec, Resident, ResourceContext, ScopeLevel,
     ShutdownConfig, SlotIdentity, TopologyTag,
     error::{Error, ErrorKind},
-    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::{
         pooled::{BrokenCheck, PoolProvider},
         resident::ResidentProvider,
@@ -82,9 +82,7 @@ impl Provider for SlowCreateResource {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        nebula_core::resource_key!("test.shutdown_race.slow")
-    }
+    const KEY: &'static str = "test.shutdown_race.slow";
 
     async fn create(&self, _config: &Self::Config, _ctx: &ResourceContext) -> Result<(), Error> {
         let delay = self.create_delay;
@@ -94,9 +92,8 @@ impl Provider for SlowCreateResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("test.shutdown_race.slow"),
             "",
         )
@@ -328,9 +325,7 @@ impl Provider for PausableEvictResource {
     type Instance = ();
     type Topology = Pooled<Self>;
 
-    fn key() -> ResourceKey {
-        nebula_core::resource_key!("test.shutdown_race.pausable_evict")
-    }
+    const KEY: &'static str = "test.shutdown_race.pausable_evict";
 
     async fn create(&self, _config: &Self::Config, _ctx: &ResourceContext) -> Result<(), Error> {
         self.create_count.fetch_add(1, Ordering::SeqCst);
@@ -343,9 +338,8 @@ impl Provider for PausableEvictResource {
         Err(Error::cancelled())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("test.shutdown_race.pausable_evict"),
             "",
         )

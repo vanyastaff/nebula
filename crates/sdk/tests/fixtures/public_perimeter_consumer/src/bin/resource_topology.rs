@@ -1,7 +1,7 @@
 use nebula_sdk::integration::resource::{
     AdmissionPhase, CreatedEntry, Error, HookFault, Load, MaintenanceSchedule, Provider,
-    ResourceContext, ResourceKey, RetainedId, RetainedLease, RetainedStore, StoreView, TeardownCx,
-    Ticket, Topology, Unavailable, no_credential_slots, resource_key,
+    ProviderKey, ResourceContext, RetainedId, RetainedLease, RetainedStore, StoreView, TeardownCx,
+    Ticket, Topology, Unavailable, no_credential_slots,
 };
 
 struct OwnedConnection(String);
@@ -15,17 +15,14 @@ impl Provider for CustomProvider {
     type Instance = OwnedConnection;
     type Topology = CustomTopology;
 
-    fn metadata() -> nebula_sdk::integration::resource::ResourceMetadataDraft {
-        nebula_sdk::integration::resource::ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> nebula_sdk::integration::resource::ResourceMetadata {
+        nebula_sdk::integration::resource::ResourceMetadata::new(
             nebula_sdk::prelude::metadata_name!("CustomProvider"),
             "",
         )
     }
 
-    fn key() -> ResourceKey {
-        resource_key!("example.custom-topology")
-    }
+    const KEY: &'static str = "example.custom-topology";
 
     async fn create(&self, _: &(), _: &ResourceContext) -> Result<OwnedConnection, Error> {
         Ok(OwnedConnection(String::from("exclusive connection")))

@@ -3,6 +3,7 @@
 //! session destroys its instance, and a connection-bound session never runs
 //! on an instance built on superseded credentials.
 
+use crate::resource::ProviderKey;
 use std::{
     num::NonZeroU32,
     sync::{

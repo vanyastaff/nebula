@@ -1,15 +1,15 @@
 //! Static proofs and dynamic validation share the catalog-name contract.
 
 use nebula_core::{action_key, credential_key, resource_key};
-use nebula_metadata::{MetadataDraft, MetadataError, MetadataName, metadata_name};
+use nebula_metadata::{Metadata, MetadataError, MetadataName, metadata_name};
 use nebula_schema::ValidSchema;
 use proptest::prelude::*;
 
 #[test]
 fn literals_carry_a_nonblank_name_proof() {
     const NAME: MetadataName = metadata_name!("  Example  ");
-    let metadata = MetadataDraft::new(action_key!("example"), NAME, "")
-        .bind_schema(ValidSchema::empty())
+    let metadata = Metadata::new(NAME, "")
+        .bind(action_key!("example"), ValidSchema::empty())
         .expect("valid bounded metadata");
     assert_eq!(metadata.name(), "  Example  ");
     assert_eq!(metadata.key(), &action_key!("example"));

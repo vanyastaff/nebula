@@ -1043,12 +1043,13 @@ mod tests {
     // ── resource handles ─────────────────────────────────────────────────
 
     mod resource_handle {
-        use nebula_core::{ScopeLevel, resource_key};
+        use nebula_core::ScopeLevel;
+        use nebula_resource::ProviderKey;
         use nebula_resource::{
             ErrorKind, Manager, RegistrationSpec, Resident, ResidentConfig, ResourceConfig,
             ResourceContext, SlotIdentity,
             call::ResourceHandle,
-            resource::{Provider, ResourceMetadataDraft},
+            resource::{Provider, ResourceMetadata},
             topology::ResidentProvider,
         };
 
@@ -1074,16 +1075,10 @@ mod tests {
             type Instance = ();
             type Topology = Resident<Self>;
 
-            fn key() -> ResourceKey {
-                resource_key!("action.context.ledger")
-            }
+            const KEY: &'static str = "action.context.ledger";
 
-            fn metadata() -> ResourceMetadataDraft {
-                ResourceMetadataDraft::new(
-                    Self::key(),
-                    nebula_resource::metadata_name!("ledger"),
-                    "",
-                )
+            fn metadata() -> ResourceMetadata {
+                ResourceMetadata::new(nebula_resource::metadata_name!("ledger"), "")
             }
 
             async fn create(

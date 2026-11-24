@@ -14,12 +14,13 @@
 //! The end-to-end Manager-driven safety proof lives in
 //! `custom_topology_manager.rs`; this file pins the standalone hook shape.
 
+use nebula_resource::ProviderKey;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use nebula_core::{ResourceKey, ScopeLevel, resource_key};
+use nebula_core::ScopeLevel;
 use nebula_resource::error::Error;
-use nebula_resource::resource::{Provider, ResourceConfig, ResourceMetadataDraft};
+use nebula_resource::resource::{Provider, ResourceConfig, ResourceMetadata};
 use nebula_resource::topology::{
     AdmissionPhase, InstanceStore, ReturnOutcome, StoreView, Ticket, Topology, Unavailable,
 };
@@ -47,9 +48,7 @@ impl Provider for PermitRes {
     type Instance = u32;
     type Topology = EntryPool;
 
-    fn key() -> ResourceKey {
-        resource_key!("custom.standalone.permit")
-    }
+    const KEY: &'static str = "custom.standalone.permit";
 
     async fn create(&self, _config: &PermitCfg, _ctx: &ResourceContext) -> Result<u32, Error> {
         Ok(42)
@@ -59,9 +58,8 @@ impl Provider for PermitRes {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("custom.standalone.permit"),
             "",
         )

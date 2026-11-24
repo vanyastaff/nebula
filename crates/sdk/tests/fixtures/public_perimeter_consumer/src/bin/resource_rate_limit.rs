@@ -7,8 +7,8 @@ use std::{num::NonZeroU32, time::Duration};
 
 use nebula_sdk::integration::resource::{
     Cost, Error, ErrorKind, Operation, OperationCx, OperationError, Provider, Rate, Resident,
-    ResidentProvider, ResiliencePolicy, ResourceContext, ResourceHandle, ResourceKey, TeardownCx,
-    no_credential_slots, resource_key, retry_after_from_header,
+    ResidentProvider, ResiliencePolicy, ResourceContext, ResourceHandle, TeardownCx,
+    no_credential_slots, retry_after_from_header,
 };
 use nebula_sdk::prelude::{Deserialize, Serialize};
 
@@ -45,17 +45,14 @@ impl Provider for ChatProvider {
     type Instance = ChatClient;
     type Topology = Resident<Self>;
 
-    fn metadata() -> nebula_sdk::integration::resource::ResourceMetadataDraft {
-        nebula_sdk::integration::resource::ResourceMetadataDraft::new(
-            Self::key(),
+    fn metadata() -> nebula_sdk::integration::resource::ResourceMetadata {
+        nebula_sdk::integration::resource::ResourceMetadata::new(
             nebula_sdk::prelude::metadata_name!("ChatProvider"),
             "",
         )
     }
 
-    fn key() -> ResourceKey {
-        resource_key!("example.rate-limited-chat")
-    }
+    const KEY: &'static str = "example.rate-limited-chat";
 
     fn resilience() -> ResiliencePolicy {
         ResiliencePolicy::new()

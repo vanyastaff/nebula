@@ -3,6 +3,7 @@
 //! ends early — drop, cancel, deadline, row closing. Paused time; no
 //! transport.
 
+use crate::resource::ProviderKey;
 use std::{
     num::NonZeroUsize,
     sync::{
@@ -12,7 +13,7 @@ use std::{
     time::Duration,
 };
 
-use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
+use nebula_core::{ScopeLevel, scope::Scope};
 use tokio::{sync::Notify, time::Instant};
 use tokio_util::sync::CancellationToken;
 
@@ -21,7 +22,7 @@ use crate::{
     Error, ErrorKind, Manager, Provider, RegistrationSpec, Resident, ResidentConfig,
     ResourceConfig, ResourceContext, SlotIdentity,
     call::{Cost, Effect, OperationCx, OperationError, ResourceHandle, SentState},
-    resource::ResourceMetadataDraft,
+    resource::ResourceMetadata,
     runtime::managed::ManagedResource,
     topology::ResidentProvider,
 };
@@ -49,12 +50,10 @@ impl Provider for Feed {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("call-stream")
-    }
+    const KEY: &'static str = "call-stream";
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("call-stream"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(crate::metadata_name!("call-stream"), "")
     }
 
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<(), Error> {

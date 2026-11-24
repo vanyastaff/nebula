@@ -8,7 +8,7 @@
 
 use semver::Version;
 
-use crate::BaseMetadata;
+use crate::BaseDefinition;
 
 /// Entity-agnostic compatibility errors reported by
 /// [`validate_base_compat`].
@@ -48,7 +48,7 @@ where
 }
 
 /// Validate that `current` is a backwards-compatible revision of `previous`
-/// with respect to the shared `BaseMetadata` prefix.
+/// with respect to the shared `BaseDefinition` prefix.
 ///
 /// Rules:
 /// - `key` must be equal.
@@ -61,8 +61,8 @@ where
 /// Entity-specific rules (ports, auth pattern) are **not** checked here —
 /// each concrete metadata type layers its own rules on top.
 pub fn validate_base_compat<K>(
-    current: &BaseMetadata<K>,
-    previous: &BaseMetadata<K>,
+    current: &BaseDefinition<K>,
+    previous: &BaseDefinition<K>,
 ) -> Result<(), BaseCompatError<K>>
 where
     K: std::fmt::Debug + std::fmt::Display + Clone + PartialEq + Eq,
@@ -102,7 +102,7 @@ mod tests {
     use semver::Version;
 
     use super::{BaseCompatError, validate_base_compat};
-    use crate::{BaseMetadata, MetadataDraft};
+    use crate::{BaseDefinition, Metadata};
 
     fn empty_schema() -> ValidSchema {
         Schema::builder()
@@ -127,11 +127,11 @@ mod tests {
         }
     }
 
-    fn md(key: &'static str, major: u64, minor: u64) -> BaseMetadata<TestKey> {
-        MetadataDraft::try_new(TestKey(key), "n", "d")
+    fn md(key: &'static str, major: u64, minor: u64) -> BaseDefinition<TestKey> {
+        Metadata::try_new("n", "d")
             .expect("nonblank name")
             .with_version(Version::new(major, minor, 0))
-            .bind_schema(empty_schema())
+            .bind(TestKey(key), empty_schema())
             .expect("valid bounded metadata")
     }
 
@@ -168,10 +168,10 @@ mod tests {
     #[test]
     fn schema_change_without_major_rejected() {
         let prev = md("k", 1, 0);
-        let next_base = MetadataDraft::try_new(TestKey("k"), "n", "d")
+        let next_base = Metadata::try_new("n", "d")
             .expect("nonblank name")
             .with_version(Version::new(1, 1, 0))
-            .bind_schema(schema_with_one_field())
+            .bind(TestKey("k"), schema_with_one_field())
             .expect("valid bounded metadata");
         let err = validate_base_compat(&next_base, &prev).unwrap_err();
         assert_eq!(err, BaseCompatError::SchemaChangeWithoutMajorBump);
@@ -180,10 +180,10 @@ mod tests {
     #[test]
     fn schema_change_with_major_accepted() {
         let prev = md("k", 1, 0);
-        let next_base = MetadataDraft::try_new(TestKey("k"), "n", "d")
+        let next_base = Metadata::try_new("n", "d")
             .expect("nonblank name")
             .with_version(Version::new(2, 0, 0))
-            .bind_schema(schema_with_one_field())
+            .bind(TestKey("k"), schema_with_one_field())
             .expect("valid bounded metadata");
         assert!(validate_base_compat(&next_base, &prev).is_ok());
     }

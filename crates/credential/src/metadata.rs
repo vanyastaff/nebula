@@ -1,5 +1,5 @@
 use nebula_core::CredentialKey;
-use nebula_metadata::{BaseMetadata, Metadata, MetadataDraft, RecordedBaseMetadata};
+use nebula_metadata::{BaseDefinition, Definition, Metadata, RecordedBaseDefinition};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
@@ -12,7 +12,8 @@ use crate::AuthPattern;
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use = "credential metadata drafts are admitted by a credential registry"]
 pub struct CredentialMetadataDraft {
-    base: MetadataDraft<CredentialKey>,
+    key: CredentialKey,
+    base: Metadata,
 }
 
 impl CredentialMetadataDraft {
@@ -23,7 +24,8 @@ impl CredentialMetadataDraft {
         description: impl Into<String>,
     ) -> Self {
         Self {
-            base: MetadataDraft::new(key, name, description),
+            key,
+            base: Metadata::new(name, description),
         }
     }
 
@@ -39,7 +41,8 @@ impl CredentialMetadataDraft {
         description: impl Into<String>,
     ) -> Result<Self, nebula_metadata::MetadataError> {
         Ok(Self {
-            base: MetadataDraft::try_new(key, name, description)?,
+            key,
+            base: Metadata::try_new(name, description)?,
         })
     }
 
@@ -161,7 +164,7 @@ impl CredentialMetadataDraft {
         schema: nebula_schema::ValidSchema,
         pattern: AuthPattern,
     ) -> Result<CredentialMetadata, CredentialMetadataAdmissionError> {
-        let base = self.base.bind_schema(schema).map_err(|_| {
+        let base = self.base.bind(self.key, schema).map_err(|_| {
             tracing::error!(
                 error_code = "CREDENTIAL:CATALOG_METADATA_INVALID",
                 "credential catalog metadata admission failed"
@@ -206,14 +209,14 @@ pub enum CredentialMetadataAdmissionError {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CredentialMetadata {
-    base: BaseMetadata<CredentialKey>,
+    base: BaseDefinition<CredentialKey>,
     pattern: AuthPattern,
 }
 
-impl Metadata for CredentialMetadata {
+impl Definition for CredentialMetadata {
     type Key = CredentialKey;
 
-    fn base(&self) -> &BaseMetadata<CredentialKey> {
+    fn base(&self) -> &BaseDefinition<CredentialKey> {
         &self.base
     }
 }
@@ -325,7 +328,7 @@ impl CredentialMetadata {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RecordedCredentialMetadata {
-    base: RecordedBaseMetadata<CredentialKey>,
+    base: RecordedBaseDefinition<CredentialKey>,
     pattern: AuthPattern,
 }
 
@@ -335,7 +338,7 @@ impl<'de> Deserialize<'de> for RecordedCredentialMetadata {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Fields {
-            base: RecordedBaseMetadata<CredentialKey>,
+            base: RecordedBaseDefinition<CredentialKey>,
             pattern: AuthPattern,
         }
 

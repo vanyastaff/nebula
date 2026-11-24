@@ -9,6 +9,7 @@
 //! canonical request, key part, recovery, recorded output) are covered
 //! here too.
 
+use crate::resource::ProviderKey;
 use std::{
     collections::{BTreeMap, HashMap},
     num::{NonZeroU32, NonZeroUsize},

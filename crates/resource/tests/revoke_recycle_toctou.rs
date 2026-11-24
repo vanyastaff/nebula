@@ -31,6 +31,7 @@
 //! marks a shared flag. The scenarios drive the precise interleaving that
 //! exposed the defect and assert the fenced outcome.
 
+use nebula_resource::ProviderKey;
 use std::{
     assert_matches,
     future::Future,
@@ -41,12 +42,12 @@ use std::{
     time::Duration,
 };
 
-use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
+use nebula_core::{ScopeLevel, scope::Scope};
 use nebula_resource::{
     AcquireOptions, Manager, PoolConfig, Pooled, Provider, RegistrationSpec, ResourceConfig,
     ResourceContext, SlotIdentity,
     error::{Error, ErrorKind},
-    resource::{HasCredentialSlots, ResourceMetadataDraft},
+    resource::{HasCredentialSlots, ResourceMetadata},
     topology::pooled::{PoolProvider, RecycleDecision, config::WarmupStrategy},
 };
 use tokio::sync::Notify;
@@ -125,9 +126,7 @@ impl Provider for PoolResource {
     type Instance = PoolRt;
     type Topology = Pooled<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("r16-pool")
-    }
+    const KEY: &'static str = "r16-pool";
 
     async fn create(&self, _config: &PoolCfg, _ctx: &ResourceContext) -> Result<PoolRt, Error> {
         let seq = self.create_seq.fetch_add(1, Ordering::SeqCst);
@@ -157,8 +156,8 @@ impl Provider for PoolResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(Self::key(), nebula_resource::metadata_name!("r16-pool"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("r16-pool"), "")
     }
 }
 

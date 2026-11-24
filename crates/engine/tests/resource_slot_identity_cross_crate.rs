@@ -37,20 +37,20 @@ use std::sync::{
 };
 
 use nebula_core::{
-    CredentialKey, DeclaresDependencies, Dependencies, ResourceKey,
+    CredentialKey, DeclaresDependencies, Dependencies,
     dependencies::{SlotField, SlotKind},
-    resource_key,
 };
 use nebula_engine::{
     KindActivator, RegisterRequest, ResourceActivatorRegistry, ResourceConfigInput, SlotBinding,
     resource_accessor::slot_identities_for_key,
 };
 use nebula_expression::ExpressionEngine;
+use nebula_resource::ProviderKey;
 use nebula_resource::Resident;
 use nebula_resource::{
     Manager, ScopeLevel, SlotIdentity,
     error::Error as ResourceError,
-    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::resident,
 };
 
@@ -115,9 +115,7 @@ impl Provider for XResource {
     type Instance = Arc<AtomicU64>;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("xcross.widget")
-    }
+    const KEY: &'static str = "xcross.widget";
 
     async fn create(
         &self,
@@ -128,9 +126,8 @@ impl Provider for XResource {
         Ok(Arc::new(AtomicU64::new(id)))
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            <Self as Provider>::key(),
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(
             nebula_resource::metadata_name!("xcross.widget"),
             String::new(),
         )
@@ -277,7 +274,7 @@ async fn engine_recorded_identity_is_byte_identical_to_resource_side_derive() {
     // under — not some other digest).
     assert!(
         manager.has_registered_for_identity(
-            &<XResource as Provider>::key(),
+            &<XResource as ProviderKey>::key(),
             &ScopeLevel::Global,
             &outcome.slot_identity,
         ),
@@ -308,9 +305,9 @@ async fn accessor_acquire_path_derive_agrees_with_register_path() {
     // The accessor builds its acquire-path identity map from the resolved
     // `(slot, credential)` pairs via `slot_identities_for_key` — a separate
     // construction site from the register path.
-    let acquire_map = slot_identities_for_key(<XResource as Provider>::key(), &bindings);
+    let acquire_map = slot_identities_for_key(<XResource as ProviderKey>::key(), &bindings);
     let acquire_side = acquire_map
-        .get(&<XResource as Provider>::key())
+        .get(&<XResource as ProviderKey>::key())
         .expect("accessor acquire-path identity is present for the key");
 
     assert_eq!(
@@ -362,7 +359,7 @@ async fn distinct_resolved_credentials_never_alias_cross_crate() {
 
     // Both rows are independently resolvable under their own identity, and
     // neither is visible under the other's — fail-closed isolation.
-    let key = <XResource as Provider>::key();
+    let key = <XResource as ProviderKey>::key();
     assert!(manager.has_registered_for_identity(
         &key,
         &ScopeLevel::Global,

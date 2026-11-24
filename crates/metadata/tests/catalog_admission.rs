@@ -3,10 +3,10 @@
 use std::cell::Cell;
 
 use nebula_metadata::{
-    BaseMetadata, CatalogCategoryKey, CatalogLink, CatalogLinkRelation, CatalogReference,
-    DeprecationNotice, MAX_SHARED_METADATA_BYTES, MetadataBuildError, MetadataDecodeLimits,
-    MetadataDraft, MetadataError, MetadataReadmissionError, RecordedBaseMetadata, RemovalSchedule,
-    decode_json_slice, validate_base_compat,
+    BaseDefinition, CatalogCategoryKey, CatalogLink, CatalogLinkRelation, CatalogReference,
+    DeprecationNotice, MAX_SHARED_METADATA_BYTES, Metadata, MetadataBuildError,
+    MetadataDecodeLimits, MetadataError, MetadataReadmissionError, RecordedBaseDefinition,
+    RemovalSchedule, decode_json_slice, validate_base_compat,
 };
 use nebula_schema::ValidSchema;
 use proptest::prelude::*;
@@ -14,12 +14,14 @@ use semver::Version;
 use serde::Serialize;
 use serde_json::json;
 
-fn draft() -> MetadataDraft<String> {
-    MetadataDraft::try_new("example".to_owned(), "Example", "").unwrap()
+fn authored() -> Metadata {
+    Metadata::try_new("Example", "").unwrap()
 }
 
-fn admit(draft: MetadataDraft<String>) -> BaseMetadata<String> {
-    draft.bind_schema(ValidSchema::empty()).unwrap()
+fn admit(authored: Metadata) -> BaseDefinition<String> {
+    authored
+        .bind("example".to_owned(), ValidSchema::empty())
+        .unwrap()
 }
 
 fn category(key: &str) -> CatalogCategoryKey {
@@ -30,8 +32,12 @@ fn link(relation: CatalogLinkRelation, target: &str) -> CatalogLink {
     CatalogLink::new(relation, target.parse().unwrap())
 }
 
-fn rejection(draft: MetadataDraft<String>) -> MetadataError {
-    match draft.bind_schema(ValidSchema::empty()).unwrap_err() {
+fn rejection(authored: Metadata) -> MetadataError {
+    rejection_for("example".to_owned(), authored)
+}
+
+fn rejection_for(key: String, authored: Metadata) -> MetadataError {
+    match authored.bind(key, ValidSchema::empty()).unwrap_err() {
         MetadataBuildError::Metadata(error) => error,
         error => panic!("expected intrinsic failure, got {error:?}"),
     }
@@ -42,7 +48,7 @@ fn discovery_is_sorted_deduplicated_and_trimmed() {
     let overview = link(CatalogLinkRelation::Overview, "/docs");
     let setup = link(CatalogLinkRelation::Setup, "/setup");
     let metadata = admit(
-        draft()
+        authored()
             .with_categories([
                 category("network"),
                 category("database"),
@@ -65,7 +71,7 @@ fn discovery_is_sorted_deduplicated_and_trimmed() {
 
 #[test]
 fn overview_replacement_repairs_only_overview_guidance() {
-    let conflicting = draft().with_links([
+    let conflicting = authored().with_links([
         link(CatalogLinkRelation::Overview, "/first"),
         link(CatalogLinkRelation::Overview, "/second"),
         link(CatalogLinkRelation::Setup, "/setup"),
@@ -78,13 +84,13 @@ fn overview_replacement_repairs_only_overview_guidance() {
     assert_eq!(repaired.documentation_url(), Some("/final"));
     assert_eq!(repaired.links().len(), 2);
     let repaired = admit(
-        draft()
+        authored()
             .with_documentation_url("javascript:private")
             .with_documentation_url("/valid"),
     );
     assert_eq!(repaired.documentation_url(), Some("/valid"));
     assert_eq!(
-        rejection(draft().with_tags([" "]).with_documentation_url("/valid")),
+        rejection(authored().with_tags([" "]).with_documentation_url("/valid")),
         MetadataError::BlankTag
     );
 }
@@ -100,7 +106,7 @@ fn raw_iterators_stop_at_the_overflow_sentinel_even_for_duplicates() {
         );
         "duplicate"
     });
-    let excessive = draft().with_tags(endless);
+    let excessive = authored().with_tags(endless);
     assert_eq!(visits.get(), 65);
     assert_eq!(
         rejection(excessive.clone()),
@@ -111,10 +117,10 @@ fn raw_iterators_stop_at_the_overflow_sentinel_even_for_duplicates() {
         ["replacement"]
     );
     assert_eq!(
-        admit(draft().with_tags(std::iter::repeat_n("same", 64))).tags(),
+        admit(authored().with_tags(std::iter::repeat_n("same", 64))).tags(),
         ["same"]
     );
-    let categories = draft().with_categories(std::iter::repeat(category("same")));
+    let categories = authored().with_categories(std::iter::repeat(category("same")));
     assert_eq!(
         rejection(categories.clone()),
         MetadataError::TooManyRawEntries(nebula_metadata::MetadataField::Categories)
@@ -124,7 +130,7 @@ fn raw_iterators_stop_at_the_overflow_sentinel_even_for_duplicates() {
             .categories()
             .is_empty()
     );
-    let links = draft().with_links(std::iter::repeat(link(CatalogLinkRelation::Setup, "/same")));
+    let links = authored().with_links(std::iter::repeat(link(CatalogLinkRelation::Setup, "/same")));
     assert_eq!(
         rejection(links.clone()),
         MetadataError::TooManyRawEntries(nebula_metadata::MetadataField::Links)
@@ -135,29 +141,32 @@ fn raw_iterators_stop_at_the_overflow_sentinel_even_for_duplicates() {
 #[test]
 fn canonical_collection_limits_apply_after_bounded_deduplication() {
     let tags: Vec<_> = (0..32).map(|i| format!("tag{i}")).collect();
-    assert_eq!(admit(draft().with_tags(tags.clone())).tags().len(), 32);
+    assert_eq!(admit(authored().with_tags(tags.clone())).tags().len(), 32);
     assert_eq!(
-        rejection(draft().with_tags(tags).add_tag("extra")),
+        rejection(authored().with_tags(tags).add_tag("extra")),
         MetadataError::TooManyEntries(nebula_metadata::MetadataField::Tags)
     );
     let categories: Vec<_> = (0..16).map(|i| category(&format!("category{i}"))).collect();
     assert_eq!(
-        admit(draft().with_categories(categories.clone()))
+        admit(authored().with_categories(categories.clone()))
             .categories()
             .len(),
         16
     );
     assert_eq!(
-        rejection(draft().with_categories(categories.into_iter().chain([category("extra")]))),
+        rejection(authored().with_categories(categories.into_iter().chain([category("extra")]))),
         MetadataError::TooManyEntries(nebula_metadata::MetadataField::Categories)
     );
     let links: Vec<_> = (0..16)
         .map(|i| link(CatalogLinkRelation::Reference, &format!("/doc{i}")))
         .collect();
-    assert_eq!(admit(draft().with_links(links.clone())).links().len(), 16);
+    assert_eq!(
+        admit(authored().with_links(links.clone())).links().len(),
+        16
+    );
     assert_eq!(
         rejection(
-            draft()
+            authored()
                 .with_links(links)
                 .add_link(link(CatalogLinkRelation::Setup, "/extra"))
         ),
@@ -168,12 +177,12 @@ fn canonical_collection_limits_apply_after_bounded_deduplication() {
 #[test]
 fn utf8_field_limits_and_replacement_setters_are_checked() {
     assert_eq!(
-        rejection(draft().with_inline_icon("x".repeat(MAX_SHARED_METADATA_BYTES + 1))),
+        rejection(authored().with_inline_icon("x".repeat(MAX_SHARED_METADATA_BYTES + 1))),
         MetadataError::FieldTooLarge(nebula_metadata::MetadataField::Icon)
     );
     assert_eq!(
         rejection(
-            draft().with_version(
+            authored().with_version(
                 format!("1.0.0+{}", "x".repeat(MAX_SHARED_METADATA_BYTES + 1))
                     .parse()
                     .unwrap()
@@ -182,40 +191,40 @@ fn utf8_field_limits_and_replacement_setters_are_checked() {
         MetadataError::FieldTooLarge(nebula_metadata::MetadataField::Version)
     );
     assert_eq!(
-        admit(draft().with_tags(["a".repeat(64)])).tags()[0].len(),
+        admit(authored().with_tags(["a".repeat(64)])).tags()[0].len(),
         64
     );
     assert_eq!(
-        rejection(draft().with_tags(["a".repeat(65)])),
+        rejection(authored().with_tags(["a".repeat(65)])),
         MetadataError::FieldTooLarge(nebula_metadata::MetadataField::Tags)
     );
     assert_eq!(
-        admit(draft().with_tags(["\u{00e9}".repeat(32)])).tags()[0].len(),
+        admit(authored().with_tags(["\u{00e9}".repeat(32)])).tags()[0].len(),
         64
     );
     assert_eq!(
-        rejection(draft().with_tags(["\u{00e9}".repeat(33)])),
+        rejection(authored().with_tags(["\u{00e9}".repeat(33)])),
         MetadataError::FieldTooLarge(nebula_metadata::MetadataField::Tags)
     );
     for blank in ["", " \t", "\u{2003}"] {
         assert_eq!(
-            rejection(draft().with_tags([blank])),
+            rejection(authored().with_tags([blank])),
             MetadataError::BlankTag
         );
     }
     assert_eq!(
-        admit(draft().with_description("d".repeat(8192)))
+        admit(authored().with_description("d".repeat(8192)))
             .description()
             .len(),
         8192
     );
     assert_eq!(
-        rejection(draft().with_description("d".repeat(8193))),
+        rejection(authored().with_description("d".repeat(8193))),
         MetadataError::FieldTooLarge(nebula_metadata::MetadataField::Description)
     );
     assert_eq!(
         admit(
-            draft()
+            authored()
                 .with_description("d".repeat(8193))
                 .with_description("new")
         )
@@ -224,7 +233,7 @@ fn utf8_field_limits_and_replacement_setters_are_checked() {
     );
     assert_eq!(
         admit(
-            draft()
+            authored()
                 .with_inline_icon("x".repeat(40000))
                 .with_inline_icon("new")
         )
@@ -234,7 +243,7 @@ fn utf8_field_limits_and_replacement_setters_are_checked() {
     );
 }
 
-fn authored_size(metadata: &BaseMetadata<String>) -> usize {
+fn authored_size(metadata: &BaseDefinition<String>) -> usize {
     let mut wire = serde_json::to_value(metadata).unwrap();
     wire.as_object_mut().unwrap().remove("schema");
     serde_json::to_vec(&wire).unwrap().len()
@@ -242,12 +251,12 @@ fn authored_size(metadata: &BaseMetadata<String>) -> usize {
 
 #[test]
 fn aggregate_budget_matches_exact_json_including_escaping_at_the_boundary() {
-    let overhead = authored_size(&admit(draft().with_inline_icon("")));
+    let overhead = authored_size(&admit(authored().with_inline_icon("")));
     let content_bytes = MAX_SHARED_METADATA_BYTES - overhead;
-    let exact = admit(draft().with_inline_icon("x".repeat(content_bytes)));
+    let exact = admit(authored().with_inline_icon("x".repeat(content_bytes)));
     assert_eq!(authored_size(&exact), MAX_SHARED_METADATA_BYTES);
     assert_eq!(
-        rejection(draft().with_inline_icon("x".repeat(content_bytes + 1))),
+        rejection(authored().with_inline_icon("x".repeat(content_bytes + 1))),
         MetadataError::SharedBudgetExceeded
     );
     // A control character costs six bytes in canonical JSON, not one.
@@ -256,15 +265,15 @@ fn aggregate_budget_matches_exact_json_including_escaping_at_the_boundary() {
         "\u{0001}".repeat(content_bytes / 6),
         "x".repeat(content_bytes % 6)
     );
-    let escaped = admit(draft().with_inline_icon(escaped));
+    let escaped = admit(authored().with_inline_icon(escaped));
     assert_eq!(authored_size(&escaped), MAX_SHARED_METADATA_BYTES);
     assert_eq!(
-        rejection(draft().with_inline_icon("\u{0001}".repeat(content_bytes / 6 + 1))),
+        rejection(authored().with_inline_icon("\u{0001}".repeat(content_bytes / 6 + 1))),
         MetadataError::SharedBudgetExceeded
     );
     for metadata in [exact, escaped] {
         let wire = serde_json::to_vec(&metadata).unwrap();
-        let record: RecordedBaseMetadata<String> =
+        let record: RecordedBaseDefinition<String> =
             decode_json_slice(&wire, MetadataDecodeLimits::default()).unwrap();
         assert_eq!(record.readmit_against(&metadata).unwrap(), metadata);
     }
@@ -274,19 +283,19 @@ fn aggregate_budget_matches_exact_json_including_escaping_at_the_boundary() {
 fn aggregate_budget_includes_generic_keys_names_versions_and_notices() {
     let oversized = "x".repeat(MAX_SHARED_METADATA_BYTES);
     assert_eq!(
-        rejection(MetadataDraft::try_new(oversized.clone(), "Name", "").unwrap()),
+        rejection_for(oversized.clone(), Metadata::try_new("Name", "").unwrap()),
         MetadataError::SharedBudgetExceeded
     );
     assert_eq!(
-        rejection(MetadataDraft::try_new("key".to_owned(), oversized.clone(), "").unwrap()),
+        rejection(Metadata::try_new(oversized.clone(), "").unwrap()),
         MetadataError::SharedBudgetExceeded
     );
     assert_eq!(
-        rejection(draft().with_version(format!("1.0.0+{oversized}").parse().unwrap())),
+        rejection(authored().with_version(format!("1.0.0+{oversized}").parse().unwrap())),
         MetadataError::SharedBudgetExceeded
     );
     assert_eq!(
-        rejection(draft().with_deprecation(
+        rejection(authored().with_deprecation(
             DeprecationNotice::new(Version::new(1, 0, 0)).with_reason(oversized)
         )),
         MetadataError::SharedBudgetExceeded
@@ -302,9 +311,9 @@ fn serializer_failures_are_payload_free_and_have_no_raw_source() {
             Err(serde::ser::Error::custom("private_serializer_payload"))
         }
     }
-    let error = MetadataDraft::try_new(BrokenKey, "Name", "")
+    let error = Metadata::try_new("Name", "")
         .unwrap()
-        .bind_schema(ValidSchema::empty())
+        .bind(BrokenKey, ValidSchema::empty())
         .unwrap_err();
     assert!(!format!("{error}: {error:?}").contains("private_serializer_payload"));
     match error {
@@ -321,14 +330,14 @@ fn chronology_uses_semver_precedence_and_allows_elapsed_dates() {
     let since: Version = "1.0.0+z".parse().unwrap();
     let notice = DeprecationNotice::new(since.clone());
     let metadata = admit(
-        draft()
+        authored()
             .with_version("1.0.0+a".parse().unwrap())
             .with_deprecation(notice.clone()),
     );
     assert_eq!(metadata.deprecation().unwrap().since(), &since);
     assert_eq!(
         rejection(
-            draft()
+            authored()
                 .with_version("1.0.0-beta".parse().unwrap())
                 .with_deprecation(notice.clone())
         ),
@@ -336,7 +345,7 @@ fn chronology_uses_semver_precedence_and_allows_elapsed_dates() {
     );
     assert_eq!(
         rejection(
-            draft().with_deprecation(
+            authored().with_deprecation(
                 notice
                     .clone()
                     .with_removal(RemovalSchedule::AtVersion("1.0.0+a".parse().unwrap()))
@@ -348,17 +357,17 @@ fn chronology_uses_semver_precedence_and_allows_elapsed_dates() {
         .clone()
         .with_removal(RemovalSchedule::OnDate("2000-01-01".parse().unwrap()));
     assert_eq!(
-        admit(draft().with_deprecation(past.clone())).deprecation(),
+        admit(authored().with_deprecation(past.clone())).deprecation(),
         Some(&past)
     );
     let repaired = DeprecationNotice::new(Version::new(2, 0, 0));
     assert_eq!(
-        rejection(draft().with_deprecation(repaired.clone())),
+        rejection(authored().with_deprecation(repaired.clone())),
         MetadataError::FutureDeprecation
     );
     assert_eq!(
         admit(
-            draft()
+            authored()
                 .with_deprecation(repaired)
                 .with_deprecation(notice.clone())
         )
@@ -369,20 +378,20 @@ fn chronology_uses_semver_precedence_and_allows_elapsed_dates() {
 
 #[test]
 fn literal_versions_preserve_full_semver_and_defer_invalid_intent_to_binding() {
-    let exact = admit(draft().with_version_literal("2.1.0-beta.2+build.7"));
+    let exact = admit(authored().with_version_literal("2.1.0-beta.2+build.7"));
     assert_eq!(exact.version().to_string(), "2.1.0-beta.2+build.7");
     assert_eq!(
-        rejection(draft().with_version_literal("private-invalid-version")),
+        rejection(authored().with_version_literal("private-invalid-version")),
         MetadataError::InvalidVersion(nebula_metadata::MetadataField::Version)
     );
     let repaired = admit(
-        draft()
+        authored()
             .with_version_literal("invalid")
             .with_version(Version::new(3, 0, 0)),
     );
     assert_eq!(repaired.version(), &Version::new(3, 0, 0));
     let repaired = admit(
-        draft()
+        authored()
             .with_version_literal("invalid")
             .with_version_literal("4.0.0"),
     );
@@ -391,13 +400,13 @@ fn literal_versions_preserve_full_semver_and_defer_invalid_intent_to_binding() {
 
 #[test]
 fn guidance_can_change_without_a_major_but_exact_readmission_rejects_it() {
-    let fresh = admit(draft());
+    let fresh = admit(authored());
     let mutations = [
-        draft().with_description("changed"),
-        draft().with_categories([category("network")]),
-        draft().with_tags(["network"]),
-        draft().with_documentation_url("/new"),
-        draft().with_deprecation(
+        authored().with_description("changed"),
+        authored().with_categories([category("network")]),
+        authored().with_tags(["network"]),
+        authored().with_documentation_url("/new"),
+        authored().with_deprecation(
             DeprecationNotice::new(Version::new(1, 0, 0))
                 .with_replacement(CatalogReference::resource("new.resource".parse().unwrap())),
         ),
@@ -405,7 +414,7 @@ fn guidance_can_change_without_a_major_but_exact_readmission_rejects_it() {
     for changed in mutations {
         let changed = admit(changed);
         validate_base_compat(&fresh, &changed).unwrap();
-        let recorded: RecordedBaseMetadata<String> =
+        let recorded: RecordedBaseDefinition<String> =
             serde_json::from_value(json!(changed)).unwrap();
         assert_eq!(
             recorded.readmit_against(&fresh).unwrap_err(),
@@ -492,14 +501,14 @@ fn schema_has_a_separate_exact_budget_and_default_transport_can_round_trip_it() 
         serde_json::to_vec(&exact_schema).unwrap().len(),
         nebula_metadata::MAX_METADATA_SCHEMA_BYTES
     );
-    let metadata = draft().bind_schema(exact_schema).unwrap();
+    let metadata = authored().bind("example".to_owned(), exact_schema).unwrap();
     let bytes = serde_json::to_vec(&metadata).unwrap();
     assert!(bytes.len() <= nebula_metadata::MAX_METADATA_JSON_BYTES);
-    let recorded: RecordedBaseMetadata<String> =
+    let recorded: RecordedBaseDefinition<String> =
         decode_json_slice(&bytes, MetadataDecodeLimits::default()).unwrap();
     assert_eq!(recorded.readmit_against(&metadata).unwrap(), metadata);
-    match draft()
-        .bind_schema(schema("x".repeat(content_bytes + 1)))
+    match authored()
+        .bind("example".to_owned(), schema("x".repeat(content_bytes + 1)))
         .unwrap_err()
     {
         MetadataBuildError::Metadata(error) => {
@@ -540,11 +549,11 @@ fn manifest_packaging_cannot_admit_semver_fields_its_decoder_would_reject() {
 proptest! {
     #[test]
     fn canonical_sets_are_order_and_duplicate_independent(tags in prop::collection::vec("[a-z]{1,10}", 0..24)) {
-        let fresh = admit(draft().with_tags(tags.clone()));
+        let fresh = admit(authored().with_tags(tags.clone()));
         let reordered = tags.into_iter().rev().flat_map(|tag| [format!(" {tag} "), tag]);
-        let equivalent = admit(draft().with_tags(reordered));
+        let equivalent = admit(authored().with_tags(reordered));
         prop_assert_eq!(&fresh, &equivalent);
-        let recorded: RecordedBaseMetadata<String> = serde_json::from_value(json!(equivalent))?;
+        let recorded: RecordedBaseDefinition<String> = serde_json::from_value(json!(equivalent))?;
         prop_assert_eq!(recorded.readmit_against(&fresh)?, fresh);
     }
 }

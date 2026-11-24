@@ -32,6 +32,7 @@
 //! not fit a session: a unit's deadline is capped at
 //! [`OPERATION_DEADLINE_CAP`](super::OPERATION_DEADLINE_CAP).
 
+use crate::resource::ProviderKey;
 use std::{
     fmt,
     future::Future,
@@ -78,10 +79,10 @@ pub type SessionFuture<'s, T> =
 ///
 /// ```
 /// use async_trait::async_trait;
-/// use nebula_core::{ResourceKey, ScopeLevel, resource_key};
+/// use nebula_core::ScopeLevel;
 /// use nebula_resource::{
-///     Error, Manager, PoolConfig, PoolProvider, Pooled, Provider, RegistrationSpec, Resource,
-///     ResourceContext, ResourceMetadataDraft, SlotIdentity, metadata_name,
+///     Error, Manager, ResourceMetadata, PoolConfig, PoolProvider, Pooled, Provider, RegistrationSpec,
+///     Resource, ResourceContext, SlotIdentity, metadata_name,
 ///     call::{Cost, OperationError, SessionClosed, SessionEnd, SessionProvider, SessionSpec},
 /// };
 ///
@@ -113,12 +114,10 @@ pub type SessionFuture<'s, T> =
 ///     type Instance = Conn;
 ///     type Topology = Pooled<Self>;
 ///
-///     fn key() -> ResourceKey {
-///         resource_key!("doctest.ledger")
-///     }
+///     const KEY: &'static str = "doctest.ledger";
 ///
-///     fn metadata() -> ResourceMetadataDraft {
-///         ResourceMetadataDraft::new(Self::key(), metadata_name!("Ledger"), "")
+///     fn metadata() -> ResourceMetadata {
+///         ResourceMetadata::new(metadata_name!("Ledger"), "")
 ///     }
 ///
 ///     async fn create(&self, _: &(), _: &ResourceContext) -> Result<Conn, Error> {
@@ -668,14 +667,13 @@ fn settle_session<T>(result: Result<T, OperationError>, closed: SessionClosed) -
 
 #[cfg(test)]
 mod tests {
+    use crate::resource::ProviderKey;
     use std::{sync::Arc, time::Duration};
 
     use super::{
         OperationError, SessionClosed, SessionCx, SessionEnd, SessionFuture, SessionProvider,
     };
-    use crate::{
-        Provider, call::PinSlots, guard::LeaseClosing, manager::strict_fixtures::StrictPooled,
-    };
+    use crate::{call::PinSlots, guard::LeaseClosing, manager::strict_fixtures::StrictPooled};
 
     /// Open, body, close — the shape the runtime drives, generic over the
     /// provider so the `Send` proof below holds for every provider.

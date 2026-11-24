@@ -1,9 +1,9 @@
-//! `BaseMetadata<K>` composition contract, plus direct serde coverage of
-//! every `skip_serializing_if` path on `BaseMetadata` itself.
+//! `BaseDefinition<K>` composition contract, plus direct serde coverage of
+//! every `skip_serializing_if` path on `BaseDefinition` itself.
 //!
 //! Three locally-defined composed metadata shapes stand in for the
 //! production consumers: zero extra fields (mirrors
-//! `nebula-resource::ResourceMetadata`), one scalar extra field (mirrors
+//! `nebula-resource::ResourceDefinition`), one scalar extra field (mirrors
 //! `nebula-credential::CredentialMetadata::pattern`), and a
 //! multi-field-with-collection shape (mirrors
 //! `nebula-action::ActionMetadata`'s `category`/`isolation_level`/`inputs`).
@@ -13,7 +13,7 @@
 //! and retain direct coverage of shared default-field omission.
 
 use nebula_metadata::{
-    BaseMetadata, DeprecationNotice, MaturityLevel, Metadata, MetadataDraft, RecordedBaseMetadata,
+    BaseDefinition, Definition, DeprecationNotice, MaturityLevel, Metadata, RecordedBaseDefinition,
 };
 use nebula_schema::ValidSchema;
 use pretty_assertions::assert_eq;
@@ -39,31 +39,31 @@ fn empty_schema() -> ValidSchema {
     ValidSchema::empty()
 }
 
-fn base(name: &str) -> BaseMetadata<LocalKey> {
-    draft(name)
-        .bind_schema(empty_schema())
+fn base(name: &str) -> BaseDefinition<LocalKey> {
+    authored(name)
+        .bind(key(name), empty_schema())
         .expect("valid bounded metadata")
 }
 
-fn draft(name: &str) -> MetadataDraft<LocalKey> {
-    MetadataDraft::try_new(key(name), name, "desc").expect("nonblank name")
+fn authored(name: &str) -> Metadata {
+    Metadata::try_new(name, "desc").expect("nonblank name")
 }
 
 // --- Shape 1: zero extra fields ---
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct ZeroExtraMetadata {
-    base: BaseMetadata<LocalKey>,
+    base: BaseDefinition<LocalKey>,
 }
 
 #[derive(Debug, Deserialize)]
 struct RecordedZeroExtraMetadata {
-    base: RecordedBaseMetadata<LocalKey>,
+    base: RecordedBaseDefinition<LocalKey>,
 }
 
-impl Metadata for ZeroExtraMetadata {
+impl Definition for ZeroExtraMetadata {
     type Key = LocalKey;
-    fn base(&self) -> &BaseMetadata<Self::Key> {
+    fn base(&self) -> &BaseDefinition<Self::Key> {
         &self.base
     }
 }
@@ -72,19 +72,19 @@ impl Metadata for ZeroExtraMetadata {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct ScalarExtraMetadata {
-    base: BaseMetadata<LocalKey>,
+    base: BaseDefinition<LocalKey>,
     pattern: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct RecordedScalarExtraMetadata {
-    base: RecordedBaseMetadata<LocalKey>,
+    base: RecordedBaseDefinition<LocalKey>,
     pattern: String,
 }
 
-impl Metadata for ScalarExtraMetadata {
+impl Definition for ScalarExtraMetadata {
     type Key = LocalKey;
-    fn base(&self) -> &BaseMetadata<Self::Key> {
+    fn base(&self) -> &BaseDefinition<Self::Key> {
         &self.base
     }
 }
@@ -93,7 +93,7 @@ impl Metadata for ScalarExtraMetadata {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct MultiFieldMetadata {
-    base: BaseMetadata<LocalKey>,
+    base: BaseDefinition<LocalKey>,
     category: String,
     priority: u32,
     capabilities: Vec<String>,
@@ -101,15 +101,15 @@ struct MultiFieldMetadata {
 
 #[derive(Debug, Deserialize)]
 struct RecordedMultiFieldMetadata {
-    base: RecordedBaseMetadata<LocalKey>,
+    base: RecordedBaseDefinition<LocalKey>,
     category: String,
     priority: u32,
     capabilities: Vec<String>,
 }
 
-impl Metadata for MultiFieldMetadata {
+impl Definition for MultiFieldMetadata {
     type Key = LocalKey;
-    fn base(&self) -> &BaseMetadata<Self::Key> {
+    fn base(&self) -> &BaseDefinition<Self::Key> {
         &self.base
     }
 }
@@ -177,9 +177,9 @@ fn scalar_extra_field_nests_alongside_base() {
 #[test]
 fn multi_field_with_collection_nests_alongside_base() {
     let original = MultiFieldMetadata {
-        base: draft("http.request")
+        base: authored("http.request")
             .with_tags(["network"])
-            .bind_schema(empty_schema())
+            .bind(key("http.request"), empty_schema())
             .expect("valid bounded metadata"),
         category: "integration".to_owned(),
         priority: 3,
@@ -227,11 +227,11 @@ fn multi_field_with_collection_nests_alongside_base() {
 }
 
 #[test]
-fn metadata_trait_delegates_through_a_composed_shape() {
+fn definition_trait_delegates_through_a_composed_shape() {
     let metadata = ScalarExtraMetadata {
-        base: draft("token_auth")
+        base: authored("token_auth")
             .mark_beta()
-            .bind_schema(empty_schema())
+            .bind(key("token_auth"), empty_schema())
             .expect("valid bounded metadata"),
         pattern: "secret_token".to_owned(),
     };
@@ -241,16 +241,16 @@ fn metadata_trait_delegates_through_a_composed_shape() {
     assert_eq!(metadata.maturity(), MaturityLevel::Beta);
 }
 
-// --- Direct `BaseMetadata` `skip_serializing_if` matrix ---
+// --- Direct `BaseDefinition` `skip_serializing_if` matrix ---
 
 #[test]
 fn default_version_is_omitted_and_explicit_version_is_present() {
     let default_value = serde_json::to_value(base("k")).expect("serializes");
     assert!(default_value.get("version").is_none());
 
-    let explicit = draft("k")
+    let explicit = authored("k")
         .with_version(Version::new(2, 0, 0))
-        .bind_schema(empty_schema())
+        .bind(key("k"), empty_schema())
         .expect("valid bounded metadata");
     let explicit_value = serde_json::to_value(&explicit).expect("serializes");
     assert_eq!(
@@ -266,9 +266,9 @@ fn icon_none_is_omitted_and_set_icon_is_present() {
     let default_value = serde_json::to_value(base("k")).expect("serializes");
     assert!(default_value.get("icon").is_none());
 
-    let with_icon = draft("k")
+    let with_icon = authored("k")
         .with_inline_icon("github")
-        .bind_schema(empty_schema())
+        .bind(key("k"), empty_schema())
         .expect("valid bounded metadata");
     let value = serde_json::to_value(&with_icon).expect("serializes");
     assert_eq!(
@@ -282,9 +282,9 @@ fn empty_tags_is_omitted_and_nonempty_tags_is_present() {
     let default_value = serde_json::to_value(base("k")).expect("serializes");
     assert!(default_value.get("tags").is_none());
 
-    let with_tags = draft("k")
+    let with_tags = authored("k")
         .with_tags(["a", "b"])
-        .bind_schema(empty_schema())
+        .bind(key("k"), empty_schema())
         .expect("valid bounded metadata");
     let value = serde_json::to_value(&with_tags).expect("serializes");
     assert_eq!(
@@ -301,9 +301,9 @@ fn default_maturity_is_omitted_and_nondefault_maturity_is_present() {
     let default_value = serde_json::to_value(base("k")).expect("serializes");
     assert!(default_value.get("maturity").is_none());
 
-    let experimental = draft("k")
+    let experimental = authored("k")
         .mark_experimental()
-        .bind_schema(empty_schema())
+        .bind(key("k"), empty_schema())
         .expect("valid bounded metadata");
     let value = serde_json::to_value(&experimental).expect("serializes");
     assert_eq!(
@@ -317,9 +317,9 @@ fn documentation_url_none_is_omitted_and_set_url_is_present() {
     let default_value = serde_json::to_value(base("k")).expect("serializes");
     assert!(default_value.get("links").is_none());
 
-    let with_url = draft("k")
+    let with_url = authored("k")
         .with_documentation_url("https://example.com/docs")
-        .bind_schema(empty_schema())
+        .bind(key("k"), empty_schema())
         .expect("valid bounded metadata");
     let value = serde_json::to_value(&with_url).expect("serializes");
     assert_eq!(
@@ -335,9 +335,9 @@ fn deprecation_none_is_omitted_and_set_notice_is_present() {
     let default_value = serde_json::to_value(base("k")).expect("serializes");
     assert!(default_value.get("deprecation").is_none());
 
-    let deprecated = draft("k")
+    let deprecated = authored("k")
         .with_deprecation(DeprecationNotice::new(Version::new(1, 0, 0)))
-        .bind_schema(empty_schema())
+        .bind(key("k"), empty_schema())
         .expect("valid bounded metadata");
     let value = serde_json::to_value(&deprecated).expect("serializes");
     assert_eq!(

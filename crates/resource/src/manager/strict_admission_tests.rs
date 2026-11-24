@@ -2,6 +2,7 @@
 //! credentials first, outside the admission lock, and applies what it saw
 //! under it (invariant I7).
 
+use crate::resource::ProviderKey;
 use std::{sync::Arc, time::Duration};
 
 use nebula_core::ScopeLevel;

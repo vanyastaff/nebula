@@ -1,14 +1,15 @@
 //! Retirement must not depend on optional diagnostic storage.
 
+use nebula_resource::ProviderKey;
 use std::sync::atomic::AtomicBool;
 
-use nebula_core::{DeclaresDependencies, ResourceId, ResourceKey, WorkspaceId, resource_key};
+use nebula_core::{DeclaresDependencies, ResourceId, WorkspaceId};
 use nebula_engine::resource::{
     ActivationContext, KindActivator, ResourceActivatorRegistry, StoredResourceActivator,
 };
 use nebula_resource::{
     AcquireOptions, Manager, Provider, Resident, ResourceContext,
-    resource::{ResourceMetadataDraft, TeardownCx},
+    resource::{ResourceMetadata, TeardownCx},
 };
 use nebula_storage::inmem::InMemoryResourceStore;
 use nebula_storage_port::{
@@ -36,16 +37,10 @@ impl Provider for RetiredResource {
     type Instance = ();
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("test.worker.retirement")
-    }
+    const KEY: &'static str = "test.worker.retirement";
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("Retirement probe"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("Retirement probe"), "")
     }
 
     async fn create(&self, (): &(), _: &ResourceContext) -> Result<(), nebula_resource::Error> {

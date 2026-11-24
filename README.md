@@ -55,9 +55,10 @@ Durable write authority is aggregate-scoped rather than concentrated in a god se
 Private ADR-0117, *Support one Rust SDK surface with lockstep dependency packages*, defines one persona-scoped `nebula-sdk`: workflow/authoring, integration, schema, testing, client, and embedded façades. Client and embedded support are curated safe surfaces when their documented features ship; they do not expose raw storage, durable mutation, admission, claim, or tenant-proof capabilities. Transport-contract and implementation crates remain technical lockstep dependencies, not additional supported Rust products.
 
 Action, Credential, and Resource metadata follows one-way admission in 0.6:
-authors return `*MetadataDraft`, the owning factory or registry derives the
+authors return schema-free metadata (`ResourceMetadata`, `ActionMetadataDraft`,
+`CredentialMetadataDraft`), the owning factory or registry derives the
 associated Rust schema and admits an immutable terminal definition, and stored
-catalog bytes deserialize only into `Recorded*Metadata` evidence. Internal
+catalog bytes deserialize only into `Recorded*` evidence. Internal
 validated/resolved value proofs, admitted metadata, erased/prepared action
 input, registries, and factories are intentionally absent from the supported
 SDK surface.
@@ -86,7 +87,7 @@ Source of truth: workspace members in `Cargo.toml`.
 | **Core**          | `core`          | IDs, domain keys, prefixed-ULID, shared vocabulary                                   |
 |                   | `validator`     | Validation rule engine                                                               |
 |                   | `schema`        | Typed field definitions + `#[derive(HasSchema)]` (was `nebula-parameter`)            |
-|                   | `metadata`      | `Metadata` trait + helpers shared by Action / Credential / Resource / Plugin         |
+|                   | `metadata`      | `Metadata`, `Definition` trait + helpers shared by Action / Credential / Resource / Plugin         |
 |                   | `expression`    | Template expression engine                                                           |
 |                   | `workflow`      | `WorkflowDefinition`, DAG structure, activation-time validator                       |
 |                   | `execution`     | Execution state machine + transitions                                                |

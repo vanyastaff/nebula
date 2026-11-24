@@ -85,7 +85,7 @@ pub use nebula_resource::topology::{
 pub use nebula_resource::{
     Bounded, BoundedMode, BoundedProvider, CheckCost, ClassifyError, ConfigFingerprint,
     ConfigFingerprintError, CredentialSlot, CredentialUnavailableReason, Error, ErrorKind,
-    HasCredentialSlots, LeaseClosing, PoolConfig, PoolProvider, Pooled, Provider, Resident,
-    ResidentConfig, ResidentProvider, Resource, ResourceConfig, ResourceContext,
-    ResourceMetadataDraft, SlotCell, TeardownCx, TeardownReason, TopologyTag, no_credential_slots,
+    HasCredentialSlots, LeaseClosing, PoolConfig, PoolProvider, Pooled, Provider, ProviderKey,
+    Resident, ResidentConfig, ResidentProvider, Resource, ResourceConfig, ResourceContext,
+    ResourceMetadata, SlotCell, TeardownCx, TeardownReason, TopologyTag, no_credential_slots,
 };

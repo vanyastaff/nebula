@@ -3,6 +3,7 @@
 //! or of another [`Kind`] — submits effect units on the resource handle of a fake payment gateway that counts every
 //! provider call and deduplicates by the idempotency key it receives.
 
+use nebula_resource::ProviderKey;
 use std::{
     collections::HashMap,
     num::NonZeroU32,
@@ -14,12 +15,12 @@ use nebula_action::{
     GenericAgentFactory, GenericControlFactory, GenericStatefulFactory, InstanceFactory,
     StatefulAction, StatelessAction,
 };
-use nebula_core::{ResourceKey, ScopeLevel, resource_key};
+use nebula_core::ScopeLevel;
 use nebula_resource::{
     Manager, RegistrationSpec, Resident, ResidentConfig, ResourceContext, SlotIdentity,
     call::{Cost, Effect, Operation, OperationCx, OperationError},
     error::Error as ResourceError,
-    resource::{Provider as ResourceProvider, ResourceMetadataDraft},
+    resource::{Provider as ResourceProvider, ResourceMetadata},
     topology::resident::ResidentProvider,
 };
 use nebula_storage_port::dto::EffectOccurrenceRecord;
@@ -386,16 +387,10 @@ impl ResourceProvider for Payments {
     type Instance = Arc<Gateway>;
     type Topology = Resident<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("test.journal.payments")
-    }
+    const KEY: &'static str = "test.journal.payments";
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("JournalPayments"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("JournalPayments"), "")
     }
 
     async fn create(&self, (): &(), _: &ResourceContext) -> Result<Arc<Gateway>, ResourceError> {

@@ -18,7 +18,7 @@ Action, credential, and resource metadata compose it rather than redeclaring
 the prefix.
 
 Plugin manifests are container descriptors. They reuse supporting types but do
-not compose `BaseMetadata<K>` or carry a canonical input schema (ADR-0018).
+not compose `BaseDefinition<K>` or carry a canonical input schema (ADR-0018).
 
 ## Breaking
 
@@ -35,12 +35,12 @@ fallbacks.
 
 | Previous use | Required migration |
 |---|---|
-| `let base = draft.bind_schema(schema);` | Use `let base = draft.bind_schema(schema)?;`. The return type is `Result<BaseMetadata<K>, MetadataBuildError>`, and binding now requires `K: serde::Serialize`. |
-| Recorded decoding with only `K: FromStr` | `RecordedBaseMetadata<K>: Deserialize` now requires `K: FromStr + Serialize` for exact canonical accounting. Key parser diagnostics are not exposed. |
+| `let base = metadata.bind_schema(schema);` | Use `let base = metadata.bind(key, schema)?;`. The return type is `Result<BaseDefinition<K>, MetadataBuildError>`, and binding now requires `K: serde::Serialize`. |
+| Recorded decoding with only `K: FromStr` | `RecordedBaseDefinition<K>: Deserialize` now requires `K: FromStr + Serialize` for exact canonical accounting. Key parser diagnostics are not exposed. |
 | Generic keys serializing as numbers, arrays, or objects | Use a key whose deterministic `Serialize` representation is a JSON string and whose `FromStr` recovers that same key from the string contents. Non-string key representations fail with `MetadataError::InvalidKey`. |
 | Deserializing `PluginManifestBuilder` | Deserialize `PluginManifest` instead; its private wire DTO passes through the final build gate. The public builder no longer implements `Deserialize`. |
 | Matching `ManifestError::InvalidKey(source)` | Match `ManifestError::InvalidKey`. Its `PluginKeyParseError` payload and error source are removed; use the stable error code rather than parsing diagnostic text. |
-| Treating any constructed draft or supporting value as admitted | Handle final admission failures for fields, collection counts, chronology, canonical bytes, and complete-record depth. `MetadataDraft` and `BaseMetadata` do not implement `Deserialize`. |
+| Treating any constructed metadata or supporting value as admitted | Handle final admission failures for fields, collection counts, chronology, canonical bytes, and complete-record depth. `Metadata` and `BaseDefinition` do not implement `Deserialize`. |
 
 `MetadataError` adds data-carrying `InvalidVersion(MetadataField)`,
 `FieldTooLarge(MetadataField)`, `TooManyEntries(MetadataField)`,
@@ -105,13 +105,18 @@ versioned integration-catalog export prerequisite.
 Static definitions move in one direction:
 
 ```text
-MetadataDraft<K> --bind_schema(ValidSchema)--> Result<BaseMetadata<K>, MetadataBuildError>
+Metadata --bind(K, ValidSchema)--> Result<BaseDefinition<K>, MetadataBuildError>
 ```
 
-`MetadataDraft<K>` owns every lower metadata field except `schema`. Use
-`MetadataDraft::new` with a validated `MetadataName`, or
-`MetadataDraft::try_new` for dynamic text. All fluent authoring happens on the
-draft. `bind_schema` is the only transition to `BaseMetadata<K>` and checks every
+`Metadata` owns what an author says about a component for the catalog:
+every lower metadata field except the `key` and the `schema`. The key is the
+component's identity, declared once on its type (`const KEY`); the schema is
+derived from its associated types. Neither can be written into it, so authored
+metadata cannot name a component other than the one it is admitted for. Use
+`Metadata::new` with a validated `MetadataName`, or
+`Metadata::try_new` for dynamic text. All fluent authoring happens on this
+value. `bind(key, schema)` is the only transition to `BaseDefinition<K>`, called
+by whoever admits the component (a factory or a registry), and checks every
 shared field, chronology, and byte budget. It requires `K: Serialize` for exact
 canonical JSON accounting, including generic keys.
 
@@ -123,43 +128,39 @@ shared-budget validation, admission captures the key independently within
 Recorded ingress enforces the same check after parsing the key. Trait bounds
 alone cannot establish a custom serializer/parser's semantic round-trip law.
 
-`BaseMetadata<K>` has private fields and getters only. It represents a technical
+`BaseDefinition<K>` has private fields and getters only. It represents a technical
 definition admitted from current static Rust code. It implements `Serialize`,
 but deliberately does not implement `Deserialize`.
 
 ```rust
-use nebula_metadata::{BaseMetadata, Metadata, MetadataDraft, metadata_name};
+use nebula_metadata::{BaseDefinition, Definition, Metadata, metadata_name};
 use nebula_schema::ValidSchema;
 
-struct ActionMetadata {
-    base: BaseMetadata<String>,
+struct ActionDefinition {
+    base: BaseDefinition<String>,
 }
 
-impl Metadata for ActionMetadata {
+impl Definition for ActionDefinition {
     type Key = String;
 
-    fn base(&self) -> &BaseMetadata<Self::Key> {
+    fn base(&self) -> &BaseDefinition<Self::Key> {
         &self.base
     }
 }
 
-let metadata = ActionMetadata {
-    base: MetadataDraft::new(
-        "http.request".to_owned(),
-        metadata_name!("HTTP Request"),
-        "Send an HTTP request",
-    )
-    .mark_beta()
-    .with_tags(["network", "http"])
-    .bind_schema(ValidSchema::empty())?,
+let definition = ActionDefinition {
+    base: Metadata::new(metadata_name!("HTTP Request"), "Send an HTTP request")
+        .mark_beta()
+        .with_tags(["network", "http"])
+        .bind("http.request".to_owned(), ValidSchema::empty())?,
 };
 
-assert_eq!(metadata.name(), "HTTP Request");
-assert_eq!(metadata.tags(), ["http", "network"]);
+assert_eq!(definition.name(), "HTTP Request");
+assert_eq!(definition.tags(), ["http", "network"]);
 # Ok::<(), nebula_metadata::MetadataBuildError>(())
 ```
 
-The draft vocabulary is intentionally singular:
+The authoring vocabulary is intentionally singular:
 
 - `with_version(semver::Version)`
 - `with_icon(Icon)`, `with_inline_icon`, `with_url_icon`
@@ -167,7 +168,7 @@ The draft vocabulary is intentionally singular:
 - `with_links`, `add_link`, `with_documentation_url`
 - `mark_experimental`, `mark_beta`, `mark_stable`
 - `with_deprecation(DeprecationNotice)`
-- `bind_schema(ValidSchema)`
+- `bind(key, ValidSchema)`
 
 There is no key replacement or final-metadata mutation API. Rebuild a fresh
 static definition when any authored field changes.
@@ -176,25 +177,21 @@ static definition when any authored field changes.
 
 Persisted or wire metadata is evidence about a prior definition, not authority
 to instantiate an admitted definition. Deserialize it as
-`RecordedBaseMetadata<K>`, then compare it with a freshly built static
-`BaseMetadata<K>` using `readmit_against`. Every field and the schema must match.
+`RecordedBaseDefinition<K>`, then compare it with a freshly built static
+`BaseDefinition<K>` using `readmit_against`. Every field and the schema must match.
 The successful value is cloned from the fresh definition; no deserialized field
 is promoted into the admitted value.
 
 ```rust
-use nebula_metadata::{MetadataDraft, RecordedBaseMetadata, metadata_name};
+use nebula_metadata::{Metadata, RecordedBaseDefinition, metadata_name};
 use nebula_schema::ValidSchema;
 
 # fn restore() -> Result<(), Box<dyn std::error::Error>> {
-let fresh = MetadataDraft::new(
-    "http.request".to_owned(),
-    metadata_name!("HTTP Request"),
-    "Send an HTTP request",
-)
-.bind_schema(ValidSchema::empty())?;
+let fresh = Metadata::new(metadata_name!("HTTP Request"), "Send an HTTP request")
+    .bind("http.request".to_owned(), ValidSchema::empty())?;
 
 let wire = serde_json::to_string(&fresh)?;
-let recorded: RecordedBaseMetadata<String> = serde_json::from_str(&wire)?;
+let recorded: RecordedBaseDefinition<String> = serde_json::from_str(&wire)?;
 let admitted = recorded.readmit_against(&fresh)?;
 
 assert_eq!(admitted, fresh);
@@ -210,20 +207,20 @@ otherwise. A mismatch returns `MetadataReadmissionError` without definition
 payloads in its error or trace output.
 
 Leaf metadata with additional fields needs an explicitly named recorded leaf
-DTO containing a nested `base: RecordedBaseMetadata<K>`. Do not use serde
+DTO containing a nested `base: RecordedBaseDefinition<K>`. Do not use serde
 flattening. Re-admit the base against the fresh
 leaf definition and validate any leaf-specific evidence in the owning crate.
-Deriving `Deserialize` on an admitted leaf that contains `BaseMetadata<K>` is
+Deriving `Deserialize` on an admitted leaf that contains `BaseDefinition<K>` is
 intentionally impossible.
 
 ## Public API
 
-- `MetadataDraft<K>` - schema-free authoring state.
-- `BaseMetadata<K>` - getter-only admitted technical definition.
-- `RecordedBaseMetadata<K>` - validated wire or persistence evidence.
+- `Metadata` - key-free and schema-free authoring state.
+- `BaseDefinition<K>` - getter-only admitted technical definition.
+- `RecordedBaseDefinition<K>` - validated wire or persistence evidence.
 - `MetadataName` and `metadata_name!` - checked dynamic and literal names.
 - `MetadataVersion` - nameable alias for `semver::Version`.
-- `Metadata` - shared getter trait for composed leaf metadata.
+- `Definition` - shared getter trait for composed leaf definitions.
 - `CatalogCategoryKey`, `CatalogLink`, `CatalogLinkRelation`, `CatalogLinkTarget`,
   `DocumentationOrigin`, `CatalogReference`, `RemovalDate`, `RemovalMilestone`,
   `RemovalSchedule`, `Icon`, `MaturityLevel`, `DeprecationNotice` - supporting types.
@@ -321,19 +318,19 @@ plan, and schema-envelope versions are independent contracts.
 name, and lifecycle through the same intrinsic rules. Accepted names are stored
 trimmed. Manifest deserialization goes through the builder and therefore cannot
 bypass these checks. Manifests share category/link types, canonicalization,
-chronology, and the 32 KiB authored-field budget, without composing `BaseMetadata`
+chronology, and the 32 KiB authored-field budget, without composing `BaseDefinition`
 or binding a schema. Packaging fields remain separate, with at most 64 group or
 dependency entries and a 64 KiB complete manifest ceiling. Structural validity
 does not prove publisher trust or tenant availability.
 
 ## Leaf migration checklist
 
-1. Build a `MetadataDraft<K>` with `new` or `try_new`.
-2. Apply version, ornament, and lifecycle methods before schema binding.
-3. Propagate the `Result` from `bind_schema`.
+1. Build a `Metadata` with `new` or `try_new`; it takes no key.
+2. Apply version, ornament, and lifecycle methods before binding.
+3. Bind the component's own key and derived schema with `bind`, and propagate its `Result`.
 4. Rebuild instead of mutating a bound key or any other bound field.
-5. Remove `Deserialize` from admitted leaf metadata containing `BaseMetadata<K>`.
-6. Add a recorded leaf DTO containing `RecordedBaseMetadata<K>` where persisted
+5. Remove `Deserialize` from admitted leaf metadata containing `BaseDefinition<K>`.
+6. Add a recorded leaf DTO containing `RecordedBaseDefinition<K>` where persisted
    restoration is required, nested under `base` with strict shared fields.
 7. Re-admit recorded evidence only against a freshly built static definition,
    then validate leaf-specific evidence in the leaf crate.

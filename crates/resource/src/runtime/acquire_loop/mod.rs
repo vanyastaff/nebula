@@ -21,6 +21,7 @@
 //! [`managed`](super::managed) so code that never touches the topology can import
 //! a lighter set of bounds.
 
+use crate::resource::ProviderKey;
 use std::sync::Arc;
 
 use futures::stream::{self, StreamExt};

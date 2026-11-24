@@ -25,14 +25,14 @@ use std::{
     time::Duration,
 };
 
-use nebula_core::{ExecutionId, ResourceKey, resource_key};
+use nebula_core::ExecutionId;
 use nebula_resource::Pooled;
 use nebula_resource::topology::pooled::PoolProvider;
 use nebula_resource::{
     AcquireOptions, Manager, PoolConfig, RegistrationSpec, ResidentConfig, ResourceContext,
     ResourceGuard, ScopeLevel, ShutdownConfig, SlotIdentity,
     error::{Error, ErrorKind},
-    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
+    resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::{Resident, pooled::BrokenCheck},
 };
 
@@ -113,9 +113,7 @@ impl Provider for HttpClientResource {
     type Instance = FakeHttpClient;
     type Topology = Pooled<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("http.client")
-    }
+    const KEY: &'static str = "http.client";
 
     async fn create(
         &self,
@@ -126,12 +124,8 @@ impl Provider for HttpClientResource {
         Ok(FakeHttpClient { connection_id: id })
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("http.client"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("http.client"), "")
     }
 }
 
@@ -264,17 +258,11 @@ impl Provider for ConfigStoreResource {
     type Instance = ConfigStore;
     type Topology = Resident<Self>;
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("ConfigStoreResource"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("ConfigStoreResource"), "")
     }
 
-    fn key() -> ResourceKey {
-        resource_key!("config.store")
-    }
+    const KEY: &'static str = "config.store";
 
     async fn create(
         &self,
@@ -411,9 +399,7 @@ impl Provider for DbResource {
     type Instance = FakeDbConnection;
     type Topology = Pooled<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("db.connection")
-    }
+    const KEY: &'static str = "db.connection";
 
     async fn create(
         &self,
@@ -427,12 +413,8 @@ impl Provider for DbResource {
         Ok(FakeDbConnection { id })
     }
 
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(
-            Self::key(),
-            nebula_resource::metadata_name!("db.connection"),
-            "",
-        )
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("db.connection"), "")
     }
 }
 
