@@ -873,10 +873,32 @@
         {
           "sequence": 1,
           "kind": "diagnostic_raised",
+          "boundary": "compiler",
+          "http_status": null,
+          "code": "PLUGIN_PLAN_GRAPH_V1:DEPENDENCY_TYPE_MISMATCH",
+          "path": "/nodes/step_a/slot_bindings/resident",
+          "expected": "<matching-local-type>",
+          "actual": "provider.resident",
+          "remediation": "declare the same local concrete type as the registered contract"
+        },
+        {
+          "sequence": 2,
+          "kind": "diagnostic_raised",
           "boundary": "http_activation",
           "http_status": 422,
           "code": "PLUGIN_PLAN_GRAPH_V1:DEPENDENCY_TYPE_MISMATCH",
           "path": "/components/resources/provider.resident",
+          "expected": "<matching-local-type>",
+          "actual": "provider.resident",
+          "remediation": "declare the same local concrete type as the registered contract"
+        },
+        {
+          "sequence": 3,
+          "kind": "diagnostic_raised",
+          "boundary": "http_activation",
+          "http_status": 422,
+          "code": "PLUGIN_PLAN_GRAPH_V1:DEPENDENCY_TYPE_MISMATCH",
+          "path": "/nodes/step_a/slot_bindings/resident",
           "expected": "<matching-local-type>",
           "actual": "provider.resident",
           "remediation": "declare the same local concrete type as the registered contract"
@@ -901,10 +923,32 @@
         {
           "sequence": 1,
           "kind": "diagnostic_raised",
+          "boundary": "compiler",
+          "http_status": null,
+          "code": "PLUGIN_PLAN_GRAPH_V1:UNDECLARED_PLUGIN_DEPENDENCY",
+          "path": "/nodes/step_a/slot_bindings/resident",
+          "expected": "<declared-plugin-dependency>",
+          "actual": "provider",
+          "remediation": "declare the provider plugin and compatible version requirement"
+        },
+        {
+          "sequence": 2,
+          "kind": "diagnostic_raised",
           "boundary": "http_activation",
           "http_status": 422,
           "code": "PLUGIN_PLAN_GRAPH_V1:UNDECLARED_PLUGIN_DEPENDENCY",
           "path": "/components/resources/provider.resident",
+          "expected": "<declared-plugin-dependency>",
+          "actual": "provider",
+          "remediation": "declare the provider plugin and compatible version requirement"
+        },
+        {
+          "sequence": 3,
+          "kind": "diagnostic_raised",
+          "boundary": "http_activation",
+          "http_status": 422,
+          "code": "PLUGIN_PLAN_GRAPH_V1:UNDECLARED_PLUGIN_DEPENDENCY",
+          "path": "/nodes/step_a/slot_bindings/resident",
           "expected": "<declared-plugin-dependency>",
           "actual": "provider",
           "remediation": "declare the provider plugin and compatible version requirement"
