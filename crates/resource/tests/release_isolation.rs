@@ -16,11 +16,11 @@ use std::{
 };
 
 use async_trait::async_trait;
-use nebula_core::{ResourceKey, ScopeLevel, resource_key};
+use nebula_core::ScopeLevel;
 use nebula_resource::{
     AcquireOptions, Error, ErrorKind, Manager, ManagerConfig, PoolProvider, Pooled, Provider,
-    RegistrationSpec, Resource, ResourceContext, ResourceGuard, ResourceMetadataDraft,
-    SlotIdentity, TeardownCx,
+    RegistrationSpec, Resource, ResourceContext, ResourceGuard, ResourceMetadata, SlotIdentity,
+    TeardownCx,
     topology::pooled::{BrokenCheck, config::Config as PoolConfig},
 };
 
@@ -40,14 +40,11 @@ struct Stuck {
 impl Provider for Stuck {
     type Config = ();
     type Instance = ();
+    const KEY: &'static str = "isolation.stuck";
     type Topology = Pooled<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("isolation.stuck")
-    }
-
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(Self::key(), nebula_resource::metadata_name!("stuck"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("stuck"), "")
     }
 
     async fn create(&self, _config: &(), _ctx: &ResourceContext) -> Result<(), Error> {
@@ -76,14 +73,11 @@ struct Healthy;
 impl Provider for Healthy {
     type Config = ();
     type Instance = ();
+    const KEY: &'static str = "isolation.healthy";
     type Topology = Pooled<Self>;
 
-    fn key() -> ResourceKey {
-        resource_key!("isolation.healthy")
-    }
-
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::new(Self::key(), nebula_resource::metadata_name!("healthy"), "")
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::new(nebula_resource::metadata_name!("healthy"), "")
     }
 
     async fn create(&self, _config: &(), _ctx: &ResourceContext) -> Result<(), Error> {
