@@ -8,10 +8,10 @@ use std::{
 use nebula_action::{
     Action, ActionFactory, ActionResult, RemoteEffectInstanceFactory,
     effect::{
-        ActionEffectContract, EffectInvocationContext, EffectInvocationOutcome,
-        EffectPreparationContext, EffectPreparationError, EffectQueryContext,
-        EffectReconciliationOutcome, PreparedEffectAdapter, PreparedRemoteEffect,
-        ReadOnlyEffectQuery, RemoteDestinationGuarantee, RemoteEffectAction,
+        EffectInvocationContext, EffectInvocationOutcome, EffectPreparationContext,
+        EffectPreparationError, EffectQueryContext, EffectReconciliationOutcome,
+        PreparedEffectAdapter, PreparedRemoteEffect, ReadOnlyEffectQuery,
+        RemoteDestinationGuarantee, RemoteEffectAction, RemoteEffectDeclarationError,
         RemoteEffectDescriptor, RemoteEffectPolicy,
     },
 };
@@ -107,14 +107,13 @@ struct Provider {
 }
 
 thread_local! {
-    /// Remote descriptor the [`ProviderAction`] under admission declares; each
-    /// test case builds its own recovery policy.
+    /// Remote descriptor [`ProviderAction::descriptor`] returns during
+    /// admission; each test case builds its own recovery policy.
     static DECLARED_DESCRIPTOR: std::cell::RefCell<Option<RemoteEffectDescriptor>> =
         const { std::cell::RefCell::new(None) };
 }
 
 struct ProviderAction<I> {
-    descriptor: RemoteEffectDescriptor,
     provider: Arc<Provider>,
     _input: PhantomData<fn() -> I>,
 }
@@ -128,16 +127,10 @@ where
     type Output = Value;
 
     fn metadata() -> nebula_action::ActionMetadata {
-        let metadata = nebula_action::ActionMetadata::new(
+        nebula_action::ActionMetadata::new(
             nebula_action::metadata_name!("Send"),
             "Trusted test provider",
-        );
-        match DECLARED_DESCRIPTOR.with(|descriptor| descriptor.borrow().clone()) {
-            Some(descriptor) => {
-                metadata.with_effect_contract(ActionEffectContract::Remote(Box::new(descriptor)))
-            },
-            None => metadata,
-        }
+        )
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -150,8 +143,10 @@ impl<I> RemoteEffectAction for ProviderAction<I>
 where
     I: nebula_schema::HasSchema + DeserializeOwned + Serialize + Send + Sync + 'static,
 {
-    fn descriptor(&self) -> &RemoteEffectDescriptor {
-        &self.descriptor
+    fn descriptor() -> Result<RemoteEffectDescriptor, RemoteEffectDeclarationError> {
+        Ok(DECLARED_DESCRIPTOR
+            .with(|descriptor| descriptor.borrow().clone())
+            .expect("a descriptor is installed during fixture admission"))
     }
     async fn prepare(
         &self,
@@ -382,10 +377,9 @@ impl Fixture {
         }
         .unwrap();
         let descriptor = RemoteEffectDescriptor::new("test.provider/v1", 1, policy).unwrap();
-        DECLARED_DESCRIPTOR.with(|declared| *declared.borrow_mut() = Some(descriptor.clone()));
+        DECLARED_DESCRIPTOR.with(|declared| *declared.borrow_mut() = Some(descriptor));
         let factory: Arc<dyn ActionFactory> = Arc::new(
             RemoteEffectInstanceFactory::new(ProviderAction::<I> {
-                descriptor,
                 provider: provider.clone(),
                 _input: PhantomData,
             })

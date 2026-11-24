@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use super::RemoteEffectDescriptor;
+use super::{RemoteEffectDeclarationError, RemoteEffectDescriptor};
 use crate::{
     Action, ActionDefinition, ActionError, ActionInput, ActionResult, PreparedActionInput,
 };
@@ -18,9 +18,22 @@ pub(crate) mod sealed {
 }
 
 /// Typed authoring contract for a remote-effect action.
+///
+/// The remote effect contract is the type's own, like its key and metadata:
+/// [`RemoteEffectInstanceFactory`](crate::RemoteEffectInstanceFactory) stamps
+/// [`descriptor()`](Self::descriptor) into the admitted definition, and the
+/// action's [`metadata()`](Action::metadata) declares no effect contract.
 pub trait RemoteEffectAction: Action {
     /// Exact effect protocol declaration implemented by this adapter.
-    fn descriptor(&self) -> &RemoteEffectDescriptor;
+    ///
+    /// Read once, at admission. A different descriptor for the same code is a
+    /// different action type.
+    ///
+    /// # Errors
+    ///
+    /// Returns the reason the declared policy or contract identity is invalid;
+    /// admission then refuses the action.
+    fn descriptor() -> Result<RemoteEffectDescriptor, RemoteEffectDeclarationError>;
 
     /// Freeze a logical provider request from typed, admitted action input.
     #[must_use = "remote preparation does nothing unless its future is awaited"]

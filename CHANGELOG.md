@@ -11,6 +11,32 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **A remote action's effect contract is its `RemoteEffectAction::descriptor()`,
+  declared once on the type.** A remote action declared its descriptor twice:
+  as `ActionEffectContract::Remote(..)` in its metadata and as the instance's
+  `descriptor(&self)`, and `RemoteEffectInstanceFactory::new` checked that the
+  two matched. `descriptor` is now an associated function,
+  `fn descriptor() -> Result<RemoteEffectDescriptor, RemoteEffectDeclarationError>`
+  (both builders' errors convert into the new `RemoteEffectDeclarationError`,
+  so it is written with `?`), and the factory stamps it as the definition's
+  `Remote` contract. The action's metadata declares no effect contract: a
+  remote action whose metadata declares one is refused with
+  `ActionMetadataAdmissionError::EffectContractOnRemoteAction`, and metadata
+  that declares a `Remote` contract on any factory with
+  `RemoteEffectContractInMetadata`. `RemoteEffectContractRequired` and
+  `RemoteEffectDescriptorMismatch` are removed; an invalid descriptor is
+  `RemoteEffectDeclaration(..)`. Migrate by deleting the
+  `.with_effect_contract(ActionEffectContract::Remote(..))` call and the
+  instance's descriptor field, and returning the descriptor from
+  `descriptor()`.
+
+- **`KindActivator::with_metadata` and `KindActivator::configurable_with_metadata`
+  are removed.** They let a caller pass resource metadata next to the provider
+  type, so one type could be registered with metadata other than its own. A
+  resource's metadata is `Provider::metadata()`; use `KindActivator::new` or
+  `KindActivator::configurable`, and declare another provider type for an entry
+  with different metadata.
+
 - **`nebula_core::CredentialLike` and `nebula_core::ResourceLike` are removed.**
   Each declared a `KEY_STR` constant that nothing implemented or read; a
   credential's identity is `Credential::KEY` and a resource's is

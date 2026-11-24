@@ -5,7 +5,7 @@ use nebula_action::{
         ActionEffectContract, EffectFailureCode, EffectInvocationContext, EffectInvocationOutcome,
         EffectPreparationContext, EffectPreparationError, PreparedEffectAdapter,
         PreparedRemoteEffect, RemoteDestinationGuarantee, RemoteEffectAction,
-        RemoteEffectDescriptor, RemoteEffectPolicy,
+        RemoteEffectDeclarationError, RemoteEffectDescriptor, RemoteEffectPolicy,
     },
 };
 use nebula_core::{Dependencies, ExecutionId, OperationId, WorkflowId, action_key, node_key};
@@ -58,7 +58,6 @@ impl EffectObservations {
 }
 
 struct RecoveryEffectAction {
-    descriptor: RemoteEffectDescriptor,
     observations: Arc<EffectObservations>,
 }
 
@@ -72,9 +71,6 @@ impl Action for RecoveryEffectAction {
             nebula_action::metadata_name!("Send"),
             "durable recovery effect fixture",
         )
-        .with_effect_contract(ActionEffectContract::Remote(
-            Box::new(recovery_descriptor()),
-        ))
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -84,8 +80,17 @@ impl Action for RecoveryEffectAction {
 }
 
 impl RemoteEffectAction for RecoveryEffectAction {
-    fn descriptor(&self) -> &RemoteEffectDescriptor {
-        &self.descriptor
+    fn descriptor() -> Result<RemoteEffectDescriptor, RemoteEffectDeclarationError> {
+        let policy = RemoteEffectPolicy::builder(RemoteDestinationGuarantee::stable_key(60_000)?)
+            .maximum_invocations(2)
+            .maximum_queries(0)
+            .recovery_window(Duration::from_mins(1))
+            .build()?;
+        Ok(RemoteEffectDescriptor::new(
+            "worker.recovery/v1",
+            1,
+            policy,
+        )?)
     }
 
     async fn prepare(
@@ -238,24 +243,11 @@ fn registry(
     (actions, Arc::new(frozen))
 }
 
-/// The remote effect descriptor the recovery action declares and carries.
-fn recovery_descriptor() -> RemoteEffectDescriptor {
-    let policy =
-        RemoteEffectPolicy::builder(RemoteDestinationGuarantee::stable_key(60_000).unwrap())
-            .maximum_invocations(2)
-            .maximum_queries(0)
-            .recovery_window(Duration::from_mins(1))
-            .build()
-            .unwrap();
-    RemoteEffectDescriptor::new("worker.recovery/v1", 1, policy).unwrap()
-}
-
 fn effect_registry(
     observations: &Arc<EffectObservations>,
 ) -> (Arc<ActionRegistry>, Arc<FrozenPluginRegistry>) {
     let factory = Arc::new(
         RemoteEffectInstanceFactory::new(RecoveryEffectAction {
-            descriptor: recovery_descriptor(),
             observations: observations.clone(),
         })
         .expect("coherent recovery effect factory"),

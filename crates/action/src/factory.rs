@@ -30,8 +30,8 @@ use crate::{
     context::{ActionContext, TriggerContext},
     control::ControlAction,
     effect::{
-        ActionEffectContract, EffectPreparationContext, EffectPreparationError,
-        PreparedRemoteEffect, RemoteEffectAction, RemoteEffectFactory,
+        EffectPreparationContext, EffectPreparationError, PreparedRemoteEffect, RemoteEffectAction,
+        RemoteEffectFactory,
     },
     error::ActionError,
     from_workflow_node::FromWorkflowNode,
@@ -306,6 +306,8 @@ where
 pub struct RemoteEffectInstanceFactory<A: Action> {
     action: A,
     meta: Arc<ActionDefinition>,
+    /// The descriptor stamped into `meta` as its remote contract.
+    descriptor: crate::RemoteEffectDescriptor,
     input_contract: ActionInputContract,
 }
 
@@ -317,26 +319,23 @@ where
 {
     /// Admit a typed remote-effect action and bind its ingress capability.
     ///
+    /// Key, metadata and remote contract are the type's own:
+    /// [`A::KEY`](Action::KEY), [`A::metadata()`](Action::metadata) and
+    /// [`A::descriptor()`](RemoteEffectAction::descriptor), which admission
+    /// stamps as the definition's [`ActionEffectContract::Remote`](crate::ActionEffectContract::Remote).
+    ///
     /// # Errors
     ///
-    /// The key and metadata are the type's own, [`A::KEY`](Action::KEY) and
-    /// [`A::metadata()`](Action::metadata); the metadata must declare the
-    /// remote contract that the instance's descriptor matches.
-    ///
-    /// Returns a typed admission failure for invalid metadata, a missing
-    /// remote contract, or a descriptor mismatch.
+    /// Returns a typed admission failure for invalid metadata, metadata that
+    /// declares an effect contract of its own, or an invalid descriptor.
     pub fn new(action: A) -> Result<Self, ActionMetadataAdmissionError> {
-        let meta = admit_metadata::<A>(A::metadata(), ActionKind::Stateless)?;
-        let ActionEffectContract::Remote(descriptor) = meta.effect_contract() else {
-            return Err(ActionMetadataAdmissionError::RemoteEffectContractRequired);
-        };
-        if descriptor.as_ref() != action.descriptor() {
-            return Err(ActionMetadataAdmissionError::RemoteEffectDescriptorMismatch);
-        }
+        let descriptor = A::descriptor()?;
+        let meta = Arc::new(A::metadata().admit_remote_for::<A>(descriptor.clone())?);
         let input_contract = ActionInputContract::new(meta.base().schema());
         Ok(Self {
             action,
             meta,
+            descriptor,
             input_contract,
         })
     }
@@ -382,7 +381,7 @@ where
     A: RemoteEffectAction,
 {
     fn descriptor(&self) -> &crate::RemoteEffectDescriptor {
-        self.action.descriptor()
+        &self.descriptor
     }
 
     fn definition(&self) -> &Arc<ActionDefinition> {

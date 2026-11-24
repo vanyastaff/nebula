@@ -351,6 +351,21 @@ struct RemoteEffectDescriptorWire {
     policy: RemoteEffectPolicy,
 }
 
+/// Why a remote action's [`descriptor`](RemoteEffectAction::descriptor) could
+/// not be built.
+///
+/// Both builders' errors convert into it, so a descriptor is written with `?`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum RemoteEffectDeclarationError {
+    /// The recovery policy is incoherent.
+    #[error(transparent)]
+    Policy(#[from] RemoteEffectPolicyError),
+    /// The contract identity or canonicalization version is invalid.
+    #[error(transparent)]
+    Contract(#[from] EffectContractError),
+}
+
 /// Bounded rejection of an invalid effect declaration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]

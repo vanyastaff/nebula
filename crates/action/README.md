@@ -285,8 +285,11 @@ The examples deliberately wire slot resolution manually (no `#[derive(Action)]`)
   before any provider call, with a detail saying why. `ReadOnly` and `Remote` actions
   likewise get read-only handles only. No contract reaches a raw lease: since 0.27.0 the action surface has no lease route
   (`ResourceGuard<R>` slots and `acquire_resource_by_id` are removed), because a lease would
-  bypass the journal. A remote stateless factory exposes
-  `RemoteEffectFactory`; generic action dispatch cannot invoke it. Preparation produces
+  bypass the journal. A `Remote` contract is never declared in metadata: it is the
+  action type's `RemoteEffectAction::descriptor()`, which `RemoteEffectInstanceFactory`
+  stamps into the definition at admission (metadata that declares any effect contract on a
+  remote action, or a `Remote` one on any other factory, is refused). A remote stateless
+  factory exposes `RemoteEffectFactory`; generic action dispatch cannot invoke it. Preparation produces
   bounded canonical request and destination-binding bytes without invocation authority.
   Only the execution owner issues an `EffectInvocationContext` after the ledger
   acknowledges a fresh call grant. After an ambiguous boundary, only a pinned stable-key destination may make

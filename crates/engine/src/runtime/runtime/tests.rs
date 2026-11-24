@@ -325,23 +325,72 @@ async fn engine_dispatch_admits_a_journaled_effect_with_read_only_authority() {
 
 #[tokio::test]
 async fn generic_dispatch_rejects_a_remote_effect_without_capability_before_action_code() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use nebula_action::effect::{
-        ActionEffectContract, RemoteDestinationGuarantee, RemoteEffectDescriptor,
-        RemoteEffectPolicy,
+        EffectPreparationContext, EffectPreparationError, PreparedRemoteEffect,
+        RemoteDestinationGuarantee, RemoteEffectAction, RemoteEffectDeclarationError,
+        RemoteEffectDescriptor, RemoteEffectPolicy,
     };
 
-    let policy = RemoteEffectPolicy::builder(RemoteDestinationGuarantee::Opaque)
-        .maximum_invocations(1)
-        .maximum_queries(0)
-        .recovery_window(std::time::Duration::from_mins(1))
-        .build()
-        .unwrap();
-    let descriptor = RemoteEffectDescriptor::new("test.provider/v1", 1, policy).unwrap();
-    let (result, executions, metrics) = dispatch_counted_contract(
-        ActionEffectContract::Remote(Box::new(descriptor)),
-        ResourceAuthority::EngineJournaled,
-    )
-    .await;
+    /// Remote action whose preparation counts as running action code.
+    struct CountedRemote(Arc<AtomicUsize>);
+
+    impl Action for CountedRemote {
+        const KEY: &'static str = "test.owner_required";
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        fn metadata() -> ActionMetadata {
+            ActionMetadata::new(nebula_action::metadata_name!("Guard"), "effect gate")
+        }
+
+        fn dependencies() -> &'static Dependencies {
+            static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
+            DEPENDENCIES.get_or_init(Dependencies::new)
+        }
+    }
+
+    impl RemoteEffectAction for CountedRemote {
+        fn descriptor() -> Result<RemoteEffectDescriptor, RemoteEffectDeclarationError> {
+            let policy = RemoteEffectPolicy::builder(RemoteDestinationGuarantee::Opaque)
+                .maximum_invocations(1)
+                .maximum_queries(0)
+                .recovery_window(std::time::Duration::from_mins(1))
+                .build()?;
+            Ok(RemoteEffectDescriptor::new("test.provider/v1", 1, policy)?)
+        }
+
+        async fn prepare(
+            &self,
+            _: serde_json::Value,
+            _: &EffectPreparationContext,
+        ) -> Result<PreparedRemoteEffect, EffectPreparationError> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Err(EffectPreparationError::Unavailable)
+        }
+    }
+
+    let preparations = Arc::new(AtomicUsize::new(0));
+    let factory: Arc<dyn ActionFactory> = Arc::new(
+        nebula_action::RemoteEffectInstanceFactory::new(CountedRemote(Arc::clone(&preparations)))
+            .expect("remote fixture admits"),
+    );
+    let (runtime, metrics) = make_runtime_with_metrics(Arc::new(ActionRegistry::new()));
+    let node = NodeDefinition::new(node_key!("test"), "Guard", "test", "owner_required").unwrap();
+    let result = runtime
+        .run_factory(
+            "test.owner_required",
+            factory,
+            &node,
+            nebula_action::ActionInput::Raw(serde_json::Value::Null),
+            &test_context(),
+            None,
+            ResourceAuthority::EngineJournaled,
+            None,
+        )
+        .await;
+    let executions = preparations.load(Ordering::Relaxed);
 
     std::assert_matches!(result, Err(RuntimeError::EffectRequiresOwner));
     assert_eq!(executions, 0);
