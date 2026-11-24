@@ -516,7 +516,7 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
             pub mod resource {
                 pub use nebula_resource::{
                     __assert_provider_key, ConfigFingerprint, Error, HasCredentialSlots, PinSlots,
-                    ResourceConfig, SlotInstallError, SlotUpdate,
+                    ResourceConfig, SlotInstallError, SlotUpdate, key_of,
                 };
                 pub mod contribution {
                     pub use crate::resource_contribution::{
@@ -528,7 +528,7 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
                     reason = "the hidden macro ABI mirrors nebula_resource::resource paths emitted by existing derives"
                 )]
                 pub mod resource {
-                    pub use nebula_resource::resource::{Provider};
+                    pub use nebula_resource::resource::Provider;
                 }
                 pub mod topology {
                     pub use nebula_resource::topology::{Pooled, Resident, Topology};
